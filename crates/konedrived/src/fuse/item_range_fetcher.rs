@@ -44,8 +44,8 @@ pub(super) enum RangeRefusal {
 /// What the answer to a range says of the item it is a range of.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RangeAnswerFacts {
-    /// The item's size; 0 from a source that does not say.
-    pub(super) size: u64,
+    /// The item's size, when the source says it.
+    pub(super) size: Option<u64>,
     /// The item's modification time in Unix seconds; 0 from a source that does not say.
     pub(super) mtime: i64,
     /// The cTag of the content the bytes are of, when the source says it.
@@ -61,17 +61,17 @@ impl RangeAnswerFacts {
 
 /// Whether an answer that says `answer` is of another content than `content`, the one the
 /// reader opened. Pure. The cTags decide when both sides have one. Else the size and the
-/// time in whole seconds do; an answer with neither (`ContentSource::read_range` may
-/// leave both empty, and the source over Graph does) says nothing, and tells no other
-/// content.
+/// time in whole seconds do, each when the answer says it: what was not said disagrees
+/// with nothing, and a size of 0 that was said is a size — against a content that has
+/// bytes, another content. An answer with neither (`ContentSource::read_range` may leave
+/// both out, and the source over Graph does) says nothing, and tells no other content.
 pub(super) fn decide_is_another_content(answer: &RangeAnswerFacts, content: &ContentVersion) -> bool {
     if let (Some(answered), ContentVersion::Hashed { ctag: Some(opened), .. }) = (&answer.ctag, content) {
         return answered != opened;
     }
-    if answer.size == 0 && answer.mtime == 0 {
-        return false;
-    }
-    answer.size != content.size() || answer.mtime != content.mtime().0
+    let is_another_size = answer.size.is_some_and(|size| size != content.size());
+    let is_another_time = answer.mtime != 0 && answer.mtime != content.mtime().0;
+    is_another_size || is_another_time
 }
 
 /// The range fetcher of one mount.

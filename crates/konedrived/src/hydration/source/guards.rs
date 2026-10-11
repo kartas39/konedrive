@@ -139,7 +139,8 @@ pub(super) async fn open(
     }
 }
 
-/// Refuses an answer no byte of which may be written.
+/// Refuses an answer no byte of which may be written; for one that may, the size it says
+/// the item has, which is what the download goes by from here on.
 ///
 /// - Bytes are written where the source says they start, or not at all. A source that
 ///   answers a resume by restarting the body at 0 (an HTTP `200` to a `Range` request)
@@ -150,7 +151,11 @@ pub(super) async fn open(
 ///   unconfirmed answer. A file emptied in the cloud is a change of metadata, and belongs
 ///   to the sync, not to a fill started by an open. Every other resize, in either
 ///   direction, goes through.
-pub(super) fn check_answer(item_id: &str, fetched: &Fetched, asked_from: u64, original_size: u64) -> Result<(), End> {
+/// - An answer that tells no size is refused, whatever the size asked for: a download
+///   cannot tell the end of the file from a stream that broke, nor hold what it wrote
+///   against a size nobody said. It is a failure of this one asking, and states nothing
+///   of the content.
+pub(super) fn check_answer(item_id: &str, fetched: &Fetched, asked_from: u64, original_size: u64) -> Result<u64, End> {
     if fetched.served_from != asked_from {
         tracing::error!(
             "{item_id}: asked for byte {asked_from} and got a stream starting at {}; refusing rather \
@@ -159,14 +164,18 @@ pub(super) fn check_answer(item_id: &str, fetched: &Fetched, asked_from: u64, or
         );
         return Err(End::Fail(libc::EIO));
     }
-    if fetched.size == 0 && original_size != 0 {
+    let Some(size) = fetched.size else {
+        tracing::error!("{item_id}: the source tells no size of the file; nothing of this answer is written");
+        return Err(End::Fail(libc::EIO));
+    };
+    if size == 0 && original_size != 0 {
         tracing::error!(
             "{item_id}: the source declares size 0 for a placeholder of {original_size} bytes; \
              refusing to truncate it here"
         );
         return Err(End::Fail(libc::EIO));
     }
-    Ok(())
+    Ok(size)
 }
 
 pub(super) fn same_version(a: &Option<Version>, b: &Option<Version>) -> bool {

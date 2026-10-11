@@ -56,7 +56,7 @@ impl ContentSource for GraphSource {
             };
             match self.drive.download(&address, from, Some(end)).await {
                 Ok(download) => {
-                    return Ok(Fetched { served_from: download.served_from, size: 0, mtime: SystemTime::UNIX_EPOCH, version: None, stream: download.stream })
+                    return Ok(Fetched { served_from: download.served_from, size: None, mtime: SystemTime::UNIX_EPOCH, version: None, stream: download.stream })
                 }
                 Err(e) if fresh => return Err(source_error(e)),
                 Err(_) => self.forget(item_id),
@@ -89,7 +89,8 @@ impl ContentSource for GraphSource {
                 Ok(download) => {
                     return Ok(Fetched {
                         served_from: download.served_from,
-                        size: item.size.unwrap_or(0),
+                        // As OneDrive said it: a size it left out is not a size of 0.
+                        size: item.size,
                         mtime: mtime_of(&item),
                         version,
                         stream: download.stream,
@@ -125,3 +126,6 @@ fn mtime_of(item: &DriveItem) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(seconds as u64)
 }
 
+
+#[cfg(test)]
+mod tests;

@@ -110,11 +110,11 @@ async fn attempt(
 
     loop {
         let fetched = open(source, item_id, written, None, breaks).await?;
-        check_answer(item_id, &fetched, written, original_size)?;
+        let size = check_answer(item_id, &fetched, written, original_size)?;
         let version = match &expected {
             None => {
                 if let Some(progress) = checkpoint.take() {
-                    hasher = resume(target, item_id, &progress, &fetched.version, fetched.size).await?;
+                    hasher = resume(target, item_id, &progress, &fetched.version, size).await?;
                 }
                 expected.insert(fetched.version.clone()).clone()
             }
@@ -160,13 +160,13 @@ async fn attempt(
                 .await?;
         };
         match broke {
-            None if written >= fetched.size => {
+            None if written >= size => {
                 verify(item_id, &version, &hasher)?;
                 // More bytes than the file has are not its content, whatever they hash to.
-                if written != fetched.size && version.as_ref().is_some_and(|v| v.quick_xor.is_some()) {
+                if written != size && version.as_ref().is_some_and(|v| v.quick_xor.is_some()) {
                     return Err(End::Mismatch);
                 }
-                return Ok(Downloaded { size: fetched.size, version });
+                return Ok(Downloaded { size, version });
             }
             // A break, or a short stream: continue from where the bytes stopped.
             None => breaks.again(item_id, &format!("the stream ended after {written} bytes")).await?,

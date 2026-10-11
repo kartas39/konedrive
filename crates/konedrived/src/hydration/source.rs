@@ -42,7 +42,12 @@ pub struct Fetched {
     /// to the offset of the first byte of `stream`, not to the offset it was
     /// asked for.
     pub served_from: u64,
-    pub size: u64,
+    /// The item's size by now, when the source said one. `None` is "not said", never an
+    /// empty file: OneDrive's metadata may leave the size out, and the answer to a range a
+    /// program reads tells nothing of the item (`read_range`). Whoever reads it decides
+    /// what an answer without a size is to them; a download refuses it
+    /// (`guards::check_answer`).
+    pub size: Option<u64>,
     pub mtime: SystemTime,
     /// `None` from a source that cannot say (`LocalDir`): nothing is then
     /// verified or checkpointed.

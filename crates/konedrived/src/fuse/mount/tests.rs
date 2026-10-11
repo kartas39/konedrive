@@ -28,7 +28,7 @@ struct EmptyFiles;
 #[async_trait::async_trait]
 impl ContentSource for EmptyFiles {
     async fn fetch(&self, _item_id: &str, from: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
-        Ok(Fetched { served_from: from, size: 0, mtime: UNIX_EPOCH, version: None, stream: Box::new(std::io::Cursor::new(Vec::new())) })
+        Ok(Fetched { served_from: from, size: Some(0), mtime: UNIX_EPOCH, version: None, stream: Box::new(std::io::Cursor::new(Vec::new())) })
     }
 }
 

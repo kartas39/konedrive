@@ -26,10 +26,12 @@
 //! download states are told at that answer (`ItemDownloadStates::forget_another_content`),
 //! not when the download is started and not when it ends.
 //!
-//! **A size that was not told** disagrees with nothing ([`find_told_size`]): the answer
-//! is held against the asked content by its version alone, and with no version either it
-//! states no other content. The download then refuses it as it refuses a size of 0 for a
-//! file that has bytes (`guards::check_answer`): a failure of that one asking.
+//! **A size that was not told** (`Fetched::size` is `None`) disagrees with nothing: the
+//! answer is held against the asked content by its version alone, and with no version
+//! either it states no other content. The download then refuses it, having no size to go
+//! by (`guards::check_answer`): a failure of that one asking. A size of 0 that was told
+//! is a size: against a content that has bytes it is another content, with or without a
+//! version — the file was emptied in OneDrive.
 //!
 //! **The mark is taken back to 0** the moment the download does not trust what is on
 //! disk any more — a hash that does not match, a version that changed between two
@@ -74,17 +76,6 @@ pub(super) enum AnswerUse {
     NotCounted,
     /// Of another content than the one asked for: nothing of it is written or counted.
     AnotherContent,
-}
-
-/// The size an answer that says `answered` tells the item to be, for a download of
-/// `asked`; `None` when it tells none. Pure.
-///
-/// `Fetched::size` is 0 both for an empty file and from a source OneDrive told no size
-/// (`hydration::graph_source`). Against a content that is empty, 0 is its size. Against
-/// one that has bytes, 0 is not told apart from "not said", and is taken as not said: a
-/// file emptied in OneDrive is another content by its version, where one is told.
-pub(super) fn find_told_size(answered: u64, asked: &ContentVersion) -> Option<u64> {
-    (answered != 0 || asked.size() == 0).then_some(answered)
 }
 
 /// What the download of `asked` does with an answer that says the item is `size` bytes
@@ -174,7 +165,7 @@ impl ContentSource for DownloadSource<'_> {
             }
         };
         // Before the stream is handed on and before the mark is touched.
-        match decide_answer_use(&self.asked, find_told_size(fetched.size, &self.asked), fetched.version.as_ref(), fetched.served_from, from, end) {
+        match decide_answer_use(&self.asked, fetched.size, fetched.version.as_ref(), fetched.served_from, from, end) {
             AnswerUse::AnotherContent => {
                 crate::panic::lock(&self.refusals).insert(end, DownloadRefusal::AnotherContent);
                 // Answered as a file OneDrive does not have: the download ends at once.

@@ -84,7 +84,7 @@ struct RestartingSource;
 #[async_trait::async_trait]
 impl ContentSource for RestartingSource {
     async fn fetch(&self, _item_id: &str, _from: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
-        Ok(Fetched { served_from: 0, size: 10, mtime: UNIX_EPOCH + Duration::from_secs(MTIME as u64), version: None, stream: Box::new(std::io::Cursor::new(b"0123456789".to_vec())) })
+        Ok(Fetched { served_from: 0, size: Some(10), mtime: UNIX_EPOCH + Duration::from_secs(MTIME as u64), version: None, stream: Box::new(std::io::Cursor::new(b"0123456789".to_vec())) })
     }
 }
 
@@ -129,21 +129,32 @@ async fn a_source_that_fails_is_an_error_of_the_read() {
 #[test]
 fn an_answer_tells_another_content_by_its_ctag_else_by_its_size_and_time_and_one_that_says_nothing_tells_none() {
     let opened = opened().content;
-    let answer = |size, mtime, ctag: Option<&str>| RangeAnswerFacts { size, mtime, ctag: ctag.map(str::to_owned) };
+    let answer = |size: Option<u64>, mtime, ctag: Option<&str>| RangeAnswerFacts { size, mtime, ctag: ctag.map(str::to_owned) };
     // The cTags decide when both sides have one, whatever the size and the time say.
-    assert!(!decide_is_another_content(&answer(10, MTIME, Some("c1")), &opened));
-    assert!(!decide_is_another_content(&answer(0, 0, Some("c1")), &opened));
-    assert!(!decide_is_another_content(&answer(10, MTIME + 60, Some("c1")), &opened), "the time of a content can be set; its cTag is the content's");
-    assert!(decide_is_another_content(&answer(10, MTIME, Some("c2")), &opened));
+    assert!(!decide_is_another_content(&answer(Some(10), MTIME, Some("c1")), &opened));
+    assert!(!decide_is_another_content(&answer(None, 0, Some("c1")), &opened));
+    assert!(!decide_is_another_content(&answer(Some(0), 0, Some("c1")), &opened));
+    assert!(!decide_is_another_content(&answer(Some(10), MTIME + 60, Some("c1")), &opened), "the time of a content can be set; its cTag is the content's");
+    assert!(decide_is_another_content(&answer(Some(10), MTIME, Some("c2")), &opened));
     // No cTag on one side: the size and the time in whole seconds.
-    assert!(!decide_is_another_content(&answer(10, MTIME, None), &opened));
-    assert!(decide_is_another_content(&answer(11, MTIME, None), &opened));
-    assert!(decide_is_another_content(&answer(10, MTIME + 1, None), &opened));
+    assert!(!decide_is_another_content(&answer(Some(10), MTIME, None), &opened));
+    assert!(decide_is_another_content(&answer(Some(11), MTIME, None), &opened));
+    assert!(decide_is_another_content(&answer(Some(10), MTIME + 1, None), &opened));
     let without_ctag = ContentVersion::Hashed { size: 10, mtime: MTIME, mtime_nsec: 0, hash: None, ctag: None };
-    assert!(!decide_is_another_content(&answer(10, MTIME, Some("c2")), &without_ctag), "the limit: the same size and time read as the same content");
-    assert!(decide_is_another_content(&answer(11, MTIME, Some("c2")), &without_ctag));
+    assert!(!decide_is_another_content(&answer(Some(10), MTIME, Some("c2")), &without_ctag), "the limit: the same size and time read as the same content");
+    assert!(decide_is_another_content(&answer(Some(11), MTIME, Some("c2")), &without_ctag));
+    // Only what was said is held against the content: a size that was not said is not a
+    // size of 0, and a time that was not said is no time.
+    assert!(!decide_is_another_content(&answer(None, MTIME, None), &opened), "no size said: the time alone");
+    assert!(decide_is_another_content(&answer(None, MTIME + 1, None), &opened));
+    assert!(!decide_is_another_content(&answer(Some(10), 0, None), &opened), "no time said: the size alone");
+    // A size of 0 that was said is a size: the file was emptied in OneDrive.
+    assert!(decide_is_another_content(&answer(Some(0), 0, None), &opened), "0 said against a content that has bytes");
+    let empty = ContentVersion::Hashed { size: 0, mtime: MTIME, mtime_nsec: 0, hash: None, ctag: None };
+    assert!(!decide_is_another_content(&answer(Some(0), MTIME, None), &empty), "an empty file is 0 bytes long");
+    assert!(decide_is_another_content(&answer(Some(5), MTIME, None), &empty));
     // An answer that says nothing of the item, as the source over Graph's: no other
     // content is told by it.
-    assert!(!decide_is_another_content(&answer(0, 0, None), &opened));
-    assert!(!decide_is_another_content(&answer(0, 0, None), &without_ctag));
+    assert!(!decide_is_another_content(&answer(None, 0, None), &opened));
+    assert!(!decide_is_another_content(&answer(None, 0, None), &without_ctag));
 }

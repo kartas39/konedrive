@@ -14,7 +14,7 @@ struct TenBytes;
 impl ContentSource for TenBytes {
     async fn fetch(&self, _item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
         let content: Vec<u8> = (from as u8..end.unwrap_or(10) as u8).collect();
-        Ok(Fetched { served_from: from, size: 10, mtime: UNIX_EPOCH, version: None, stream: Box::new(std::io::Cursor::new(content)) })
+        Ok(Fetched { served_from: from, size: Some(10), mtime: UNIX_EPOCH, version: None, stream: Box::new(std::io::Cursor::new(content)) })
     }
 }
 

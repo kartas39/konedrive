@@ -245,7 +245,7 @@ fn the_content_source_serves_what_was_listed_or_given_and_refuses_as_asked() {
     };
     let ContentVersion::Hashed { ctag, .. } = ItemFixture::onedrive_content_of(b"0123456789") else { unreachable!() };
 
-    assert_eq!(fetch(0, None).unwrap(), (0, 10, b"0123456789".to_vec(), ctag));
+    assert_eq!(fetch(0, None).unwrap(), (0, Some(10), b"0123456789".to_vec(), ctag));
     assert_eq!(fetch(3, Some(6)).unwrap().2, b"345");
     assert_eq!(fetch(10, None).unwrap().2, b"", "a fetch from the end is answered, empty");
     fixture.serve_content(file.local_item_id, b"other bytes");

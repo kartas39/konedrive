@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use konedrive_tree::{ContentPresence, Item, LocalVersionChange};
 
-use super::download_source::{decide_answer_use, decide_refusal, find_gravest_refusal, find_told_size, AnswerUse};
+use super::download_source::{decide_answer_use, decide_refusal, find_gravest_refusal, AnswerUse};
 use super::*;
 use crate::folder::running_steps::{RunningStep, StepClass};
 use crate::fuse::item_fixture::ItemFixture;
@@ -127,7 +127,8 @@ struct QueuedSource {
 
 /// One answer: the item's size and version, where the stream starts, and its bytes.
 struct QueuedAnswer {
-    size: u64,
+    /// `None`: the answer tells no size.
+    size: Option<u64>,
     version: Option<Version>,
     served_from: u64,
     bytes: Vec<u8>,
@@ -141,7 +142,7 @@ impl QueuedSource {
     /// The whole of `content` from `served_from` on, as the content OneDrive would tell
     /// for these bytes.
     fn queue_content(&self, content: &[u8], served_from: u64) {
-        self.queue(Ok(QueuedAnswer { size: content.len() as u64, version: Some(version_of(content)), served_from, bytes: content[served_from as usize..].to_vec() }));
+        self.queue(Ok(QueuedAnswer { size: Some(content.len() as u64), version: Some(version_of(content)), served_from, bytes: content[served_from as usize..].to_vec() }));
     }
 }
 
@@ -283,6 +284,12 @@ fn content_of_another_size_or_version_than_was_asked_for_is_not_the_asked_conten
     assert!(!decide_is_asked_content(&asked, None, Some(&version(&ctag, Some(other_hash)))));
     assert!(!decide_is_asked_content(&asked, None, Some(&version("another cTag", None))));
     assert!(decide_is_asked_content(&asked, None, None), "nothing was told: nothing disagrees");
+    // A size of 0 that was told is a size like any other.
+    assert!(!decide_is_asked_content(&asked, Some(0), None), "emptied in OneDrive, and no version said");
+    assert!(!decide_is_asked_content(&asked, Some(0), Some(&version(&ctag, Some(hash)))));
+    let empty = ItemFixture::onedrive_content_of(b"");
+    assert!(decide_is_asked_content(&empty, Some(0), None), "an empty file is 0 bytes long");
+    assert!(!decide_is_asked_content(&empty, Some(5), None));
 }
 
 #[test]
@@ -624,7 +631,7 @@ fn an_answer_of_another_content_ends_the_download_before_the_mark_is_raised_or_a
     // The asked content first, and another content after a break: the mark stays where
     // the bytes of the asked content got to, and nothing of the other is read.
     let (inner, written_up_to) = (QueuedSource::default(), Arc::new(AtomicU64::new(0)));
-    inner.queue(Ok(QueuedAnswer { size: 11, version: Some(version_of(b"the content")), served_from: 0, bytes: b"the c".to_vec() }));
+    inner.queue(Ok(QueuedAnswer { size: Some(11), version: Some(version_of(b"the content")), served_from: 0, bytes: b"the c".to_vec() }));
     inner.queue_content(b"THE CONTENT", 5);
     let source = DownloadSource::new(&inner, asked.clone(), Arc::clone(&written_up_to), &alone.0, &alone.1);
     let read = run(async { read_whole(source.fetch("id", 0, None).await.ok().expect("the asked content")).await });
@@ -636,8 +643,8 @@ fn an_answer_of_another_content_ends_the_download_before_the_mark_is_raised_or_a
     // A part of another content is refused as the one stream is; a part of the asked
     // content is handed on and tells nothing of how far the file is written.
     let (inner, written_up_to) = (QueuedSource::default(), Arc::new(AtomicU64::new(0)));
-    inner.queue(Ok(QueuedAnswer { size: 11, version: Some(version_of(b"the content")), served_from: 4, bytes: b"cont".to_vec() }));
-    inner.queue(Ok(QueuedAnswer { size: 11, version: Some(version_of(b"THE CONTENT")), served_from: 0, bytes: b"THE ".to_vec() }));
+    inner.queue(Ok(QueuedAnswer { size: Some(11), version: Some(version_of(b"the content")), served_from: 4, bytes: b"cont".to_vec() }));
+    inner.queue(Ok(QueuedAnswer { size: Some(11), version: Some(version_of(b"THE CONTENT")), served_from: 0, bytes: b"THE ".to_vec() }));
     let source = DownloadSource::new(&inner, asked, Arc::clone(&written_up_to), &alone.0, &alone.1);
     assert_eq!(run(async { read_whole(source.fetch("id", 4, Some(8)).await.ok().expect("a part of the asked content")).await }), b"cont");
     assert!(matches!(run(source.fetch("id", 0, Some(4))), Err(SourceError::NotFound(_))));
@@ -655,7 +662,7 @@ fn a_refusal_is_kept_until_the_same_range_is_answered_and_the_gravest_is_told() 
     assert_eq!(find_gravest_refusal([DownloadRefusal::ItemGone, DownloadRefusal::AnotherContent, DownloadRefusal::SignedOut]), Some(DownloadRefusal::AnotherContent), "what was stated of the content before a part that was not found");
 
     let asked = ItemFixture::onedrive_content_of(b"the content");
-    let part = |served_from: u64, bytes: &[u8]| Ok(QueuedAnswer { size: 11, version: Some(version_of(b"the content")), served_from, bytes: bytes.to_vec() });
+    let part = |served_from: u64, bytes: &[u8]| Ok(QueuedAnswer { size: Some(11), version: Some(version_of(b"the content")), served_from, bytes: bytes.to_vec() });
     let inner = QueuedSource::default();
     let alone = start_download_alone(&asked);
     let source = DownloadSource::new(&inner, asked, Arc::default(), &alone.0, &alone.1);
@@ -778,18 +785,13 @@ fn a_download_of_an_item_onedrive_does_not_have_fails_and_keeps_its_unfinished_f
 fn a_size_the_source_does_not_tell_is_no_other_content() {
     let asked = ItemFixture::onedrive_content_of(b"the content");
     let empty = ItemFixture::onedrive_content_of(b"");
-    assert_eq!(find_told_size(11, &asked), Some(11));
-    assert_eq!(find_told_size(12, &asked), Some(12));
-    assert_eq!(find_told_size(0, &asked), None, "0 for a content that has bytes: not said");
-    assert_eq!(find_told_size(0, &empty), Some(0), "an empty file is 0 bytes long");
-    assert_eq!(find_told_size(5, &empty), Some(5));
 
     // Through the download's source: no size and the asked version is let through, and
     // nothing is kept as a refusal; no size and another version is another content.
     let inner = QueuedSource::default();
-    inner.queue(Ok(QueuedAnswer { size: 0, version: Some(version_of(b"the content")), served_from: 0, bytes: b"the content".to_vec() }));
-    inner.queue(Ok(QueuedAnswer { size: 0, version: None, served_from: 0, bytes: b"the content".to_vec() }));
-    inner.queue(Ok(QueuedAnswer { size: 0, version: Some(version_of(b"")), served_from: 0, bytes: Vec::new() }));
+    inner.queue(Ok(QueuedAnswer { size: None, version: Some(version_of(b"the content")), served_from: 0, bytes: b"the content".to_vec() }));
+    inner.queue(Ok(QueuedAnswer { size: None, version: None, served_from: 0, bytes: b"the content".to_vec() }));
+    inner.queue(Ok(QueuedAnswer { size: None, version: Some(version_of(b"")), served_from: 0, bytes: Vec::new() }));
     let alone = start_download_alone(&asked);
     let source = DownloadSource::new(&inner, asked.clone(), Arc::default(), &alone.0, &alone.1);
     assert!(run(source.fetch("id", 0, None)).is_ok());
@@ -797,12 +799,14 @@ fn a_size_the_source_does_not_tell_is_no_other_content() {
     assert_eq!(source.find_refusal(), None);
     assert!(matches!(run(source.fetch("id", 0, None)), Err(SourceError::NotFound(_))), "emptied in OneDrive: its version says so");
     assert_eq!(source.find_refusal(), Some(DownloadRefusal::AnotherContent));
-    // A real empty file against a row of 0 bytes.
+    // A real empty file against a row of 0 bytes, with its size said and not said.
     let inner = QueuedSource::default();
     inner.queue_content(b"", 0);
+    inner.queue(Ok(QueuedAnswer { size: None, version: Some(version_of(b"")), served_from: 0, bytes: Vec::new() }));
     inner.queue_content(b"bytes", 0);
     let alone = start_download_alone(&empty);
     let source = DownloadSource::new(&inner, empty, Arc::default(), &alone.0, &alone.1);
+    assert!(run(source.fetch("id", 0, None)).is_ok());
     assert!(run(source.fetch("id", 0, None)).is_ok());
     assert!(matches!(run(source.fetch("id", 0, None)), Err(SourceError::NotFound(_))));
 
@@ -811,10 +815,35 @@ fn a_size_the_source_does_not_tell_is_no_other_content() {
     let fixture = ItemFixture::new();
     let shown = fixture.show_onedrive_file("report.txt", b"the content");
     let inner = Arc::new(QueuedSource::default());
-    inner.queue(Ok(QueuedAnswer { size: 0, version: Some(version_of(b"the content")), served_from: 0, bytes: b"the content".to_vec() }));
+    inner.queue(Ok(QueuedAnswer { size: None, version: Some(version_of(b"the content")), served_from: 0, bytes: b"the content".to_vec() }));
     let (downloader, _) = make_downloader_from(&fixture, Arc::clone(&inner) as Arc<dyn ContentSource>);
     assert_eq!(hear(ask(&downloader, &shown, DownloadAsker::Read)), Err(libc::EIO));
     assert!(!fixture.download_states.is_another_content(&key_of(&shown)));
+    assert_eq!(fixture.read_disk_file("report.txt"), None);
+}
+
+/// A size of 0 that OneDrive said is a size, not "not said": the file was emptied there.
+#[test]
+fn a_file_emptied_in_onedrive_is_another_content_also_when_no_version_is_said() {
+    let asked = ItemFixture::onedrive_content_of(b"the content");
+    let inner = QueuedSource::default();
+    inner.queue(Ok(QueuedAnswer { size: Some(0), version: None, served_from: 0, bytes: Vec::new() }));
+    inner.queue(Ok(QueuedAnswer { size: Some(0), version: Some(version_of(b"the content")), served_from: 0, bytes: Vec::new() }));
+    let alone = start_download_alone(&asked);
+    let source = DownloadSource::new(&inner, asked, Arc::default(), &alone.0, &alone.1);
+    assert!(matches!(run(source.fetch("id", 0, None)), Err(SourceError::NotFound(_))), "0 bytes said, and no version");
+    assert_eq!(source.find_refusal(), Some(DownloadRefusal::AnotherContent));
+    assert!(matches!(run(source.fetch("id", 0, None)), Err(SourceError::NotFound(_))), "0 bytes said, with the asked version");
+
+    // A whole download: OneDrive stated another content, which is remembered, and
+    // nothing lands.
+    let fixture = ItemFixture::new();
+    let shown = fixture.show_onedrive_file("report.txt", b"the content");
+    let inner = Arc::new(QueuedSource::default());
+    inner.queue(Ok(QueuedAnswer { size: Some(0), version: None, served_from: 0, bytes: Vec::new() }));
+    let (downloader, _) = make_downloader_from(&fixture, Arc::clone(&inner) as Arc<dyn ContentSource>);
+    assert_eq!(hear(ask(&downloader, &shown, DownloadAsker::Read)), Err(libc::ESTALE));
+    assert!(fixture.download_states.is_another_content(&key_of(&shown)));
     assert_eq!(fixture.read_disk_file("report.txt"), None);
 }
 
@@ -868,7 +897,7 @@ fn what_was_remembered_of_a_key_is_void_at_the_first_answer_its_next_download_ac
     // A part of a download in parts is an answer as well.
     let (run_again, inner) = (start(), QueuedSource::default());
     let source = DownloadSource::new(&inner, asked, Arc::default(), &download_states, &run_again);
-    inner.queue(Ok(QueuedAnswer { size: 11, version: Some(version_of(b"the content")), served_from: 4, bytes: b"cont".to_vec() }));
+    inner.queue(Ok(QueuedAnswer { size: Some(11), version: Some(version_of(b"the content")), served_from: 4, bytes: b"cont".to_vec() }));
     assert!(download_states.is_another_content(&key));
     assert!(run(source.fetch("id", 4, Some(8))).is_ok());
     assert!(!download_states.is_another_content(&key));

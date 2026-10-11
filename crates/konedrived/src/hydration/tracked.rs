@@ -48,16 +48,19 @@ impl ContentSource for Tracked {
     async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
         let entry = self.entry.get_or_init(|| self.transfers.start_as(self.path.clone(), 0, self.open));
         let Fetched { served_from, size, mtime, version, stream } = self.source.fetch(item_id, from, end).await?;
+        // An answer that tells no size leaves the entry's total as it is: 0, "not known
+        // yet", for a first answer. Nothing is counted against a size nobody said.
+        let Some(total) = size else { return Ok(Fetched { served_from, size, mtime, version, stream }) };
         if end.is_some() {
             // A piece of a download in parts: the file is shown once, and the
             // download says how far it has come as a whole (`progress`).
-            if entry.total() != size {
-                entry.progress(0, size);
+            if entry.total() != total {
+                entry.progress(0, total);
             }
             return Ok(Fetched { served_from, size, mtime, version, stream });
         }
-        entry.progress(served_from, size);
-        let stream = Box::new(Counting { inner: stream, at: served_from, total: size, handle: entry.handle() });
+        entry.progress(served_from, total);
+        let stream = Box::new(Counting { inner: stream, at: served_from, total, handle: entry.handle() });
         Ok(Fetched { served_from, size, mtime, version, stream })
     }
 

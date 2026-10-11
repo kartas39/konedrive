@@ -1025,7 +1025,7 @@ impl crate::hydration::source::ContentSource for AnotherContentSource {
     async fn fetch(&self, _item_id: &str, from: u64, _end: Option<u64>) -> Result<crate::hydration::source::Fetched, crate::hydration::source::SourceError> {
         self.fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let version = crate::hydration::source::Version { ctag: "c-new".into(), quick_xor: Some([7; konedrive_graph::quickxor::LEN]) };
-        Ok(crate::hydration::source::Fetched { served_from: from, size: self.size, mtime: std::time::UNIX_EPOCH, version: Some(version), stream: Box::new(HeldStream { left: self.served }) })
+        Ok(crate::hydration::source::Fetched { served_from: from, size: Some(self.size), mtime: std::time::UNIX_EPOCH, version: Some(version), stream: Box::new(HeldStream { left: self.served }) })
     }
 }
 
@@ -1174,7 +1174,7 @@ impl crate::hydration::source::ContentSource for ScriptedDownloadSource {
             }
             Some(ScriptedAnswer::OtherBytesOfSameVersion) => {
                 let fetched = self.inner.fetch(item_id, from, end).await?;
-                let other = vec![b'b'; (fetched.size - fetched.served_from) as usize];
+                let other = vec![b'b'; (fetched.size.expect("the fixture's source tells a size") - fetched.served_from) as usize];
                 Ok(Fetched { stream: Box::new(std::io::Cursor::new(other)), ..fetched })
             }
             None => self.inner.fetch(item_id, from, end).await,

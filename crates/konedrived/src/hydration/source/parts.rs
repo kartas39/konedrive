@@ -242,13 +242,12 @@ async fn attempt(
     // The first answer, for the first piece, says which version and how large the file is.
     let mut breaks = Breaks::new(tuning);
     let fetched = open(source, item_id, start, Some(start.saturating_add(split.piece)), &mut breaks).await?;
-    check_answer(item_id, &fetched, start, original_size)?;
+    let size = check_answer(item_id, &fetched, start, original_size)?;
     let hash = match &checkpoint {
-        Some(progress) => resume(target, item_id, progress, &fetched.version, fetched.size).await?,
+        Some(progress) => resume(target, item_id, progress, &fetched.version, size).await?,
         None => QuickXor::new(),
     };
 
-    let size = fetched.size;
     let version = fetched.version.clone();
     let mut pieces = Vec::new();
     let mut at = start;
@@ -373,7 +372,8 @@ impl Attempt<'_> {
                     fetched
                 }
             };
-            if !same_version(&self.version, &fetched.version) || fetched.size != self.size {
+            // Every answer here told a size (`check_answer`): another one is another file.
+            if !same_version(&self.version, &fetched.version) || fetched.size != Some(self.size) {
                 return Err(End::Changed);
             }
             let mut stream = fetched.stream;

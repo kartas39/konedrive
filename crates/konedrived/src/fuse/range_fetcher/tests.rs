@@ -24,7 +24,7 @@ impl ContentSource for TenBytes {
     async fn fetch(&self, _item_id: &str, from: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
         let served_from = if self.restarts { 0 } else { from };
         let content: Vec<u8> = (served_from as u8..10).collect();
-        Ok(Fetched { served_from, size: 10, mtime: UNIX_EPOCH, version: None, stream: Box::new(std::io::Cursor::new(content)) })
+        Ok(Fetched { served_from, size: Some(10), mtime: UNIX_EPOCH, version: None, stream: Box::new(std::io::Cursor::new(content)) })
     }
 
     fn forget(&self, _item_id: &str) {

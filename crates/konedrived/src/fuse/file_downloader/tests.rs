@@ -29,7 +29,7 @@ struct SameContent(&'static [u8]);
 impl ContentSource for SameContent {
     async fn fetch(&self, _item_id: &str, from: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
         let rest = self.0.get(from as usize..).unwrap_or_default();
-        Ok(Fetched { served_from: from, size: self.0.len() as u64, mtime: UNIX_EPOCH, version: None, stream: Box::new(std::io::Cursor::new(rest.to_vec())) })
+        Ok(Fetched { served_from: from, size: Some(self.0.len() as u64), mtime: UNIX_EPOCH, version: None, stream: Box::new(std::io::Cursor::new(rest.to_vec())) })
     }
 }
 

@@ -91,7 +91,7 @@ impl ContentSource for FixtureContentSource {
         let start = from.min(size);
         let stop = end.map_or(size, |end| end.min(size)).max(start);
         let bytes = content.bytes[start as usize..stop as usize].to_vec();
-        Ok(Fetched { served_from: start, size, mtime: UNIX_EPOCH + Duration::from_secs(content.mtime.max(0) as u64), version: content.version.clone(), stream: Box::new(std::io::Cursor::new(bytes)) })
+        Ok(Fetched { served_from: start, size: Some(size), mtime: UNIX_EPOCH + Duration::from_secs(content.mtime.max(0) as u64), version: content.version.clone(), stream: Box::new(std::io::Cursor::new(bytes)) })
     }
 
     fn forget(&self, item_id: &str) {

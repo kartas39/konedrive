@@ -97,6 +97,7 @@
 // test: a_download_whose_landing_removed_what_it_named_starts_the_next_with_a_new_file
 // test: a_download_of_an_item_onedrive_does_not_have_fails_and_keeps_its_unfinished_file
 // test: a_size_the_source_does_not_tell_is_no_other_content
+// test: a_file_emptied_in_onedrive_is_another_content_also_when_no_version_is_said
 // test: the_mark_is_taken_back_the_moment_the_download_does_not_trust_what_is_on_disk
 // test: what_was_remembered_of_a_key_is_void_at_the_first_answer_its_next_download_accepts
 // test: the_end_of_a_download_is_news_per_case
