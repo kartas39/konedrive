@@ -19,7 +19,9 @@
 //!   dropped, ever, and no stamp of the switch is kept: a read-only folder sends
 //!   nothing at all;
 //! - no request that changes OneDrive leaves under a token that cannot write: the hold
-//!   is set, and what is in flight has ended, BEFORE [`switch_to_read_only`] returns, and
+//!   is set, and what is in flight has ended — or the bounded wait for it ran out, which
+//!   the answer says ([`StepsTowardsOneDrive::StillRunning`]) —, BEFORE
+//!   [`switch_to_read_only`] returns, and
 //!   the account gives its token up only after it returned
 //!   (`PendingUploads::hold_unsent_changes`; the account's order is `config.toml`, its
 //!   mode worked out again, this switch awaited, the token). So no 403 comes from a switch, and nothing
@@ -63,6 +65,20 @@ const RUNNING_STEPS_LOOKED_AT_EVERY: std::time::Duration = std::time::Duration::
 /// guess: longer than a fragment of an upload takes on a slow line.
 const RUNNING_STEPS_WAITED_FOR: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Whether the steps towards OneDrive had ended when a switch to read-only returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepsTowardsOneDrive {
+    /// None runs: no request that changes OneDrive is in flight.
+    Ended,
+    /// The wait ran out with one still running.
+    StillRunning,
+}
+
+/// Whether the mount asked to be taken down for a fault: it is read-only for good then.
+fn is_take_down_asked(mount: &ItemMount) -> bool {
+    mount.folder_step_parts().mount_take_down.is_asked()
+}
+
 /// Whether a step towards OneDrive is among `steps`: one that sends content or
 /// metadata. Pure.
 fn has_step_towards_onedrive(steps: &[RunningStep]) -> bool {
@@ -78,27 +94,37 @@ fn has_step_towards_onedrive(steps: &[RunningStep]) -> bool {
 /// thread is gone: the hold stands all the same.
 ///
 /// The wait for the running steps is bounded ([`RUNNING_STEPS_WAITED_FOR`]): after it the
-/// switch goes on with a warning. Sending is held by then, so a step that still runs
-/// starts no request the hold refuses — an upload stops after its fragment — or ends by
-/// itself; only "no step towards OneDrive runs" is then not yet true when this returns.
-pub async fn switch_to_read_only(mount: &ItemMount, sending_holds: &SendingHolds, running_steps: &RunningSteps) -> Result<(), String> {
+/// switch goes on with a warning and answers [`StepsTowardsOneDrive::StillRunning`].
+/// Sending is held by then, so a step that still runs starts nothing new — an upload
+/// stops after its fragment — but a request of it that hangs may still be sent again by
+/// the Graph client. Whether the account gives its token up all the same is the
+/// caller's: a request sent under a token that cannot write is refused, and that
+/// refusal is kept.
+pub async fn switch_to_read_only(mount: &ItemMount, sending_holds: &SendingHolds, running_steps: &RunningSteps) -> Result<StepsTowardsOneDrive, String> {
     // Nothing towards OneDrive is started from here on.
     sending_holds.set_folder_read_only(true);
     let switched = mount.switch_to_read_only().await;
     let waited_since = tokio::time::Instant::now();
+    let mut steps = StepsTowardsOneDrive::Ended;
     while has_step_towards_onedrive(&running_steps.list_steps()) {
         if waited_since.elapsed() >= RUNNING_STEPS_WAITED_FOR {
             tracing::warn!("a step towards OneDrive still runs {} s after the folder was switched to read-only; the switch goes on", RUNNING_STEPS_WAITED_FOR.as_secs());
+            steps = StepsTowardsOneDrive::StillRunning;
             break;
         }
         tokio::time::sleep(RUNNING_STEPS_LOOKED_AT_EVERY).await;
     }
-    switched.map(drop).map_err(|error| error.to_string())
+    switched.map(|_| steps).map_err(|error| error.to_string())
 }
 
 /// Switches the folder to read-write: the order of the module's doc. What was unsent
-/// under the hold is planned at once.
+/// under the hold is planned at once. `Err`, with nothing changed, for a mount whose
+/// take-down was asked (`MountTakeDown::is_asked`): it made itself read-only for a fault
+/// and is never made to take changes again.
 pub async fn switch_to_read_write(mount: &ItemMount, sending_holds: &SendingHolds) -> Result<(), String> {
+    if is_take_down_asked(mount) {
+        return Err("the folder's mount is to be taken down for a fault: it takes no change until the folder was started again".to_owned());
+    }
     mount.switch_to_read_write();
     sending_holds.set_folder_read_only(false);
     Ok(())
@@ -106,13 +132,17 @@ pub async fn switch_to_read_write(mount: &ItemMount, sending_holds: &SendingHold
 
 /// At a start, before the tasks: makes the mount's access mode the wanted one, and the
 /// hold with it (`SendingHolds::set_folder_read_only(wanted == Mode::ReadOnly)`), before
-/// any plan is made: a folder started read-only sends nothing from its first plan on.
+/// any plan is made: a folder started read-only sends nothing from its first plan on. A
+/// mount whose take-down was asked stays read-only, under the hold, whatever is wanted.
 pub async fn apply_wanted_access_mode(mount: &ItemMount, sending_holds: &SendingHolds, wanted: Mode) -> Result<(), String> {
     match wanted {
         Mode::ReadOnly => {
             sending_holds.set_folder_read_only(true);
             mount.switch_to_read_only().await.map_err(|error| error.to_string())?;
         }
+        // The mount made itself read-only for its fault, and stays so: the start goes
+        // on, and the owner's take-down follows.
+        Mode::ReadWrite if is_take_down_asked(mount) => sending_holds.set_folder_read_only(true),
         Mode::ReadWrite => {
             mount.switch_to_read_write();
             sending_holds.set_folder_read_only(false);

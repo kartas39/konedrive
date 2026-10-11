@@ -47,7 +47,7 @@ use konedrive_tree::{DriveId, Store, TreeError};
 use super::access_mode_switch::AccessModeSwitch;
 use super::backing_directory::{remove_write_bits, BackingDirectory};
 use super::fuse_connection::FuseConnection;
-use super::kernel_requests::KernelRequests;
+use super::kernel_requests::{InterruptibleReads, KernelRequests};
 use super::item_content_files::ItemContentFiles;
 use super::item_download_states::ItemDownloadStates;
 use super::item_downloader::ItemDownloader;
@@ -140,15 +140,23 @@ pub struct ItemMount {
     upload_rules: Arc<UploadRules>,
     /// The parts a stop reaches, in the order it stops them (`build_order::PartsToStop`).
     parts_to_stop: build_order::PartsToStop,
-    /// `None` until served: the session, and the connection the kernel numbers it by,
-    /// read when the mount went over the folder.
-    session: std::sync::Mutex<Option<(fuser::BackgroundSession, FuseConnection)>>,
+    /// `None` until served.
+    session: std::sync::Mutex<Option<ServedSession>>,
     /// Whether the mount was stopped: a second stop, and the drop after one, do nothing.
     is_stopped: AtomicBool,
 }
 
 fn to_io_error(error: impl ToString) -> std::io::Error {
     std::io::Error::other(error.to_string())
+}
+
+/// What a mount has once it is served.
+struct ServedSession {
+    session: fuser::BackgroundSession,
+    /// The connection the kernel numbers the mount by, read when it went over the folder.
+    fuse_connection: FuseConnection,
+    /// The reads that wait for OneDrive on the runtime: aborted at the stop.
+    interruptible_reads: Arc<InterruptibleReads>,
 }
 
 /// How many threads answer the kernel's requests of one mount, as today.
@@ -195,7 +203,8 @@ impl ItemMount {
         let runtime = tokio::runtime::Handle::try_current().map_err(to_io_error)?;
         // Taken before the mount: the daemon's own way to the folder once its path is the mount.
         let own_descriptor = Arc::new(self.backing_directory.clone_descriptor()?);
-        let filesystem = KernelRequests::new(kernel_requests, Arc::clone(&self.backing_directory), Arc::clone(&self.access_mode_switch), runtime);
+        let interruptible_reads = Arc::new(InterruptibleReads::default());
+        let filesystem = KernelRequests::new(kernel_requests, Arc::clone(&self.backing_directory), Arc::clone(&self.access_mode_switch), Arc::clone(&interruptible_reads), runtime);
         let mut config = fuser::Config::default();
         config.mount_options = vec![fuser::MountOption::FSName("konedrive".into()), fuser::MountOption::Subtype("konedrive".into()), fuser::MountOption::NoSuid, fuser::MountOption::NoDev];
         config.n_threads = Some(SESSION_THREADS);
@@ -213,7 +222,8 @@ impl ItemMount {
             }
         };
         // Kept before anything else can fail: the stop then takes the mount off.
-        *crate::panic::lock(&self.session) = Some((session, FuseConnection::of_mount_at(folder)));
+        let fuse_connection = FuseConnection::of_mount_at(folder);
+        *crate::panic::lock(&self.session) = Some(ServedSession { session, fuse_connection, interruptible_reads });
         self.parts_to_stop.inotify_bridge.start(Arc::clone(&self.parts_to_stop.read_connections), Some(Arc::new(notifier)))
     }
 
@@ -240,7 +250,10 @@ impl ItemMount {
         parts.write_operation_thread.stop();
         parts.inotify_bridge.stop();
         parts.downloader.stop();
-        if let Some((session, fuse_connection)) = session {
+        if let Some(ServedSession { session, fuse_connection, interruptible_reads }) = session {
+            // Every read that waits for OneDrive is given up, and none is kept from here
+            // on: a read left running would hold the mount's parts, and the store with them.
+            interruptible_reads.stop();
             let folder = self.folder_step_parts.folder.clone();
             // Aborted before the mount is detached: a program that still holds a file of
             // the mount open would otherwise keep the session, and this call, waiting.

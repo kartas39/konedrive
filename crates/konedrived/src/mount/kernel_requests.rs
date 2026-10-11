@@ -151,23 +151,55 @@ fn reply_to_done(reply: ReplyEmpty) -> ReplyTo<()> {
     })
 }
 
-/// The reads that wait for OneDrive, each by the number of its request.
+/// The reads that wait for OneDrive, each by the number of its request; and whether the
+/// mount stopped, after which none is kept running.
 #[derive(Default)]
-struct InterruptibleReads(Mutex<HashMap<u64, AbortHandle>>);
+struct KeptReads {
+    by_request: HashMap<u64, AbortHandle>,
+    is_stopped: bool,
+}
+
+/// The reads of one served mount that wait for OneDrive on the runtime. Made by
+/// `ItemMount::serve`, which keeps it beside the session: the kernel's interface adds and
+/// interrupts, the mount's stop aborts them all — a read left running would hold the
+/// mount's parts, and with them the store, past the stop.
+#[derive(Default)]
+pub(super) struct InterruptibleReads(Mutex<KeptReads>);
 
 impl InterruptibleReads {
-    fn add(&self, request: u64, read: AbortHandle) {
-        crate::panic::lock(&self.0).insert(request, read);
+    /// Starts a read with `start` and keeps it under `request`, in one hold of the lock:
+    /// the read's own [`remove`](Self::remove) waits for that lock, so it never comes
+    /// before the keeping and leaves no entry behind. `start` only spawns. After the
+    /// stop the read is aborted at once.
+    fn start(&self, request: u64, start: impl FnOnce() -> AbortHandle) {
+        let mut reads = crate::panic::lock(&self.0);
+        let read = start();
+        if reads.is_stopped {
+            return read.abort();
+        }
+        reads.by_request.insert(request, read);
     }
 
     fn remove(&self, request: u64) {
-        crate::panic::lock(&self.0).remove(&request);
+        crate::panic::lock(&self.0).by_request.remove(&request);
+    }
+
+    /// The mount stops: every read is aborted — its reply, dropped with the task, answers
+    /// the kernel — and each one started later is aborted as it starts. Called by
+    /// `ItemMount::stop`.
+    pub(super) fn stop(&self) {
+        let reads = {
+            let mut reads = crate::panic::lock(&self.0);
+            reads.is_stopped = true;
+            std::mem::take(&mut reads.by_request)
+        };
+        reads.into_values().for_each(|read| read.abort());
     }
 
     /// The kernel gave the request up: its read is aborted, and its reply, dropped with
     /// the task, answers the kernel.
     fn interrupt(&self, request: u64) {
-        let read = crate::panic::lock(&self.0).remove(&request);
+        let read = crate::panic::lock(&self.0).by_request.remove(&request);
         if let Some(read) = read {
             read.abort();
         }
@@ -186,9 +218,10 @@ pub(super) struct KernelRequests {
 }
 
 impl KernelRequests {
-    /// Made by `ItemMount::serve` over what the mount's build answered.
-    pub(super) fn new(requests: ItemKernelRequests, backing_directory: Arc<BackingDirectory>, access_mode_switch: Arc<AccessModeSwitch>, runtime: tokio::runtime::Handle) -> Self {
-        KernelRequests { requests: Arc::new(requests), backing_directory, access_mode_switch, interruptible_reads: Arc::default(), runtime }
+    /// Made by `ItemMount::serve` over what the mount's build answered, with the reads
+    /// the mount's stop aborts.
+    pub(super) fn new(requests: ItemKernelRequests, backing_directory: Arc<BackingDirectory>, access_mode_switch: Arc<AccessModeSwitch>, interruptible_reads: Arc<InterruptibleReads>, runtime: tokio::runtime::Handle) -> Self {
+        KernelRequests { requests: Arc::new(requests), backing_directory, access_mode_switch, interruptible_reads, runtime }
     }
 
     /// The errno of a request the folder never takes: `refusal` in a folder that takes
@@ -205,7 +238,7 @@ impl KernelRequests {
     fn fetch_on_runtime(&self, req: &Request, range: RangeToFetch, fetch: RangeFetch, reply: ReplyData) {
         let request = req.unique().0;
         let (requests, reads) = (Arc::clone(&self.requests), Arc::clone(&self.interruptible_reads));
-        let read = self.runtime.spawn(async move {
+        let read = async move {
             let fetched = match fetch {
                 RangeFetch::Range => requests.fetch_read_range(range).await,
                 RangeFetch::AfterWholeDownload => requests.fetch_range_after_download(range).await,
@@ -215,12 +248,8 @@ impl KernelRequests {
                 Ok(bytes) => reply.data(&bytes),
                 Err(errno) => reply.error(errno),
             }
-        });
-        self.interruptible_reads.add(request, read.abort_handle());
-        // It may have ended before it was kept: then nothing is left to interrupt.
-        if read.is_finished() {
-            self.interruptible_reads.remove(request);
-        }
+        };
+        self.interruptible_reads.start(request, || self.runtime.spawn(read).abort_handle());
     }
 }
 
