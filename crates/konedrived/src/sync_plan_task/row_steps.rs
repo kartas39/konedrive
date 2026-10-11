@@ -83,7 +83,7 @@ impl RowSteps {
     /// row is written by then: a mark that could not be changed is said in the journal,
     /// and the step is done all the same.
     async fn change_marks(&self, item: LocalItemId, change: impl FnOnce(LocalItemId) -> std::io::Result<()> + Send + 'static) {
-        // TODO: a mark that fails here, or a stop between the commit and the mark, is never tried again: the step is written and no plan gives it again (the review's S8). What is missing is a later pass that puts the marks on disk in step with the rows; check and fix if needed.
+        // A mark that fails here, or a stop between the commit and the mark, is not tried again by a plan: the step is written. Nothing is lost or sent twice for it, as the rows decide and a mark is read in three places only (`backing_directory_check`, the download's landing). A copy agreed on that kept the cTag of the copy the change began from reads as changed at the next check at start, is hashed, agrees again, and is marked then (`AgreeOnContent`). One left with no mark, or the id alone, is the row's entry to the check whatever its marks (a row whose content is on disk is compared by size and time), which writes the id; no download lands on a row whose content is on disk. Marks left on an item that gave its binding up stay until its sending writes its own: the check reads no mark of an entry whose row has no binding, and after a rebuilt store such an entry is bound by its mark as a guess, which the plan gives up or agrees by the hash.
         match tokio::task::spawn_blocking(move || change(item)).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => tracing::warn!("cannot change the marks of item {item} on disk: {error}"),
