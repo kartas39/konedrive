@@ -64,6 +64,26 @@ async fn a_refresh_runs_a_cycle_now() {
 }
 
 #[tokio::test]
+async fn a_refresh_given_while_a_cycle_runs_runs_another_after_it() {
+    let folder = ListedFolder::start().await;
+    let hold = folder.hold_next_page_request().await;
+    let poller = start(&folder, Schedule::polled(LONG, Vec::new()));
+    hold.wait_for_request().await;
+
+    // The first cycle stands in its request: twice asked is one cycle more.
+    poller.handle().refresh();
+    poller.handle().refresh();
+    hold.let_go();
+
+    // The held request was answered by the test; what the fake counts is the cycle the
+    // refresh ran, which no interval brings.
+    wait_until("the refresh ran a cycle after the one under way", || count_page_requests(&folder) == 1).await;
+    wait_until("it ended", || folder.fixture.read_rows(|reader| reader.find_listing_under_way()).is_none()).await;
+    poller.stop().await;
+    assert_eq!(count_page_requests(&folder), 1);
+}
+
+#[tokio::test]
 async fn a_failed_cycle_is_tried_again_on_the_retry_schedule() {
     let folder = ListedFolder::start().await;
     // The delta link is refused once: the cycle fails, and the link is kept.

@@ -19,22 +19,27 @@
 //!
 //! 1. the account is checked against the folder's drive (`check_account`, as today);
 //! 2. how to begin is decided ([`decide_listing_start`]) and said to the store
-//!    (`begin_full_listing`, `begin_delta_listing`, or the listing found under way);
+//!    (`begin_full_listing`, `begin_delta_listing`, or the full listing found under way
+//!    with the next link it kept). One listing id names one enumeration of OneDrive:
+//!    what is asked from the start is always a listing begun anew;
 //! 3. per page: the count read (`ItemStore::confirmation_count`), the page fetched
 //!    (`DriveClient::delta`), classified (`folder::classify`), written
 //!    (`write_listed_changes`); while the answer names items to read again, each is read
-//!    (`DriveClient::item`) and the call repeated with the same link; the plan woken;
+//!    (`DriveClient::item`), given back under the id that was asked, and the call
+//!    repeated with the same link; the plan woken;
 //! 4. a refused link is decided ([`decide_page_refusal`]): 410 and a refused resume link
 //!    begin a full listing in the same cycle; a delta link refused otherwise fails the
 //!    cycle and is kept;
-//! 5. the page with the delta link ends the listing: counts, `last_checked`, the plan
-//!    woken with `ListingEnded`.
+//! 5. the page with the delta link ends the listing: the plan woken with `ListingEnded`,
+//!    the thumbnail filler nudged, `last_checked` written — and only then the counts
+//!    read, so that a read that fails keeps nothing of the listing's end from being told.
 //!
 //! A page the store refuses because its listing is not the one under way any more is
 //! dropped, and the cycle ends there with no fault ([`is_listing_given_up`]). A full
-//! listing is begun for a refused link once in a cycle, and the items of one page are
-//! read again [`READ_AGAIN_ROUNDS`] times at most: beyond either the cycle fails, and the
-//! next one goes on from what the store kept.
+//! listing is begun for a refused link once in a cycle ([`FullListingAllowance`]), and
+//! the items of one page are read again [`READ_AGAIN_ROUNDS`] times at most: beyond
+//! either the cycle fails, and the next one decides anew from what the store kept — the
+//! next link of a full listing, or else a listing begun anew.
 //!
 //! **Tested without the rest**, against the fake OneDrive and the fixture's store
 //! (`fuse/item_fixture.rs`), with no mount and nothing of the folder but its rows:
@@ -59,6 +64,14 @@
 // test: a_listing_is_given_up_when_another_or_none_is_under_way
 // test: two_cycles_never_run_at_once
 // test: a_drive_that_is_not_the_folders_stops_the_cycle_before_anything_is_listed
+// test: a_full_listing_stopped_before_its_first_link_was_written_is_begun_anew
+// test: a_second_410_in_one_cycle_fails_the_cycle_and_the_next_begins_a_full_listing_anew
+// test: items_that_stay_outdated_are_read_again_so_many_rounds_and_then_the_cycle_fails
+// test: an_item_read_again_is_given_back_under_the_id_that_was_asked
+// test: the_end_of_a_listing_is_told_though_the_counts_cannot_be_read
+// test: a_drive_another_account_has_recorded_is_not_listed_into_this_folder
+// test: a_drive_is_the_same_however_its_id_is_spelled
+// test: the_first_cycle_records_the_accounts_drive_in_config_toml
 
 use std::sync::Arc;
 
@@ -75,7 +88,7 @@ use crate::status::snapshot::{SyncStateHandle, SyncTrouble};
 /// How a cycle begins, and what a refused page leads to.
 mod listing_start;
 
-pub use listing_start::{decide_listing_start, decide_page_refusal, AfterPageRefusal, ListingStart, PageLinkOrigin};
+pub use listing_start::{decide_listing_start, decide_page_refusal, AfterPageRefusal, FullListingAllowance, ListingStart, PageLinkOrigin};
 
 /// One page as it was fetched: what it says, what followed it, and the count of
 /// confirmations read before the request left.
@@ -117,6 +130,23 @@ const READ_AGAIN_ROUNDS: usize = 5;
 /// page is dropped then, and any other refusal is a fault of the cycle. Pure.
 fn is_listing_given_up(listing: ListingId, under_way: Option<ListingId>) -> bool {
     under_way != Some(listing)
+}
+
+/// `read`, what OneDrive answered the reading of the item `asked`, as a change of that
+/// item: under the id that was asked, however the answer spells it. The store finds a
+/// row by its item id letter for letter, and answers again an item it was not given back:
+/// under another spelling the row asked for would stay unanswered, and a full listing
+/// that waits for it would not end. Pure.
+fn name_by_asked_id(read: Change, asked: &OneDriveItemId) -> Change {
+    let name = |mut row: konedrive_tree::Row| {
+        row.id = asked.as_str().to_owned();
+        row
+    };
+    match read {
+        Change::Root(row) => Change::Root(name(row)),
+        Change::Upsert(row) => Change::Upsert(name(row)),
+        Change::Delete(_) => Change::Delete(asked.as_str().to_owned()),
+    }
 }
 
 /// `request`, unless `cancel` fires first; it is dropped then. Only for a request to
@@ -229,24 +259,22 @@ impl ListingCycle {
         let (mut listing, mut from, mut origin) = self.begin(false).await?;
         let _shown = FullListingShown(&self.state);
         let mut report = ListingCycleReport { kind: listing.kind, pages: 0, changes: 0, read_again: 0 };
-        // A full listing is begun for a refused link once in a cycle: a second refusal
-        // fails the cycle, and the next one goes on with the full listing under way.
-        let mut is_begun_again = false;
+        let mut allowance = FullListingAllowance::Unused;
         loop {
             self.state.update_if_changed(|state| state.cycle.listing = listing.kind == ListingKind::Full);
             let page = match self.fetch_page(&from, cancel).await {
                 Ok(page) => page,
                 Err(PageFetchError::Cancelled) => return Err(CycleError::Cancelled),
                 Err(PageFetchError::Store(error)) => return Err(error.into()),
-                Err(PageFetchError::Graph(error)) => match decide_page_refusal(&error, origin) {
-                    AfterPageRefusal::BeginFullListing if !is_begun_again => {
+                Err(PageFetchError::Graph(error)) => match decide_page_refusal(&error, origin, allowance) {
+                    AfterPageRefusal::BeginFullListing => {
                         tracing::info!("OneDrive would not go on with the listing ({error}); listing the drive again from the start");
-                        is_begun_again = true;
+                        allowance = FullListingAllowance::Used;
                         (listing, from, origin) = self.begin(true).await?;
                         report.kind = listing.kind;
                         continue;
                     }
-                    AfterPageRefusal::BeginFullListing | AfterPageRefusal::FailCycle => return Err(describe_drive_error(error)),
+                    AfterPageRefusal::FailCycle => return Err(describe_drive_error(error)),
                 },
             };
             let (change_count, link) = (page.changes.len(), page.link.clone());
@@ -259,16 +287,25 @@ impl ListingCycle {
             }
             report.pages += 1;
             report.changes += change_count;
-            if listing.kind == ListingKind::Full || change_count > 0 {
-                self.publish_counts(&listing).await?;
-            }
+            let is_count_changed = listing.kind == ListingKind::Full || change_count > 0;
             match link {
-                ListingLink::NextLink(next) => (from, origin) = (DeltaFrom::Link(next), PageLinkOrigin::GivenInThisCycle),
-                ListingLink::DeltaLink(_) => break,
+                ListingLink::NextLink(next) => {
+                    if is_count_changed {
+                        self.publish_counts().await?;
+                    }
+                    (from, origin) = (DeltaFrom::Link(next), PageLinkOrigin::GivenInThisCycle);
+                }
+                // The listing ended in the store with this page: that is told before
+                // anything that may fail is read.
+                ListingLink::DeltaLink(_) => {
+                    self.end_cycle(&report).await?;
+                    if is_count_changed {
+                        self.publish_counts().await?;
+                    }
+                    return Ok(report);
+                }
             }
         }
-        self.end_cycle(&report).await?;
-        Ok(report)
     }
 
     /// The drive the token reaches is the folder's: as today (`listing.rs:395-428`), with
@@ -323,9 +360,10 @@ impl ListingCycle {
     /// Reads from the store what [`decide_listing_start`] asks — the listing under way,
     /// the delta link, whether a full listing was asked for — in one job, decides, and
     /// says the beginning to the store: `begin_full_listing`, `begin_delta_listing`, or
-    /// nothing for a full listing that goes on. Answers the listing and where its first
-    /// request goes. `start_over`: OneDrive refused the link the cycle began with, and a
-    /// full listing begins whatever the store says.
+    /// nothing for a full listing that goes on from its next link. Answers the listing
+    /// and where its first request goes: from the start only for a listing begun here,
+    /// under an id no page was written with. `start_over`: OneDrive refused the link the
+    /// cycle began with, and a full listing begins whatever the store says.
     async fn begin(&self, start_over: bool) -> Result<(ListingUnderWay, DeltaFrom, PageLinkOrigin), CycleError> {
         let begun = self
             .store
@@ -338,10 +376,7 @@ impl ListingCycle {
                     }
                 };
                 Ok(match start {
-                    ListingStart::GoOnWithFullListing { listing } => match listing.next_link.clone() {
-                        Some(next) => (listing, DeltaFrom::Link(next), PageLinkOrigin::KeptNextLink),
-                        None => (listing, DeltaFrom::Start, PageLinkOrigin::GivenInThisCycle),
-                    },
+                    ListingStart::GoOnWithFullListing { listing, next_link } => (listing, DeltaFrom::Link(next_link), PageLinkOrigin::KeptNextLink),
                     ListingStart::BeginFullListing => (store.item_store().begin_full_listing()?, DeltaFrom::Start, PageLinkOrigin::GivenInThisCycle),
                     ListingStart::BeginDeltaListing { delta_link } => (store.item_store().begin_delta_listing()?, DeltaFrom::Link(delta_link), PageLinkOrigin::KeptDeltaLink),
                 })
@@ -415,14 +450,14 @@ impl ListingCycle {
     /// gone (`DriveClient::item`, `crates/konedrive-graph/src/drive/mod.rs:217`; today's
     /// `fresh`, `listing/stage.rs:182`), and the count read before the first request,
     /// which the next call of `write_listed_changes` is given with them and the page's
-    /// own link. Every item asked is answered, as there or as gone: the store answers
-    /// again one that is not.
+    /// own link. Every item asked is answered, as there or as gone, and under the id
+    /// that was asked ([`name_by_asked_id`]): the store answers again one that is not.
     async fn read_items_again(&self, items: &[OneDriveItemId], cancel: &CancellationToken) -> Result<(Vec<Change>, u64), CycleError> {
         let read_began_at_count = self.read_confirmation_count().await?;
         let mut changes = Vec::with_capacity(items.len());
         for item in items {
             changes.push(match cancellable(cancel, self.drive.item(item.as_str())).await? {
-                Ok(read) => classify(&read),
+                Ok(read) => name_by_asked_id(classify(&read), item),
                 Err(DriveError::NotFound) => Change::Delete(item.as_str().to_owned()),
                 Err(error) => return Err(describe_drive_error(error)),
             });
@@ -431,14 +466,13 @@ impl ListingCycle {
     }
 
     /// The folder's counts on the bus after a page: what OneDrive has, what the folder
-    /// shows, what it cannot show (`ItemReader::count_items`), and whether a full listing
-    /// is under way. "Shown" grows as the plan's `ShowItem` steps commit, not as pages
-    /// come: the plan's task publishes it too. MISSING-2.d.
-    async fn publish_counts(&self, listing: &ListingUnderWay) -> Result<ItemCounts, CycleError> {
+    /// shows, what it cannot show (`ItemReader::count_items`). "Shown" grows as the plan's
+    /// `ShowItem` steps commit, not as pages come: the plan's task publishes it too.
+    /// Whether a full listing is under way is not said here: the cycle's loop and its end
+    /// say it. MISSING-2.d.
+    async fn publish_counts(&self) -> Result<ItemCounts, CycleError> {
         let counts = self.store.read_items(|reader| reader.count_items()).await?;
-        let is_full_listing_under_way = listing.kind == ListingKind::Full;
         self.state.update_if_changed(|state| {
-            state.cycle.listing = is_full_listing_under_way;
             state.cycle.items_listed = counts.in_onedrive;
             state.cycle.items_placed = counts.shown;
             state.cycle.skipped_count = counts.cannot_be_shown;
@@ -446,13 +480,18 @@ impl ListingCycle {
         Ok(counts)
     }
 
-    /// The listing ended: the plan woken with `WakeCause::ListingEnded`, `last_checked`
-    /// written (`TreeStore::set_last_checked`), the conflicts on record looked over
-    /// (through `report`), the thumbnail filler nudged (`after_listing`). As today's
-    /// `after_cycle` (`listing.rs:340`) without what told the outbox. The plan is woken
-    /// first: the listing ended in the store whatever becomes of the rest.
+    /// The listing ended: the plan woken with `WakeCause::ListingEnded`, the thumbnail
+    /// filler nudged (`after_listing`), `last_checked` written
+    /// (`TreeStore::set_last_checked`), the conflicts on record looked over (through
+    /// `report`). As today's `after_cycle` (`listing.rs:340`) without what told the
+    /// outbox. Called as soon as the store ended the listing, before the counts are read.
+    /// The wake and the nudge come first, and nothing that can fail stands before them:
+    /// the listing ended in the store whatever becomes of the rest.
     async fn end_cycle(&self, report: &ListingCycleReport) -> Result<(), CycleError> {
         self.sync_plan_wake.wake(WakeCause::ListingEnded);
+        if let Some(after_listing) = &self.after_listing {
+            after_listing.notify_one();
+        }
         self.state.update_if_changed(|state| state.cycle.listing = false);
         let now = crate::clock::unix_now();
         self.store.call(move |store| store.set_last_checked(now)).await?;
@@ -462,9 +501,6 @@ impl ListingCycle {
         let activity = Arc::clone(&self.report.activity);
         if let Err(error) = tokio::task::spawn_blocking(move || activity.prune()).await {
             tracing::warn!("the task looking over the conflicts failed: {error}");
-        }
-        if let Some(after_listing) = &self.after_listing {
-            after_listing.notify_one();
         }
         tracing::debug!("a {:?} listing ended: {} pages, {} changes, {} items read again", report.kind, report.pages, report.changes, report.read_again);
         Ok(())

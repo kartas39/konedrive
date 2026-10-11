@@ -7,13 +7,16 @@
 //!
 //! **Answers for:** when a cycle runs: at once at its start, every interval, on the retry
 //! schedule after a failure, on a refresh, and while the account's work runs
-//! (`conditions::running`). It holds no cycle back for a read-only folder with unsent
+//! (`conditions::running`). How long it waits is decided in `poll_wait`, from typed cases.
+//! A refresh given while a cycle runs is kept, and several are one: one more cycle runs
+//! after the one under way. It holds no cycle back for a read-only folder with unsent
 //! changes (today's `held_back`, `listing/poller.rs:170-184`, goes: design §13 (3)).
 //!
 //! **Tested without the rest**, over a real cycle, the fixture's store and the fake
 //! OneDrive, on the real clock with short waits (a request to the fake is real I/O):
 // test: a_cycle_runs_at_once_and_then_every_interval
 // test: a_refresh_runs_a_cycle_now
+// test: a_refresh_given_while_a_cycle_runs_runs_another_after_it
 // test: a_failed_cycle_is_tried_again_on_the_retry_schedule
 // test: a_full_refresh_asks_the_store_for_a_full_listing_before_the_cycle
 // test: a_stop_cancels_the_cycle_between_two_requests_and_waits_for_the_page_being_written
@@ -28,8 +31,14 @@ use tokio_util::sync::CancellationToken;
 use super::listing::{CycleError, Schedule};
 use super::listing_cycle::ListingCycle;
 use super::live::{Live, LiveContext};
-use crate::conditions::running::{Running, Stop};
+use crate::conditions::running::Running;
 use crate::status::snapshot::LiveChanges;
+
+/// How long the poller waits after a cycle and through a pause.
+mod poll_wait;
+
+use poll_wait::{decide_cycle_wait, decide_pause_wait, LastCycle, NotificationSocket, PauseWait};
+
 /// What may be asked of a running poller by whoever does not own it. Asking a stopped
 /// poller does nothing.
 #[derive(Clone)]
@@ -145,10 +154,11 @@ impl Drop for ListingPoller {
     }
 }
 
-/// The poller's task: a cycle at once, then every interval (the longer one while the
-/// notification socket is up), at once on a refresh, and on the retry schedule after a
-/// failure; none while the account's work is stopped. As today's `run`
-/// (`listing/poller.rs:186`) without what held a read-only folder's cycles back.
+/// The poller's task: a cycle at once, then when the next is due
+/// ([`decide_cycle_wait`]) or at once on a refresh; none while the account's work is
+/// stopped, which is looked at again when a timed pause ends ([`decide_pause_wait`]),
+/// after the interval and on a refresh. As today's `run` (`listing/poller.rs:186`)
+/// without what held a read-only folder's cycles back.
 async fn run_cycles(cycle: Arc<ListingCycle>, schedule: Schedule, running: Arc<Running>, refresh: Arc<Notify>, cancel: CancellationToken, mut up: watch::Receiver<bool>) {
     let mut failure_count = 0usize;
     // False once the sender is gone: `changed` would then answer at once, for good.
@@ -156,17 +166,12 @@ async fn run_cycles(cycle: Arc<ListingCycle>, schedule: Schedule, running: Arc<R
     loop {
         // Paused, or held: OneDrive is not asked until that ends or a refresh nudges.
         if let Some(stop) = running.stop() {
-            // A timed pause ends by the account's clock. Looked at again after the poll's
-            // interval at the latest, and no sooner than in a second.
             let clock = running.clock();
-            let pause_end = match stop {
-                Stop::Paused(until) if until > 0 => Some(until.max(clock.now().saturating_add(1))),
-                _ => None,
-            };
+            let pause_wait = decide_pause_wait(stop, clock.now());
             let pause_ended = async {
-                match pause_end {
-                    Some(at) => clock.sleep_until(at).await,
-                    None => std::future::pending().await,
+                match pause_wait {
+                    PauseWait::UntilClock(at) => clock.sleep_until(at).await,
+                    PauseWait::NotByClock => std::future::pending().await,
                 }
             };
             tokio::select! {
@@ -177,24 +182,24 @@ async fn run_cycles(cycle: Arc<ListingCycle>, schedule: Schedule, running: Arc<R
             }
             continue;
         }
-        let retry_wait = match cycle.run(&cancel).await {
+        let last_cycle = match cycle.run(&cancel).await {
             Ok(_) => {
                 failure_count = 0;
-                None
+                LastCycle::Ended
             }
             Err(CycleError::Cancelled) => return,
             Err(error) => {
                 tracing::warn!("the listing of OneDrive failed: {error}");
-                let wait = schedule.retry.get(failure_count).copied().unwrap_or(schedule.interval);
                 failure_count += 1;
-                Some(wait)
+                LastCycle::Failed { failures_before: failure_count - 1 }
             }
         };
         // Counted from the end of the cycle: a socket that goes down makes the next cycle
         // due at most `interval` after it, and one that comes up puts it off.
         let cycle_ended_at = tokio::time::Instant::now();
         loop {
-            let wait = retry_wait.unwrap_or(if *up.borrow_and_update() { schedule.live_interval } else { schedule.interval });
+            let socket = if *up.borrow_and_update() { NotificationSocket::Up } else { NotificationSocket::Down };
+            let wait = decide_cycle_wait(&schedule, last_cycle, socket);
             tokio::select! {
                 () = tokio::time::sleep_until(cycle_ended_at + wait) => break,
                 () = refresh.notified() => break,

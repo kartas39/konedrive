@@ -29,11 +29,27 @@ fn no_delta_link_and_nothing_under_way_begins_a_full_listing() {
 }
 
 #[test]
-fn a_full_listing_under_way_goes_on_from_its_next_link_or_from_the_start() {
-    for next_link in [Some("next"), None] {
-        let listing = listing_under_way(ListingKind::Full, next_link);
-        assert_eq!(decide_listing_start(Some(&listing), None, false), ListingStart::GoOnWithFullListing { listing: listing.clone() });
-    }
+fn a_full_listing_under_way_goes_on_from_the_next_link_the_store_kept() {
+    let listing = listing_under_way(ListingKind::Full, Some("next"));
+    assert_eq!(decide_listing_start(Some(&listing), None, false), ListingStart::GoOnWithFullListing { listing: listing.clone(), next_link: "next".into() });
+}
+
+#[test]
+fn a_full_listing_under_way_with_no_next_link_is_given_up_for_a_full_listing_begun_anew() {
+    let listing = listing_under_way(ListingKind::Full, None);
+    assert_eq!(decide_listing_start(Some(&listing), None, false), ListingStart::BeginFullListing);
+    assert_eq!(decide_listing_start(Some(&listing), None, true), ListingStart::BeginFullListing);
+    // Whatever delta link is said beside it: no listing of changes takes its place.
+    assert_eq!(decide_listing_start(Some(&listing), Some("delta"), false), ListingStart::BeginFullListing);
+}
+
+/// A case the store never gives (a listing of changes is begun only from a delta link, and
+/// only a full listing forgets it): the function answers it all the same.
+#[test]
+fn a_listing_of_changes_under_way_with_no_delta_link_begins_a_full_listing() {
+    let stopped = listing_under_way(ListingKind::Delta, Some("next"));
+    assert_eq!(decide_listing_start(Some(&stopped), None, false), ListingStart::BeginFullListing);
+    assert_eq!(decide_listing_start(Some(&stopped), None, true), ListingStart::BeginFullListing);
 }
 
 #[test]
@@ -50,40 +66,50 @@ fn a_full_listing_asked_for_wins_over_a_delta_link_and_not_over_one_under_way() 
     let stopped = listing_under_way(ListingKind::Delta, Some("next"));
     assert_eq!(decide_listing_start(Some(&stopped), Some("delta"), true), ListingStart::BeginFullListing);
     let full = listing_under_way(ListingKind::Full, Some("next"));
-    assert_eq!(decide_listing_start(Some(&full), None, true), ListingStart::GoOnWithFullListing { listing: full.clone() });
+    assert_eq!(decide_listing_start(Some(&full), None, true), ListingStart::GoOnWithFullListing { listing: full.clone(), next_link: "next".into() });
 }
 
 #[test]
 fn a_410_begins_a_full_listing() {
     for origin in [PageLinkOrigin::KeptDeltaLink, PageLinkOrigin::KeptNextLink, PageLinkOrigin::GivenInThisCycle] {
-        assert_eq!(decide_page_refusal(&DriveError::ResyncRequired, origin), AfterPageRefusal::BeginFullListing);
-        assert_eq!(decide_page_refusal(&DriveError::ResyncUpload, origin), AfterPageRefusal::BeginFullListing);
+        assert_eq!(decide_page_refusal(&DriveError::ResyncRequired, origin, FullListingAllowance::Unused), AfterPageRefusal::BeginFullListing);
+        assert_eq!(decide_page_refusal(&DriveError::ResyncUpload, origin, FullListingAllowance::Unused), AfterPageRefusal::BeginFullListing);
     }
 }
 
 #[test]
 fn a_refused_next_link_the_store_kept_begins_a_full_listing() {
-    assert_eq!(decide_page_refusal(&DriveError::NotFound, PageLinkOrigin::KeptNextLink), AfterPageRefusal::BeginFullListing);
-    assert_eq!(decide_page_refusal(&failed(), PageLinkOrigin::KeptNextLink), AfterPageRefusal::BeginFullListing);
+    assert_eq!(decide_page_refusal(&DriveError::NotFound, PageLinkOrigin::KeptNextLink, FullListingAllowance::Unused), AfterPageRefusal::BeginFullListing);
+    assert_eq!(decide_page_refusal(&failed(), PageLinkOrigin::KeptNextLink, FullListingAllowance::Unused), AfterPageRefusal::BeginFullListing);
 }
 
 #[test]
 fn a_refused_delta_link_fails_the_cycle() {
-    assert_eq!(decide_page_refusal(&DriveError::NotFound, PageLinkOrigin::KeptDeltaLink), AfterPageRefusal::FailCycle);
-    assert_eq!(decide_page_refusal(&failed(), PageLinkOrigin::KeptDeltaLink), AfterPageRefusal::FailCycle);
+    assert_eq!(decide_page_refusal(&DriveError::NotFound, PageLinkOrigin::KeptDeltaLink, FullListingAllowance::Unused), AfterPageRefusal::FailCycle);
+    assert_eq!(decide_page_refusal(&failed(), PageLinkOrigin::KeptDeltaLink, FullListingAllowance::Unused), AfterPageRefusal::FailCycle);
 }
 
 #[test]
 fn a_refused_link_of_this_cycle_fails_the_cycle() {
-    assert_eq!(decide_page_refusal(&DriveError::NotFound, PageLinkOrigin::GivenInThisCycle), AfterPageRefusal::FailCycle);
-    assert_eq!(decide_page_refusal(&failed(), PageLinkOrigin::GivenInThisCycle), AfterPageRefusal::FailCycle);
+    assert_eq!(decide_page_refusal(&DriveError::NotFound, PageLinkOrigin::GivenInThisCycle, FullListingAllowance::Unused), AfterPageRefusal::FailCycle);
+    assert_eq!(decide_page_refusal(&failed(), PageLinkOrigin::GivenInThisCycle, FullListingAllowance::Unused), AfterPageRefusal::FailCycle);
 }
 
 #[test]
 fn any_other_trouble_with_graph_fails_the_cycle() {
     for origin in [PageLinkOrigin::KeptDeltaLink, PageLinkOrigin::KeptNextLink, PageLinkOrigin::GivenInThisCycle] {
-        assert_eq!(decide_page_refusal(&DriveError::SignedOut, origin), AfterPageRefusal::FailCycle);
-        assert_eq!(decide_page_refusal(&transient(), origin), AfterPageRefusal::FailCycle);
-        assert_eq!(decide_page_refusal(&DriveError::UrlExpired, origin), AfterPageRefusal::FailCycle);
+        assert_eq!(decide_page_refusal(&DriveError::SignedOut, origin, FullListingAllowance::Unused), AfterPageRefusal::FailCycle);
+        assert_eq!(decide_page_refusal(&transient(), origin, FullListingAllowance::Unused), AfterPageRefusal::FailCycle);
+        assert_eq!(decide_page_refusal(&DriveError::UrlExpired, origin, FullListingAllowance::Unused), AfterPageRefusal::FailCycle);
     }
+}
+
+#[test]
+fn a_second_refusal_in_one_cycle_begins_no_second_full_listing() {
+    for origin in [PageLinkOrigin::KeptDeltaLink, PageLinkOrigin::KeptNextLink, PageLinkOrigin::GivenInThisCycle] {
+        assert_eq!(decide_page_refusal(&DriveError::ResyncRequired, origin, FullListingAllowance::Used), AfterPageRefusal::FailCycle);
+        assert_eq!(decide_page_refusal(&DriveError::ResyncUpload, origin, FullListingAllowance::Used), AfterPageRefusal::FailCycle);
+    }
+    assert_eq!(decide_page_refusal(&DriveError::NotFound, PageLinkOrigin::KeptNextLink, FullListingAllowance::Used), AfterPageRefusal::FailCycle);
+    assert_eq!(decide_page_refusal(&failed(), PageLinkOrigin::KeptNextLink, FullListingAllowance::Used), AfterPageRefusal::FailCycle);
 }
