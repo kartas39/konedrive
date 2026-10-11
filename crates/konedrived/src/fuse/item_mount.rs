@@ -138,7 +138,11 @@ impl ItemMount {
     }
 
     /// Mounts over the folder and serves it with `filesystem`, which answers the kernel
-    /// through the `ItemKernelRequests` the build gave; then starts the bridge's thread.
+    /// through the `ItemKernelRequests` the build gave; then starts the bridge's thread
+    /// with the session's notifier as the kernel's cached pages
+    /// (`ItemInotifyBridge::start(read_connections, Some(Arc::new(session.notifier())))`):
+    /// without it a read through the mount is answered the old content of a file a step
+    /// changed, from the kernel's cache.
     /// After this the folder's path is the mount. THE SWITCH'S: its body, the
     /// `Filesystem` and its caller are written with the switch.
     pub fn serve<F: fuser::Filesystem + Send + 'static>(self: &Arc<Self>, filesystem: F) -> std::io::Result<()> {

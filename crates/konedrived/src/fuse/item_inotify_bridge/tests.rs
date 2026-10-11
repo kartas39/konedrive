@@ -100,7 +100,7 @@ use crate::fuse::item_fixture::ItemFixture;
 fn start_bridge(fixture: &ItemFixture) -> (Arc<ItemInotifyBridge>, tempfile::TempDir) {
     let watched = tempfile::tempdir().unwrap();
     let bridge = Arc::new(ItemInotifyBridge::new(watched.path().to_owned()));
-    bridge.start(Arc::clone(&fixture.read_connections)).unwrap();
+    bridge.start(Arc::clone(&fixture.read_connections), None).unwrap();
     (bridge, watched)
 }
 
@@ -160,7 +160,7 @@ fn the_thread_is_started_once_told_by_its_id_and_ended_by_the_stop() {
     assert!(thread_id != own_id && bridge.is_own_thread(thread_id) && !bridge.is_own_thread(own_id), "the kernel's id of the bridge's thread, not of the starter's");
     assert!(bridge.thread.lock().unwrap().is_some(), "kept for the stop to wait for");
     // A second start starts nothing.
-    bridge.start(Arc::clone(&fixture.read_connections)).unwrap();
+    bridge.start(Arc::clone(&fixture.read_connections), None).unwrap();
     assert!(bridge.is_own_thread(thread_id));
     bridge.announce(vec![ItemAnnouncement::Appeared { item: top, place: place_in(LocalItemId::ROOT, "top.txt") }]);
     wait_until("the name appears", || watched.path().join("top.txt").exists());
@@ -172,12 +172,12 @@ fn the_thread_is_started_once_told_by_its_id_and_ended_by_the_stop() {
     assert!(bridge.queued.lock().unwrap().is_empty() && bridge.find_in_progress().is_none());
     assert!(!watched.path().join("top.txt").exists());
     // And a start after the stop starts no thread.
-    bridge.start(Arc::clone(&fixture.read_connections)).unwrap();
+    bridge.start(Arc::clone(&fixture.read_connections), None).unwrap();
     assert!(bridge.thread.lock().unwrap().is_none());
     // A bridge that was never started is stopped all the same; a start then is nothing.
     let never_started = Arc::new(ItemInotifyBridge::new(watched.path().to_owned()));
     never_started.stop();
-    never_started.start(Arc::clone(&fixture.read_connections)).unwrap();
+    never_started.start(Arc::clone(&fixture.read_connections), None).unwrap();
     assert!(never_started.thread.lock().unwrap().is_none() && never_started.thread_id.get().is_none());
 }
 
@@ -271,6 +271,47 @@ fn a_changed_content_is_a_touch_of_the_file_by_path() {
     wait_until("the file is touched again", || fs::metadata(&path).unwrap().modified().unwrap() > long_ago);
     assert_eq!(fs::metadata(&directory).unwrap().modified().unwrap(), long_ago);
     bridge.stop();
+}
+
+/// The stand-in of the kernel's cached pages: which file's pages were dropped, and the
+/// time the file at `path` had by then.
+struct RecordedPageCache {
+    path: PathBuf,
+    dropped: std::sync::Mutex<Vec<(LocalItemId, std::time::SystemTime)>>,
+}
+
+impl KernelPageCache for RecordedPageCache {
+    fn invalidate(&self, node: LocalItemId) -> std::io::Result<()> {
+        self.dropped.lock().unwrap().push((node, fs::metadata(&self.path)?.modified()?));
+        Ok(())
+    }
+}
+
+/// The review's S5: after a step took OneDrive's content, no read through the mount may
+/// be answered pages of the old one.
+#[test]
+fn the_kernels_pages_of_a_changed_content_are_dropped_before_the_file_is_touched() {
+    let fixture = ItemFixture::new();
+    let docs = fixture.show_onedrive_directory("docs").local_item_id;
+    let file = fixture.show_onedrive_file("docs/a.txt", b"hello").local_item_id;
+    let watched = tempfile::tempdir().unwrap();
+    let path = watched.path().join("docs/a.txt");
+    fs::create_dir(watched.path().join("docs")).unwrap();
+    fs::write(&path, b"").unwrap();
+    let long_ago = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    fs::File::options().write(true).open(&path).unwrap().set_modified(long_ago).unwrap();
+    let page_cache = Arc::new(RecordedPageCache { path: path.clone(), dropped: Default::default() });
+    let bridge = Arc::new(ItemInotifyBridge::new(watched.path().to_owned()));
+    bridge.start(Arc::clone(&fixture.read_connections), Some(Arc::clone(&page_cache) as Arc<dyn KernelPageCache>)).unwrap();
+    bridge.announce(vec![
+        // A name that appears has no pages, and a directory no content.
+        ItemAnnouncement::Appeared { item: file, place: place_in(docs, "b.txt") },
+        ItemAnnouncement::ContentChanged { item: docs, place: place_in(LocalItemId::ROOT, "docs") },
+        ItemAnnouncement::ContentChanged { item: file, place: place_in(docs, "a.txt") },
+    ]);
+    wait_until("the file is touched", || fs::metadata(&path).unwrap().modified().unwrap() > long_ago);
+    bridge.stop();
+    assert_eq!(*page_cache.dropped.lock().unwrap(), [(file, long_ago)], "the pages of the file alone, once, while it still had its old time");
 }
 
 #[test]
