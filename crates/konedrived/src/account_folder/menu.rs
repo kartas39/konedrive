@@ -227,3 +227,6 @@ pub fn decide(paths: &[String], parts: &[(Vec<usize>, Part)], account_folder: bo
     }
     menu
 }
+
+#[cfg(test)]
+mod tests;

@@ -410,3 +410,6 @@ fn remove_tree_files(tree_db: &Path) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

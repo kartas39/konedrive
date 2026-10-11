@@ -21,6 +21,10 @@ const DIRECTORIES_READ_AT_ONCE: usize = 1000;
 /// Asks whoever lists one of `directories` to list it again. Best effort: with no session bus
 /// nothing is said.
 pub async fn read_again(directories: Vec<PathBuf>) {
+    // A test build tells nobody: no test reaches the session bus.
+    if cfg!(test) {
+        return;
+    }
     let Ok(connection) = zbus::Connection::session().await else { return };
     for directory in directories {
         let Ok(url) = url::Url::from_directory_path(&directory) else { continue };

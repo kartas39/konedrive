@@ -214,3 +214,58 @@ async fn a_forgotten_pause_is_not_ended_later_and_the_next_one_is() {
     pass(1200).await;
     assert_eq!(scene.run_out(), 1, "the timer went with the clock");
 }
+
+/// What stops the account's work, as the sending of a folder's sync is held by it: the
+/// user's pause with its end, or with none until resumed; the automatic hold with none, as
+/// it ends by no time; nothing when neither stops it.
+#[test]
+fn a_pause_until_resumed_and_a_hold_have_no_end_and_a_timed_pause_has_its_own() {
+    use crate::conditions::running::{Hold, Stop};
+    let cases = [
+        (None, None),
+        (Some(Stop::Paused(0)), Some(None)),
+        (Some(Stop::Paused(START + 60)), Some(Some(START + 60))),
+        (Some(Stop::Held(Hold::Metered)), Some(None)),
+        (Some(Stop::Held(Hold::OnBattery)), Some(None)),
+        (Some(Stop::Held(Hold::PowerSaver)), Some(None)),
+    ];
+    for (stop, paused_until) in cases {
+        assert_eq!(super::decide_paused_until(stop), paused_until, "{stop:?}");
+    }
+}
+
+/// `Pause` and `Resume` reach a running sync through the handles of the view: the hold of
+/// its sending is set with the pause's end and taken off again, and the listing is asked
+/// for a cycle each time, since nothing else wakes the poller after an untimed pause.
+#[test]
+fn a_pause_holds_the_sending_of_a_running_sync_and_a_resume_ends_the_hold() {
+    use crate::account_folder::staged_folder::{make_kept_parts, make_service, publish_running_view};
+    use crate::mount::item_fixture::ItemFixture;
+    use crate::sync_parts::sending_holds::SendingHold;
+
+    let fixture = ItemFixture::new();
+    fixture.runtime().block_on(async {
+        let (service, clock) = make_service();
+        let kept = make_kept_parts(&fixture);
+        let mount = Arc::clone(&kept.mount);
+        let asked_cycle_count = publish_running_view(&service, &fixture, kept);
+        let paused = |now| match fixture.sending_holds.find(now) {
+            Some(SendingHold::Paused { until }) => Some(until),
+            _ => None,
+        };
+        assert_eq!(paused(clock.now()), None);
+
+        service.pause_syncing(0).await.unwrap();
+        assert_eq!(paused(clock.now()), Some(None), "until resumed");
+        assert_eq!(asked_cycle_count.load(Ordering::SeqCst), 1);
+        service.pause_syncing(90).await.unwrap();
+        assert_eq!(paused(clock.now()), Some(Some(clock.now() + 90)), "a timed pause holds with its end");
+        service.resume_syncing().await.unwrap();
+        assert_eq!(paused(clock.now()), None);
+        assert_eq!(asked_cycle_count.load(Ordering::SeqCst), 3, "a cycle is asked for at every change of the pause");
+
+        // The scene's end: the view lets go of the mount, which is dropped where a thread may be joined.
+        service.view.send_replace(crate::account_folder::folder::View::default());
+        tokio::task::spawn_blocking(move || drop(mount)).await.unwrap();
+    });
+}

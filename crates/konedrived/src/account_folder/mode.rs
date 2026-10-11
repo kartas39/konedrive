@@ -305,3 +305,6 @@ pub async fn watch_account(mut account: watch::Receiver<AccountSnapshot>, sync: 
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -698,3 +698,6 @@ impl SyncService {
         self.view.borrow().parts.as_ref().map(|parts| parts.store.clone())
     }
 }
+
+#[cfg(test)]
+mod tests;

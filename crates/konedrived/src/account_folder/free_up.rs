@@ -151,3 +151,6 @@ pub struct FreedUp {
 fn freed_detail(files: u32, bytes: u64) -> String {
     format!("{files} file{}, {}", if files == 1 { "" } else { "s" }, activity::human_size(bytes))
 }
+
+#[cfg(test)]
+mod tests;

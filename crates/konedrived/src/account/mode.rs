@@ -490,3 +490,6 @@ pub fn decide_read_only_switch(unsent: u64, is_forced: bool) -> ReadOnlySwitch {
         ReadOnlySwitch::KeepWish { unsent }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -199,3 +199,6 @@ impl SyncService {
         restored.map(|restored| u32::try_from(restored).unwrap_or(u32::MAX)).map_err(|e| SyncError::Store(e.to_string()))
     }
 }
+
+#[cfg(test)]
+mod tests;

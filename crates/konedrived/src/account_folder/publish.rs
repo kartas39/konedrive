@@ -107,3 +107,6 @@ impl SyncService {
         });
     }
 }
+
+#[cfg(test)]
+mod tests;

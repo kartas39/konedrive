@@ -100,3 +100,6 @@ impl SyncService {
         self.state.update_if_changed(|s| s.local.pinned_count = count);
     }
 }
+
+#[cfg(test)]
+mod tests;

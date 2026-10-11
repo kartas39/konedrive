@@ -342,3 +342,5 @@ fn decide_refused_sync(before: &Sync, take_down_try: Option<TakeDownTry>, refusa
     }
 }
 
+#[cfg(test)]
+mod tests;

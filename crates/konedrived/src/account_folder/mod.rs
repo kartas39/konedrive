@@ -22,6 +22,9 @@ pub mod take_down;
 #[cfg(any(test, feature = "fault-injection"))]
 pub mod testing;
 pub mod wiring;
+/// Test code: a folder put into a state by hand.
+#[cfg(test)]
+mod staged_folder;
 
 use std::sync::Arc;
 
