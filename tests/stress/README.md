@@ -17,9 +17,8 @@ Rust's own known-answer vectors run as a self-test on import). Matching item cou
 not catch a file that went up with the wrong content or arrived at the wrong name — this checks
 the bytes.
 
-**It confirms held deletes on its own** (`sync deletes confirm`, whenever this run's mass deletes
-get held for confirmation, so the outbox can drain without a human in the loop) — so it runs only
-against a dedicated **test** account, never a real one.
+**It deletes real files and folders, and every deletion is sent to OneDrive at once** — so it
+runs only against a dedicated **test** account, never a real one.
 
 What enforces that is `write_test_drive_ids` in the daemon's `config.toml`, the list of the test
 accounts' drives that `konedrive-write-test` checks too: before it changes anything, the tool

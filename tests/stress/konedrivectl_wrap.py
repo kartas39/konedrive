@@ -3,7 +3,7 @@ parse the plain-text tables it prints (there is no ``--json``; this tool speaks 
 person reading ``konedrivectl --help`` would see, per ``docs/design/desktop.md`` §3). The exact
 strings parsed here are read out of ``crates/konedrivectl/src/text/`` and
 ``crates/konedrive-tree/src/outbox/row.rs`` (the ``OutboxState`` enum: ``waiting``, ``ready``,
-``running``, ``retry``, ``blocked``, ``held``), so a wording change there should update this file
+``running``, ``retry``, ``blocked``), so a wording change there should update this file
 too.
 """
 
@@ -102,9 +102,6 @@ class Ctl:
     def free(self, path: str) -> Run:
         return self.run("sync", "free", path)
 
-    def deletes_confirm(self) -> Run:
-        return self.run("sync", "deletes", "confirm")
-
     def export_access_token(self, out_path: str, read_write: bool = False) -> Run:
         args = ["dev", "export-access-token", "--out", out_path]
         if read_write:
@@ -141,16 +138,11 @@ def parse_status(text: str) -> dict:
     m = re.match(r"(\d+)", fields.get("Blocked", ""))
     if m:
         blocked = int(m.group(1))
-    held = 0
-    m = re.match(r"(\d+)", fields.get("Held for confirmation", ""))
-    if m:
-        held = int(m.group(1))
     return {
         "folder": fields.get("Folder", ""),
         "onedrive_items": onedrive_items,
         "folder_items": folder_items,
         "blocked": blocked,
-        "held": held,
         "fields": fields,
     }
 

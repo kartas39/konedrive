@@ -23,7 +23,7 @@
 //! unsent is the account's own (`AccountService`), which this program has none of.
 //!
 //! What is unsent: `outbox` (the upload queue's entries), `outbox-status` (its counts), `not-uploaded`,
-//! `conflicts`, `confirm-deletes`, `restore-deletes`, `pause`, `resume`.
+//! `conflicts`, `pause`, `resume`.
 
 use std::path::{Path, PathBuf};
 
@@ -167,7 +167,7 @@ async fn main() {
             ),
             ["outbox-status"] => {
                 let outbox = service.state().get().outbox;
-                format!("pending {}, held {}, blocked {}, note {:?}", outbox.pending_count, outbox.held_count, outbox.blocked_count, outbox.note)
+                format!("pending {}, blocked {}, note {:?}", outbox.pending_count, outbox.blocked_count, outbox.note)
             }
             ["not-uploaded"] => said(
                 service.not_uploaded().await.map(|kept| kept.iter().map(|k| format!("{} {}", k.path, k.reason)).collect::<Vec<_>>().join(" | ")).map_err(|e| e.to_string()),
@@ -179,8 +179,6 @@ async fn main() {
                     .map(|rows| rows.iter().map(|row| format!("{:?} {} {}", row.kind, row.original, row.rescued)).collect::<Vec<_>>().join(" | "))
                     .map_err(|e| e.to_string()),
             ),
-            ["confirm-deletes"] => said(service.confirm_deletes().await.map(|n| format!("{n} released")).map_err(|e| e.to_string())),
-            ["restore-deletes"] => said(service.restore_deletes().await.map(|n| format!("{n} restored")).map_err(|e| e.to_string())),
             ["pause"] => said(service.pause_syncing(0).await.map(|()| "paused".into()).map_err(|e| e.to_string())),
             ["resume"] => said(service.resume_syncing().await.map(|()| "resumed".into()).map_err(|e| e.to_string())),
             _ => "not a command".into(),

@@ -102,7 +102,6 @@ removed_directory_goes_from_onedrive() {
     user "rm -r docs"
     check_within 30 "OneDrive lacks the directory" onedrive_lacks docs
     check_sent
-    check "nothing is held by the mass-delete guard" "$(daemon outbox-status | cut -d, -f2)" " held 0"
     check_holds "OneDrive's bin holds the directory" "$(onedrive bin)" D
     daemon refresh > /dev/null
     sleep 1
@@ -110,51 +109,31 @@ removed_directory_goes_from_onedrive() {
     check "the other files are still in OneDrive" "$(onedrive id keep7.txt)" K7
 }
 
-# A folder of 30 files in a drive of 37 items: a removal of 31, over a fifth of them.
+# A folder of 30 files in a drive of 37 items: a removal of 31, most of what the folder shows.
 seed_large_directory() {
     seed_folder M R many
     for n in $(seq -w 1 30); do seed_file M$n M f$n.txt "file $n"; done
     for n in 1 2 3 4 5; do seed_file K$n R keep$n.txt 'kept'; done
 }
 
-mass_delete_is_held_until_confirmed() {
+# A removal made here is sent as any other change, however much it removes: nothing is held
+# and nothing is asked. What protects the user is OneDrive's own recycle bin.
+removing_a_large_directory_sends_every_removal() {
     begin_folder
     seed_large_directory
     register_folder
     user "rm -r many"
     check "the folder lacks the directory at once" "$(user "test -e many && echo there || echo gone")" gone
-    wait_for 10 outbox_has_rows
-    sleep 3
-    check_holds "the removals are held" "$(daemon outbox)" "held"
-    check_lacks "no removal is held back for another reason or sent" "$(daemon outbox-status)" "held 0,"
-    check "OneDrive still holds the directory" "$(onedrive id many/f17.txt)" M17
-    check "nothing was removed from OneDrive" "$(onedrive count DELETE items)" 0
-    check_holds "confirmed" "$(daemon confirm-deletes)" "released"
-    check_within 30 "OneDrive lacks the directory once the removal is confirmed" onedrive_lacks many
+    check_within 30 "OneDrive lacks the directory" onedrive_lacks many
     check_sent
+    check "the queue has no entry left, and asks nothing" "$(daemon outbox)" ""
+    check "nothing is pending or blocked" "$(daemon outbox-status | cut -d, -f1,2)" "pending 0, blocked 0"
+    check_holds "OneDrive's bin holds the directory" "$(onedrive bin)" "M "
+    check_holds "and the first of its files" "$(onedrive bin)" M01
+    check_holds "and the last of them" "$(onedrive bin)" M30
+    check "all thirty-one are in the bin" "$(onedrive bin | wc -w)" 31
     check "the other files are still in OneDrive" "$(onedrive id keep3.txt)" K3
-}
-
-# The removal is made while OneDrive cannot be reached, so that none of it is sent before the
-# guard holds it.
-mass_delete_is_held_until_restored() {
-    begin_folder
-    seed_large_directory
-    register_folder
-    download many/f05.txt
-    onedrive outage on > /dev/null
-    user "rm -r many"
-    wait_for 10 outbox_has_rows
-    check_holds "the removals are held" "$(daemon outbox)" "held"
-    onedrive outage off > /dev/null
-    sleep 3
-    check_holds "restored" "$(daemon restore-deletes)" "restored"
-    check_within 20 "the folder shows the directory again" folder_has many/f30.txt
-    check "all of its files are back" "$(user "ls many | wc -l")" 30
-    check_folder_holds many/f05.txt 'file 05'
-    check_sent
-    check "nothing was removed from OneDrive" "$(onedrive count DELETE items)" 0
-    check "OneDrive still holds the directory" "$(onedrive id many/f17.txt)" M17
+    check "and none of them is in the bin" "$(onedrive bin | tr ' ' '\n' | grep -c '^K')" 0
 }
 
 # -- a rename, a move
@@ -789,8 +768,7 @@ file_writes() {
         overwrite_in_place_of_file_that_is_not_downloaded_keeps_the_rest \
         removed_files_go_to_onedrives_bin \
         removed_directory_goes_from_onedrive \
-        mass_delete_is_held_until_confirmed \
-        mass_delete_is_held_until_restored \
+        removing_a_large_directory_sends_every_removal \
         renamed_file_keeps_its_item \
         moved_file_keeps_its_item \
         renamed_and_moved_directory_keeps_its_items \
