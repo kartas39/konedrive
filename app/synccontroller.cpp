@@ -438,6 +438,10 @@ void SyncController::cancelPending()
 
 void SyncController::forget()
 {
+    // TODO: before this call the window warns: it asks `UploadQueue.UnsentCount()` (m_queue->UnsentCount(), answered
+    // for a folder in any state) and, when the answer is not 0, asks the user to confirm "N changes were not sent
+    // to OneDrive and will stay only on this computer". Unregister is never refused for what is unsent any more, so
+    // the handling of org.konedrive.Error.PendingUploads below has nothing to answer and goes with it.
     // M6: no timeout, as Register and FreeUpSpace have.
     const auto message = QDBusMessage::createMethodCall(ServiceName, m_path, FolderInterface, QStringLiteral("Unregister"));
     call(m_bus.asyncCall(message, std::numeric_limits<int>::max()), {}, [this](const QDBusError &error) {

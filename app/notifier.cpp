@@ -129,6 +129,8 @@ Notifier::Notifier(AccountController *account, SyncController *sync, Notificatio
 void Notifier::onActivity(qint64, const QString &kind, const QString &path, const QString &detail)
 {
     const QString name = fileName(path);
+    // TODO: a `not-removed-here` event is a notification: "This folder cannot be removed here because it holds items
+    // that cannot be shown here; remove it in OneDrive", naming the folder (`path`). Not posted yet.
     if (kind == QLatin1String("conflict")) {
         // M3: past 50 conflicts in one cycle, the daemon adds one more
         // `conflict` event whose path is the root and whose detail is

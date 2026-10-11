@@ -230,6 +230,10 @@ void DaemonController::remove(const QString &path)
     m_removeWaitsForUploads = false;
     Q_EMIT removeChanged();
 
+    // TODO: before this call the window warns as before a Forget: it asks the account's `UploadQueue.UnsentCount()`
+    // and, when the answer is not 0, asks the user to confirm "N changes were not sent to OneDrive and will stay only
+    // on this computer". Remove is never refused for what is unsent any more: m_removeWaitsForUploads has nothing
+    // to say and goes with the handling of org.konedrive.Error.PendingUploads.
     auto message = QDBusMessage::createMethodCall(ServiceName, ObjectPath, InterfaceName, QStringLiteral("Remove"));
     message << QVariant::fromValue(QDBusObjectPath(path));
     auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(message, std::numeric_limits<int>::max()), this);

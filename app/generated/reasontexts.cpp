@@ -79,6 +79,8 @@ bool takesDetail(QStringView key)
         QLatin1String("bad-handle"),
         QLatin1String("another-item"),
         QLatin1String("blocked"),
+        QLatin1String("not-read-on-disk"),
+        QLatin1String("being-checked"),
         QLatin1String("network"),
         QLatin1String("local-error"),
         QLatin1String("index-error"),
@@ -305,6 +307,18 @@ QString reasonSentence(const ReasonParts &parts, const QString &needs, const QSt
     if (parts.key == QLatin1String("blocked")) {
         if (!parts.hasDetail) {
             return i18n("KOneDrive's record of this change is incomplete (%1): it stays here until the file is changed again.", parts.key);
+        }
+        return QString();
+    }
+    if (parts.key == QLatin1String("not-read-on-disk")) {
+        if (!parts.hasDetail) {
+            return i18n("KOneDrive could not read this on disk when it started: nothing of it is uploaded until it can be read at a start.");
+        }
+        return QString();
+    }
+    if (parts.key == QLatin1String("being-checked")) {
+        if (!parts.hasDetail) {
+            return i18n("Being checked: KOneDrive is asking OneDrive for the whole folder again, and goes on by itself.");
         }
         return QString();
     }

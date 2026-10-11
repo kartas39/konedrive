@@ -93,6 +93,7 @@ fn every_key_has_the_group_it_had() {
                 "another-item",
                 "state-unreadable",
                 "blocked",
+                "not-read-on-disk",
                 "unreadable",
             ],
         ),
@@ -101,6 +102,7 @@ fn every_key_has_the_group_it_had() {
             Some(Group::Waiting),
             &[
                 "open-for-writing",
+                "being-checked",
                 "locked",
                 "not-found",
                 "not-downloaded",

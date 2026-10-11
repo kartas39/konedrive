@@ -113,6 +113,10 @@ void AccountController::applyProperties(const QVariantMap &properties)
         m_signInUrl.clear();
         Q_EMIT signInUrlChanged();
     }
+    // TODO: a switch to read-only asked while changes are unsent is no refusal any more: the account stays read-write
+    // and LastError says "switching to read-only: N changes still to send" until it switches by itself. The window
+    // must show that as a state of its own (with the count, a way to force it and a way to take the wish back —
+    // SetMode("read-only", true) and SetMode("read-write", false)), not as an error of the switch.
     // A switch to read-write ends as the command line's does: granted, or LastError
     // saying why not (SetMode cleared it before it answered), or no longer signed in.
     if (modeSignInPending()) {

@@ -62,6 +62,9 @@ QString ActivityModel::describe(const QString &kind, const QString &detail)
     if (kind == QLatin1String("listed")) {
         return i18nc("@info activity", "Listed");
     }
+    // TODO: the kind `not-removed-here` (a directory that cannot be removed here because it holds in OneDrive items
+    // that cannot be shown here; the path is the directory) has no words yet: it must say that the folder was not
+    // removed, why, and that it is to be removed in OneDrive, and point at the list of what is not shown.
     if (kind == QLatin1String("conflict")) {
         // A rescue; a copy (TextRole, isConflictCopy) has its own words.
         return i18nc("@info activity", "Your changed version was moved");

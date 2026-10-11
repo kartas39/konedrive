@@ -35,7 +35,7 @@ pub(super) async fn folder_command(
             println!("{tag}{}", said::registered_text(&absolute));
         }
         FolderCmd::Forget => {
-            // TODO: before the call, the warning of what is unsent: "N changes were not sent to OneDrive and will stay only on this computer" (`UploadQueue.UnsentCount()`, `proxy`'s `unsent_count`; nothing is said for 0). Not written yet; `account remove` warns by the same member.
+            // TODO: before the call: `warn_of_unsent_changes(proxy)`, and the call only when it answers to go on. Not called yet: its body is `todo!()`.
             explained(chosen, proxy, SyncAction::Forget, proxy.folder.unregister().await).await?;
             println!("{tag}{}", said::FORGOTTEN);
             fail_if_folder_unhealthy(proxy).await?;
@@ -195,4 +195,16 @@ async fn ignore(chosen: &Chosen, proxy: &FolderProxies<'_>, action: IgnoreCmd) -
     explained(chosen, proxy, SyncAction::Ignore, proxy.folder.set_ignore_patterns(&refs).await).await?;
     println!("{tag}{done}");
     Ok(())
+}
+
+/// Before a Forget and before the removal of an account, neither of which is refused for
+/// what is unsent: reads how many changes made here are not sent
+/// (`UploadQueue.UnsentCount()`, answered for a folder in any state) and, when it is not
+/// 0, says "N changes were not sent to OneDrive and will stay only on this computer" and
+/// asks whether to go on (a `--yes` of the command answers it). Whether the caller goes
+/// on; `true` at once for 0. A count that cannot be read is said, and asked about too.
+// TODO: wording
+#[allow(dead_code, unused_variables)]
+pub(crate) async fn warn_of_unsent_changes(proxy: &FolderProxies<'_>) -> anyhow::Result<bool> {
+    todo!()
 }

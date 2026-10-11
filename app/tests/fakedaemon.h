@@ -449,6 +449,7 @@ public:
 
 public Q_SLOTS:
     KonedriveOutboxList Changes(uint limit);
+    qulonglong UnsentCount();
     uint ConfirmDeletes();
     uint RestoreDeletes();
     KonedriveSkippedList NotUploaded();
@@ -746,6 +747,12 @@ inline KonedriveOutboxList FakeUploadQueue::Changes(uint limit)
 {
     m_sync->calls << QStringLiteral("Changes");
     return limit == 0 ? m_sync->outboxRows : m_sync->outboxRows.mid(0, int(limit));
+}
+
+inline qulonglong FakeUploadQueue::UnsentCount()
+{
+    m_sync->calls << QStringLiteral("UnsentCount");
+    return qulonglong(m_sync->outboxRows.size());
 }
 
 inline uint FakeUploadQueue::ConfirmDeletes()
