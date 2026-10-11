@@ -69,6 +69,7 @@
 // test: what_onedrive_refuses_of_a_row_that_is_not_unsent_is_a_failed_try_of_the_tasks
 // test: a_settlement_the_store_could_not_be_written_is_a_try_the_task_keeps
 // test: the_count_of_tries_is_the_stores_of_the_stamp_the_step_was_planned_from
+// test: a_written_step_is_said_in_the_journal_without_the_path_of_its_event
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -299,6 +300,18 @@ pub fn decide_step_settlement(step: &SyncStep, outcome: &StepOutcome, tries: u32
         }
     }
     settlement
+}
+
+/// What came of a step, as the journal says it at `debug`: the case, and for a step that
+/// was not written why — with no event of a written step, which names its path. Pure.
+pub fn describe_outcome(outcome: &StepOutcome) -> String {
+    match outcome {
+        StepOutcome::Written { events } => format!("written, {} event(s)", events.len()),
+        StepOutcome::RowsChanged(follow_up) => format!("the rows changed ({follow_up:?})"),
+        StepOutcome::Refused(refusal) => format!("refused ({refusal:?})"),
+        StepOutcome::NotRun(obstacle) => format!("not run ({obstacle:?})"),
+        StepOutcome::Failed(failure) => format!("failed ({failure:?})"),
+    }
 }
 
 /// Whether what came of a step changed anything a plan is made from: the step was

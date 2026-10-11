@@ -185,3 +185,13 @@ fn the_count_of_tries_is_the_stores_of_the_stamp_the_step_was_planned_from() {
     let settled = decide_step_settlement(&step, &transient(), count_failed_tries(&step, &LocalStepTries::default(), &counts), NOW);
     assert_eq!(settled.memory, vec![MemoryWrite::FailedTry { reason: Reason::Network, next_try_at: Some(NOW + 8) }]);
 }
+
+#[test]
+fn a_written_step_is_said_in_the_journal_without_the_path_of_its_event() {
+    let event = StepEvent { kind: ActivityKind::Uploaded, path: "Private/report.txt".into(), former_path: None };
+    let said = describe_outcome(&StepOutcome::Written { events: vec![event] });
+    assert_eq!(said, "written, 1 event(s)");
+    assert_eq!(describe_outcome(&StepOutcome::NotRun(StepObstacle::SendingStopped)), "not run (SendingStopped)");
+    assert_eq!(super::super::step_choice::find_step_name(&send_content(unsent(2, 7))), "SendContent");
+    assert_eq!(super::super::step_choice::find_step_name(&SyncStep::Folder(FolderStep::DownloadContent { item: not_unsent(2) })), "DownloadContent");
+}

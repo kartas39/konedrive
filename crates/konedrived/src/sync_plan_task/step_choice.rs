@@ -42,6 +42,21 @@ pub struct StartChoice {
     pub left: Vec<SyncStep>,
 }
 
+/// The name of the case `step` is of, with nothing it carries: what the journal says a
+/// step by at `debug`, where no name of an item and no path is written. Pure.
+pub fn find_step_name(step: &SyncStep) -> String {
+    match step {
+        SyncStep::OneDrive(OneDriveStep::MakeDirectory { .. }) => "MakeDirectory".to_owned(),
+        SyncStep::OneDrive(OneDriveStep::SendNewFile { .. }) => "SendNewFile".to_owned(),
+        SyncStep::OneDrive(OneDriveStep::SendContent { .. }) => "SendContent".to_owned(),
+        SyncStep::OneDrive(OneDriveStep::SendMove { .. }) => "SendMove".to_owned(),
+        SyncStep::OneDrive(OneDriveStep::SendFileRemoval { .. }) => "SendFileRemoval".to_owned(),
+        SyncStep::OneDrive(OneDriveStep::SendDirectoryRemoval { .. }) => "SendDirectoryRemoval".to_owned(),
+        SyncStep::Folder(step) => format!("{:?}", step.kind()),
+        SyncStep::Row(step) => format!("{:?}", step.kind()),
+    }
+}
+
 /// The class of `step`, and with it every row the step carries beside its own (the rows
 /// below a removed directory, the second row of a merge) and the directory it sends into
 /// (`MakeDirectory`, `SendNewFile`, `SendMove`), as `RunningSteps` is told it.

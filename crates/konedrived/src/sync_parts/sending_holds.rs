@@ -72,7 +72,7 @@ fn decide_is_held(hold: Option<&SendingHold>, class: StepClass) -> bool {
     }
 }
 
-#[derive(Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Holds {
     is_stopping: bool,
     is_signed_out: bool,
@@ -143,13 +143,17 @@ pub struct SendingHolds {
 
 impl SendingHolds {
     /// Makes `change` to what holds, and wakes the plan when it changed something: after
-    /// this part's lock is let go.
+    /// this part's lock is let go. A hold set or ended is said at `debug`.
     fn change(&self, change: impl FnOnce(&mut Holds)) {
         let is_changed = {
             let mut holds = crate::panic::lock(&self.holds);
             let before = holds.clone();
             change(&mut holds);
-            *holds != before
+            let is_changed = *holds != before;
+            if is_changed {
+                tracing::debug!("what holds all sending changed: from {before:?} to {:?}", *holds);
+            }
+            is_changed
         };
         if is_changed {
             self.sync_plan_wake.wake(WakeCause::SendingHoldChanged);

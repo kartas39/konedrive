@@ -371,6 +371,8 @@ impl SyncPlanTask {
                         Ok(round) => {
                             self.plan_count.fetch_add(1, Ordering::SeqCst);
                             let now = (parts.clock)();
+                            let plan = &round.plan;
+                            tracing::debug!("a plan was made of {} items: {} step(s), {} wait(s), {} exclusion(s), {} fault(s)", round.input.items.len(), plan.steps.len(), plan.waits.len(), plan.exclusions.len(), plan.faults.len());
                             self.publish_round(&round, parts.sending_holds.find(now).as_ref()).await;
                             self.publish_queue_status(true).await;
                             // A read of the quota that was due and failed is tried again after a wait, not at once.
@@ -746,6 +748,7 @@ impl SyncPlanTask {
         if !self.parts.running_steps.begin(running_step) {
             return;
         }
+        tracing::debug!("a step starts: {} of item {item}", step_choice::find_step_name(&step));
         // A step towards OneDrive runs for these rows from here on: their sync mark says so.
         if matches!(step, SyncStep::OneDrive(_)) {
             (self.parts.marks_announcer)(rows);
@@ -782,6 +785,7 @@ impl SyncPlanTask {
             return;
         }
         let shown_items: Vec<LocalItemId> = started.iter().map(SyncStep::local_item_id).collect();
+        tracing::debug!("{} ShowItem step(s) start as one job, of the items {shown_items:?}", shown_items.len());
         let running = tokio::spawn((self.parts.step_runners.run_show_steps)(items));
         for item in shown_items {
             self.parts.running_steps.keep_abort_handle(item, running.abort_handle());
@@ -857,6 +861,7 @@ impl SyncPlanTask {
             settled
         };
         for (step, outcome) in &ended {
+            tracing::debug!("a step ended: {} of item {}: {}", step_choice::find_step_name(step), step.local_item_id(), step_settlement::describe_outcome(outcome));
             match outcome {
                 StepOutcome::NotRun(obstacle @ (StepObstacle::ContentChanged | StepObstacle::BackingFileMissing | StepObstacle::PlaceHeldOnDisk { .. })) => {
                     tracing::warn!("a step of item {} did not run: {obstacle:?}", step.local_item_id());
