@@ -170,6 +170,7 @@ fn build_over(backing_directory: Arc<BackingDirectory>, setup: ItemMountSetup, r
         Arc::clone(&item_handles),
         Arc::clone(&write_operation_thread),
         sync_plan_wake,
+        Arc::clone(&inotify_bridge),
     ));
 
     let kernel_requests = ItemKernelRequests::new(

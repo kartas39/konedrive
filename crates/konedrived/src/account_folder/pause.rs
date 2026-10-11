@@ -223,9 +223,12 @@ impl SyncService {
             paused
         });
         if changed {
-            // TODO: `SendingHolds::set_paused` of `SyncTasks::sending_holds`, which wakes the plan; and the
-            // listing asked for a cycle (`SyncTasks::poll().refresh()`): the poller looks at the pause itself
-            // only at its interval, and after an untimed pause nothing else wakes it.
+            // TODO: over the handles of the view (this is not async): `SendingHolds::set_paused` of
+            // `View::sending_holds`, which wakes the plan — `Some(until)` for the user's pause, `Some(None)` for
+            // the automatic hold (metered, battery), `None` when neither stops the account's work: both read
+            // `SendingHold::Paused`, as today both read `paused` — and the listing asked for a cycle
+            // (`View::poll`, `refresh`): the poller looks at the pause itself only at its interval, and after an
+            // untimed pause nothing else wakes it.
             todo!()
         }
     }

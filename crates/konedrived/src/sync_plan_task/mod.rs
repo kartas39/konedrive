@@ -145,10 +145,10 @@ pub struct SyncPlanTaskParts {
     /// Unix seconds: the account's clock.
     pub clock: Arc<dyn Fn() -> i64 + Send + Sync>,
     /// Reads the account's quota from OneDrive (`DriveClient::quota`); `None` when it
-    /// could not be read. Asked when the quota was read by another
-    /// (`WakeCause::QuotaRead`) and when the quota's next read is due
-    /// (`OneDriveSpace::find_next_read`); what it answers is applied by
-    /// `OneDriveSpace::apply_quota`.
+    /// could not be read. Asked only when the quota's next read is due
+    /// (`OneDriveSpace::find_next_read`), and what it answers is applied by the task
+    /// (`OneDriveSpace::apply_quota`). On `WakeCause::QuotaRead` it is NOT asked: another
+    /// read the quota and applied it.
     pub quota_reader: Arc<dyn Fn() -> RunningFuture<Option<DriveQuota>> + Send + Sync>,
     /// The folder's activity log: every event the settlement of a step wrote into the
     /// store is announced through it (`Activity::announce`: `ActivityLog.Added`), and
@@ -165,12 +165,13 @@ pub struct SyncPlanTaskParts {
     /// it brought, so the nudge of the cycle alone finds no file to make a thumbnail
     /// for. `None` with no filler.
     pub after_folder_steps: Option<Arc<tokio::sync::Notify>>,
-    /// Called after each published plan whose reading counted no unsent item
-    /// (`PlannedRound`'s count of unsent, of the plan's own reading), and never
-    /// otherwise: who waits for "nothing is unsent now" — the account that keeps a wish
-    /// for read-only (`FolderAccount::nothing_is_unsent`). The task is the ONE that says
-    /// it; nobody asks the count on a timer. It must not block.
-    pub nothing_unsent_report: Arc<dyn Fn() + Send + Sync>,
+    /// Called after every published plan with how many changes that plan's reading
+    /// counted as unsent (`ItemReader::count_unsent`, read in the plan's closure): who
+    /// shows the count and waits for "nothing is unsent now" — the account that keeps a
+    /// wish for read-only (`FolderAccount::tell_unsent_count`). The task is the ONE that
+    /// says it; nobody asks the count on a timer. It must not block.
+    // TODO: the count is of every unsent item, so it never reaches 0 while an item is refused for good or left by the check at start: a kept wish for read-only then waits for ever, and the user must force it. Whether such items are to be left out of the count (the switch then holds them here) is the owner's to say; check and fix if needed.
+    pub unsent_count_report: Arc<dyn Fn(u64) + Send + Sync>,
 }
 
 /// How often the bytes of the uploads that run are published while one runs, in seconds
@@ -287,7 +288,9 @@ pub fn decide_outcome_of_ended_task(is_cancelled: bool, detail: String) -> Optio
 /// (`SyncPlanTask::publish_queue_status`), Unix seconds: `UPLOAD_PROGRESS_PUBLISHED_EVERY`
 /// after `now` while a step of the class `StepClass::Content` runs, else none. A wake at
 /// this time is a round that does not plan: it settles what ended, publishes, and waits
-/// again — unless the plan's own time ([`decide_next_wake`]) was reached too. Pure.
+/// again — unless the plan's own time ([`decide_next_wake`]) was reached too. The loop
+/// tells the two apart itself, by the times (it kept both): for a wake at the tick alone
+/// it does not ask [`decide_round`], whose three cases stay as they are. Pure.
 #[allow(unused_variables)]
 pub fn decide_progress_tick(running: &[RunningStep], now: i64) -> Option<i64> {
     todo!()
@@ -324,7 +327,7 @@ impl SyncPlanTask {
         let mut causes = BTreeSet::new();
         loop {
             let settled = self.settle_steps(self.take_ended_steps(), &memories).await;
-            // TODO: the queue's status is published here after every round that settled a step and after every plan (`publish_queue_status`), and on a tick of its own while a content step runs (`decide_progress_tick`: `wait_for_round` is given the sooner of the two times, and a wake at the tick alone makes no plan — a fourth case of `decide_round`). Not called yet: its body is `todo!()`.
+            // TODO: the queue's status is published here after every round that settled a step and after every plan (`publish_queue_status`), and on a tick of its own while a content step runs (`decide_progress_tick`: `wait_for_round` is given the sooner of the two times and answers which was reached; a wake at the tick alone publishes and waits again, and `decide_round` is not asked). Not called yet: its body is `todo!()`.
             match decide_round(&causes, settled, steps_left_to_start.len()) {
                 RoundDecision::MakePlan => {
                     let now = (parts.clock)();
@@ -746,7 +749,7 @@ impl SyncPlanTask {
         answers.extend(plan.exclusions.iter().map(|exclusion| (exclusion.item, ItemAnswer::Excluded(exclusion.reason))));
         answers.extend(plan.faults.iter().map(|fault| (fault.local_item_id(), ItemAnswer::Fault(fault.clone()))));
         parts.published_plan.publish(answers);
-        // TODO: `nothing_unsent_report` is called here when the plan's reading counted nothing unsent: `PlannedRound` carries no count of what is unsent yet (`ItemReader::count_unsent` in `plan_next_steps`, beside `item_counts`). Check and fix if needed.
+        // TODO: `unsent_count_report` is called here with the count of the plan's reading: `PlannedRound` carries no count of what is unsent yet (`ItemReader::count_unsent` in `plan_next_steps`, beside `item_counts`). Check and fix if needed.
         // TODO: with every publish: the counts of the held removals of directories (`PublishedPlan::publish_held_removal_counts`, from `round.input.onedrive_item_count_below` for the directories answered `WaitReason::User(Reason::MassDelete)`), and the sync marks of the items whose answer turned to or from a wait for the user or a fault (`marks_announcer`). Not called yet: the first is `todo!()`.
 
         let note = match hold {

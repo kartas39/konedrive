@@ -45,6 +45,11 @@
          go once uploaded, or are dropped by
          Account.SetMode("read-only", true). -->
     <method name="Unregister"/>
+    <!-- Unregister, forced: the folder is forgotten whatever is unsent, a
+         change OneDrive refused for good among it. The files stay where they
+         are; what the daemon knew of the unsent changes goes with the
+         folder's record. Refused as Unregister is, but for PendingUploads. -->
+    <method name="UnregisterForced"/>
     <method name="PopulateFromDirectory">
       <arg name="source_dir" type="s" direction="in"/>
       <arg name="created" type="t" direction="out"/>

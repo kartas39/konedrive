@@ -16,10 +16,13 @@ impl AccountService {
     ///   and says why in `LastError`; the account stays signed in, read-only. An account
     ///   read-write already needs no sign-in.
     /// - **To read-only**, by what is unsent ([`decide_read_only_switch`]):
-    ///   - nothing unsent, or `force`: the switch is made at once — the folder is told
-    ///     to hold what is unsent and to take no change, and answered
-    ///     (`PendingUploads::hold_unsent_changes`); THEN `mode = "read-only"` is written,
-    ///     the wish forgotten, the token that could write dropped, and the next refresh
+    ///   - nothing unsent, or `force`: the switch is made at once, in ONE order, forced
+    ///     or not: `mode = "read-only"` written to `config.toml` and the wish forgotten;
+    ///     the mode worked out again (`recompute_mode`: the snapshot says read-only from
+    ///     here on, so the folder's watcher cannot turn the folder back); the folder told
+    ///     to hold what is unsent and to take no change, and awaited
+    ///     (`PendingUploads::hold_unsent_changes`); THEN the token that could write
+    ///     dropped, and the next refresh
     ///     asks for `Files.Read`, a subset of the grant: no sign-in. What was unsent
     ///     stays here, not sent and not lost, and is sent when the account is read-write
     ///     again. Nothing is dropped;
@@ -206,9 +209,10 @@ impl AccountService {
     /// `config.toml` beside the mode (`[accounts] read_only_wanted = true`, so that it
     /// survives a restart of the daemon: at its start the account shows the note again
     /// and the folder's first plan with nothing unsent makes the switch), and shown
-    /// (`ModeNote::SwitchingToReadOnly { unsent }`, which `recompute_mode` keeps while the
-    /// wish stands and takes the count of from `PendingUploads::pending_uploads` each time
-    /// it runs). The account's mode does not change. The ONE keeper of the wish is the
+    /// (`ModeNote::SwitchingToReadOnly { unsent }`: `recompute_mode` keeps the note while
+    /// the wish stands and leaves its count as it is; the count is written by
+    /// `FolderAccount::tell_unsent_count`, which the folder's plan calls after every
+    /// plan). The account's mode does not change. The ONE keeper of the wish is the
     /// account: it holds the token the switch gives up. Called by
     /// [`switch_to_read_only`](Self::switch_to_read_only) under `session`.
     // TODO: `read_only_wanted` is not in `config::Account` yet: a field of `config.toml` is added with its reading of older files (`config/model.rs`, `config/migrate.rs`); check and fix if needed.
@@ -225,11 +229,11 @@ impl AccountService {
         todo!()
     }
 
-    /// The folder's plan found nothing unsent (`FolderAccount::nothing_is_unsent`): an
+    /// The folder's plan counted nothing unsent (`FolderAccount::tell_unsent_count(0)`): an
     /// account that keeps a wish for read-only switches now, as a forced switch does and
-    /// in its order — the folder told first and answered
-    /// (`PendingUploads::hold_unsent_changes`, which answers how many are unsent at that
-    /// moment), then `config.toml`, then the token. A change made here between the plan's
+    /// in its order ([`set_mode`](Self::set_mode)): `config.toml`, the mode worked out
+    /// again, the folder told and awaited (`PendingUploads::hold_unsent_changes`, which
+    /// answers how many are unsent at that moment), then the token. A change made here between the plan's
     /// reading and the hold stays here unsent, under the hold, as after a forced switch:
     /// the switch is not put off again for it. Nothing for an account with no wish.
     #[allow(dead_code)]
@@ -279,6 +283,7 @@ impl AccountService {
             .map_err(|e| ModeError::Failed(format!("cannot save the configuration: {e}")))?;
         // Dropped only once config.toml says read-only: a write that failed leaves
         // the account read-write with its rows.
+        // TODO: the one order of a switch is `config.toml`, `recompute_mode`, `hold_unsent_changes` awaited — forced or not —, then the token: here the folder is told only when forced, and before the mode is worked out again. Not changed: `tests/mode.rs` holds this body; check and fix if needed.
         if let (true, Some(uploads)) = (force, &uploads) {
             uploads.hold_unsent_changes().await;
         }

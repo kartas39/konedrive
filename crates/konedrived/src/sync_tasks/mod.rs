@@ -2,7 +2,9 @@
 //! task — and the order in which a folder starts, stops and changes its access mode.
 //!
 //! **State owned:** the poller, the plan's task with the handle of its loop, the
-//! thumbnail filler, the watcher of the sign-in, and the token that stops them all.
+//! thumbnail filler, and the token that stops them all. No task of the sync watches the
+//! account: the owner's one watcher does (`account_folder::mode::watch_account`), and sets
+//! and releases what the account holds through [`SyncTasks`].
 //! [`SyncTasks`] holds them and hands out the things others ask of a running sync (what
 //! holds sending, the poll, the wake, the stop's token); what each task does is its own.
 //! It takes the place of `RunningSync` and its `Parts` (`running_sync.rs`), in either
@@ -38,9 +40,9 @@
 //!   start cut between two of its stages would drop a store the activity log is still
 //!   attached to, and a mount on one of the runtime's threads, where its drop joins a
 //!   thread and unmounts. `start_order::start_folder_sync` relies on never being cut;
-//! - at the daemon's end it calls ONE function, `stop_order::end_folder_at_daemon_stop`,
-//!   in a task of its own, under the daemon's stop bound: the sync stopped, then the
-//!   mount stopped, which leaves the folder on disk without its write bits; it closes
+//! - at the daemon's end it calls ONE function, `stop_order::end_kept_folder_at_daemon_stop`,
+//!   inside a change of the folder (which stopped the sync), in a task of its own, under
+//!   the daemon's stop bound: the mount stopped, which leaves the folder on disk without its write bits; it closes
 //!   nothing more, the process exits. Neither `take_folder_down` (it says a trouble) nor
 //!   `forget_folder` (it gives the write bits back) is called for it;
 //! - a pause an older daemon left is not taken over (`take_old_pause` has no place in the
@@ -57,7 +59,6 @@
 
 use std::sync::Arc;
 
-use konedrive_tree::Store;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -79,7 +80,7 @@ pub struct SyncTasks {
     /// says so. `None` once [`stop`](Self::stop) took it to stop it.
     listing_poller: Option<ListingPoller>,
     /// The poller's handle, cloned from it at the start: what [`poll`](Self::poll)
-    /// answers, also once the poller was taken. The watcher of the sign-in and the plan's
+    /// answers, also once the poller was taken. The plan's
     /// task were given clones of the same.
     poll: ListingPollHandle,
     plan: Arc<SyncPlanTask>,
@@ -87,16 +88,9 @@ pub struct SyncTasks {
     /// The thumbnail filler (`desktop::thumbs::ThumbnailFiller`); none without a cache to
     /// fill. It holds a clone of the store until it ends.
     thumbnail_filler: Option<JoinHandle<()>>,
-    /// The watcher of the account's sign-in (`stop_order::watch_sign_in`).
-    sign_in_watcher: JoinHandle<()>,
     sending_holds: Arc<SendingHolds>,
     sync_plan_wake: Arc<SyncPlanWake>,
-    /// The folder's store, as the tasks hold it: the watcher of the sign-in was given a
-    /// clone of this (`stop_order::release_after_sign_in` forgets through it what the
-    /// steps remember). Dropped with the tasks, so that a stopped sync holds no clone.
-    store: Store,
-    /// Cancelled, every task ends: the plan's loop, the thumbnail filler, the watcher of
-    /// the sign-in, and a step towards the folder that waits for the folder's lease.
+    /// Cancelled, every task ends: the plan's loop, the thumbnail filler, and a step towards the folder that waits for the folder's lease.
     stop: CancellationToken,
 }
 

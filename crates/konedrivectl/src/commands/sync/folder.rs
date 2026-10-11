@@ -34,8 +34,9 @@ pub(super) async fn folder_command(
             fail_if_not_recovered(proxy, &absolute).await?;
             println!("{tag}{}", said::registered_text(&absolute));
         }
-        FolderCmd::Forget => {
-            explained(chosen, proxy, SyncAction::Forget, proxy.folder.unregister().await).await?;
+        FolderCmd::Forget { force } => {
+            let forgotten = if force { proxy.folder.unregister_forced().await } else { proxy.folder.unregister().await };
+            explained(chosen, proxy, SyncAction::Forget, forgotten).await?;
             println!("{tag}{}", said::FORGOTTEN);
             fail_if_folder_unhealthy(proxy).await?;
         }

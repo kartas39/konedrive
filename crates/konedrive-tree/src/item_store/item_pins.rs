@@ -39,7 +39,12 @@ use crate::TreeError;
 /// What became of a pin that was asked to be set or taken off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinChange {
+    /// The pin was set, or taken off.
     Written,
+    /// The item's own pin was so already: set where it was to be set, absent where it
+    /// was to be taken off. Nothing was written.
+    // TODO: `set_item_pin` does not answer this yet: it answers `Written` for a pin that was there too (the statements' counts of changed rows say which). Fill with its test.
+    AlreadySo,
     /// OneDrive does not have the item: there is nothing a pin could follow.
     NoBinding,
     /// The row is gone.

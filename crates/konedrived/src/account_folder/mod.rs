@@ -335,9 +335,9 @@ impl SyncService {
     /// caller bounds the wait (`crate::daemon::stop`): the work runs in a task of its
     /// own, which a caller that is cut leaves running until the process exits.
     pub async fn end_at_daemon_stop(&self) -> Option<std::path::PathBuf> {
-        // TODO: inside a change of the folder: `sync_tasks::stop_order::end_folder_at_daemon_stop` for a running
-        // sync, `end_kept_folder_at_daemon_stop` for the parts a stopped one kept (`Kept::parts`), each in a task
-        // of its own that is awaited here.
+        // TODO: inside a change of the folder (which stops the sync, if one runs, and leaves its parts in
+        // `Kept::parts`): `sync_tasks::stop_order::end_kept_folder_at_daemon_stop` over those parts, taken out of
+        // the record, in a task of its own that is awaited here.
         todo!()
     }
 

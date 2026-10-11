@@ -367,7 +367,7 @@ impl AccountManager {
         // Retired first, each under its own lock, so that no call on the account's own
         // objects can register a folder or store a sign-in in between: the folder
         // forgotten (a held account's too), then the sign-in.
-        // TODO: `Accounts.Remove` has no argument that says the removal is forced: check and fix if needed.
+        // TODO: `Accounts.Remove` has no forced case: an account whose folder has something unsent is removed after `sync forget --force`. Whether `Remove` gets one of its own is the owner's to say.
         let forgotten = account.sync.retire(false).await?;
         let failed = match account.account.retire().await {
             Err(e) => Some((ManagerError::Failed(format!("cannot delete the sign-in: {e}")), false)),

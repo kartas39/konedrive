@@ -30,6 +30,7 @@ use super::item_download_states::{DownloadAsker, ItemDownloadStates};
 use super::item_downloader::{ItemDownloader, ItemToDownload};
 use super::item_free_up::{FreedCopy, ItemFreeUp};
 use super::item_handles::ItemHandles;
+use super::item_inotify_bridge::ItemInotifyBridge;
 use super::write_operation_thread::WriteOperationThread;
 use crate::sync_parts::sync_plan_wake::{SyncPlanWake, WakeCause};
 
@@ -108,6 +109,8 @@ pub struct ItemFilesInterface {
     item_handles: Arc<ItemHandles>,
     write_operation_thread: Arc<WriteOperationThread>,
     sync_plan_wake: Arc<SyncPlanWake>,
+    /// Told when a pin was set or taken off (`ItemAnnouncement::MarksChanged`).
+    inotify_bridge: Arc<ItemInotifyBridge>,
 }
 
 impl ItemFilesInterface {
@@ -122,8 +125,9 @@ impl ItemFilesInterface {
         item_handles: Arc<ItemHandles>,
         write_operation_thread: Arc<WriteOperationThread>,
         sync_plan_wake: Arc<SyncPlanWake>,
+        inotify_bridge: Arc<ItemInotifyBridge>,
     ) -> Self {
-        Self { folder, store, download_states, downloader, free_up, item_handles, write_operation_thread, sync_plan_wake }
+        Self { folder, store, download_states, downloader, free_up, item_handles, write_operation_thread, sync_plan_wake, inotify_bridge }
     }
 
     /// The item of OneDrive the folder shows at `path`, a full path, with whether a pin
@@ -246,7 +250,7 @@ impl ItemFilesInterface {
     /// its place: the emblem is read from `user.konedrive.pin`). It is the item's OWN pin
     /// that is set or taken off, whatever a directory above it has. Answers whether the
     /// item's own pin changed: `false` for a pin that was there already, or was not.
-    // TODO: the answer is `true` for every pin written: `PinChange` does not say whether the pin was there. And nothing is announced yet (this part holds no bridge). Check and fix if needed.
+    // TODO: filling: the answer is `false` for `PinChange::AlreadySo` once the store answers it (it answers `Written` for every pin today), and the announcement through `inotify_bridge` of the item at its place is not made yet.
     pub async fn set_pin(&self, path: &Path, is_pinned: bool) -> Result<bool, FilesRefusal> {
         let (item, _) = self.find_onedrive_item(path).await?;
         let id = item.local_item_id;
@@ -255,6 +259,7 @@ impl ItemFilesInterface {
                 self.sync_plan_wake.wake(WakeCause::UserAnswered);
                 Ok(true)
             }
+            PinChange::AlreadySo => Ok(false),
             PinChange::NoBinding | PinChange::NoItem => Err(FilesRefusal::NotInOneDrive),
         }
     }

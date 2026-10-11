@@ -166,15 +166,18 @@ pub trait PendingUploads: Send + Sync {
     /// How many changes made here are unsent now (`ItemReader::count_unsent`). 0 for an
     /// account with no folder.
     async fn pending_uploads(&self) -> u64;
-    /// A switch to read-only was forced while changes were unsent: from this call on the
-    /// folder sends nothing (`SendingHolds::set_folder_read_only(true)`, the hold
-    /// `SendingHold::FolderReadOnly`) and takes no change (the mount's switch). Returns
-    /// only when both hold and no request that changes OneDrive is in flight — the
-    /// account gives its token that can write up AFTER this, so no request leaves under a
-    /// token that cannot write and none is refused for it. What is unsent stays here,
-    /// not sent and not lost, and is sent when the folder is read-write again. Answers
-    /// how many changes stay unsent. Called also for a switch that was not forced, at
-    /// the switch itself: nothing is unsent then.
+    /// The account switches to read-only now: from this call on the folder sends nothing
+    /// (`SendingHolds::set_folder_read_only(true)`, the hold `SendingHold::FolderReadOnly`)
+    /// and takes no change (the mount's switch). Returns only when both hold and no
+    /// request that changes OneDrive is in flight. Called at EVERY switch to read-only,
+    /// forced or not (nothing is unsent then), in the one order of a switch
+    /// (`AccountService::set_mode`): `config.toml` written and the mode worked out again
+    /// first — so that the account's snapshot says read-only before the folder is told,
+    /// and the folder's watcher cannot turn it back —, then this call, awaited, and only
+    /// then the token that can write given up. So no request leaves under a token that
+    /// cannot write and none is refused for it. What is unsent stays here, not sent and
+    /// not lost, and is sent when the folder is read-write again. Answers how many
+    /// changes stay unsent.
     async fn hold_unsent_changes(&self) -> u64;
     /// The account's quota was just read (`RefreshInfo`): a full OneDrive, or a file
     /// too big for what was left, is decided again by it.
@@ -197,12 +200,14 @@ pub trait FolderAccount: Send + Sync {
     /// The folder's cycle saw the account's token reach `drive`, which is not the drive
     /// the folder was listed from.
     fn drive_seen(&self, drive: &str);
-    /// The folder's plan found nothing unsent: an account whose user asked for read-only
-    /// while changes were unsent switches now (`AccountService::switch_to_read_only_when_sent`,
-    /// in a task of its own: this never waits). Called by the folder, from the report it
-    /// gave its sync (`FolderStartInput::nothing_unsent_report`), after each plan whose
-    /// reading counted no unsent item; nothing for an account that keeps no such wish.
-    fn nothing_is_unsent(&self);
+    /// The folder's plan counted `unsent` unsent changes. For an account whose user asked
+    /// for read-only while changes were unsent: the count shown is this one
+    /// (`ModeNote::SwitchingToReadOnly { unsent }`, written here when it changed), and at
+    /// 0 the account switches (`AccountService::switch_to_read_only_when_sent`, in a task
+    /// of its own: this never waits). Nothing for an account that keeps no such wish.
+    /// Called by the folder, from the report it gave its sync
+    /// (`FolderStartInput::unsent_count_report`), after every published plan.
+    fn tell_unsent_count(&self, unsent: u64);
 }
 
 impl FolderAccount for AccountService {
@@ -226,7 +231,8 @@ impl FolderAccount for AccountService {
         AccountService::drive_seen(self, drive);
     }
 
-    fn nothing_is_unsent(&self) {
+    #[allow(unused_variables)]
+    fn tell_unsent_count(&self, unsent: u64) {
         todo!()
     }
 }

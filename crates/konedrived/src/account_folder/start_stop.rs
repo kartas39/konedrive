@@ -26,14 +26,27 @@ impl SyncService {
     pub(super) async fn start_sync(&self, stopped: &mut Stopped<'_>) {
         // TODO: `sync_tasks::start_order::start_folder_sync`, in a task of its own, its answer
         // (`StartedFolder`) kept as `Sync::Running`. Its input: `kept` is `Kept::parts`, taken whole;
-        // `settings` is `PlanSettings::of(self.machine_name())`; `standing_holds` the pause as it is shown and
+        // `settings` is `PlanSettings::of(self.machine_name())`; `standing_holds` what stops the account's work now
+        // (`Running::stop`: the user's pause with its end, the automatic hold as paused until resumed) and
         // `mode::decide_account_holds` of the account's snapshot read now; `take_down_report` is
-        // `self.take_down_report()`; `nothing_unsent_report` tells the account
-        // (`FolderAccount::nothing_is_unsent`); `lease` is `Lease::on(&self.folder)`.
+        // `self.take_down_report()`; `unsent_count_report` tells the account
+        // (`FolderAccount::tell_unsent_count`); `lease` is `Lease::on(&self.folder)`.
         // A `RefusedStart` goes to `cannot_start` — `StartRefusal::DriveNotKnown` as `Why::DriveNotKnown`,
-        // which the watcher of the account starts again — and the parts it gives back into `Kept::parts`.
+        // which the watcher of the account starts again; a start that is a try after a take-down
+        // (`Up::take_down_try`) stays `Why::TakenDown`, as `retry_after_take_down` says — and the parts it
+        // gives back into `Kept::parts`. What a rebuild of the store lost (`StartedFolder::store_origin`,
+        // `RefusedStart::rebuild_loss`) is read here, once, and said (`describe_rebuild_loss`).
         // After a start: the desktop told the mount came (`stopped.read_again()`, in either access mode),
         // and `PinnedCount` shown (`show_pins`).
+        todo!()
+    }
+
+    /// What the user is told once after a start whose store was rebuilt and lost
+    /// something (`RebuildLoss`: pins, unsent changes that are not on disk, open upload
+    /// sessions): `None` when nothing was lost. Pure.
+    // TODO: where it is said beside the journal — an event of the activity log, the folder's `LastError` — and in which words is the owner's to say; until then the journal alone.
+    #[allow(unused_variables)]
+    fn describe_rebuild_loss(loss: &konedrive_tree::RebuildLoss) -> Option<String> {
         todo!()
     }
 
@@ -124,14 +137,16 @@ impl SyncService {
     /// A cycle now, if a OneDrive folder is syncing (the network came back). A read-write
     /// folder's outbox waits for that cycle (`docs/design/writes.md` §9).
     pub fn refresh_now(&self) {
-        // TODO: `SyncTasks::wake_for_network` (`sync_tasks::stop_order`).
+        // TODO: what `SyncTasks::wake_for_network` does, over the handles of the view (this is not async and holds no
+        // lock of the folder): `View::poll` (`wake_live`, `refresh`) and the plan's wake (`View::parts`,
+        // `WakeCause::SendingHoldChanged`).
         todo!()
     }
 
     /// [`refresh_now`](Self::refresh_now); whether a sync was running to
     /// nudge.
     pub(super) fn nudge(&self) -> bool {
-        // TODO: `SyncTasks::wake_for_network`; whether a sync was running.
+        // TODO: as `refresh_now`, over `View::poll`; whether a sync was running (`View::poll` is some).
         todo!()
     }
 

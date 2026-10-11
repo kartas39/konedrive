@@ -10,7 +10,7 @@
 //! - asked while something is unsent and not forced, the switch is not made and not
 //!   refused: the ACCOUNT keeps the wish (`account::mode`, `keep_read_only_wish`), the
 //!   folder stays read-write, goes on taking changes and sending them, and the plan's
-//!   task says when nothing is unsent (`SyncPlanTaskParts::nothing_unsent_report`); the
+//!   task says when nothing is unsent (`SyncPlanTaskParts::unsent_count_report`); the
 //!   account then makes the switch by itself. Nothing of that is this module's: until
 //!   the switch itself the folder is a read-write folder;
 //! - the switch itself — forced, or with nothing unsent — goes through at once
@@ -21,7 +21,8 @@
 //! - no request that changes OneDrive leaves under a token that cannot write: the hold
 //!   is set, and what is in flight has ended, BEFORE [`switch_to_read_only`] returns, and
 //!   the account gives its token up only after it returned
-//!   (`PendingUploads::hold_unsent_changes`). So no 403 comes from a switch, and nothing
+//!   (`PendingUploads::hold_unsent_changes`; the account's order is `config.toml`, its
+//!   mode worked out again, this switch awaited, the token). So no 403 comes from a switch, and nothing
 //!   is kept as refused for good because of one.
 //!
 //! The sync is not stopped and started for a switch (today `follow_mode` rebuilds it,

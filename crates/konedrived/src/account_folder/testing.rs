@@ -142,7 +142,7 @@ impl FolderAccount for Account {
         self.state.get()
     }
 
-    fn nothing_is_unsent(&self) {}
+    fn tell_unsent_count(&self, _unsent: u64) {}
 
     fn changes(&self) -> watch::Receiver<AccountSnapshot> {
         self.state.subscribe()

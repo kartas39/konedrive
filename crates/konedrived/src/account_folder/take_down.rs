@@ -80,7 +80,8 @@ impl SyncService {
     /// The folder that was forgotten.
     async fn forget(&self, retire: bool, is_forced: bool) -> Result<Option<PathBuf>, SyncError> {
         // TODO: `sync_tasks::stop_order::decide_forget(unsent, is_forced)` (over `ItemReader::count_unsent`, or
-        // `count_unsent_of_closed_store`), then `stop_folder_sync` and `forget_folder`, or
+        // `count_unsent_of_closed_store`), then, inside the change — which stopped the sync and left its parts
+        // in `Kept::parts` — `forget_folder` over those parts, or
         // `forget_folder_without_mount` for a folder that keeps no parts; `forgotten` and
         // `remove_tree_store` afterwards. A retry after a take-down that waits is given up with it.
         todo!()
@@ -141,40 +142,58 @@ pub(super) fn describe_take_down(cause: &crate::mount::TakeDownCause, folder: &P
     todo!()
 }
 
+/// Which try the next start by the owner is, after a fault took the mount down at `now`:
+/// one more than `last`'s, the try the taken-down sync was started as — but 1 when that
+/// start stayed up for [`STAYED_UP_AFTER`], and when the sync was no such try (`None`).
+/// What `Why::TakenDown::attempt` is set to, less one (the starts tried so far). Pure.
+// test: a_folder_taken_down_for_the_first_time_is_tried_as_the_first
+// test: a_try_that_was_taken_down_again_soon_is_followed_by_the_next
+// test: a_try_that_stayed_up_starts_the_count_over
+#[allow(unused_variables)]
+pub(super) fn decide_take_down_attempt(last: Option<super::folder::TakeDownTry>, now: i64) -> u32 {
+    todo!()
+}
+
 impl SyncService {
     /// Who the folder's mount tells that it must be taken down: what a start is given as
     /// `FolderStartInput::take_down_report`. Called from the write-operation thread, it
     /// never blocks: it spawns [`take_folder_down_for_fault`](Self::take_folder_down_for_fault)
-    /// on the service's runtime, holding the service weakly.
+    /// on the service's runtime, with a weak reference to the service.
     pub(super) fn take_down_report(self: &Arc<Self>) -> crate::mount::TakeDownReport {
         todo!()
     }
 
-    /// The owner's task for a mount that asked for its take-down. Inside ONE change of
-    /// the folder ([`change`](Self::change), which stops the sync): the view published
-    /// without the parts and the activity log detached, then
-    /// `sync_tasks::stop_order::take_folder_down` over the parts the stop answered; the
-    /// folder's sync is `Why::TakenDown` with the sentence of `cause`
-    /// ([`describe_take_down`]), the attempt as it was (0 after a start that stayed up
-    /// for [`STAYED_UP_AFTER`]) and the time of the next try ([`decide_retry_wait`]; none
-    /// when the store could not be closed); the desktop told to list the folder's
+    /// The owner's task for a mount that asked for its take-down; nothing when the
+    /// service is gone. Inside ONE change of the folder ([`change`](Self::change), which
+    /// stopped the sync and left its parts in `Kept::parts`): the view published without
+    /// the parts and the activity log detached, then
+    /// `sync_tasks::stop_order::take_folder_down` over those parts, taken out of the
+    /// record; the folder's sync is `Why::TakenDown` with the sentence of `cause`
+    /// ([`describe_take_down`]: the ONE maker of it, published by `publish` as the
+    /// folder's blocking trouble), the starts tried so far
+    /// ([`decide_take_down_attempt`] of `Up::take_down_try`) and the time of the next try
+    /// ([`decide_retry_wait`]; none when the store could not be closed); the desktop told to list the folder's
     /// directories again, which show the backing directory now
     /// (`desktop::dirnotify::read_again` of `mount::list_directories`). Then the wait:
     /// [`retry_after_take_down`](Self::retry_after_take_down).
     #[allow(unused_variables)]
-    pub(super) async fn take_folder_down_for_fault(self: Arc<Self>, cause: crate::mount::TakeDownCause) {
+    pub(super) async fn take_folder_down_for_fault(service: std::sync::Weak<Self>, cause: crate::mount::TakeDownCause) {
         todo!()
     }
 
     /// Waits until the folder's next try is due (`Why::TakenDown::next_try_at`, by the
     /// account's clock) and starts the folder again, inside a change, with nothing kept:
-    /// the check at start runs. The attempt is counted before the start. A start that is
-    /// refused, or whose mount is taken down again, leaves `Why::TakenDown` with the next
-    /// wait; one that stays up for [`STAYED_UP_AFTER`] ends the count. Ends without a
+    /// the check at start runs. The try is written beside the sync before the start
+    /// (`Up::take_down_try`). A start that is refused leaves the folder `Why::TakenDown`
+    /// — never `Why::CannotStart`, which nothing would try again — with the cause as it
+    /// was, the try counted and the next wait; one whose mount is taken down again comes
+    /// back through [`take_folder_down_for_fault`](Self::take_folder_down_for_fault);
+    /// one that stays up for [`STAYED_UP_AFTER`] ends the count. Ends without a
     /// start when the folder is no longer `Why::TakenDown` with this attempt when the
     /// time comes: a `Refresh()` started it, it was forgotten, or the daemon stops. The
-    /// one timer of a taken-down folder; it holds the service weakly.
-    pub(super) async fn retry_after_take_down(self: Arc<Self>) {
+    /// one timer of a taken-down folder; across its wait it holds no strong reference to
+    /// the service, and ends when the service is gone.
+    pub(super) async fn retry_after_take_down(service: std::sync::Weak<Self>) {
         todo!()
     }
 

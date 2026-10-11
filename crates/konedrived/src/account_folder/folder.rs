@@ -191,6 +191,23 @@ pub(super) enum Why {
 pub(super) struct Up {
     pub record: Record,
     pub sync: Sync,
+    /// For a sync that was started after a fault took the folder's mount down: which
+    /// try this start was, and when it was made. `None` for every other start, and
+    /// forgotten once the start stayed up (`take_down::decide_take_down_attempt`). Kept
+    /// here, beside the sync, because a running sync (`StartedFolder`) knows nothing of
+    /// why it was started: what `take_folder_down_for_fault` reads when the mount is
+    /// taken down again.
+    pub take_down_try: Option<TakeDownTry>,
+}
+
+/// A start of the folder that the owner made by itself after a take-down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TakeDownTry {
+    /// How many such starts were made since one stayed up, this one counted: 1 for the
+    /// first.
+    pub attempt: u32,
+    /// When this start was made, Unix seconds, by the account's clock.
+    pub started_at: i64,
 }
 
 impl Folder {
@@ -310,6 +327,11 @@ pub(super) struct View {
     /// for a folder that keeps none. The owner publishes a view without them before a
     /// take-down or a Forget closes the store: each holds it open.
     pub parts: Option<KeptFolderParts>,
+    /// The poll of a RUNNING sync (`SyncTasks::poll`): what asks its listing for a cycle
+    /// and has its live socket looked at again, for the callers that are not async and
+    /// hold no lock of the folder (`show_pause`, `refresh_now`, `nudge`). `None` while no
+    /// sync runs.
+    pub poll: Option<crate::listing::listing_poller::ListingPollHandle>,
     /// What holds the sending of a RUNNING sync, and whether its OneDrive is full: `None`
     /// while no sync runs — the queue's answers then say them as not known
     /// (`upload_queue::describe_stopped_sync`).
@@ -409,7 +431,51 @@ impl Drop for Stopped<'_> {
     }
 }
 
+/// The folder's state, held for writing with the folder's sync LEFT RUNNING: the second
+/// door, for the changes that stop no task — the access mode
+/// (`sync_tasks::access_mode_change`, with `Folder::wanted`) and nothing else. It is what
+/// serializes the two that switch the mode: the watcher's `follow_mode` and the account's
+/// `hold_unsent_changes` each hold one for the whole of their switch, so neither sees the
+/// other half done, and the mode applied is the one the account says when the lock is
+/// held. A step towards the folder waits for the folder's lease — a read of this lock —
+/// while one is held, and is not cut; no step towards OneDrive and no listing waits for
+/// it. Whoever holds one must not stop or start the sync: that is [`Stopped`]'s.
+///
+/// Dropped, it publishes the state as a `Stopped` does: `Writable`, the view, and the
+/// desktop told to read the folder again when the folder takes changes where it took
+/// none, or the other way round.
+pub(super) struct HeldFolder<'a> {
+    service: &'a SyncService,
+    folder: RwLockWriteGuard<'a, Folder>,
+    /// Whether the folder's mount took changes when the lock was taken.
+    was_writable: bool,
+}
+
+impl HeldFolder<'_> {
+    pub fn folder(&self) -> &Folder {
+        &self.folder
+    }
+
+    /// The mode the folder follows from now on.
+    pub fn set_wanted(&mut self, wanted: Mode) {
+        self.folder.wanted = wanted;
+    }
+}
+
+impl Drop for HeldFolder<'_> {
+    fn drop(&mut self) {
+        // TODO: the desktop told to read the folder again when `Writable` changed, as `Stopped::drop` does (`was_writable`); check and fix if needed.
+        self.service.publish(&self.folder, |_| {});
+    }
+}
+
 impl SyncService {
+    /// The second door ([`HeldFolder`]): takes the folder's state for writing and leaves
+    /// its sync running. Nothing is told to stop.
+    pub(super) async fn hold_folder(&self) -> HeldFolder<'_> {
+        todo!()
+    }
+
     /// The one door to changing the folder: tells the folder's sync to stop, takes the
     /// state for writing, takes the sync out of it and waits until every part has ended.
     ///

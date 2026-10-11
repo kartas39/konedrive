@@ -12,34 +12,28 @@
 //!
 //! **Tested without the rest:**
 // test: a_stop_ends_the_listing_before_the_plans_task
-// test: a_stop_ends_the_thumbnail_filler_and_the_watcher_of_the_sign_in
+// test: a_stop_ends_the_thumbnail_filler
 // test: a_step_between_its_disk_change_and_its_commit_is_waited_for_at_a_stop
 // test: a_step_that_waits_for_the_lease_under_the_stoppers_write_lock_does_not_hold_the_stop
 // test: a_request_cut_off_by_a_stop_is_gone_on_with_or_adopted_at_the_next_start
 // test: a_sign_out_holds_all_sending_wakes_the_plan_and_stops_no_task
 // test: a_sign_in_forgets_what_was_not_allowed_and_wakes_the_plan
-// test: the_watcher_releases_sending_at_each_sign_in_and_ends_at_the_stop
 // test: a_refresh_wakes_the_plan_and_asks_for_a_cycle
 // test: the_network_back_wakes_the_live_socket_and_the_plan
 // test: a_forget_with_something_unsent_is_refused_unless_forced
 // test: a_folder_taken_down_has_no_mount_a_closed_store_and_its_trouble_said
 // test: a_folder_forgotten_has_its_write_bits_and_a_closed_store
 // test: a_folder_forgotten_with_no_parts_kept_has_its_write_bits
-// test: a_watcher_whose_account_signed_in_before_its_first_look_releases_at_once
 // test: a_store_somebody_still_holds_after_the_wait_is_answered
 // test: a_closed_store_that_is_not_there_or_not_of_this_version_counts_as_nothing_unsent
 #![allow(dead_code, unused_variables)]
 
 use konedrive_tree::{Store, UnsentTotal};
-use tokio_util::sync::CancellationToken;
 
 use super::start_order::{KeptFolderParts, StartedFolder};
 use super::SyncTasks;
-use crate::account::state::AccountSnapshot;
 use crate::folder::root::SyncRoot;
-use crate::mount::TakeDownCause;
 use crate::listing::listing_poller::ListingPollHandle;
-use crate::status::snapshot::SyncStateHandle;
 use crate::sync_parts::sending_holds::SendingHolds;
 
 impl SyncTasks {
@@ -50,7 +44,7 @@ impl SyncTasks {
     /// written is written whole); the plan's loop, which ends its own steps before it
     /// returns (`SyncPlanTask::run`: requests are aborted, a step between a disk change
     /// and its commit is settled, a step towards the folder that waits for the lease is
-    /// not run); the watcher of the sign-in; the thumbnail filler. After it no task holds
+    /// not run); the thumbnail filler. After it no task holds
     /// a clone of the store. The mount and the store stay. The queue's status on the bus
     /// is empty by then: the plan's loop published it so before it returned
     /// (`upload_queue::publish_stopped_queue`), and nobody else writes it.
@@ -66,10 +60,12 @@ impl SyncTasks {
 
     /// The account signed out: all sending is held (`SendingHolds::set_signed_out`, which
     /// wakes the plan) and uploads stop after their fragment; no task stops, and the
-    /// mount goes on taking changes, as today. Called by the owner of the folder's state
-    /// when the account's state becomes signed out: the watcher of the sign-in only
-    /// releases. The plan's task sets the same hold itself when a step is answered that
-    /// the account is signed out (`sync_plan_task`'s settlement), whichever comes first.
+    /// mount goes on taking changes, as today. Called by the owner's watcher of the
+    /// account (`SyncService::follow_account`) when the snapshot it applies says signed
+    /// out; the same watcher ends the hold ([`release_after_sign_in`]). The plan's task
+    /// sets the same hold itself when a step is answered that the account is signed out
+    /// (`sync_plan_task`'s settlement), whichever comes first: that hold too is ended by
+    /// the owner's watcher, at the next snapshot that says signed in.
     pub fn hold_for_sign_out(&self) {
         todo!()
     }
@@ -97,26 +93,14 @@ impl SyncTasks {
 /// (`StepMemory::forget_refusals_for(&Reason::Forbidden)`), every next try is due
 /// (`StepMemory::clear_next_tries`) — both through `store`, a failure of either a warning
 /// —, then the hold ends (`SendingHolds::set_signed_out(false)`, which wakes the plan) and
-/// the listing is asked for a cycle (`ListingPollHandle::refresh`). Called by the watcher
-/// of the sign-in ([`watch_sign_in`]), which holds clones of the three and not the
-/// `SyncTasks` it is a task of.
+/// the listing is asked for a cycle (`ListingPollHandle::refresh`). Called by the owner's
+/// watcher of the account (`SyncService::follow_account`) — the ONE that sets and ends
+/// the hold of a sign-out from outside the sync — when the snapshot it applies says
+/// signed in and the holds say signed out (`SendingHolds::find`), with the store, the
+/// holds and the poll of the running sync (`StartedFolder::store`,
+/// `SyncTasks::sending_holds`, `SyncTasks::poll`). Since one task applies the snapshots
+/// in their order, no hold set from an older snapshot outlives a newer one.
 pub async fn release_after_sign_in(store: &Store, sending_holds: &SendingHolds, poll: &ListingPollHandle) {
-    todo!()
-}
-
-/// The watcher of the account's sign-in, as a task of the sync
-/// (`start_order::start_sync_tasks` spawns it, `SyncTasks::stop` awaits it): each time
-/// the account becomes signed in from any other state it calls
-/// [`release_after_sign_in`]. It ends when `stop` is cancelled and when the account's
-/// sender is gone. Without it a folder that says "signed out" would say so until the
-/// poller's next cycle after the sign-in.
-///
-/// Its first state is `is_signed_out_at_start` — what the start set on the holds
-/// (`StandingSendingHolds::is_signed_out`) —, NOT what the receiver says when the task is
-/// spawned: the owner read the one before the start's stages, the task begins after
-/// them. So a receiver that says signed in at the watcher's first look, with a start
-/// that held for a sign-out, releases at once; nothing else ends that hold.
-pub async fn watch_sign_in(account_changes: tokio::sync::watch::Receiver<AccountSnapshot>, is_signed_out_at_start: bool, store: Store, sending_holds: std::sync::Arc<SendingHolds>, poll: ListingPollHandle, stop: CancellationToken) {
     todo!()
 }
 
@@ -151,11 +135,11 @@ pub enum TakeDownOutcome {
 /// (`Activity::detach`) and taken back what it gave the bus and the view (the mount's
 /// `files_interface`, the view's clone of the store): each holds the store open.
 ///
-/// In this order: `cause` is said in the journal and as the folder's blocking trouble —
-/// `state.update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text, blocking: true,
-/// kind: TroubleKind::Other }))`, the text made here from `cause` and the folder's path;
-/// nobody clears it but the first cycle that ends well after a later start
-/// (`ListingCycle::run`) —; the mount stopped (`ItemMount::stop`, off the runtime's threads: it
+/// It says nothing: the sentence the folder shows is the owner's
+/// (`account_folder::take_down::describe_take_down`, kept as `Why::TakenDown::cause` and
+/// published by the owner's `publish`, the one writer of it).
+///
+/// In this order: the mount stopped (`ItemMount::stop`, off the runtime's threads: it
 /// aborts every download, so none holds the store any more, and takes the write bits
 /// off); every `Arc` of the mount and of the leaf state dropped — `kept` is taken by
 /// value; then the store closed (`Store::close`), waited for with a bound.
@@ -167,25 +151,18 @@ pub enum TakeDownOutcome {
 /// `start_order::start_folder_sync` with nothing kept, which runs the check at start,
 /// which reads what the failed undo left as a change made while no daemon ran (design
 /// §8). `StoreStillOpen` is answered to that owner, which then does not start by itself.
-pub async fn take_folder_down(kept: KeptFolderParts, cause: TakeDownCause, state: &SyncStateHandle) -> TakeDownOutcome {
+pub async fn take_folder_down(kept: KeptFolderParts) -> TakeDownOutcome {
     todo!()
 }
 
-/// The daemon's end, for one folder whose sync runs: the sync stopped
-/// ([`stop_folder_sync`]), then the mount of the parts that answers stopped
-/// (`ItemMount::stop`, off the runtime's threads), which leaves the folder on disk
-/// without its write bits; the parts are dropped, nothing is closed, the process exits.
-/// The ONE function the owner calls at the daemon's end, in a task of its own and under
-/// the daemon's stop bound; for a folder that keeps its parts with no sync running the
-/// owner calls [`end_kept_folder_at_daemon_stop`]. A caller that is cut at the bound
-/// leaves the task running until the process exits, and the unit's tidy step
-/// (`konedrived --tidy`) does for the folder what was not reached.
-pub async fn end_folder_at_daemon_stop(started: StartedFolder) {
-    todo!()
-}
-
-/// As [`end_folder_at_daemon_stop`], for a folder whose sync does not run and that keeps
-/// its parts: the mount stopped, the parts dropped.
+/// The daemon's end, for one folder: the mount of the parts its stopped sync kept is
+/// stopped (`ItemMount::stop`, off the runtime's threads), which leaves the folder on
+/// disk without its write bits; the parts are dropped, nothing is closed, the process
+/// exits. The ONE function of this layer for the daemon's end: the owner calls it inside
+/// a change of the folder — which stopped the sync, if one ran, and put what it kept into
+/// the folder's record —, in a task of its own and under the daemon's stop bound. A
+/// caller that is cut at the bound leaves the task running until the process exits, and
+/// the unit's tidy step (`konedrived --tidy`) does for the folder what was not reached.
 pub async fn end_kept_folder_at_daemon_stop(kept: KeptFolderParts) {
     todo!()
 }

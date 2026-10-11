@@ -35,7 +35,7 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use fuser::Errno;
-use konedrive_tree::{ContentPresence, Item, ItemKind, LocalItemId, LocalVersionChange, PlaceChangeRecord, PlaceChangeRowWrite};
+use konedrive_tree::{ContentPresence, Item, ItemKind, ItemsNeverShown, LocalItemId, LocalVersionChange, PlaceChangeRecord, PlaceChangeRowWrite};
 
 use super::ItemWriteOperations;
 use crate::folder::disk::make_aside_entry_name;
@@ -54,13 +54,14 @@ pub(super) struct RemoveCase {
     pub(super) asked_kind: ItemKind,
     /// Whether the folder shows something in the directory to be removed.
     pub(super) is_empty: bool,
-    /// Whether OneDrive has in the directory to be removed, at any depth, an item the
-    /// folder does not show (`ItemReader::has_onedrive_items_not_shown_below`): one it
-    /// cannot show (a name too long, a OneNote notebook…), or one a listing brought that
-    /// no step has shown yet. Such a directory is not removed here: `rmdir` answers
-    /// `ENOTEMPTY`, as for one the folder shows something in — the shown files in it
-    /// were removed as asked, each by its own unlink. `false` for a file.
-    pub(super) has_onedrive_items_not_shown: bool,
+    /// What OneDrive has in the directory to be removed, at any depth, that the folder
+    /// never showed (`ItemReader::find_onedrive_items_never_shown_below`): items it
+    /// cannot show (a name too long, a OneNote notebook…), or items a listing brought
+    /// that no step has shown yet. Either way the directory is not removed here: `rmdir`
+    /// answers `ENOTEMPTY`, as for one the folder shows something in — the shown files
+    /// in it were removed as asked, each by its own unlink, and those removals are none
+    /// of this. `Nothing` for a file.
+    pub(super) onedrive_items_never_shown: ItemsNeverShown,
 }
 
 /// What a removal that goes ahead does on disk before the row.
@@ -77,9 +78,11 @@ pub(super) enum RemoveDecision {
 /// Whether the removal goes ahead and how; the errno otherwise, in today's order
 /// (`write_operations/remove_plan.rs:37-53`): `ENOENT`, `EISDIR`, `ENOTDIR`, `ENOTEMPTY`.
 /// `ENOTEMPTY` also for a directory the folder shows nothing in while OneDrive has in it
-/// what the folder does not show (`RemoveCase::has_onedrive_items_not_shown`): the caller
-/// then tells the user why (`ItemWriteOperations::tell_directory_not_removable`). Pure.
-// TODO: the case of `has_onedrive_items_not_shown` is not decided yet: such a directory is still removed, and the plan shows it again (`RowStep::ForgetSyncedVersion`). Fill with a test of the case.
+/// what the folder never showed (`RemoveCase::onedrive_items_never_shown` is not
+/// `Nothing`). For `CannotBeShown`, and for it alone, the caller then tells the user why
+/// (`ItemWriteOperations::tell_directory_not_removable`): of items that are only not
+/// shown yet, "cannot be shown here" would be false, and they appear by themselves. Pure.
+// TODO: the case of `onedrive_items_never_shown` is not decided yet: such a directory is still removed, and the plan shows it again (`RowStep::ForgetSyncedVersion`). Fill with a test of the case.
 pub(super) fn decide_remove(case: &RemoveCase) -> Result<RemoveDecision, Errno> {
     if case.directory.is_none() {
         return Err(Errno::ENOENT);
@@ -120,15 +123,15 @@ impl ItemWriteOperations {
             let items = store.item_store();
             let reader = items.reader();
             let Some(shown) = reader.find_item(directory)?.filter(|row| row.kind == ItemKind::Directory && row.local.is_some()) else {
-                return Ok(RemoveCase { directory: None, item: None, path: None, asked_kind, is_empty: true, has_onedrive_items_not_shown: false });
+                return Ok(RemoveCase { directory: None, item: None, path: None, asked_kind, is_empty: true, onedrive_items_never_shown: ItemsNeverShown::Nothing });
             };
             let item = reader.find_item_at(directory, &name)?;
             let (path, is_empty) = match &item {
                 Some(item) => (reader.find_path(item.local_item_id)?, item.kind == ItemKind::File || reader.list_children(item.local_item_id)?.is_empty()),
                 None => (None, true),
             };
-            // TODO: `reader.has_onedrive_items_not_shown_below(item)` for a directory, in this job; `false` until that reader is filled.
-            Ok(RemoveCase { directory: Some(shown), item, path, asked_kind, is_empty, has_onedrive_items_not_shown: false })
+            // TODO: `reader.find_onedrive_items_never_shown_below(item)` for a directory, in this job; `Nothing` until that reader is filled.
+            Ok(RemoveCase { directory: Some(shown), item, path, asked_kind, is_empty, onedrive_items_never_shown: ItemsNeverShown::Nothing })
         })
     }
 
@@ -144,12 +147,12 @@ impl ItemWriteOperations {
     /// the file keeps its descriptor; its last close finds no shown row and writes
     /// nothing. What the download states keep of the item is forgotten.
     ///
-    /// A `rmdir` refused because OneDrive has in the directory what the folder does not
-    /// show tells the user why before it answers `ENOTEMPTY`
+    /// A `rmdir` refused because OneDrive has in the directory what the folder cannot
+    /// show (`ItemsNeverShown::CannotBeShown`) tells the user why before it answers `ENOTEMPTY`
     /// ([`tell_directory_not_removable`](Self::tell_directory_not_removable)).
     ///
     /// Called by the kernel's unlink and rmdir, on the write-operation thread.
-    // TODO: call `tell_directory_not_removable` where `decide_remove` answers `ENOTEMPTY` for `has_onedrive_items_not_shown`, once that case is decided.
+    // TODO: call `tell_directory_not_removable` where `decide_remove` answers `ENOTEMPTY` for `ItemsNeverShown::CannotBeShown`, once that case is decided.
     pub(in crate::mount) fn remove(&self, directory: LocalItemId, name: &OsStr, asked_kind: ItemKind) -> Result<(), Errno> {
         self.access_mode_switch.check_read_write()?;
         let case = self.read_remove_case(directory, name, asked_kind)?;

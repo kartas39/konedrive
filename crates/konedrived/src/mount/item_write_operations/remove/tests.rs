@@ -11,7 +11,7 @@ use crate::mount::item_write_operations::MadeKind;
 use crate::mount::mount_take_down::TakeDownCause;
 
 fn case(item: Option<Item>, asked_kind: ItemKind) -> RemoveCase {
-    RemoveCase { directory: Some(make_row(2, ItemKind::Directory)), path: item.as_ref().map(|_| "d/x".into()), item, asked_kind, is_empty: true, has_onedrive_items_not_shown: false }
+    RemoveCase { directory: Some(make_row(2, ItemKind::Directory)), path: item.as_ref().map(|_| "d/x".into()), item, asked_kind, is_empty: true, onedrive_items_never_shown: konedrive_tree::ItemsNeverShown::Nothing }
 }
 
 #[test]

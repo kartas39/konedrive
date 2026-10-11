@@ -186,6 +186,8 @@ pub trait Folder {
     /// another account's folder.
     fn register(&self, path: &str) -> zbus::Result<()>;
     fn unregister(&self) -> zbus::Result<()>;
+    /// The Forget whatever is unsent: nothing of it is sent, the files stay.
+    fn unregister_forced(&self) -> zbus::Result<()>;
     fn refresh(&self) -> zbus::Result<()>;
     fn skipped(&self) -> zbus::Result<Vec<NotInFolder>>;
     fn free_up_space(&self) -> zbus::Result<FreedSpace>;

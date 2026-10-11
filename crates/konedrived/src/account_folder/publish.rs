@@ -63,7 +63,8 @@ pub(super) fn publish(folder: &Folder) -> Published {
         wanted: folder.wanted,
         tree_lock: folder.acted_on().map(|record| Arc::clone(&record.kept.tree_lock)),
         parts: folder.acted_on().and_then(|_| folder.parts()),
-        // TODO: `sending_holds` and `onedrive_space` from the running sync (`SyncTasks::sending_holds`, `StartedFolder::onedrive_space`): `SyncTasks`' accessors are `todo!()` until the folder's start is written.
+        // TODO: `poll`, `sending_holds` and `onedrive_space` from the running sync (`SyncTasks::poll`, `SyncTasks::sending_holds`, `StartedFolder::onedrive_space`): `SyncTasks`' accessors are `todo!()` until the folder's start is written.
+        poll: None,
         sending_holds: None,
         onedrive_space: None,
         sync: sync.clone(),

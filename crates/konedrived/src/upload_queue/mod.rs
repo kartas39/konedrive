@@ -272,7 +272,8 @@ pub fn decide_queue_reason(kind: UnsentKind, state: QueueState, entry: &UnsentEn
 /// A held mass removal of a directory is ONE row, the directory's: `state` is `held`,
 /// `sent` is 0 and `total` is the number of items the removal takes from OneDrive below
 /// it (`entry.held_items_below`) — a count of items there, not of bytes, which the
-/// window says as "N files". The rows below such a directory are no rows of their own:
+/// window says as "N files".
+// TODO: the number is of every item OneDrive has below the directory, its sub-directories among them, and it is shown as files: whether that is to be files alone (a second count by the plan's reading) or the word is to be "items" is the owner's to say. The rows below such a directory are no rows of their own:
 /// the reader leaves them out ([`read_unsent_entries`]).
 pub fn describe_queue_change(entry: &UnsentEntry, path: &Path, sending: &QueueConditions, folder: &Path) -> Option<Change> {
     todo!()
@@ -332,7 +333,10 @@ pub struct QueueTotals {
 ///
 /// The owner decided `HeldCount`: a held mass removal of a directory is ONE, the
 /// directory, whatever is below it; the rows below it are counted nowhere while it is
-/// held — not in `held` and not in `pending` — as they are no entries. The number of
+/// held — not in `held` and not in `pending` — as they are no entries. They are in the
+/// store's sum and not among `answered`, so `pending` is ALSO less the sum of
+/// `held_items_below` of the held entries, and `pending_bytes` less nothing for them (a
+/// removal has no bytes). The number of
 /// files is on the directory's row ([`describe_queue_change`]).
 // TODO: `ConfirmDeletes()` answers the confirmations written (the directory and all below it), which is not this number; check which of the two the window shows after the answer and fix if needed. Former note: here it is the removals the last plan holds — a directory removed with all below it is one, and a removal beyond the plan's reach is none — where today it is one per file and directory. The number of items the held removals take from OneDrive is `ItemReader::count_unsent_removals`, a walk below every removed directory at each plan. Two numbers the user sees beside it differ too: while a removed directory is held, the items below it are entries of their own that read `waiting` (the plan answers them `AnotherItem(directory)`) and stay in `PendingCount`, where today held rows are in neither; and `ConfirmDeletes()` answers the confirmations written (the directory and all below it), which is not `HeldCount`.
 pub fn count_queue(totals: &QueueTotals, sending: &QueueConditions) -> QueueCounts {

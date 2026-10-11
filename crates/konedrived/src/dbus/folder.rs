@@ -19,8 +19,13 @@ impl Folder {
     }
 
     async fn unregister(&self) -> Result<()> {
-        // TODO: `Folder.Unregister` has no argument that says the Forget is forced (the XML, the proxy, `konedrivectl` and the window would each gain one): until it has, a folder with something unsent that can never be sent cannot be forgotten from the bus. Check and fix if needed.
         Ok(self.service.unregister_root(false).await?)
+    }
+
+    /// `UnregisterForced`: the Forget whatever is unsent (`konedrivectl sync forget --force`).
+    // TODO: the window has no way to it yet (`app/synccontroller.cpp` calls `Unregister`): where it offers the forced Forget, after a refusal `PendingUploads`, is the owner's to say.
+    async fn unregister_forced(&self) -> Result<()> {
+        Ok(self.service.unregister_root(true).await?)
     }
 
     /// Refused: kept for the clients that still know the call.

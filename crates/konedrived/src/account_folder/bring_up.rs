@@ -162,7 +162,7 @@ impl SyncService {
             kept.source = self.drive().map(|drive| self.wiring.sources.onedrive(drive));
         }
         let record = Record { root, baloo, kept };
-        stopped.folder_mut().is = Is::Up(Up { record, sync: Sync::Stopped(Why::NotStarted) });
+        stopped.folder_mut().is = Is::Up(Up { record, sync: Sync::Stopped(Why::NotStarted), take_down_try: None });
         stopped.publish();
         // `LocalBytes` for the folder now registered.
         self.report.space.kick();

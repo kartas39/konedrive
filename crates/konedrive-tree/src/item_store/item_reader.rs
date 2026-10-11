@@ -68,6 +68,20 @@ pub struct ItemReader<'a> {
     store: &'a TreeStore,
 }
 
+/// What OneDrive has in a directory, at any depth, that the folder never showed
+/// ([`ItemReader::find_onedrive_items_never_shown_below`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemsNeverShown {
+    /// Nothing: all OneDrive has in it the folder shows, or showed and removed.
+    Nothing,
+    /// Items a listing brought that no step has shown yet, and none the folder cannot
+    /// show: they appear by themselves.
+    NotShownYet,
+    /// At least one item the folder cannot show at all (a name too long, a OneNote
+    /// notebook…): it stays in OneDrive whatever is done here.
+    CannotBeShown,
+}
+
 impl ItemReader<'_> {
     /// The connection every reader of this module and of the modules beside it reads on.
     pub(crate) fn conn(&self) -> &Connection {
@@ -295,14 +309,18 @@ impl ItemReader<'_> {
         todo!()
     }
 
-    /// Whether OneDrive has in `directory`, at any depth, an item the folder does not
-    /// show: a row with an OneDrive place below it and no local place — one the folder
-    /// cannot show, or one no step has shown yet. By the OneDrive places, as
-    /// `list_below_in_onedrive`, and it ends at the first such row. Called by the mount's
-    /// `rmdir`, in the job that reads its case: a directory for which this holds is not
+    /// What OneDrive has in `directory`, at any depth, that the folder NEVER showed: a row
+    /// with an OneDrive place below it, no local place, and nothing agreed on (no synced
+    /// place) — as `ItemBelowRemovedDirectory::NeverShownHere`. A row the two sides
+    /// agreed on that has no local place is an item removed here whose removal is
+    /// unsent, and is none of these: the last `rmdir` of an `rm -r` finds none.
+    /// `CannotBeShown` when one of them is an item the folder cannot show
+    /// (`find_folder_visibility`), else `NotShownYet` when there is any, else `Nothing`.
+    /// By the OneDrive places, as `list_below_in_onedrive`. Called by the mount's `rmdir`,
+    /// in the job that reads its case: a directory for which this is not `Nothing` is not
     /// removed here (`ENOTEMPTY`).
     #[allow(unused_variables)]
-    pub fn has_onedrive_items_not_shown_below(&self, directory: LocalItemId) -> Result<bool, TreeError> {
+    pub fn find_onedrive_items_never_shown_below(&self, directory: LocalItemId) -> Result<ItemsNeverShown, TreeError> {
         todo!()
     }
 

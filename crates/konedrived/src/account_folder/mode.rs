@@ -38,8 +38,11 @@ impl SyncService {
     pub async fn follow_mode(&self, mode: Mode) {
         // TODO: `sync_tasks::access_mode_change::switch_to_read_only` or `switch_to_read_write`, over the parts
         // of the running sync and while its tasks run; a folder that is not up, or whose sync does not run, only
-        // takes the mode (`Folder::wanted`), which its next start applies. A folder the account turned read-only
-        // through `hold_unsent_changes` is found turned already.
+        // takes the mode (`Folder::wanted`), which its next start applies. Inside `hold_folder()`, not a
+        // `change()`: no task is stopped. The mode applied is the one the ACCOUNT says once the folder's lock is
+        // held (`FolderAccount::snapshot`), not `mode` as the watcher woke with it: a switch the account made
+        // meanwhile through `hold_unsent_changes` is then found made, and is never turned back by an older
+        // snapshot.
         todo!()
     }
 
@@ -76,13 +79,16 @@ impl SyncService {
     /// The account's state changed to `snapshot`: what the folder does about it, all of
     /// it here. In this order:
     ///
-    /// 1. the mode followed ([`follow_mode`](Self::follow_mode)) when it is not the
-    ///    folder's;
+    /// 1. the mode followed ([`follow_mode`](Self::follow_mode)), which applies the mode
+    ///    the account says when the folder's lock is held — never `snapshot`'s, which may
+    ///    be older than a switch the account made since;
     /// 2. what holds the sending of a running sync set to what [`decide_account_holds`]
-    ///    answers now, each when it changed: signed out —
-    ///    `SyncTasks::hold_for_sign_out` (the release at a sign-in is the sync's own
-    ///    watcher's, `stop_order::watch_sign_in`); the refusal —
-    ///    `SendingHolds::set_writes_refusal`;
+    ///    answers of `snapshot`, each when it is not what the holds say: signed out —
+    ///    `SyncTasks::hold_for_sign_out`; signed in while the holds say signed out —
+    ///    `stop_order::release_after_sign_in`; the refusal —
+    ///    `SendingHolds::set_writes_refusal`. This is the ONE place that sets and ends
+    ///    them from outside the sync, and it applies the snapshots in their order: no
+    ///    hold set from an older snapshot outlives a newer one;
     /// 3. a folder whose sync could not start because no drive was known
     ///    (`Why::DriveNotKnown`) started again, inside a change, when the snapshot or
     ///    `config.toml` names a drive now.
@@ -116,7 +122,7 @@ impl PendingUploads for SyncService {
     /// The account switches to read-only now (forced, or with nothing unsent): the
     /// folder turns read-only here, in this call, rather than when it follows its
     /// account ([`SyncService::follow_mode`], which then finds it turned) —
-    /// `sync_tasks::access_mode_change::switch_to_read_only` over the parts of the running
+    /// inside [`hold_folder`](SyncService::hold_folder), `sync_tasks::access_mode_change::switch_to_read_only` over the parts of the running
     /// sync, which answers only when the folder takes no change, sends nothing and no
     /// step towards OneDrive runs; `wanted` set to read-only in the same change of the
     /// folder's state. The account gives its token up after this returned. Nothing is

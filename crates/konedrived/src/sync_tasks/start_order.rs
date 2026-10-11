@@ -35,8 +35,8 @@
 //!    [`apply_wanted_access_mode`](super::access_mode_change::apply_wanted_access_mode):
 //!    the mount's access mode and the hold of a read-only folder, BEFORE any task plans;
 //! 6. `OneDriveSpace::new(input.quota)`, then [`read_quota_before_first_plan`];
-//! 7. [`start_sync_tasks`]: the listing's poller, the thumbnail filler, the plan's task,
-//!    the watcher of the sign-in. In either access mode. Nothing is awaited in it.
+//! 7. [`start_sync_tasks`]: the listing's poller, the thumbnail filler, the plan's task.
+//!    In either access mode. Nothing is awaited in it.
 //!
 //! **Two functions.** Stages 5 to 7 are [`start_sync_over_parts`], over the parts of a
 //! folder whether they were kept or made in this start, and whether the mount is served
@@ -83,7 +83,6 @@ use konedrive_tree::{DriveId, FullListingCause, RebuildLoss, Store, StoreOrigin}
 
 use super::SyncTasks;
 use crate::account::quota::Quota;
-use crate::account::state::AccountSnapshot;
 use crate::conditions::running::Running;
 use crate::config::Mode;
 use crate::sync_parts::published_plan::PublishedPlan;
@@ -134,7 +133,11 @@ pub struct KeptFolderParts {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StandingSendingHolds {
     /// `None`: not paused. `Some(None)`: paused until resumed. `Some(Some(t))`: paused
-    /// until `t`, Unix seconds. As `SendingHolds::set_paused` takes it.
+    /// until `t`, Unix seconds. As `SendingHolds::set_paused` takes it. The account's
+    /// background work is stopped by the user's pause and by the automatic hold alike
+    /// (metered connection, battery: `Running::stop`), as today: the user's pause is
+    /// given with its end, a hold as `Some(None)` — it ends when the owner says so
+    /// (`show_pause`), by no time. Both read `SendingHold::Paused`.
     pub paused_until: Option<Option<i64>>,
     pub is_signed_out: bool,
     /// Why the account may not write to OneDrive now, as the account says it; `None` when
@@ -180,8 +183,6 @@ pub struct FolderStartInput {
     /// Where the thumbnails of the folder's files are written; `None` with no cache to
     /// fill: no thumbnail filler is started then.
     pub thumbnail_cache: Option<PathBuf>,
-    /// The account's state as it changes: the watcher of the sign-in reads it.
-    pub account_changes: tokio::sync::watch::Receiver<AccountSnapshot>,
     /// What holds all sending now.
     pub standing_holds: StandingSendingHolds,
     /// Unix seconds: the account's clock.
@@ -193,11 +194,11 @@ pub struct FolderStartInput {
     /// `stop_order::take_folder_down` inside a change of the folder, and starts the folder
     /// again after its pause.
     pub take_down_report: TakeDownReport,
-    /// Called by the plan's task after each plan whose reading counted nothing unsent
-    /// (`SyncPlanTaskParts::nothing_unsent_report`): the owner tells the account
-    /// (`FolderAccount::nothing_is_unsent`), which may wait for it with a switch to
-    /// read-only. It must not block.
-    pub nothing_unsent_report: Arc<dyn Fn() + Send + Sync>,
+    /// Called by the plan's task after every published plan with how many changes are
+    /// unsent (`SyncPlanTaskParts::unsent_count_report`): the owner tells the account
+    /// (`FolderAccount::tell_unsent_count`), which may show the count and wait for 0 with
+    /// a switch to read-only. It must not block.
+    pub unsent_count_report: Arc<dyn Fn(u64) + Send + Sync>,
     /// What the folder keeps from an earlier sync; `None` at the folder's first start and
     /// after a take-down. With kept parts the fields the mount was made with at its build
     /// are not read: `tree_db`, `recorded_drive`, `account_drive`, `source`,
@@ -221,7 +222,8 @@ pub struct StartedFolder {
     /// passes it on.
     pub drive_id: DriveId,
     /// How the store came to be: said to the user where a rebuild lost something. `Kept`
-    /// for a folder that was started with the parts it kept.
+    /// for a folder that was started with the parts it kept. Read by the owner's
+    /// `start_sync` right after the start, once (`describe_rebuild_loss`).
     pub store_origin: StoreOrigin,
 }
 
@@ -246,6 +248,7 @@ pub enum StartRefusal {
 /// A start that was refused: why, and what is left of it.
 pub struct RefusedStart {
     pub refusal: StartRefusal,
+    /// Read by the owner's `start_sync`, as `StartedFolder::store_origin` is.
     /// What the rebuild of the store lost, when stage 1 of THIS start rebuilt a store: the
     /// next start finds the new store as one that was kept and cannot say it any more.
     /// `None` when no store was rebuilt, and when nothing could be counted in the one
@@ -394,11 +397,10 @@ async fn read_quota_before_first_plan(drive: &DriveClient, space: &OneDriveSpace
 /// when it could not be read), the activity log (`input.report.activity`), the
 /// announcer of sync marks (`FolderSteps::announce_marks_changed` of the mount's
 /// `folder_steps`), the thumbnail filler's nudge as `after_folder_steps` (the same
-/// `Notify` the cycle was given) and `input.nothing_unsent_report`, and its loop spawned
-/// with the stop's token; the watcher of
-/// the sign-in (`stop_order::watch_sign_in`, with `input.account_changes` and
-/// `input.standing_holds.is_signed_out` as its first state). The poller's handle is
-/// cloned for the plan's task, the watcher and `SyncTasks::poll`. The plan's
+/// `Notify` the cycle was given) and `input.unsent_count_report`, and its loop spawned
+/// with the stop's token. No task watches the account: what its state holds is set and
+/// ended by the owner's watcher. The poller's handle is cloned for the plan's task and
+/// `SyncTasks::poll`. The plan's
 /// task sends nothing to OneDrive until the first listing of this start ended
 /// (`SendingHold::FirstListingNotEnded`).
 #[allow(clippy::too_many_arguments)]
