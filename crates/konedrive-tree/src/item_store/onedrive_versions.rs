@@ -130,7 +130,8 @@ impl ItemStore<'_> {
     /// `listing` is the id the store gave when the listing began
     /// ([`begin_full_listing`](Self::begin_full_listing),
     /// [`begin_delta_listing`](Self::begin_delta_listing)), or that of the listing found
-    /// under way after a stop ([`find_listing_under_way`](Self::find_listing_under_way)).
+    /// under way after a stop ([`find_listing_under_way`](Self::find_listing_under_way))
+    /// when the page was asked by the next link kept of it.
     /// `fetch_began_at_count` is the count of confirmations
     /// ([`confirmation_count`](Self::confirmation_count)) the caller read when the fetch
     /// that brought the page began. `link` is what followed the page.

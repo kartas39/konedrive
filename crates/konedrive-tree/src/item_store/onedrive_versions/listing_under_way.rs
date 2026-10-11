@@ -47,7 +47,9 @@ impl ItemStore<'_> {
     /// with a [`DeltaLink`](ListingLink::DeltaLink) leaves nothing to read again. `None`
     /// when none is under way. While one is, the rows may say OneDrive does not have an
     /// item, or has it where the folder cannot show it, that a page still to come says
-    /// otherwise of. A listing that was stopped goes on with the id found here.
+    /// otherwise of. A listing that was stopped goes on with the id found here only from
+    /// the next link the store kept of it: an id names one enumeration of OneDrive, so a
+    /// full listing asked from the start is begun anew, with a new id.
     pub fn find_listing_under_way(&self) -> Result<Option<ListingUnderWay>, TreeError> {
         ListingUnderWay::find(&self.store.conn)
     }
