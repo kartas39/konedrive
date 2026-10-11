@@ -24,12 +24,21 @@
 // test: the_announcement_being_performed_is_what_the_bridges_own_lookup_is_answered_from
 // test: announcements_are_performed_in_the_order_they_were_queued
 // test: a_stop_drops_what_is_queued_and_ends_the_thread
+// test: the_thread_is_started_once_told_by_its_id_and_ended_by_the_stop
+// test: an_announcement_is_performed_once
+// test: a_changed_content_is_a_touch_of_the_file_by_path
+// test: an_announcement_in_a_directory_the_folder_no_longer_shows_is_skipped_and_the_next_performed
 #![allow(dead_code, unused_variables)]
 
-use std::path::PathBuf;
+use std::ffi::CString;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::item_announcements::ItemAnnouncement;
+use konedrive_tree::TreeError;
+
+use super::backing_directory::{to_mode_bits, EntryKind, WriteBits};
+use super::item_announcements::{decide_system_call, AnnouncementSystemCall, ItemAnnouncement};
 use super::read_connections::ReadConnections;
 
 /// The bridge of one mount.
@@ -59,8 +68,93 @@ impl ItemInotifyBridge {
     /// Starts the bridge's thread, which reads the paths of what it announces through a
     /// reading connection of its own. Called by the mount once it is over the folder
     /// (`ItemMount::serve`).
+    ///
+    /// When this returns the thread runs and its id is known
+    /// ([`is_own_thread`](Self::is_own_thread)): no request of it can come before. A
+    /// second start starts nothing, nor does a start after the stop.
+    // The kernel's cached pages of a file whose content changed are NOT dropped here, as
+    // today's bridge drops them (`fuser::Notifier::inval_inode` before the touch): the
+    // thread is given no notifier. The touch alone tells the watchers; the pages are the
+    // switch's to drop (`ItemMount::serve` has the session).
     pub(super) fn start(self: &Arc<Self>, read_connections: Arc<ReadConnections>) -> std::io::Result<()> {
-        todo!()
+        // Held from the look to the keeping of the handle: one start at a time. The stop
+        // takes this lock only after its own flag is set, and the thread never takes it.
+        let mut thread = crate::panic::lock(&self.thread);
+        if thread.is_some() || self.is_stopping.load(std::sync::atomic::Ordering::SeqCst) || self.read_connections.set(read_connections).is_err() {
+            return Ok(());
+        }
+        let (bridge, (id_sender, id)) = (Arc::clone(self), std::sync::mpsc::channel());
+        let started = std::thread::Builder::new().name("konedrive-announce".into()).spawn(move || {
+            // SAFETY: a system call that takes nothing and cannot fail.
+            let _ = id_sender.send(unsafe { libc::gettid() } as u32);
+            bridge.perform_queued();
+        })?;
+        if let Ok(id) = id.recv() {
+            let _ = self.thread_id.set(id);
+        }
+        *thread = Some(started);
+        Ok(())
+    }
+
+    /// The thread: performs what is queued, one change after the other, until the stop.
+    /// Each announcement is one system call by path through the mount
+    /// (`item_announcements::decide_system_call`), which the mount answers on this
+    /// thread's behalf from [`find_in_progress`](Self::find_in_progress) and the rows,
+    /// making nothing: so the kernel tells whoever watches the directory. After a stop
+    /// the announcement being performed is finished and no other is begun.
+    fn perform_queued(&self) {
+        while let Some(announcements) = self.wait_for_announcements() {
+            for announcement in announcements {
+                if self.is_stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                let system_call = match self.find_system_call(&announcement) {
+                    Ok(Some(system_call)) => system_call,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        tracing::warn!("a change of item {} is not announced to the kernel: its place could not be read: {error}", announcement.item());
+                        continue;
+                    }
+                };
+                self.mark_in_progress(Some(announcement));
+                if let Err(error) = self.make_system_call(&system_call) {
+                    tracing::debug!("{system_call:?} through the mount, for an announcement: {error}");
+                }
+                self.mark_in_progress(None);
+            }
+        }
+    }
+
+    /// The system call of `announcement`, from what the rows say now: the path of the
+    /// directory its place is in and the kind of its item, in one read closure of this
+    /// thread's own reading connection.
+    fn find_system_call(&self, announcement: &ItemAnnouncement) -> Result<Option<AnnouncementSystemCall>, TreeError> {
+        let Some(read_connections) = self.read_connections.get() else { return Ok(None) };
+        let (directory_path, kind_now) = read_connections.read(|reader| {
+            let directory_path = reader.find_path(announcement.place().parent_local_item_id)?;
+            let kind_now = reader.find_item(announcement.item())?.filter(|item| item.local.is_some()).map(|item| item.kind);
+            Ok((directory_path, kind_now))
+        })?;
+        Ok(decide_system_call(announcement, directory_path, kind_now))
+    }
+
+    /// Makes `system_call` at its path in the folder, which is the mount.
+    fn make_system_call(&self, system_call: &AnnouncementSystemCall) -> std::io::Result<()> {
+        let to_c_path = |path: &Path| CString::new(self.folder.join(path).as_os_str().as_bytes()).map_err(std::io::Error::other);
+        // SAFETY: plain system calls on a path this function owns.
+        let answer = unsafe {
+            match system_call {
+                AnnouncementSystemCall::Mkdir(path) => libc::mkdir(to_c_path(path)?.as_ptr(), to_mode_bits(EntryKind::Directory, WriteBits::Present)),
+                AnnouncementSystemCall::Mknod(path) => libc::mknod(to_c_path(path)?.as_ptr(), libc::S_IFREG | to_mode_bits(EntryKind::File, WriteBits::Present), 0),
+                AnnouncementSystemCall::Rmdir(path) => libc::rmdir(to_c_path(path)?.as_ptr()),
+                AnnouncementSystemCall::Unlink(path) => libc::unlink(to_c_path(path)?.as_ptr()),
+                AnnouncementSystemCall::Utimensat(path) => libc::utimensat(libc::AT_FDCWD, to_c_path(path)?.as_ptr(), std::ptr::null(), 0),
+            }
+        };
+        match answer {
+            0 => Ok(()),
+            _ => Err(std::io::Error::last_os_error()),
+        }
     }
 
     /// Queues the announcements of one change of the folder, to be performed together and

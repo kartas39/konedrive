@@ -18,10 +18,11 @@
 // test: a_reader_whose_item_shows_another_content_by_now_is_stale
 // test: a_file_with_no_binding_and_nothing_on_disk_cannot_be_read
 // test: a_range_is_asked_of_the_drive_and_the_item_the_binding_names
+// test: a_directory_and_an_item_the_folder_does_not_show_are_not_opened_to_be_read
 #![allow(dead_code, unused_variables)]
 
 use fuser::Errno;
-use konedrive_tree::{ContentVersion, Item, LocalItemId, OneDriveItemReference};
+use konedrive_tree::{ContentPresence, ContentVersion, Item, ItemKind, LocalItemId, OneDriveItemReference};
 
 use super::item_lookup::NodeRow;
 
@@ -38,8 +39,20 @@ pub(super) enum OpenToRead {
 
 /// How `item`, a file the folder shows, is opened to be read. Pure. Called by the open
 /// request's read branch.
+///
+/// `EISDIR` for a directory and `ESTALE` for an item the folder does not show, should one
+/// be asked. `EIO` for a file that is not on disk and has no binding: nothing of it is
+/// anywhere, which no operation leaves — the rows are at fault, not the program.
 pub(super) fn decide_open_to_read(item: &Item) -> Result<OpenToRead, Errno> {
-    todo!()
+    let local = item.local.as_ref().ok_or(Errno::ESTALE)?;
+    if item.kind == ItemKind::Directory {
+        return Err(Errno::EISDIR);
+    }
+    match (item.content_presence, &local.content, &item.onedrive_item) {
+        (ContentPresence::OnDisk, _, _) => Ok(OpenToRead::BackingFile),
+        (ContentPresence::NotOnDisk, Some(content), Some(_)) => Ok(OpenToRead::NotOnDisk { item: item.local_item_id, content: content.clone() }),
+        (ContentPresence::NotOnDisk, _, _) => Err(Errno::EIO),
+    }
 }
 
 /// What a range of a file that is not on disk is fetched by.
@@ -72,6 +85,19 @@ pub(super) enum NotOnDiskReadOrigin {
 /// the size of another. This holds between a listing and its step (the row's local
 /// content is still the old one: the old content is read by its version) and after the
 /// step.
+///
+/// A row with the content opened and no binding (`EIO`) is one no operation leaves.
 pub(super) fn decide_not_on_disk_read_origin(row: &NodeRow, opened_as: &ContentVersion) -> NotOnDiskReadOrigin {
-    todo!()
+    let NodeRow::Shown(item) = row else { return NotOnDiskReadOrigin::Refused(Errno::ESTALE) };
+    if item.local.as_ref().and_then(|local| local.content.as_ref()) != Some(opened_as) {
+        return NotOnDiskReadOrigin::Refused(Errno::ESTALE);
+    }
+    match (item.content_presence, &item.onedrive_item) {
+        (ContentPresence::OnDisk, _) => NotOnDiskReadOrigin::LandedSince,
+        (ContentPresence::NotOnDisk, Some(onedrive_item)) => NotOnDiskReadOrigin::OneDriveRange(RangeSource { onedrive_item: onedrive_item.clone(), content: opened_as.clone() }),
+        (ContentPresence::NotOnDisk, None) => NotOnDiskReadOrigin::Refused(Errno::EIO),
+    }
 }
+
+#[cfg(test)]
+mod tests;

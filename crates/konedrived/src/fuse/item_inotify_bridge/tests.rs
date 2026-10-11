@@ -84,3 +84,164 @@ fn a_stop_drops_what_is_queued_and_ends_the_thread() {
     assert!(bridge.queued.lock().unwrap().is_empty());
     assert_eq!(bridge.wait_for_announcements(), None);
 }
+
+// The thread, with the mount replaced by a directory the test looks into: the names are
+// really made and removed there, where the mount would answer them from the rows.
+
+use std::fs;
+use std::time::{Duration, Instant, UNIX_EPOCH};
+
+use konedrive_tree::{ItemKind, ItemPlace as Place};
+
+use crate::fuse::item_fixture::ItemFixture;
+
+/// A bridge over a plain directory, started: the paths it announces at are read from the
+/// fixture's rows.
+fn start_bridge(fixture: &ItemFixture) -> (Arc<ItemInotifyBridge>, tempfile::TempDir) {
+    let watched = tempfile::tempdir().unwrap();
+    let bridge = Arc::new(ItemInotifyBridge::new(watched.path().to_owned()));
+    bridge.start(Arc::clone(&fixture.read_connections)).unwrap();
+    (bridge, watched)
+}
+
+/// Waits until `is_so`, for no longer than ten seconds.
+fn wait_until(what: &str, is_so: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !is_so() {
+        assert!(Instant::now() < deadline, "the bridge's thread did not get there: {what}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn place_in(directory: LocalItemId, name: &str) -> Place {
+    Place { parent_local_item_id: directory, name: name.into() }
+}
+
+#[test]
+fn an_appearing_is_a_name_created_and_a_vanishing_a_name_removed_by_path() {
+    let fixture = ItemFixture::new();
+    let docs = fixture.show_onedrive_directory("docs").local_item_id;
+    let file = fixture.show_onedrive_file("docs/a.txt", b"hello").local_item_id;
+    let sub = fixture.show_onedrive_directory("docs/sub").local_item_id;
+    let top = fixture.show_onedrive_file("top.txt", b"hello").local_item_id;
+    let (bridge, watched) = start_bridge(&fixture);
+    let at = |path: &str| watched.path().join(path);
+    fs::create_dir(at("docs")).unwrap();
+    // An appearing: the kind is the row's, the path the directory's by the rows.
+    bridge.announce(vec![ItemAnnouncement::Appeared { item: file, place: place_in(docs, "a.txt") }, ItemAnnouncement::Appeared { item: sub, place: place_in(docs, "sub") }]);
+    bridge.announce(vec![ItemAnnouncement::Appeared { item: top, place: place_in(LocalItemId::ROOT, "top.txt") }]);
+    wait_until("the three names appear", || at("top.txt").exists());
+    assert!(at("docs/a.txt").is_file() && at("docs/sub").is_dir() && at("top.txt").is_file(), "performed in the order they were queued, each of its kind");
+    // A vanishing: the former place and the kind travel in the announcement; the rows
+    // need not have the item any more.
+    fs::write(at("docs/old.txt"), b"").unwrap();
+    fs::create_dir(at("docs/old")).unwrap();
+    let gone = LocalItemId::new(987_654);
+    bridge.announce(vec![
+        ItemAnnouncement::Vanished { item: gone, former_place: place_in(docs, "old.txt"), kind: ItemKind::File },
+        ItemAnnouncement::Vanished { item: gone, former_place: place_in(docs, "old"), kind: ItemKind::Directory },
+        // A move: the vanishing, then the appearing.
+        ItemAnnouncement::Vanished { item: file, former_place: place_in(docs, "a.txt"), kind: ItemKind::File },
+        ItemAnnouncement::Appeared { item: file, place: place_in(docs, "b.txt") },
+    ]);
+    wait_until("the last name appears", || at("docs/b.txt").exists());
+    assert!(!at("docs/old.txt").exists() && !at("docs/old").exists() && !at("docs/a.txt").exists());
+    bridge.stop();
+}
+
+#[test]
+fn the_thread_is_started_once_told_by_its_id_and_ended_by_the_stop() {
+    let fixture = ItemFixture::new();
+    let top = fixture.show_onedrive_file("top.txt", b"hello").local_item_id;
+    let (bridge, watched) = start_bridge(&fixture);
+    // SAFETY: a system call that takes nothing and cannot fail.
+    let own_id = unsafe { libc::gettid() } as u32;
+    let thread_id = *bridge.thread_id.get().expect("known when the start returns");
+    assert!(thread_id != own_id && bridge.is_own_thread(thread_id) && !bridge.is_own_thread(own_id), "the kernel's id of the bridge's thread, not of the starter's");
+    assert!(bridge.thread.lock().unwrap().is_some(), "kept for the stop to wait for");
+    // A second start starts nothing.
+    bridge.start(Arc::clone(&fixture.read_connections)).unwrap();
+    assert!(bridge.is_own_thread(thread_id));
+    bridge.announce(vec![ItemAnnouncement::Appeared { item: top, place: place_in(LocalItemId::ROOT, "top.txt") }]);
+    wait_until("the name appears", || watched.path().join("top.txt").exists());
+    // The stop ends the thread and waits for it: nothing is made by path after it.
+    bridge.stop();
+    assert!(bridge.thread.lock().unwrap().is_none(), "the thread was waited for");
+    fs::remove_file(watched.path().join("top.txt")).unwrap();
+    bridge.announce(vec![ItemAnnouncement::Appeared { item: top, place: place_in(LocalItemId::ROOT, "top.txt") }]);
+    assert!(bridge.queued.lock().unwrap().is_empty() && bridge.find_in_progress().is_none());
+    assert!(!watched.path().join("top.txt").exists());
+    // And a start after the stop starts no thread.
+    bridge.start(Arc::clone(&fixture.read_connections)).unwrap();
+    assert!(bridge.thread.lock().unwrap().is_none());
+    // A bridge that was never started is stopped all the same; a start then is nothing.
+    let never_started = Arc::new(ItemInotifyBridge::new(watched.path().to_owned()));
+    never_started.stop();
+    never_started.start(Arc::clone(&fixture.read_connections)).unwrap();
+    assert!(never_started.thread.lock().unwrap().is_none() && never_started.thread_id.get().is_none());
+}
+
+#[test]
+fn an_announcement_is_performed_once() {
+    let fixture = ItemFixture::new();
+    let first = fixture.show_onedrive_file("first.txt", b"hello").local_item_id;
+    let second = fixture.show_onedrive_file("second.txt", b"hello").local_item_id;
+    let (bridge, watched) = start_bridge(&fixture);
+    let at = |path: &str| watched.path().join(path);
+    bridge.announce(vec![ItemAnnouncement::Appeared { item: first, place: place_in(LocalItemId::ROOT, "first.txt") }]);
+    wait_until("the first name appears", || at("first.txt").exists());
+    // Taken away by hand: an announcement performed a second time would make it again.
+    fs::remove_file(at("first.txt")).unwrap();
+    bridge.announce(vec![ItemAnnouncement::Appeared { item: second, place: place_in(LocalItemId::ROOT, "second.txt") }]);
+    wait_until("the second name appears", || at("second.txt").exists());
+    wait_until("nothing is in progress", || bridge.find_in_progress().is_none());
+    assert!(!at("first.txt").exists(), "the first was performed once");
+    assert!(bridge.queued.lock().unwrap().is_empty());
+    assert_eq!(fs::read_dir(watched.path()).unwrap().count(), 1);
+    bridge.stop();
+}
+
+#[test]
+fn a_changed_content_is_a_touch_of_the_file_by_path() {
+    let fixture = ItemFixture::new();
+    let docs = fixture.show_onedrive_directory("docs").local_item_id;
+    let file = fixture.show_onedrive_file("docs/a.txt", b"hello").local_item_id;
+    let (bridge, watched) = start_bridge(&fixture);
+    let path = watched.path().join("docs/a.txt");
+    fs::create_dir(watched.path().join("docs")).unwrap();
+    fs::write(&path, b"").unwrap();
+    let long_ago = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    fs::File::options().write(true).open(&path).unwrap().set_modified(long_ago).unwrap();
+    bridge.announce(vec![ItemAnnouncement::ContentChanged { item: file, place: place_in(docs, "a.txt") }]);
+    wait_until("the file is touched", || fs::metadata(&path).unwrap().modified().unwrap() > long_ago);
+    // A directory has no content: nothing is touched for one.
+    let directory = watched.path().join("docs");
+    fs::File::open(&directory).unwrap().set_modified(long_ago).unwrap();
+    bridge.announce(vec![ItemAnnouncement::ContentChanged { item: docs, place: place_in(LocalItemId::ROOT, "docs") }]);
+    fs::File::options().write(true).open(&path).unwrap().set_modified(long_ago).unwrap();
+    bridge.announce(vec![ItemAnnouncement::ContentChanged { item: file, place: place_in(docs, "a.txt") }]);
+    wait_until("the file is touched again", || fs::metadata(&path).unwrap().modified().unwrap() > long_ago);
+    assert_eq!(fs::metadata(&directory).unwrap().modified().unwrap(), long_ago);
+    bridge.stop();
+}
+
+#[test]
+fn an_announcement_in_a_directory_the_folder_no_longer_shows_is_skipped_and_the_next_performed() {
+    let fixture = ItemFixture::new();
+    let shown = fixture.show_onedrive_file("shown.txt", b"hello").local_item_id;
+    let listed = fixture.list_onedrive_file("listed.txt", b"not shown").local_item_id;
+    let (bridge, watched) = start_bridge(&fixture);
+    let gone = LocalItemId::new(987_654);
+    bridge.announce(vec![
+        // Its directory has no row: the name went with the directory.
+        ItemAnnouncement::Appeared { item: shown, place: place_in(gone, "inside.txt") },
+        ItemAnnouncement::Vanished { item: shown, former_place: place_in(gone, "inside.txt"), kind: ItemKind::File },
+        // Its item is not shown, or has no row: nothing of a kind to make.
+        ItemAnnouncement::Appeared { item: listed, place: place_in(LocalItemId::ROOT, "listed.txt") },
+        ItemAnnouncement::Appeared { item: gone, place: place_in(LocalItemId::ROOT, "gone.txt") },
+        ItemAnnouncement::Appeared { item: shown, place: place_in(LocalItemId::ROOT, "shown.txt") },
+    ]);
+    wait_until("the last name appears", || watched.path().join("shown.txt").exists());
+    assert_eq!(fs::read_dir(watched.path()).unwrap().count(), 1, "nothing else was made");
+    bridge.stop();
+}

@@ -131,6 +131,7 @@ fn build_over(backing_directory: Arc<BackingDirectory>, setup: ItemMountSetup, r
         Arc::clone(&upload_rules),
         Arc::clone(&running_steps),
         published_plan,
+        Arc::clone(&backing_directory),
         mount_started_at,
     ));
     let write_operations = Arc::new(ItemWriteOperations::new(
