@@ -35,14 +35,26 @@
 //! | `Failed(RunnerPanicked)` | `remember_failed_try(Failed, next)` | the journal; towards OneDrive a cycle asked for |
 //!
 //! **Whose the failed tries are.** `remember_failed_try` in the table is two things, by
-//! the direction of the step. A step towards OneDrive: the store's
-//! (`StepMemory::remember_failed_try`, [`MemoryWrite::FailedTry`]), kept under the stamp
-//! of the unsent change the step sends. A step towards the folder or of the rows: the
-//! task's own ([`LocalStepTriesChange::FailedTry`], applied to its
-//! [`LocalStepTries`](super::local_step_tries::LocalStepTries)), kept with the versions
-//! the step was planned from, for the daemon's run; the store keeps nothing of such a try.
-//! Either way the plan is told the next try (`plan_input::describe_next_tries`) and
-//! answers the wait.
+//! whether the step has a stamp of an unsent change (`LocalStep::of`). A step towards
+//! OneDrive planned from an unsent row: the store's (`StepMemory::remember_failed_try`,
+//! [`MemoryWrite::FailedTry`]), kept under the stamp of the unsent change the step sends.
+//! Every other step — towards the folder, of the rows, and towards OneDrive from a row
+//! that is not unsent —: the task's own ([`LocalStepTriesChange::FailedTry`], applied to
+//! its [`LocalStepTries`](super::local_step_tries::LocalStepTries)), kept with the
+//! versions the step was planned from, for the daemon's run; the store keeps nothing of
+//! such a try. Either way the plan is told the next try
+//! (`plan_input::describe_next_tries`) and answers the wait.
+//!
+//! **A step towards OneDrive from a row that is not unsent** has no stamp for the store to
+//! keep any fact under: what the table writes into the step memory for a refusal — a
+//! taken name, a refusal for good, a refusal for lack of space — would not be kept
+//! (`FactStanding::VersionGone`) and the step would be sent again at once. For such a
+//! step each of those is a failed try of the task's, with the refusal's reason; what the
+//! table says beside the step memory (a cycle asked for) stands.
+//!
+//! **A write of the store that failed** ([`write_step_settlements`] answers the items, or
+//! its job failed as a whole) leaves a step towards OneDrive with nothing kept: the task
+//! counts a try of its own for it ([`keep_unwritten_tries`]), so that it waits.
 //!
 //! **Tested without the rest**, a test per line of the table:
 // test: each_outcome_is_settled_as_its_line_of_the_table_says
@@ -52,7 +64,13 @@
 // test: a_step_that_did_not_run_for_a_cause_that_does_not_end_by_itself_is_not_planned_again_at_once
 // test: the_settlements_of_several_steps_are_written_in_one_job
 // test: a_failed_try_of_a_step_towards_onedrive_is_the_stores_and_any_other_the_tasks
-// test: a_step_towards_the_folder_that_is_written_forgets_the_tasks_tries_of_it
+// test: a_step_that_is_written_forgets_the_tasks_tries_of_it
+// test: a_failed_try_of_a_step_towards_onedrive_from_a_row_that_is_not_unsent_is_the_tasks
+// test: what_onedrive_refuses_of_a_row_that_is_not_unsent_is_a_failed_try_of_the_tasks
+// test: a_settlement_the_store_could_not_be_written_is_a_try_the_task_keeps
+// test: the_count_of_tries_is_the_stores_of_the_stamp_the_step_was_planned_from
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use konedrive_tree::{ActivityKind, ActivityRow, FactStanding, FailedTryStanding, FullListingCause, ItemVersions, LocalItemId, OneDriveStep, Reason, Refusal, RefusedVersion, SpaceRefusal, StepFact, SyncStep, TakenName, TreeError, TreeStore};
 
@@ -85,8 +103,8 @@ pub enum MemoryWrite {
     Forget(StepFact),
 }
 
-/// What a step's end says of the tries the task keeps of the steps towards the folder and
-/// of the rows (`LocalStepTries`). `Nothing` for every step towards OneDrive.
+/// What a step's end says of the tries the task keeps (`LocalStepTries`). A failed try
+/// only for a step whose tries are the task's (`LocalStep::of`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalStepTriesChange {
     Nothing,
@@ -183,12 +201,11 @@ pub fn decide_next_try(count: u32, now: i64) -> i64 {
 }
 
 /// What follows `step` ended as `outcome`: the table of the module's doc. `tries` is how
-/// many tries of the step failed before this one: for a step towards OneDrive, what the
-/// store answered of the unsent change in the plan's round (`ItemMemory::failed_tries`,
-/// which is of the stamp the step was planned from, or not answered); for a step towards
-/// the folder or of the rows, `LocalStepTries::count_tries` of the step. Pure.
+/// many tries of the step failed before this one ([`count_failed_tries`]). Pure.
 pub fn decide_step_settlement(step: &SyncStep, outcome: &StepOutcome, tries: u32, now: i64) -> StepSettlement {
     let is_towards_onedrive = matches!(step, SyncStep::OneDrive(_));
+    // A step with no stamp of an unsent change: the store keeps no fact of it.
+    let is_try_kept_by_task = LocalStep::of(step).is_some();
     let mut settlement = StepSettlement {
         item: step.local_item_id(),
         unsent_since: match step {
@@ -204,24 +221,26 @@ pub fn decide_step_settlement(step: &SyncStep, outcome: &StepOutcome, tries: u32
     };
     let next_try_at = Some(decide_next_try(tries.saturating_add(1), now));
     let count_failed_try = |settlement: &mut StepSettlement, reason: Reason| {
-        if is_towards_onedrive {
-            settlement.memory.push(MemoryWrite::FailedTry { reason, next_try_at });
-        } else {
+        if is_try_kept_by_task {
             settlement.local_step_tries = LocalStepTriesChange::FailedTry { reason, next_try_at };
+        } else {
+            settlement.memory.push(MemoryWrite::FailedTry { reason, next_try_at });
         }
     };
     match outcome {
         StepOutcome::Written { events } => {
             settlement.events = events.clone();
-            if is_towards_onedrive {
-                settlement.went_through = true;
-            } else {
-                settlement.local_step_tries = LocalStepTriesChange::Forgotten;
-            }
+            settlement.went_through = is_towards_onedrive;
+            // Whatever the task kept of the step: its own tries, or one the store could not be written.
+            settlement.local_step_tries = LocalStepTriesChange::Forgotten;
         }
         StepOutcome::RowsChanged(RowsChangedFollowUp::Nothing | RowsChangedFollowUp::MadeItemRemoved(_)) => {}
         StepOutcome::RowsChanged(RowsChangedFollowUp::CycleWanted | RowsChangedFollowUp::MadeItemLeft(_)) => settlement.cycle = CycleRequest::Changes,
         StepOutcome::Refused(refusal) => match refusal {
+            StepRefusal::NameTaken { .. } if is_try_kept_by_task => {
+                count_failed_try(&mut settlement, Reason::NameHeld);
+                settlement.cycle = CycleRequest::Changes;
+            }
             StepRefusal::NameTaken { place, holder_name } => {
                 settlement.memory.push(MemoryWrite::TakenName(TakenName { place: place.clone(), holder_name: holder_name.clone() }));
                 settlement.cycle = CycleRequest::Changes;
@@ -245,6 +264,7 @@ pub fn decide_step_settlement(step: &SyncStep, outcome: &StepOutcome, tries: u32
             }
             // A step that sends no content waits and is tried again: a refusal for lack of space is a content's.
             StepRefusal::NoSpace { .. } if !matches!(step, SyncStep::OneDrive(OneDriveStep::SendNewFile { .. } | OneDriveStep::SendContent { .. })) => count_failed_try(&mut settlement, Reason::Quota),
+            StepRefusal::NoSpace { free_space: Some(_) } if is_try_kept_by_task => count_failed_try(&mut settlement, Reason::Quota),
             StepRefusal::NoSpace { free_space: Some(free_space) } => {
                 let content = find_item_versions(step).local.as_ref().and_then(|local| local.content.clone());
                 settlement.memory.extend(content.map(|content| MemoryWrite::SpaceRefusal(SpaceRefusal { content, free_space: *free_space })));
@@ -255,6 +275,8 @@ pub fn decide_step_settlement(step: &SyncStep, outcome: &StepOutcome, tries: u32
                 settlement.hold = Some(SendingHold::Throttled { until: now.saturating_add(wait) });
             }
             StepRefusal::SignedOut => settlement.hold = Some(SendingHold::SignedOut),
+            StepRefusal::Forbidden if is_try_kept_by_task => count_failed_try(&mut settlement, Reason::Forbidden),
+            StepRefusal::RefusedForGood { message } if is_try_kept_by_task => count_failed_try(&mut settlement, Reason::Refused(Some(message.clone()))),
             StepRefusal::Forbidden => settlement.memory.push(MemoryWrite::Refusal(Refusal { reason: Reason::Forbidden, version: find_refused_version(step) })),
             StepRefusal::RefusedForGood { message } => settlement.memory.push(MemoryWrite::Refusal(Refusal { reason: Reason::Refused(Some(message.clone())), version: find_refused_version(step) })),
             StepRefusal::Locked => count_failed_try(&mut settlement, Reason::Locked),
@@ -293,13 +315,61 @@ pub fn has_changed_anything(outcome: &StepOutcome, settlement: &StepSettlement) 
         || settlement.hold.is_some()
 }
 
+/// How many tries of `step` failed so far: what its next wait is computed from. For a step
+/// whose tries the task keeps (`LocalStep::of`), the task's count. For a step towards
+/// OneDrive planned from an unsent row, what the store keeps under that stamp
+/// (`store_counts`, read for the settlement by [`read_failed_try_counts`]) — or the task's
+/// own count when that is more: tries the store could not be written
+/// ([`keep_unwritten_tries`]). Pure.
+pub fn count_failed_tries(step: &SyncStep, tries: &LocalStepTries, store_counts: &BTreeMap<LocalItemId, u32>) -> u32 {
+    let kept_by_task = tries.count_tries(&LocalStep::describe(step));
+    match LocalStep::of(step) {
+        Some(_) => kept_by_task,
+        None => store_counts.get(&step.local_item_id()).copied().unwrap_or(0).max(kept_by_task),
+    }
+}
+
+/// For each of `steps` whose tries the store keeps (a step towards OneDrive planned from an
+/// unsent row), how many tries the store keeps of the unsent change it was planned from:
+/// read when the step is settled, so that the count is the store's own whatever the last
+/// plan was given. An item with no try kept, or whose row has another stamp by now, is
+/// left out.
+pub fn read_failed_try_counts(items: &konedrive_tree::ItemReader<'_>, steps: &[(LocalItemId, Option<u64>)]) -> Result<BTreeMap<LocalItemId, u32>, TreeError> {
+    let mut counts = BTreeMap::new();
+    for (item, unsent_since) in steps {
+        let memory = items.find_item_memory(*item)?;
+        if let Some(failed_tries) = memory.failed_tries.filter(|_| memory.unsent_since == *unsent_since) {
+            counts.insert(*item, failed_tries.count);
+        }
+    }
+    Ok(counts)
+}
+
+/// The store could not be written what `settled` say of the items of `unwritten`: every
+/// step towards OneDrive among them that had something to keep there counts a try in the
+/// task's own tries, with the reason of its failed try, or `Reason::Store` for a fact of
+/// another kind, and its next try at the time the count gives. So a step whose try was
+/// not written waits as one whose try was. No store, no clock.
+pub fn keep_unwritten_tries(tries: &mut LocalStepTries, settled: &[(SyncStep, StepSettlement)], unwritten: &BTreeSet<LocalItemId>, now: i64) {
+    for (step, settlement) in settled {
+        if !matches!(step, SyncStep::OneDrive(_)) || settlement.memory.is_empty() || !unwritten.contains(&settlement.item) {
+            continue;
+        }
+        let reason = settlement.memory.iter().find_map(|write| if let MemoryWrite::FailedTry { reason, .. } = write { Some(reason.clone()) } else { None }).unwrap_or(Reason::Store);
+        let kept_as = LocalStep::describe(step);
+        let next_try_at = decide_next_try(tries.count_tries(&kept_as).saturating_add(1), now);
+        tries.remember_failed_try(&kept_as, reason, Some(next_try_at));
+    }
+}
+
 /// Applies what the settlements of `ended` say of the task's own tries, each to the step
-/// it is of (`LocalStep::of`): a failed try counted, the tries of a written step
-/// forgotten. No store, no clock. Called by `SyncPlanTask::settle_steps`, under the lock
-/// of the task's tries.
+/// it is of: a failed try counted, the tries of a written step forgotten — also one kept
+/// for a step towards OneDrive whose try the store could not be written
+/// (`LocalStep::describe`). No store, no clock. Called by `SyncPlanTask::settle_steps`,
+/// under the lock of the task's tries.
 pub fn change_local_step_tries(tries: &mut LocalStepTries, ended: &[(SyncStep, StepSettlement)]) {
     for (step, settlement) in ended {
-        let Some(local_step) = LocalStep::of(step) else { continue };
+        let local_step = LocalStep::describe(step);
         match &settlement.local_step_tries {
             LocalStepTriesChange::Nothing => {}
             LocalStepTriesChange::FailedTry { reason, next_try_at } => {
@@ -317,18 +387,23 @@ pub fn change_local_step_tries(tries: &mut LocalStepTries, ended: &[(SyncStep, S
 /// refusal for good is logged here, once per reason, with the item's path as the rows
 /// say it now. A fact the row does not say any more is not written
 /// (`FactStanding::VersionGone`): the item changed since, and the next plan decides. A
-/// write the store refuses — an item whose row went — is said in the journal and is that
-/// item's alone: the other writes and every event are written all the same.
+/// write the store refuses — an item whose row went — is said in the journal, answered
+/// (`SettlementsWritten::unwritten_items`) and is that item's alone: the other writes and
+/// every event are written all the same.
 /// Called by `SyncPlanTask::settle_steps`.
 pub fn write_step_settlements(store: &mut TreeStore, settlements: &[StepSettlement], folder: &std::path::Path, logged_since_listing_ended: usize, now: i64) -> Result<SettlementsWritten, TreeError> {
     let mut events = Vec::new();
     let mut logged_count = 0;
+    let mut unwritten_items = BTreeSet::new();
     for settlement in settlements {
         for write in &settlement.memory {
             // A write the store refuses is that item's alone: an item whose row went has nothing to remember.
             match write_memory(store, settlement, write, folder, now) {
                 Ok(event) => events.extend(event),
-                Err(error) => tracing::warn!("cannot keep {write:?} of item {}: {error}", settlement.item),
+                Err(error) => {
+                    tracing::warn!("cannot keep {write:?} of item {}: {error}", settlement.item);
+                    unwritten_items.insert(settlement.item);
+                }
             }
         }
         for event in decide_events_to_log(&settlement.events, logged_since_listing_ended + logged_count) {
@@ -342,7 +417,7 @@ pub fn write_step_settlements(store: &mut TreeStore, settlements: &[StepSettleme
     if !events.is_empty() {
         store.add_activity(&events)?;
     }
-    Ok(SettlementsWritten { logged_count, rows: events })
+    Ok(SettlementsWritten { logged_count, rows: events, unwritten_items })
 }
 
 /// What one job of [`write_step_settlements`] wrote into the activity log.
@@ -354,6 +429,9 @@ pub struct SettlementsWritten {
     /// Every row written, in the order written: what the task announces
     /// (`SyncPlanTask::announce_settled_steps`).
     pub rows: Vec<ActivityRow>,
+    /// The items a write of the step memory failed for: what the task keeps a try of
+    /// itself ([`keep_unwritten_tries`]).
+    pub unwritten_items: BTreeSet<LocalItemId>,
 }
 
 /// Writes one `write` of `settlement` into the step memory, and answers the event a
@@ -393,3 +471,6 @@ fn write_memory(store: &mut TreeStore, settlement: &StepSettlement, write: &Memo
     }
     Ok(None)
 }
+
+#[cfg(test)]
+mod tests;

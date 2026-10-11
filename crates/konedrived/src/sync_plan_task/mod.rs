@@ -4,9 +4,10 @@
 //!
 //! **State owned:** the loop, with the steps of the last plan that are not started yet,
 //! the count of events logged since the last listing ended, and the failed tries of the
-//! steps towards the folder and of the rows ([`LocalStepTries`], which says why they are
-//! kept here and not in the store); nothing a restart must find again: after one, such a
-//! step is tried again at once. Everything else has an owner of its own: the steps running
+//! steps the store keeps no try of — towards the folder, of the rows, towards OneDrive
+//! from a row that is not unsent, and a try the store could not be written
+//! ([`LocalStepTries`], which says why they are kept here and not in the store); nothing
+//! a restart must find again: after one, such a step is tried again at once. Everything else has an owner of its own: the steps running
 //! (`RunningSteps`), what holds all sending (`SendingHolds`), whether OneDrive is full
 //! (`OneDriveSpace`), the last plan's answers (`PublishedPlan`) — and the rows and the
 //! step memory, read at each plan.
@@ -86,7 +87,7 @@ use std::time::Duration;
 
 use konedrive_graph::drive::DriveQuota;
 use konedrive_graph::pool::TransferPool;
-use konedrive_tree::{FolderStep, FullListingCause, ItemMemory, LocalItemId, PlanFault, Store, SyncPlan, SyncStep, WaitReason};
+use konedrive_tree::{FolderStep, FullListingCause, LocalItemId, PlanFault, Store, SyncPlan, SyncStep, WaitReason};
 use tokio_util::sync::CancellationToken;
 
 use crate::sync_parts::published_plan::{decide_is_shown_blocked, ItemAnswer, PublishedPlan};
@@ -194,7 +195,7 @@ pub struct SyncPlanTask {
     /// what `step_settlement::decide_events_to_log` caps by. Set to 0 at
     /// `WakeCause::ListingEnded`.
     logged_since_listing_ended: AtomicUsize,
-    /// The failed tries of the steps towards the folder and of the rows, for this run.
+    /// The failed tries the task keeps itself, for this run (`LocalStepTries`).
     /// Changed by the loop alone: when a plan is made, to what the rows of that plan's
     /// reading still say (`PlannedRound::local_step_tries`); at a settlement
     /// (`step_settlement::change_local_step_tries`); and at a refresh
@@ -333,14 +334,13 @@ impl SyncPlanTask {
         parts.session_cancellations.forget_old_openings().await;
         let mut old_openings_forgotten_at = (parts.clock)();
         let mut steps_left_to_start: Vec<SyncStep> = Vec::new();
-        let mut memories = BTreeMap::new();
         let mut next_wake = None;
         // The first round is one of a time reached: a plan is made.
         let mut causes = BTreeSet::new();
         loop {
             let ended = self.take_ended_steps();
             let has_settled_steps = !ended.is_empty();
-            let settled = self.settle_steps(ended, &memories).await;
+            let settled = self.settle_steps(ended).await;
             // The one writer of the queue's status: after every round that settled a step, after every plan, and at the tick.
             if has_settled_steps {
                 self.publish_queue_status(true).await;
@@ -365,7 +365,6 @@ impl SyncPlanTask {
                             let next_cleaning_try = *crate::panic::lock(&self.next_cleaning_try);
                             next_wake = decide_next_wake(&round.plan, parts.sending_holds.find_end(now), next_quota_read, next_cleaning_try, now);
                             steps_left_to_start = self.start_steps(round.plan.steps, now);
-                            memories = round.memories;
                         }
                         Err(error) => {
                             tracing::warn!("cannot make the sync plan of {}: {error}", parts.folder.display());
@@ -398,7 +397,7 @@ impl SyncPlanTask {
         parts.running_steps.abort_requests();
         // TODO: a step towards the folder waits for the folder's lease and a step of the rows for the tree lock, and a stop aborts neither (the review's Q3): if whoever awaits this holds the lease for writing, or the tree lock, this loop does not end. Check `SyncTasks::stop` and its callers once they are filled, and fix if needed.
         loop {
-            self.settle_steps(self.take_ended_steps(), &memories).await;
+            self.settle_steps(self.take_ended_steps()).await;
             if parts.running_steps.count_steps_to_settle() == 0 {
                 break;
             }
@@ -632,7 +631,7 @@ impl SyncPlanTask {
         if !sent_items.is_empty() {
             (parts.marks_announcer)(sent_items);
         }
-        // A step towards the folder that was written is the one whose tries are forgotten (`decide_step_settlement`): the settlement keeps no outcome.
+        // A step that was written is the one whose tries are forgotten (`decide_step_settlement`): the settlement keeps no outcome.
         let is_folder_step_written = settled.iter().any(|(step, settlement)| match step {
             SyncStep::Folder(_) => settlement.local_step_tries == step_settlement::LocalStepTriesChange::Forgotten,
             SyncStep::OneDrive(_) | SyncStep::Row(_) => false,
@@ -789,19 +788,24 @@ impl SyncPlanTask {
     }
 
     /// Settles the steps that ended, all that are ready together: for each
-    /// `step_settlement::decide_step_settlement`, with the count of tries from the round's
-    /// memories for a step towards OneDrive and from the task's own tries for any other;
+    /// `step_settlement::decide_step_settlement`, with the count of tries
+    /// (`step_settlement::count_failed_tries`: the task's own, and for a step towards
+    /// OneDrive planned from an unsent row what the store keeps under that stamp, read
+    /// here for the settlement — `step_settlement::read_failed_try_counts` — so that a
+    /// step whose item the last plan was not given counts on all the same);
     /// the task's own tries changed (`step_settlement::change_local_step_tries`); all
     /// that is the store's written in ONE job of the store
-    /// (`step_settlement::write_step_settlements`: the step memory and the activity log);
+    /// (`step_settlement::write_step_settlements`: the step memory and the activity log),
+    /// and what could not be written there kept as a try of the task's
+    /// (`step_settlement::keep_unwritten_tries`), so that no step is planned again with
+    /// no wait;
     /// then what they say of all sending applied (`SendingHolds`), the listing asked for
     /// a cycle once when any says so, each step ended (`RunningSteps::end`). The loop
-    /// goes on with a round of `WakeCause::StepFinished`. `memories` are those of the
-    /// last plan's round (`PlannedRound::memories`). Answers what `decide_round` asks of
+    /// goes on with a round of `WakeCause::StepFinished`. Answers what `decide_round` asks of
     /// the steps settled: whether any changed something a plan is made from
     /// (`step_settlement::has_changed_anything`), and whether a plan was made since any
     /// of them began. Nothing, and neither, for no step.
-    async fn settle_steps(&self, ended: Vec<EndedStep>, memories: &BTreeMap<LocalItemId, ItemMemory>) -> SettledSteps {
+    async fn settle_steps(&self, ended: Vec<EndedStep>) -> SettledSteps {
         if ended.is_empty() {
             return SettledSteps::default();
         }
@@ -810,14 +814,27 @@ impl SyncPlanTask {
         let ended: Vec<(SyncStep, StepOutcome)> = ended.into_iter().map(|ended| (ended.step, ended.outcome)).collect();
         let parts = &self.parts;
         let now = (parts.clock)();
+        // The tries the store keeps, of the steps whose tries are its own: read now, whatever the last plan was given.
+        let kept_by_store: Vec<(LocalItemId, Option<u64>)> = ended
+            .iter()
+            .filter_map(|(step, _)| match step {
+                SyncStep::OneDrive(sent) if LocalStep::of(step).is_none() => Some((step.local_item_id(), sent.item().unsent_since)),
+                SyncStep::OneDrive(_) | SyncStep::Folder(_) | SyncStep::Row(_) => None,
+            })
+            .collect();
+        let store_counts = if kept_by_store.is_empty() {
+            BTreeMap::new()
+        } else {
+            // A count that cannot be read is the task's own: of the tries it kept when the store could not be written.
+            parts.store.read_items(move |items| step_settlement::read_failed_try_counts(items, &kept_by_store)).await.unwrap_or_else(|error| {
+                tracing::warn!("cannot read how many tries of the ended steps failed: {error}");
+                BTreeMap::new()
+            })
+        };
         let settled: Vec<(SyncStep, StepSettlement)> = {
             let mut local_step_tries = crate::panic::lock(&self.local_step_tries);
-            let count_tries = |step: &SyncStep| match LocalStep::of(step) {
-                Some(local_step) => local_step_tries.count_tries(&local_step),
-                // TODO: the count is of the last plan's memories: for a step that ran across a plan in which its item was not given it is 0, and the next try is a second away while the store's own count goes on. Check whether the store's answer of the count (`FailedTryStanding::Counted`) is to set the wait, and fix if needed.
-                None => memories.get(&step.local_item_id()).and_then(|memory| memory.failed_tries.as_ref()).map_or(0, |failed_tries| failed_tries.count),
-            };
-            let settled: Vec<(SyncStep, StepSettlement)> = ended.iter().map(|(step, outcome)| (step.clone(), step_settlement::decide_step_settlement(step, outcome, count_tries(step), now))).collect();
+            let settled: Vec<(SyncStep, StepSettlement)> =
+                ended.iter().map(|(step, outcome)| (step.clone(), step_settlement::decide_step_settlement(step, outcome, step_settlement::count_failed_tries(step, &local_step_tries, &store_counts), now))).collect();
             step_settlement::change_local_step_tries(&mut local_step_tries, &settled);
             settled
         };
@@ -835,11 +852,14 @@ impl SyncPlanTask {
         let written = match parts.store.call(move |store| step_settlement::write_step_settlements(store, &settlements, &folder, logged_since_listing_ended, now)).await {
             Ok(written) => {
                 self.logged_since_listing_ended.fetch_add(written.logged_count, Ordering::SeqCst);
+                step_settlement::keep_unwritten_tries(&mut crate::panic::lock(&self.local_step_tries), &settled, &written.unwritten_items, now);
                 written.rows
             }
-            // TODO: when this job fails no try of a step towards OneDrive is counted, and the step is planned again at once. Check whether such steps are to wait, and fix if needed.
+            // Nothing was kept in the store: the task keeps a try of each step that had something to keep there, so that it waits.
             Err(error) => {
                 tracing::warn!("cannot write what came of {} steps: {error}", settled.len());
+                let unwritten: BTreeSet<LocalItemId> = settled.iter().map(|(_, settlement)| settlement.item).collect();
+                step_settlement::keep_unwritten_tries(&mut crate::panic::lock(&self.local_step_tries), &settled, &unwritten, now);
                 Vec::new()
             }
         };

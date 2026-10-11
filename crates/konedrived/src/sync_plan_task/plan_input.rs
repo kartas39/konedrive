@@ -192,8 +192,8 @@ impl GivenItems {
 pub struct PlannedRound {
     pub input: SyncPlanInput,
     pub plan: SyncPlan,
-    /// What the steps remember of each item given, as its row still says it: for the
-    /// settlement's count of tries of a step towards OneDrive.
+    /// What the steps remember of each item given, as its row still says it: what the
+    /// answers are published with (a refusal for good).
     pub memories: BTreeMap<LocalItemId, ItemMemory>,
     /// The task's tries of `facts.local_step_tries` that the rows of this reading still
     /// say (`LocalStepTries::void_by_rows`): what the task keeps from now on, in place of
@@ -498,16 +498,28 @@ pub fn describe_given_items(items: &ItemReader<'_>, facts: &DaemonFacts, local_s
 /// failed tries with a time: that time and the reason of the last failure, under
 /// `TriedStep::TowardsOneDrive` — the store keeps the tries of what is sent, and answers
 /// them only for the unsent change they are of. And `LocalStepTries::list_next_tries` of
-/// `local_step_tries`: the task's own, each under the kind of the step towards the folder
-/// or of the rows it is of. Every entry is given, due or not: the plan compares with its
-/// `now`. Pure.
+/// `local_step_tries`: the task's own, each under the kind of the step it is of — a step
+/// towards the folder, of the rows, or towards OneDrive (from a row that is not unsent,
+/// or a try the store could not be written; where both keep a try of what is sent of an
+/// item, the later time stands). Every entry is given, due or not: the plan compares
+/// with its `now`. Pure.
 pub fn describe_next_tries(memories: &BTreeMap<LocalItemId, ItemMemory>, local_step_tries: &LocalStepTries) -> BTreeMap<(LocalItemId, TriedStep), NextTry> {
     let describe_sent = |(item, memory): (&LocalItemId, &ItemMemory)| {
         let failed_tries = memory.failed_tries.as_ref()?;
         Some(((*item, TriedStep::TowardsOneDrive), NextTry { not_before: failed_tries.next_try_at?, reason: failed_tries.last_failure.clone() }))
     };
     let mut next_tries: BTreeMap<(LocalItemId, TriedStep), NextTry> = memories.iter().filter_map(describe_sent).collect();
-    next_tries.extend(local_step_tries.list_next_tries());
+    for (step, kept_by_task) in local_step_tries.list_next_tries() {
+        match next_tries.entry(step) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(kept_by_task);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) if entry.get().not_before < kept_by_task.not_before => {
+                entry.insert(kept_by_task);
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {}
+        }
+    }
     next_tries
 }
 

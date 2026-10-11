@@ -42,6 +42,21 @@ fn an_item_under_its_temporary_name_is_sent_on_and_the_folder_is_not_moved_there
     assert_eq!(answer(&given, 4), send_move(&given, 4, "d"));
 }
 
+/// The move owed to OneDrive from a row that is not unsent — moved in OneDrive alone, to the
+/// temporary name — waits for its next try as any step towards OneDrive: the caller keeps
+/// the try itself, the store having no stamp to keep it under, and tells it as one of what
+/// is sent.
+#[test]
+fn a_move_owed_from_a_row_that_is_not_unsent_waits_until_its_next_try() {
+    let mut given = input(vec![moved_in_onedrive(synced_file(3, ROOT, "c.txt"), ROOT, &swap_name(3))]);
+    given.temporary_names = [remembered(3, place(ROOT, "c.txt"))].into();
+    assert_eq!(versions(&given, 3).unsent_since, None);
+    given.next_tries = [((id(3), TriedStep::TowardsOneDrive), NextTry { not_before: given.now + 30, reason: Reason::Network })].into();
+    assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::Time { until: given.now + 30, reason: Reason::Network }));
+    given.now += 30;
+    assert_eq!(answer(&given, 3), send_move(&given, 3, "c.txt"), "the time has come");
+}
+
 /// A temporary name the steps remember says something only while OneDrive has the item
 /// under it ([`TemporaryName::is_at`]): in the directory the item was on its way to, under
 /// that very name.

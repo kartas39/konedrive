@@ -1,8 +1,12 @@
-//! The failed tries of the steps towards the folder and of the rows alone, kept by the
-//! plan's task for the life of its run: how many tries of a step failed, when the next is
-//! due and why the last failed. They are what makes such a step wait, and the plan is told
-//! of them (`SyncPlanInput::next_tries`) together with what the store keeps of the tries
-//! of what is sent to OneDrive.
+//! The failed tries the plan's task keeps for the life of its run: how many tries of a
+//! step failed, when the next is due and why the last failed. They are of the steps the
+//! store keeps no try of: the steps towards the folder, the steps of the rows alone, and
+//! a step towards OneDrive planned from a row that is not unsent (a move owed to OneDrive
+//! after a killed exchange of names; a content that is this folder's own upload, sent
+//! again after the user put the agreed content back) — and, for any step towards OneDrive,
+//! a try the store could not be written ([`LocalStep::describe`]). They are what makes
+//! such a step wait, and the plan is told of them (`SyncPlanInput::next_tries`) together
+//! with what the store keeps of the tries of what is sent to OneDrive.
 //!
 //! **State owned:** the tries, by the item and the kind of the step ([`LocalStepKind`]),
 //! each with the versions of the rows the step was planned from. Changed by the plan's
@@ -14,8 +18,10 @@
 //! folder is planned for what OneDrive has, and nothing a row keeps tells its work from
 //! the next: the eTag is the same after the work ended (a content landed by a read, a pin
 //! taken off) and another one while the work is the same (another client renamed the
-//! item), and an item OneDrive removed has none. So the tries are kept with the versions
-//! the step was planned from, by the one who plans, and are void when:
+//! item), and an item OneDrive removed has none. A step towards OneDrive planned from a
+//! row that is not unsent has no stamp either: the store answers its try as one of a
+//! change that is gone (`FailedTryStanding::ChangeGone`). So the tries are kept with the
+//! versions the step was planned from, by the one who plans, and are void when:
 //!
 //! - the step is written ([`LocalStepTries::forget_tries`]);
 //! - a row the step was planned from is another piece of work — its binding, its local
@@ -29,11 +35,13 @@
 //! A try whose step is not planned any more while its rows are as they were (a pin taken
 //! off) stays, and makes nothing wait: the plan answers a wait only in place of a step.
 //!
-//! **After a restart** a step towards the folder or of the rows is tried again at once,
-//! with a count that begins at one. That is right: its work is local — a rename, a
-//! removal, a download into the backing directory, a row —, a try sends no request that
-//! changes OneDrive, and the failures that last (a place held on disk, a backing file
-//! that is missing) are met again at the first try and wait from then on.
+//! **After a restart** a step whose tries are kept here is tried again at once, with a
+//! count that begins at one. For a step towards the folder or of the rows that is right:
+//! its work is local — a rename, a removal, a download into the backing directory, a row
+//! —, a try sends no request that changes OneDrive, and the failures that last (a place
+//! held on disk, a backing file that is missing) are met again at the first try and wait
+//! from then on. A step towards OneDrive from a row that is not unsent sends one request
+//! more after a restart than its wait would have allowed, and waits from then on.
 //!
 //! **Tested without the rest**, a test per voider:
 // test: a_failed_try_is_counted_and_told_to_the_plan_with_its_next_try
@@ -48,19 +56,23 @@
 // test: the_step_for_an_item_onedrive_removed_waits_as_any_other
 // test: a_try_of_a_step_planned_from_other_versions_is_counted_from_one
 // test: the_tries_of_one_kind_of_step_are_not_those_of_another
-// test: no_try_of_a_step_towards_onedrive_is_kept
+// test: no_try_of_a_step_towards_onedrive_from_an_unsent_row_is_kept
+// test: the_tries_of_a_step_towards_onedrive_from_a_row_that_is_not_unsent_are_kept_and_told_as_a_sending
 // test: a_refresh_makes_every_try_due_and_keeps_its_count
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use konedrive_tree::{FolderStepKind, ItemVersions, LocalItemId, NextTry, Reason, RowStepKind, SyncStep, TriedStep};
 
-/// Which step towards the folder or of the rows a step is: what the tries of one step of an
-/// item are told from those of another by.
+/// Which step a step is, as its tries are kept here: what the tries of one step of an item
+/// are told from those of another by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LocalStepKind {
     TowardsFolder(FolderStepKind),
     OfRows(RowStepKind),
+    /// Whatever is sent of the item: a request that failed says that the next one waits,
+    /// as the store's tries of an unsent change do (`TriedStep::TowardsOneDrive`).
+    TowardsOneDrive,
 }
 
 impl LocalStepKind {
@@ -69,13 +81,14 @@ impl LocalStepKind {
         match self {
             LocalStepKind::TowardsFolder(kind) => TriedStep::TowardsFolder(kind),
             LocalStepKind::OfRows(kind) => TriedStep::OfRows(kind),
+            LocalStepKind::TowardsOneDrive => TriedStep::TowardsOneDrive,
         }
     }
 }
 
-/// A step towards the folder or of the rows, as its tries are kept: the item it is of, its
-/// kind, and the versions of every row it was planned from — its item's, and for two
-/// items that are merged those of both.
+/// A step as its tries are kept here: the item it is of, its kind, and the versions of
+/// every row it was planned from — its item's, and for two items that are merged those of
+/// both.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalStep {
     item: LocalItemId,
@@ -84,16 +97,29 @@ pub struct LocalStep {
 }
 
 impl LocalStep {
-    /// `step` as its tries are kept; `None` for a step towards OneDrive, whose tries the
-    /// store keeps with the unsent change it sends (`StepMemory::remember_failed_try`).
+    /// `step` as its tries are kept here; `None` for a step towards OneDrive planned from
+    /// an unsent row, whose tries the store keeps with the unsent change it sends
+    /// (`StepMemory::remember_failed_try`). A step towards OneDrive planned from a row
+    /// that is not unsent has no stamp for the store to keep a try under: its tries are
+    /// the task's.
     pub fn of(step: &SyncStep) -> Option<Self> {
+        match step {
+            SyncStep::OneDrive(sent) if sent.item().unsent_since.is_some() => None,
+            SyncStep::OneDrive(_) | SyncStep::Folder(_) | SyncStep::Row(_) => Some(Self::describe(step)),
+        }
+    }
+
+    /// `step` as a try of it is kept here, whichever step it is: what a try the store
+    /// could not be written is kept as, for a step towards OneDrive planned from an unsent
+    /// row too.
+    pub fn describe(step: &SyncStep) -> Self {
         let (kind, planned_from) = match step {
-            SyncStep::OneDrive(_) => return None,
+            SyncStep::OneDrive(sent) => (LocalStepKind::TowardsOneDrive, vec![sent.item().clone()]),
             SyncStep::Folder(step) => (LocalStepKind::TowardsFolder(step.kind()), vec![step.item().clone()]),
             SyncStep::Row(konedrive_tree::RowStep::MergeItems { local, onedrive }) => (LocalStepKind::OfRows(RowStepKind::MergeItems), vec![local.clone(), onedrive.clone()]),
             SyncStep::Row(step) => (LocalStepKind::OfRows(step.kind()), vec![step.item().clone()]),
         };
-        Some(Self { item: step.local_item_id(), kind, planned_from })
+        Self { item: step.local_item_id(), kind, planned_from }
     }
 
     pub fn item(&self) -> LocalItemId {
@@ -125,8 +151,7 @@ impl LocalStepTry {
     }
 }
 
-/// The failed tries of the steps towards the folder and of the rows, for one folder and one
-/// run of the daemon.
+/// The failed tries the plan's task keeps, for one folder and one run of the daemon.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LocalStepTries {
     tries: BTreeMap<(LocalItemId, LocalStepKind), LocalStepTry>,

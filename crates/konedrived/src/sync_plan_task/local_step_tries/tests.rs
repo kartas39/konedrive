@@ -217,10 +217,38 @@ fn the_tries_of_one_kind_of_step_are_not_those_of_another() {
 }
 
 #[test]
-fn no_try_of_a_step_towards_onedrive_is_kept() {
-    assert_eq!(LocalStep::of(&SyncStep::OneDrive(OneDriveStep::SendContent { item: agreeing(2) })), None);
+fn no_try_of_a_step_towards_onedrive_from_an_unsent_row_is_kept() {
+    let mut unsent = agreeing(2);
+    unsent.local.as_mut().unwrap().content = Some(content("mine"));
+    unsent.unsent_since = Some(7);
+    assert_eq!(LocalStep::of(&SyncStep::OneDrive(OneDriveStep::SendContent { item: unsent.clone() })), None, "the store keeps its tries, under the stamp");
+    let described = LocalStep::describe(&SyncStep::OneDrive(OneDriveStep::SendContent { item: unsent }));
+    assert_eq!((described.item(), described.kind()), (id(2), LocalStepKind::TowardsOneDrive), "a try the store could not be written is kept all the same");
     let hash = LocalStep::of(&SyncStep::Row(RowStep::HashLocalContent { item: agreeing(2) })).expect("of the rows");
     assert_eq!((hash.item(), hash.kind(), hash.kind().tried_step()), (id(2), LocalStepKind::OfRows(RowStepKind::HashLocalContent), TriedStep::OfRows(RowStepKind::HashLocalContent)));
+}
+
+/// A move owed to OneDrive after a killed exchange of names, and a content that is the
+/// folder's own upload sent again: the row is not unsent, and the store keeps no try.
+#[test]
+fn the_tries_of_a_step_towards_onedrive_from_a_row_that_is_not_unsent_are_kept_and_told_as_a_sending() {
+    let mut planned_from = agreeing(2);
+    planned_from.onedrive.as_mut().unwrap().place = Some(place(".konedrive-temporary"));
+    let send_move = SyncStep::OneDrive(OneDriveStep::SendMove { item: planned_from.clone(), parent: reference(1), name: OsString::from("report") });
+    let send_content = SyncStep::OneDrive(OneDriveStep::SendContent { item: planned_from.clone() });
+    for step in [send_move, send_content] {
+        let kept_as = LocalStep::of(&step).expect("no stamp: the task keeps its tries");
+        assert_eq!((kept_as.item(), kept_as.kind()), (id(2), LocalStepKind::TowardsOneDrive));
+        let mut tries = LocalStepTries::default();
+        assert_eq!(tries.remember_failed_try(&kept_as, Reason::Network, Some(60)), 1);
+        assert_eq!(tries.remember_failed_try(&kept_as, Reason::Network, Some(120)), 2);
+        assert_eq!(tries.list_next_tries(), [((id(2), TriedStep::TowardsOneDrive), NextTry { not_before: 120, reason: Reason::Network })].into(), "every step towards OneDrive of the item waits");
+        // OneDrive confirmed the move: the row is another piece of work.
+        let mut confirmed = planned_from.clone();
+        confirmed.onedrive.as_mut().unwrap().place = Some(place("report"));
+        tries.void_by_rows(&rows(&[&confirmed]));
+        assert_eq!(tries, LocalStepTries::default());
+    }
 }
 
 #[test]

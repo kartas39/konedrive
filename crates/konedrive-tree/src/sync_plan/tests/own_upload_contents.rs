@@ -38,6 +38,20 @@ fn a_content_the_folders_own_upload_left_in_onedrive_is_sent_again() {
     assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::User(Reason::WaitingForSpace)));
 }
 
+/// The content put back to the one agreed on is sent from a row that is not unsent: it
+/// waits for its next try as any step towards OneDrive, the try being the caller's to
+/// keep, as the store has no stamp to keep it under.
+#[test]
+fn a_content_sent_again_from_a_row_that_is_not_unsent_waits_until_its_next_try() {
+    let mut given = input(vec![with_content_in_onedrive(on_disk(synced_file(4, ROOT, "put-back.txt")), left())]);
+    given.own_upload_contents = [own_upload(4, left())].into();
+    assert_eq!(versions(&given, 4).unsent_since, None);
+    given.next_tries = [((id(4), TriedStep::TowardsOneDrive), NextTry { not_before: given.now + 30, reason: Reason::Hash })].into();
+    assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::Time { until: given.now + 30, reason: Reason::Hash }));
+    given.now += 30;
+    assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendContent { item: versions(&given, 4) }), "the time has come");
+}
+
 /// The fact counts only while the row's OneDrive content is the one it names: once a
 /// listing wrote another, OneDrive changed the file. And where OneDrive has the content
 /// agreed on, nothing is left of the upload.
