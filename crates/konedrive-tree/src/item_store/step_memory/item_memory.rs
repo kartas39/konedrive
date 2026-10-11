@@ -74,7 +74,20 @@ impl std::fmt::Debug for UploadSessionAddress {
 }
 
 /// An upload session that was opened and has not ended: what a step goes on with after a
-/// stop or a crash.
+/// stop or a crash. It says that OneDrive has a session at this address, which got so far,
+/// for this content of the item.
+///
+/// *Voided by:* the step's own next answer from the session — a fragment taken
+/// (`advance_upload_session`), the session ended or found gone
+/// (`forget_ended_upload_session`, and the commit of the upload, which is told the
+/// address), given up (`abandon_upload_session`); the row not being the unsent change or
+/// the bytes the session sends ([`ItemMemory::split_by_standing`]: taken away to the
+/// cancellations by the next write for the item); an operation on the item's binding, or
+/// on that of the directory its empty file is in ([`ItemMemory::drop_facts_of_binding`],
+/// [`ItemMemory::drop_answers_of_directory`]). No listing names a session. A session whose
+/// item has no step that would ask — it is left here, or waits for the user — ends at the
+/// time OneDrive said (`expires_at`): the step of another item that finds the name held
+/// by it is answered that time and acts on it (`EmptyFileSession::Continued`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadSession {
     pub address: UploadSessionAddress,
@@ -122,6 +135,13 @@ pub enum UploadTag {
 
 /// The item an upload of a new file left in OneDrive with other content than was sent: to be
 /// removed before the file is sent again.
+///
+/// *Voided by:* the answer to the request that removes it, or that reads it first —
+/// removed, gone, or changed by another (`forget_mismatched_item`); the folder having the
+/// item (the schema's triggers `mismatched_item_of_folder*`, whoever writes the row); a
+/// listing that names it with another tag than the upload's answer gave, or as gone
+/// (`forget_mismatched_item_listed_changed` and `forget_mismatched_item`, in the page's
+/// transaction).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MismatchedItem {
     /// The item, with its drive: what its removal is asked of.
@@ -167,6 +187,14 @@ impl MismatchedItem {
 /// OneDrive while the name it takes is still another item's. It says where OneDrive has the
 /// item from the first request of the exchange until OneDrive confirmed it at another
 /// place, or its step forgets it.
+///
+/// *Voided by:* the commit of a request OneDrive confirmed the item at another place by —
+/// a move ([`ItemMemory::forget_confirmed_request`]), the making of a new item
+/// (`forget_temporary_name_unless_at`) — or removed
+/// (`forget_temporary_names_of_items_onedrive_lacks`); a listing that names the item at
+/// another place (`forget_temporary_name_unless_at`, in the page's transaction) or as
+/// gone, by itself or with a directory above it (the sweep at the end of every page); and
+/// its step, done with it (`forget_fact`). It goes with the binding to the row that has it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemporaryName {
     /// The temporary name, in the directory of `toward`.
@@ -214,6 +242,12 @@ pub enum FailedTryStanding {
 }
 
 /// A file OneDrive refused as too big for the space it has.
+///
+/// *Voided by:* a quota read that says the file fits (`forget_fitting_space_refusals`:
+/// OneDrive answered again about its space; one that says it does not fit is the free
+/// space the refusal holds from then on); the row not being the unsent change or the bytes
+/// that were refused ([`ItemMemory::split_by_standing`]); an operation on the item's
+/// binding ([`ItemMemory::drop_facts_of_binding`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpaceRefusal {
     /// The content that was refused; its size is what the file needs.
@@ -275,7 +309,14 @@ impl UnsentRemoval {
 }
 
 /// The user's confirmation of a removal a mass removal held: of the removal with this
-/// stamp, and of no later removal of the same item.
+/// stamp, and of no later removal of the same item. For a directory it is given for what
+/// OneDrive had below it when the user was asked.
+///
+/// *Voided by:* the row not being that removal ([`ItemMemory::split_by_standing`]); an
+/// operation on the item's binding ([`ItemMemory::drop_facts_of_binding`]); and, for a
+/// directory, a listing that puts an item into it or below it that the rows did not say
+/// it had (`forget_removal_confirmations_above`, in the page's transaction): the guard
+/// against a mass removal asks again for what OneDrive has there now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemovalConfirmation {
     pub unsent_since: u64,
@@ -291,6 +332,15 @@ pub enum RefusedVersion {
 }
 
 /// An item OneDrive refuses for good, until it changes.
+///
+/// *Voided by:* the row not being what was refused — the unsent change, the version at
+/// that place, the removal ([`ItemMemory::split_by_standing`]); an operation on the
+/// item's binding, or the directory it was sent into giving its binding up
+/// ([`ItemMemory::drop_facts_of_binding`], [`ItemMemory::drop_answers_of_directory`]);
+/// and, for what was not allowed, a new sign-in (`forget_refusals_for`). Nothing asks
+/// OneDrive again while the item is as it was refused, and no listing says that OneDrive
+/// would take it now: that is the design's "until it changes", and the one fact here
+/// that an answer of OneDrive does not void.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
     /// Why, as OneDrive answered: not allowed, or refused with its message.
@@ -300,7 +350,18 @@ pub struct Refusal {
 }
 
 /// A name OneDrive answered is taken, though the client's own rule of names did not foresee
-/// it.
+/// it. It says two things: that this item was sent under this place — of the unsent
+/// change —, and that OneDrive has another item under that name — of what OneDrive has.
+///
+/// *Voided by:* the row not being that unsent change at that place
+/// ([`ItemMemory::split_by_standing`]); an operation on the item's binding or on the
+/// directory's; the commit of a move OneDrive confirmed the item at that place by
+/// ([`ItemMemory::forget_confirmed_request`]); and OneDrive answering again about the
+/// name, whoever writes it into the rows — a row that says the holder has the name is
+/// moved, renamed or removed, or another item is put under a name a row already has
+/// (the schema's triggers `taken_name_holder_left` and `taken_name_other_item_came`, in
+/// the transaction of the page or of the commit), or a listing ends and no row says that
+/// OneDrive has an item under the name (`forget_taken_names_onedrive_lacks`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TakenName {
     /// The place the item was sent to.

@@ -18,10 +18,21 @@
 //!   also when the file's row went first (`mismatched_item_removals`,
 //!   [`mismatched_item_removals`]).
 //!
+//! **Every fact names what voids it**, and the voider is something that happens for every
+//! way the fact can stop being true. What a fact says of OneDrive is void when OneDrive
+//! has answered again about that item: by the step's own next answer, or by a listing
+//! that names the item, changed or removed — in the transaction that writes the page
+//! (`onedrive_versions`, and the schema's triggers on `items` for what any writer of a
+//! row voids). Each type says its voiders where it is declared ([`item_memory`],
+//! [`upload_session_openings`], [`upload_session_cancellations`],
+//! [`mismatched_item_removals`]). A fact that can name no such voider is not kept here:
+//! the failed tries of a step towards the folder or of the rows are kept by the plan's
+//! task, with the versions the step was planned from, for its run.
+//!
 //! **The two kinds of fact, and what each is answered by.**
 //!
 //! - *A fact of a local change that is not sent* — the upload session, the failed tries
-//!   with their wait, the refusal for lack of space, the refusal for good, the taken name,
+//!   of what was sent with their wait, the refusal for lack of space, the refusal for good, the taken name,
 //!   the confirmation of a removal — is learnt under the stamp of the row the step was
 //!   planned from ([`ItemVersions::unsent_since`](crate::ItemVersions), which the caller
 //!   gives), is not written when the row has another stamp or none, and is answered only
@@ -36,7 +47,10 @@
 //!   unsent change from the items it changes — each was an answer about the item as it was
 //!   bound —, the upload session to the cancellations, and the temporary name goes with
 //!   the binding. The item an upload left is void once the folder has that item, which the
-//!   schema holds whoever writes the row ([`mismatched_item_removals`]). When a directory
+//!   schema holds whoever writes the row ([`mismatched_item_removals`]), and once a
+//!   listing says it has another content or is gone. A name found taken is of both kinds:
+//!   it is answered while the item is the unsent change at the place that was sent, and
+//!   is void once OneDrive answers again about the name ([`onedrive_answers`]). When a directory
 //!   gives its binding up, what OneDrive answered about sending items into it — a
 //!   refusal, a taken name, the session of a new file — is dropped from those items, and
 //!   the openings and empty files in it are with the row that has the binding.
@@ -75,6 +89,8 @@ use crate::{TreeError, TreeStore};
 mod item_memory;
 /// A row of `step_memory`.
 mod memory_row;
+/// What an answer of OneDrive about an item voids of what is remembered.
+mod onedrive_answers;
 /// The items uploads left with other content whose file's row went, until each is removed.
 mod mismatched_item_removals;
 /// The items OneDrive refused, with their reasons, listed and counted.
@@ -93,6 +109,9 @@ pub use refusal_reasons::ItemRefusalReason;
 pub use upload_session_openings::{OpeningTry, OpeningWindow, UPLOAD_SESSION_OPENING_KEPT};
 
 pub(crate) use mismatched_item_removals::list_removals as list_mismatched_item_removals;
+pub(crate) use onedrive_answers::{
+    forget_mismatched_item_listed_changed, forget_removal_confirmations_above, forget_taken_names_onedrive_lacks, forget_temporary_name_unless_at, forget_temporary_names_of_items_onedrive_lacks,
+};
 pub(crate) use refusal_reasons::{count_refusal_reasons, count_space_refusals, list_refusal_reasons, list_space_refusal_reasons};
 pub(crate) use upload_session_cancellations::list_cancellations as list_upload_session_cancellations;
 pub(crate) use upload_session_openings::{forget_openings_at, forget_openings_before, list_opening_windows, settle_answered_opening};
@@ -122,39 +141,7 @@ pub(crate) fn schema() -> String {
         mismatched_item_removals::item_gone_statements(),
         upload_session_openings::ITEM_GONE_STATEMENTS,
         memory_row::item_gone_statements(),
-    ) + &taken_name_triggers()
-}
-
-/// The two triggers that hold "a name found taken is void once OneDrive answered again
-/// about that name", whoever writes the row — a listing's page, a full listing's sweep, a
-/// removal that takes what is below a directory, the commit of a step OneDrive confirmed a
-/// move or a removal to — and in that writer's transaction:
-///
-/// - `taken_name_holder_left`: a row's place in OneDrive is no more the one it was. Every
-///   taken name at the place it left, the holder's name compared as OneDrive compares
-///   names, is forgotten: the item that held the name was moved, renamed or removed.
-/// - `taken_name_other_item_came`: a row is given a place in OneDrive that another row has
-///   already. OneDrive said that another item has the name now; every taken name there is
-///   forgotten, and the plan decides from the rows.
-///
-/// A row that is given the place first — the holder itself, listed after the answer —
-/// forgets nothing: the rows then say what the taken name says. A binding that moves to
-/// another row moves the place with it, and no row is left or joined by that.
-fn taken_name_triggers() -> String {
-    let is_another_place = "(NEW.onedrive_parent_id IS NOT OLD.onedrive_parent_id OR NEW.onedrive_folded_name IS NOT OLD.onedrive_folded_name)";
-    let cleared = memory_row::TAKEN_NAME_CLEARED;
-    format!(
-        "
-         CREATE TRIGGER taken_name_holder_left AFTER UPDATE OF onedrive_parent_id, onedrive_folded_name ON items
-             WHEN OLD.onedrive_parent_id IS NOT NULL AND {is_another_place} BEGIN
-             UPDATE step_memory SET {cleared} WHERE taken_parent_id = OLD.onedrive_parent_id AND taken_holder_folded_name = OLD.onedrive_folded_name;
-         END;
-         CREATE TRIGGER taken_name_other_item_came AFTER UPDATE OF onedrive_parent_id, onedrive_folded_name ON items
-             WHEN NEW.onedrive_parent_id IS NOT NULL AND {is_another_place} AND EXISTS (SELECT 1 FROM items
-                  WHERE onedrive_parent_id = NEW.onedrive_parent_id AND onedrive_folded_name = NEW.onedrive_folded_name AND local_item_id != NEW.local_item_id) BEGIN
-             UPDATE step_memory SET {cleared} WHERE taken_parent_id = NEW.onedrive_parent_id AND taken_holder_folded_name = NEW.onedrive_folded_name;
-         END;"
-    )
+    ) + &onedrive_answers::taken_name_triggers()
 }
 
 /// An item of OneDrive an upload left with other content than was sent, as it is found by
@@ -735,40 +722,6 @@ pub(crate) fn remember_mismatched_item(conn: &Connection, item: LocalItemId, upl
     })
 }
 
-/// A listing wrote that OneDrive has the item `onedrive_item` with these tags: in the
-/// listing's transaction. When an upload of this folder left that item and the tag of the
-/// upload's answer is another one now, another client wrote the item since: it is not what
-/// the upload left any more, and is forgotten wherever it is kept.
-pub(crate) fn forget_mismatched_item_listed_changed(conn: &Connection, onedrive_item: &OneDriveItemReference, ctag: Option<&str>, etag: Option<&str>) -> Result<(), TreeError> {
-    let kept = match list_files_of(conn, onedrive_item)?.into_iter().next() {
-        Some(file) => read_memory(conn, file)?.mismatched_item,
-        None => find_removal(conn, onedrive_item)?,
-    };
-    if kept.is_some_and(|kept| kept.is_listed_changed(ctag, etag)) {
-        forget_mismatched_item(conn, onedrive_item)?;
-    }
-    Ok(())
-}
-
-/// A listing wrote that the item `directory` of OneDrive, or a directory OneDrive has it
-/// below, has an item in it that the rows did not say it had: in the listing's
-/// transaction. The user's confirmation of the removal of each of those directories is
-/// forgotten: it was given for what OneDrive had below the directory then, and the guard
-/// against a mass removal asks again for what it has now. Nothing is read while no
-/// confirmation is kept.
-pub(crate) fn forget_removal_confirmations_above(conn: &Connection, directory: LocalItemId) -> Result<(), TreeError> {
-    if !conn.prepare_cached("SELECT EXISTS (SELECT 1 FROM step_memory WHERE is_removal_confirmed IS NOT NULL)")?.query_row([], |row| row.get::<_, bool>(0))? {
-        return Ok(());
-    }
-    // A directory may be below what is below it between two pages: each is met once.
-    let (mut at, mut met) = (Some(directory), std::collections::BTreeSet::new());
-    while let Some(above) = at.filter(|above| met.insert(*above)) {
-        change_kept_memory(conn, above, |memory| memory.removal_confirmation = None)?;
-        at = find_item(conn, above)?.and_then(|row| row.onedrive).and_then(|onedrive| onedrive.place).map(|place| place.parent_local_item_id);
-    }
-    Ok(())
-}
-
 /// [`StepMemory::find_mismatched_item`], inside the caller's transaction.
 pub(crate) fn find_mismatched_item(conn: &Connection, onedrive_item: &OneDriveItemReference) -> Result<Option<MismatchedItemUpload>, TreeError> {
     if is_item_of_folder(conn, onedrive_item)? {
@@ -811,41 +764,6 @@ pub(crate) fn remember_failed_try(conn: &Connection, item: LocalItemId, unsent_s
             FactStanding::VersionGone => FailedTryStanding::ChangeGone,
         })
     })
-}
-
-/// OneDrive said that it has `item` at `place` — a listing, where the row said another
-/// place before, or the answer to the request that made the item: in the transaction that
-/// writes it. A temporary name that is not that place's is forgotten.
-pub(crate) fn forget_temporary_name_unless_at(conn: &Connection, item: LocalItemId, place: &ItemPlace) -> Result<(), TreeError> {
-    change_kept_memory(conn, item, |memory| memory.forget_temporary_name_unless_at(place))
-}
-
-/// The temporary name of every item the rows say OneDrive does not have is forgotten: after
-/// a listing, or a step, wrote that OneDrive removed items, however many, in its
-/// transaction. One statement, by the index of the temporary names.
-pub(crate) fn forget_temporary_names_of_items_onedrive_lacks(conn: &Connection) -> Result<(), TreeError> {
-    conn.prepare_cached(
-        "UPDATE step_memory INDEXED BY step_memory_temporary_name SET temporary_name = NULL, temporary_toward_parent_id = NULL, temporary_toward_name = NULL
-          WHERE temporary_name IS NOT NULL
-            AND EXISTS (SELECT 1 FROM items WHERE items.local_item_id = step_memory.local_item_id AND onedrive_item_id IS NOT NULL AND onedrive_parent_id IS NULL AND items.local_item_id != 1)",
-    )?
-    .execute([])?;
-    Ok(())
-}
-
-/// A listing ended: in its transaction. A taken name is forgotten when no row says that
-/// OneDrive has an item under the holder's name, as OneDrive compares names, in that
-/// directory: the listing is OneDrive's answer about the directory, and the item that held
-/// the name was never listed there, or left before any listing named it. While a listing
-/// is under way nothing is asked: its later pages may still name the holder.
-pub(crate) fn forget_taken_names_onedrive_lacks(conn: &Connection) -> Result<(), TreeError> {
-    let sql = format!(
-        "UPDATE step_memory SET {} WHERE taken_parent_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM items
-          WHERE onedrive_parent_id = step_memory.taken_parent_id AND onedrive_folded_name = step_memory.taken_holder_folded_name AND items.local_item_id != step_memory.local_item_id)",
-        memory_row::TAKEN_NAME_CLEARED
-    );
-    conn.prepare_cached(&sql)?.execute([])?;
-    Ok(())
 }
 
 /// [`StepMemory::clear_next_tries`], inside the caller's transaction.

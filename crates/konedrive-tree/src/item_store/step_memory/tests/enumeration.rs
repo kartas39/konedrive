@@ -37,6 +37,9 @@ enum Shape {
     Moved,
     /// An item of OneDrive removed here, its removal not sent.
     Removed,
+    /// A file of OneDrive whose content was changed here and that was renamed here, to
+    /// `moved`: a commit of one of the two leaves it unsent by the other.
+    EditedAndMoved,
 }
 
 use Shape::{Agreeing, Edited, New, Removed};
@@ -410,6 +413,7 @@ fn shapes_for(operation: Operation, kind: ItemKind) -> &'static [Shape] {
     let is_file = kind == ItemKind::File;
     match operation {
         Renamed | RenamedAndRenamedBack | MovedToAnotherDirectory | RemovedHere | CommitRenameToConflictCopy => SHOWN,
+        CommitSendMove | CommitAgreeOnPlace if is_file => &[Shape::Moved, Shape::EditedAndMoved],
         MovedBackToSyncedPlace | CommitSendMove | CommitSendMoveToTemporaryName | CommitSendMoveAfterAnotherRename | CommitTakeMoveBack | CommitAgreeOnPlace => &[Shape::Moved],
         SavedOverABoundFile | SavedOverANewFile | ANewFileSavedOverIt | ABoundFileSavedOverIt | OpenedForWriting | ClosedChanged | ClosedUnchanged | Truncated | ExchangedPlaces
         | CommitDownloadContent | CommitHashLocalContent
@@ -440,7 +444,8 @@ fn shapes_for(operation: Operation, kind: ItemKind) -> &'static [Shape] {
         }
         GaveUpBinding | CommitGiveUpBinding | CommitRemoveItem | CommitMoveToTemporaryName | CeasedToBeShown => BOUND_AND_SHOWN,
         DirectoryGaveUpBinding | DirectoryAboveGaveUpBinding | RowDeleted => EVERY_SHAPE,
-        CommitSendContent | CommitSendContentChangedMeanwhile | CommitSendContentToldNoSession if is_file => &[Edited],
+        CommitSendContent if is_file => &[Edited, Shape::EditedAndMoved],
+        CommitSendContentChangedMeanwhile | CommitSendContentToldNoSession if is_file => &[Edited],
         CommitSendMoveChangedMeanwhile if is_file => &[Shape::Moved],
         CommitMoveItem => &[Agreeing, Edited],
         ListedAtAnotherPlace | ListedGone => BOUND,
@@ -543,6 +548,10 @@ fn scene(kind: ItemKind, shape: Shape) -> Scene {
     match shape {
         Edited => change_content(&mut store, item),
         Shape::Moved => move_to(&mut store, item, place(directory, "moved")),
+        Shape::EditedAndMoved => {
+            change_content(&mut store, item);
+            move_to(&mut store, item, place(directory, "moved"));
+        }
         Removed => remove(&mut store, item),
         New | Agreeing => {}
     }
@@ -1154,7 +1163,7 @@ fn every_fact_meets_every_operation_and_becomes_what_the_rule_says() {
     for operation in OPERATIONS {
         let mut is_done_for_any = false;
         for kind in [ItemKind::File, ItemKind::Directory] {
-            for shape in shapes_for(operation, kind).iter().filter(|shape| kind == ItemKind::File || **shape != Edited) {
+            for shape in shapes_for(operation, kind).iter().filter(|shape| kind == ItemKind::File || !matches!(**shape, Edited | Shape::EditedAndMoved)) {
                 is_done_for_any = true;
                 let mut line = format!("{operation:?} / {kind:?} {shape:?}:");
                 for fact in FACTS {

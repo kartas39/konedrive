@@ -6,6 +6,12 @@
 //! fact of an item: it is what is left to do in OneDrive once the item's memory of the
 //! session is gone, so that the empty file of a new file's session does not hold a name
 //! until OneDrive ends the session by itself.
+//!
+//! *Voided by:* OneDrive's answer to the cancel — cancelled, or no such session —, which
+//! the loop that sends the cancels gives ([`forget_cancellation`], by
+//! `StepMemory::forget_upload_session_cancellation`), and by nothing else: a cancel that
+//! fails stays and is sent again, and a session OneDrive ended by itself answers the next
+//! cancel that it is gone.
 
 use rusqlite::{params, Connection};
 

@@ -10,6 +10,13 @@
 //! file that asked — its row gone, or its step asking at another place since — and then
 //! names no file: the empty file may still hold the name for the next one. It does not
 //! outlive its directory: the schema takes it with the directory's row.
+//!
+//! *Voided by:* the answer to the request it was kept for — a certain answer that left no
+//! empty file ([`settle_answered_opening`]), or the address of the session, which tells
+//! the empty file from then on ([`forget_opening_of`]); the step that read what holds the
+//! place and resolved it ([`forget_openings_at`]); and its time
+//! ([`forget_openings_before`], [`UPLOAD_SESSION_OPENING_KEPT`] after its latest try). A
+//! record says what this folder asked, not what OneDrive has, so no listing voids it.
 
 use rusqlite::{params, Connection, OptionalExtension};
 
