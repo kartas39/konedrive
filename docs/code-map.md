@@ -457,15 +457,20 @@ The task of a folder's sync plan: one per folder, in either access mode.
 - `mod.rs` — `SyncPlanTask`: the loop that reads what differs, makes the plan, runs its steps
   and settles what came of each; what wakes it, what bounds the plans, its stop. `[tests]`
 - `plan_input.rs` — what a plan is made from: read from the store by its bounded readers,
-  closed, planned, and widened by every item the plan answers it was not given.
+  closed, planned, and widened by every item the plan answers it was not given; the window
+  of a reading (`decide_window`) and the count of what will not be sent by itself. `[tests]`
+- `missing_pinned_files.rs` — `MissingPinnedFiles`: whether a pinned file may be missing its
+  content, which is when a plan's reading scans below the pinned directories. `[tests]`
 - `step_choice.rs` — `decide_steps_to_start`: which steps of a plan start now.
 - `step_runners.rs` — the three runners as the task takes them: one seam.
 - `row_steps.rs` — the runner of the steps of the rows alone, among them the hash of a local
   content.
 - `step_settlement.rs` — what is written and asked for after a step: the one place that counts
-  tries, keeps a refusal and asks the listing for a cycle.
-- `local_step_tries.rs` — `LocalStepTries`: the failed tries of the steps towards the folder
-  and of the rows, kept for the life of the task. `[tests]`
+  tries, keeps a refusal and asks the listing for a cycle. `[tests]`
+- `local_step_tries.rs` — `LocalStepTries`: the failed tries the task keeps itself, for the
+  life of its run: of the steps towards the folder and of the rows, of a step towards
+  OneDrive from a row that is not unsent, and of a try the store could not be written.
+  `[tests]`
 
 ### `crates/konedrived/src/sync_tasks/`
 
@@ -506,7 +511,7 @@ access mode.
 - `settings.rs` — the account's own settings: thumbnails, the pause, the ignore list, the name
   conflict copies are made with.
 - `publish.rs` — what the bus shows of the folder's state, worked out in one place. `[tests]`
-- `outbox.rs` — what `org.konedrive.UploadQueue` asks of the folder: the answers of
+- `upload_queue.rs` — what `org.konedrive.UploadQueue` asks of the folder: the answers of
   `upload_queue/`. `[tests]`
 - `queries.rs` — the activity, the conflicts and their dismissal, the address of an item in
   OneDrive's web interface.
@@ -753,8 +758,6 @@ The rows:
   copy it made, the event of the activity log. `[tests]`
 - `item_store/place_change_records.rs` — the table `place_change_records`: each change of the
   backing directory's names, written before the disk is touched. `[tests]`
-- `item_store/sending_switch.rs` — the folder's state of sending across a restart: read-write,
-  or read-only with the stamp of the switch. `[tests]`
 - `item_store/ignored_names.rs` — the flag `is_name_ignored` gone over once when the ignore
   list changed. `[tests]`
 - `item_store/item_pins.rs` — the pins asked and set by item. `[tests]`
@@ -863,10 +866,9 @@ The sync plan:
   `RESERVED_PREFIX`), and `proc_path`, the path of an open descriptor.
 - `placeholder.rs` — what konedrive keeps on a file or a directory: its extended attributes
   and its modes. `[tests]`
-- `lease.rs` — a write lease: proof that no other process has the file open. `[tests]`
 - `handle.rs` — file handles: the kernel's name for an inode. `[tests]`
 - `probe.rs` — whether a directory's filesystem can be a sync folder's: sparse files, `user.*`
-  attributes, leases, file handles. `[tests]`
+  attributes, file handles. `[tests]`
 
 ## `crates/konedrive-reason`: why a change is kept back
 
@@ -897,8 +899,7 @@ Each has its file in `crates/konedrived/src/dbus/`.
 
 ### `dbus/`
 
-- `org.konedrive.Accounts.xml` — the manager: the accounts, the shared settings, `HelperState`
-  (which reads `connected`), the version.
+- `org.konedrive.Accounts.xml` — the manager: the accounts, the shared settings, the version.
 - `org.konedrive.Account.xml` — one account: sign-in, label, mode and the wish for read-only
   that waits, profile, quota.
 - `org.konedrive.Folder.xml` — one account's folder: registration, refresh, pause, settings.

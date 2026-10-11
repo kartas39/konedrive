@@ -199,7 +199,8 @@ pub const DISMISSED: &str = "Dismissed. The file was left where it is.";
 pub const PINS_LEFT: &str = "Files kept on this device (`konedrivectl sync pin`) were left as they are.";
 
 /// What `sync activity` says in the place of the detail for a kind whose events carry
-/// none and need a sentence; `None` for every other kind.
+/// none and need a sentence; `None` for every other kind. (`store-rebuilt` carries its
+/// sentence as its detail: what was lost with the old records.)
 // TODO: wording
 fn activity_kind_sentence(kind: &str) -> Option<&'static str> {
     match kind {

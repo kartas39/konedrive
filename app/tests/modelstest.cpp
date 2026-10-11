@@ -82,9 +82,15 @@ private Q_SLOTS:
         QCOMPARE(uploadReasonText(QStringLiteral("blocked")), QStringLiteral("KOneDrive's record of this change is incomplete (blocked): it stays here until the file is changed again."));
         QCOMPARE(uploadReasonText(QStringLiteral("not allowed now: the folder is read-only")), QStringLiteral("Uploads are not allowed now: it goes on when they are (the folder is read-only)."));
         for (const QString &kind : {QStringLiteral("uploaded"), QStringLiteral("cloud-moved"), QStringLiteral("cloud-deleted"), QStringLiteral("restored"),
-                                    QStringLiteral("not-uploaded"), QStringLiteral("not-removed-here")}) {
+                                    QStringLiteral("not-uploaded"), QStringLiteral("not-removed-here"), QStringLiteral("store-rebuilt")}) {
             QVERIFY2(ActivityModel::describe(kind, QString()) != kind, qPrintable(kind));
         }
+        // A store that was made anew and lost something: the folder's row, the daemon's sentence as its detail, a warning.
+        ActivityModel rebuilt;
+        rebuilt.prepend({1, QStringLiteral("store-rebuilt"), QStringLiteral("/d"), QStringLiteral("lost with them: 3 pin(s)")});
+        QCOMPARE(rebuilt.data(rebuilt.index(0), ActivityModel::TextRole).toString(), QStringLiteral("KOneDrive's records of this folder were made anew"));
+        QCOMPARE(rebuilt.data(rebuilt.index(0), ActivityModel::DetailTextRole).toString(), QStringLiteral("lost with them: 3 pin(s)"));
+        QCOMPARE(rebuilt.data(rebuilt.index(0), ActivityModel::IconRole).toString(), QStringLiteral("dialog-warning"));
         // A directory that cannot be removed here: its row says why, and what to do.
         ActivityModel notRemoved;
         notRemoved.prepend({1, QStringLiteral("not-removed-here"), QStringLiteral("/d/Notebooks"), QString()});

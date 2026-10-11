@@ -57,6 +57,11 @@ QString ActivityModel::describe(const QString &kind, const QString &detail)
     if (kind == QLatin1String("listed")) {
         return i18nc("@info activity", "Listed");
     }
+    if (kind == QLatin1String("store-rebuilt")) {
+        // The path is the folder; the detail says what was lost with the old records.
+        // TODO: wording
+        return i18nc("@info activity", "KOneDrive's records of this folder were made anew");
+    }
     if (kind == QLatin1String("not-removed-here")) {
         // The path is the directory; DetailTextRole says why and what to do.
         // TODO: wording
@@ -132,7 +137,7 @@ QVariant ActivityModel::data(const QModelIndex &index, int role) const
             return QStringLiteral("document-duplicate");
         }
         if (row.kind == QLatin1String("failed") || row.kind == QLatin1String("update-failed")
-            || row.kind == QLatin1String("upload-failed") || row.kind == QLatin1String("not-removed-here")) {
+            || row.kind == QLatin1String("upload-failed") || row.kind == QLatin1String("not-removed-here") || row.kind == QLatin1String("store-rebuilt")) {
             return QStringLiteral("dialog-warning");
         }
         if (row.kind == QLatin1String("uploaded") || row.kind == QLatin1String("cloud-moved")) {
