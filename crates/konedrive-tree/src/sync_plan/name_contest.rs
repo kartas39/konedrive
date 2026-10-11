@@ -114,7 +114,7 @@ pub(crate) fn decide_name_contest(claim: &NameClaim<'_>) -> NameContestOutcome {
         Some(NameHolder::IsHeldBack(_)) if claim.is_left_here => return NameContestOutcome::NameIsFree,
         Some(NameHolder::IsHeldBack(holder)) => return NameContestOutcome::WaitsFor(holder),
         Some(NameHolder::IsLeftByUpload { .. }) if claim.is_left_here => return NameContestOutcome::NameIsFree,
-        // TODO: contract — the item an upload left is removed by nobody once its file is left here or has a binding (step_memory: it goes to `mismatched_item_removals` only with the file's row, and the file's step removes it only before it sends the file as new again): the claimant's wait for that file then ends at the user, or at no step.
+        // A file that cannot remove its leftover any more — it came to be left here, or has a binding — holds it no longer: the schema takes the leftover to the daemon's own removals then (the trigger `mismatched_item_file_unable`), and the holder is one with no file.
         Some(NameHolder::IsLeftByUpload { file: Some(file) }) => return NameContestOutcome::WaitsFor(file),
         Some(NameHolder::IsLeftByUpload { file: None }) => return NameContestOutcome::WaitsForRemovalOfHolder,
         Some(NameHolder::Stays(_)) if claim.is_listing_under_way => return NameContestOutcome::WaitsForListing,

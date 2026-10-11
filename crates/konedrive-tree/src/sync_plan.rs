@@ -243,7 +243,7 @@ pub struct SyncPlanInput {
     /// to the file it was left by. It waits to be removed in OneDrive, which is not the
     /// plan's: the step that sends the file again removes it first, and what is left when
     /// the file's row went is removed by the daemon by itself.
-    // TODO: contract — the row of an item an upload left goes on saying OneDrive has it after the item was removed there and forgotten (`forget_mismatched_item`, step_memory.rs, touches the memory alone), until a listing says it is gone: meanwhile it is not named here and is planned as any item a listing brought (shown, a holder of its name, never shown below a removed directory). The plan needs the row to lose its OneDrive version in the transaction that forgets the item.
+    // Once such an item was removed in OneDrive or found gone, its row loses its OneDrive version in the transaction that forgets the item (`StepMemory::forget_removed_mismatched_item`): the plan is never given a row that says OneDrive has a leftover that is gone.
     pub items_left_by_uploads: BTreeMap<LocalItemId, Option<LocalItemId>>,
     /// What the steps remember of a temporary name an item goes through in OneDrive
     /// ([`ItemMemory::temporary_name`](crate::ItemMemory)), for every item given that
