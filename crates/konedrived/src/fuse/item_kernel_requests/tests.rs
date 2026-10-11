@@ -90,7 +90,7 @@ impl Requests {
             fixture.folder(),
             fixture.runtime(),
         ));
-        let free_up = Arc::new(ItemFreeUp::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.item_handles), Arc::clone(&fixture.download_states), Arc::clone(&fixture.running_steps)));
+        let free_up = Arc::new(ItemFreeUp::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.item_handles), Arc::clone(&fixture.download_states), Arc::clone(&fixture.running_steps), Arc::clone(&fixture.inotify_bridge)));
         let requests = Arc::new(ItemKernelRequests::new(
             lookup,
             Arc::clone(&fixture.read_connections),

@@ -79,6 +79,7 @@
 // test: a_conflict_copy_is_on_record_with_its_commit
 // test: the_items_of_several_show_steps_are_committed_in_one_job_each_by_its_own_versions
 // test: every_step_announces_the_former_name_and_the_new_one
+// test: a_step_that_writes_nothing_announces_nothing
 // test: a_death_between_the_disk_and_the_commit_is_undone_by_the_check_at_start_from_the_steps_record
 // test: a_commit_that_writes_takes_the_steps_record_and_one_that_finds_the_rows_changed_leaves_it
 // test: what_a_download_answered_is_the_steps_outcome_case_by_case

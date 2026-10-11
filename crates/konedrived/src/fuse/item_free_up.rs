@@ -21,24 +21,29 @@
 // test: a_changed_row_that_says_on_disk_over_no_file_is_left_for_the_check_at_start
 // test: a_death_between_the_row_and_the_copys_going_leaves_a_copy_the_check_at_start_reads_as_landed
 // test: a_copy_that_cannot_be_removed_is_on_disk_in_its_row_again
+// test: a_freed_copy_and_a_mended_row_are_announced_and_what_is_left_is_not
 //!
 //! **A copy that cannot be removed** after its row said not on disk is said on disk again
 //! (`ItemStore::commit_landed_content`): the row never says for long that content is not
 //! here which the disk holds under the item's name.
 //!
-//! **Nothing is announced here**: this part holds no bridge, and neither does the files
-//! interface that calls it. Whoever shows the state of a freed file learns of it at its
-//! next question.
+//! **Announced** (`ItemAnnouncement::ContentChanged`, by the item and its place) once a
+//! copy is gone and once a row is mended: the file's state goes from downloaded to not
+//! on disk with nothing of the kernel's saying so, and whoever shows it — a file
+//! manager's emblem — asks again. A file that was left, and a copy that could not be
+//! removed and is on disk in its row again, are as they were: nothing is announced.
 #![allow(dead_code)]
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use konedrive_tree::{ContentPresence, ContentVersion, FileSyncState, Item, ItemKind, LocalItemId, StepCommitOutcome, Store, TreeError};
+use konedrive_tree::{ContentPresence, ContentVersion, FileSyncState, Item, ItemKind, ItemPlace, LocalItemId, StepCommitOutcome, Store, TreeError};
 
 use super::free_up_decision::FreeUpDecision;
+use super::item_announcements::ItemAnnouncement;
 use super::item_download_states::ItemDownloadStates;
 use super::item_handles::ItemHandles;
+use super::item_inotify_bridge::ItemInotifyBridge;
 use super::place_changes::{PlaceChanges, RowPathStat};
 use crate::folder::running_steps::RunningSteps;
 
@@ -82,6 +87,8 @@ pub(super) enum FreedCopy {
 #[derive(Debug)]
 struct FreedRow {
     item: LocalItemId,
+    /// Where the folder shows the file: what its freeing is announced by.
+    place: ItemPlace,
     path: PathBuf,
     content: ContentVersion,
     /// What the copy takes on disk.
@@ -95,20 +102,22 @@ pub(super) struct ItemFreeUp {
     item_handles: Arc<ItemHandles>,
     download_states: Arc<ItemDownloadStates>,
     running_steps: Arc<RunningSteps>,
+    /// Told of a copy that is gone and of a row that was mended.
+    inotify_bridge: Arc<ItemInotifyBridge>,
 }
 
 impl ItemFreeUp {
-    /// Made by the mount's build.
-    pub(super) fn new(place_changes: Arc<PlaceChanges>, store: Store, item_handles: Arc<ItemHandles>, download_states: Arc<ItemDownloadStates>, running_steps: Arc<RunningSteps>) -> Self {
-        Self { place_changes, store, item_handles, download_states, running_steps }
+    /// Made by the mount's build, after the bridge.
+    pub(super) fn new(place_changes: Arc<PlaceChanges>, store: Store, item_handles: Arc<ItemHandles>, download_states: Arc<ItemDownloadStates>, running_steps: Arc<RunningSteps>, inotify_bridge: Arc<ItemInotifyBridge>) -> Self {
+        Self { place_changes, store, item_handles, download_states, running_steps, inotify_bridge }
     }
 
     /// Frees the copy of the file `item`: one job of the store reads the row, its pin and
     /// its path; [`decide_item_free_up`]; `ItemStore::commit_freed_content` with the
     /// content it decided on; and only then the backing file removed, as a place change
-    /// (`PlaceChange::set_aside`, its end, `PlaceChanges::discard`). A daemon that dies between the two
-    /// leaves a file the row says is not on disk: the check at start reads it as the
-    /// copy, landed before its row (design §10).
+    /// (`PlaceChange::set_aside`, its end, `PlaceChanges::discard`), and the change
+    /// announced. A daemon that dies between the two leaves a file the row says is not on
+    /// disk: the check at start reads it as the copy, landed before its row (design §10).
     ///
     /// Called by `ItemFilesInterface::free_up`, as a job of the write-operation thread,
     /// under the tree lock, once per file.
@@ -135,8 +144,8 @@ impl ItemFreeUp {
         });
         let Some((is_pinned, row, path)) = read.map_err(fail)? else { return Err(FreedCopy::Left(FreeUpDecision::NothingToFree)) };
         // What is not on disk takes no space, whatever keeps it.
-        let content = row.local.as_ref().and_then(|local| local.content.clone()).filter(|_| row.kind == ItemKind::File && row.content_presence == ContentPresence::OnDisk);
-        let Some(content) = content else { return Err(FreedCopy::Left(FreeUpDecision::NothingToFree)) };
+        let shown = row.local.as_ref().and_then(|local| local.content.clone().zip(local.place.clone())).filter(|_| row.kind == ItemKind::File && row.content_presence == ContentPresence::OnDisk);
+        let Some((content, place)) = shown else { return Err(FreedCopy::Left(FreeUpDecision::NothingToFree)) };
         let is_downloading_or_sent = self.download_states.is_downloading(item) || self.running_steps.has_running_step(item);
         match decide_item_free_up(&row, is_pinned, is_downloading_or_sent, self.item_handles.is_open_for_writing(item)) {
             FreeUpDecision::Free => {}
@@ -150,21 +159,22 @@ impl ItemFreeUp {
         };
         let decided = content.clone();
         match self.store.call_blocking(move |store| store.item_store().commit_freed_content(item, &decided)).map_err(fail)? {
-            StepCommitOutcome::Written => Ok(FreedRow { item, path, content, bytes }),
+            StepCommitOutcome::Written => Ok(FreedRow { item, place, path, content, bytes }),
             StepCommitOutcome::RowsChanged => Err(FreedCopy::RowsChanged),
         }
     }
 
-    /// The second half: the copy goes from the backing directory. One that cannot be
-    /// removed is said on disk in its row again.
+    /// The second half: the copy goes from the backing directory, and its going is
+    /// announced. One that cannot be removed is said on disk in its row again.
     fn remove_freed_copy(&self, freed: FreedRow) -> FreedCopy {
-        let FreedRow { item, path, content, bytes } = freed;
+        let FreedRow { item, place, path, content, bytes } = freed;
         let change = self.place_changes.begin();
         let set_aside = change.set_aside(&path, item);
         drop(change);
         match set_aside {
             Ok(undo) => {
                 self.place_changes.discard(undo);
+                self.inotify_bridge.announce(vec![ItemAnnouncement::ContentChanged { item, place }]);
                 FreedCopy::Freed { bytes }
             }
             Err(refusal) => {
@@ -181,8 +191,9 @@ impl ItemFreeUp {
     /// when the row is a clean copy (its local content is the synced one) it is written
     /// not on disk (`ItemStore::commit_freed_content`), and the next open reads from
     /// OneDrive; a changed one is left as it is, for the check at start to read as a
-    /// removal by hand. Whether it was mended. The disk is asked once more here, where no
-    /// place change runs: a file that is there by now is no missing copy.
+    /// removal by hand. Whether it was mended; a mended row is announced. The disk is
+    /// asked once more here, where no place change runs: a file that is there by now is
+    /// no missing copy.
     ///
     /// Called as a job of the write-operation thread by the open request that got
     /// `ENOENT` through `PlaceChanges::open_at_row_path` (which has ruled out a rename
@@ -191,15 +202,20 @@ impl ItemFreeUp {
         let read = self.store.call_blocking(move |store| {
             let item_store = store.item_store();
             let reader = item_store.reader();
-            let Some(content) = reader.find_item(item)?.as_ref().and_then(find_clean_copy_content).cloned() else { return Ok(None) };
-            Ok(reader.find_path(item)?.map(|path| (content, path)))
+            let Some(row) = reader.find_item(item)? else { return Ok(None) };
+            let Some(content) = find_clean_copy_content(&row).cloned() else { return Ok(None) };
+            let Some(place) = row.local.and_then(|local| local.place) else { return Ok(None) };
+            Ok(reader.find_path(item)?.map(|path| (content, place, path)))
         });
-        let Ok(Some((content, path))) = read else { return false };
+        let Ok(Some((content, place, path))) = read else { return false };
         if !matches!(self.place_changes.stat_at_row_path(move || Ok(Some((path.clone(), ())))), Ok(RowPathStat::NothingOnDisk { .. })) {
             return false;
         }
         match self.store.call_blocking(move |store| store.item_store().commit_freed_content(item, &content)) {
-            Ok(StepCommitOutcome::Written) => true,
+            Ok(StepCommitOutcome::Written) => {
+                self.inotify_bridge.announce(vec![ItemAnnouncement::ContentChanged { item, place }]);
+                true
+            }
             Ok(StepCommitOutcome::RowsChanged) => false,
             Err(error) => {
                 tracing::warn!("the row of item {item}, whose copy is missing, could not be mended: {error}");

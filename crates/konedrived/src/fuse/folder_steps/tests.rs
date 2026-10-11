@@ -715,3 +715,74 @@ fn a_commit_that_writes_takes_the_steps_record_and_one_that_finds_the_rows_chang
     assert_eq!(count_records(&fixture), 0, "the runner takes it after its undo");
     assert_eq!(fixture.read_disk_file("a.txt").as_deref(), Some(&b"the content"[..]));
 }
+
+/// What the bridge was told so far, a change after the other: its thread is not started
+/// in the fixture, so everything announced is still queued.
+fn list_announced(fixture: &ItemFixture) -> Vec<Vec<ItemAnnouncement>> {
+    fixture.inotify_bridge.list_queued()
+}
+
+fn place_at(fixture: &ItemFixture, directory: &str, name: &str) -> ItemPlace {
+    let parent_local_item_id = match directory {
+        "" => LocalItemId::ROOT,
+        directory => fixture.find_item_at(directory).expect("the directory is shown").local_item_id,
+    };
+    ItemPlace { parent_local_item_id, name: name.into() }
+}
+
+#[test]
+fn every_step_announces_the_former_name_and_the_new_one() {
+    for case in CASES {
+        let fixture = ItemFixture::new();
+        let step = make_case(&fixture, case);
+        let (steps, id) = (make_steps(&fixture), step.item().local_item_id);
+        let former_place = fixture.find_item(id).and_then(|row| row.local).and_then(|local| local.place).expect("the item is shown");
+        assert_eq!(list_announced(&fixture), Vec::<Vec<ItemAnnouncement>>::new(), "{case:?}: nothing before the step");
+
+        assert!(matches!(run(&fixture, &steps, step), StepOutcome::Written { .. }), "{case:?}");
+
+        let vanished = ItemAnnouncement::Vanished { item: id, former_place: former_place.clone(), kind: ItemKind::File };
+        let appeared = |directory: &str, name: &str| ItemAnnouncement::Appeared { item: id, place: place_at(&fixture, directory, name) };
+        let announced = match case {
+            Case::MoveItem => vec![vanished, appeared("docs", "b.txt")],
+            // Moved here to `docs/moved.txt`, and taken back to where OneDrive has it.
+            Case::TakeMoveBack => vec![vanished, appeared("", "a.txt")],
+            Case::MoveToTemporaryName => vec![vanished, ItemAnnouncement::Appeared { item: id, place: place_at(&fixture, "docs", &make_temporary_name(id, 1).to_string_lossy()) }],
+            Case::RenameToConflictCopy => vec![vanished, appeared("", "a (conflict).txt")],
+            Case::RemoveItem => vec![vanished],
+            Case::TakeOneDriveContent => vec![ItemAnnouncement::ContentChanged { item: id, place: former_place }],
+        };
+        assert_eq!(list_announced(&fixture), [announced], "{case:?}: one change, the former name first");
+    }
+
+    // The items a plan shows are one change, each appearing at its place, a directory
+    // before what is in it.
+    let fixture = ItemFixture::new();
+    let (directory, inside) = (fixture.list_onedrive_directory("docs"), fixture.list_onedrive_file("docs/a.txt", b"a"));
+    let steps = make_steps(&fixture);
+    fixture.runtime().block_on(steps.run_show_items(vec![ItemVersions::of(&inside), ItemVersions::of(&directory)]));
+    let appeared = |item: &Item, directory: &str, name: &str| ItemAnnouncement::Appeared { item: item.local_item_id, place: place_at(&fixture, directory, name) };
+    assert_eq!(list_announced(&fixture), [vec![appeared(&directory, "", "docs"), appeared(&inside, "docs", "a.txt")]]);
+
+    // A download: the file is shown as being downloaded, and then as downloaded.
+    let pinned = fixture.show_onedrive_file("docs/pinned.txt", b"pinned");
+    let before = list_announced(&fixture).len();
+    assert!(matches!(run(&fixture, &steps, FolderStep::DownloadContent { item: ItemVersions::of(&pinned) }), StepOutcome::Written { .. }));
+    let changed = vec![ItemAnnouncement::ContentChanged { item: pinned.local_item_id, place: place_at(&fixture, "docs", "pinned.txt") }];
+    assert_eq!(list_announced(&fixture)[before..], [changed.clone(), changed]);
+}
+
+#[test]
+fn a_step_that_writes_nothing_announces_nothing() {
+    for case in CASES {
+        let fixture = ItemFixture::new();
+        let step = make_case(&fixture, case);
+        let (steps, id) = (make_steps(&fixture), step.item().local_item_id);
+        // A program opened the file for writing since the plan: the step touches nothing.
+        fixture.write_rows(move |store| store.item_store().apply(&konedrive_tree::LocalVersionChange::OpenedForWriting { item: id }));
+
+        assert!(!matches!(run(&fixture, &steps, step), StepOutcome::Written { .. }), "{case:?}");
+
+        assert_eq!(list_announced(&fixture), Vec::<Vec<ItemAnnouncement>>::new(), "{case:?}");
+    }
+}

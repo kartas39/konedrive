@@ -9,7 +9,7 @@ use crate::fuse::item_download_states::{DownloadAsker, DownloadKey};
 use crate::fuse::item_fixture::ItemFixture;
 
 fn make_free_up(fixture: &ItemFixture) -> Arc<ItemFreeUp> {
-    Arc::new(ItemFreeUp::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.item_handles), Arc::clone(&fixture.download_states), Arc::clone(&fixture.running_steps)))
+    Arc::new(ItemFreeUp::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.item_handles), Arc::clone(&fixture.download_states), Arc::clone(&fixture.running_steps), Arc::clone(&fixture.inotify_bridge)))
 }
 
 fn free(fixture: &ItemFixture, free_up: &Arc<ItemFreeUp>, item: &Item) -> FreedCopy {
@@ -246,4 +246,32 @@ fn a_changed_row_that_says_on_disk_over_no_file_is_left_for_the_check_at_start()
     assert!(!mend(&fixture, &free_up, &own));
     assert_eq!(presence_of(&fixture, &changed), ContentPresence::OnDisk, "left as it is: the check at start reads a removal by hand");
     assert_eq!(fixture.find_item(changed.local_item_id), Some(changed));
+}
+
+#[test]
+fn a_freed_copy_and_a_mended_row_are_announced_and_what_is_left_is_not() {
+    use crate::fuse::item_announcements::ItemAnnouncement;
+    let fixture = ItemFixture::new();
+    fixture.show_onedrive_directory("docs");
+    let (freed, mended) = (make_clean_copy(&fixture, "docs/freed.txt", b"freed"), make_clean_copy(&fixture, "mended.txt", b"mended"));
+    let (pinned, own) = (make_clean_copy(&fixture, "pinned.txt", b"pinned"), fixture.make_own_file("own.txt", b"the user's"));
+    pin(&fixture, &pinned);
+    let free_up = make_free_up(&fixture);
+    let place_of = |row: &Item| row.local.clone().and_then(|local| local.place).expect("a shown item");
+
+    // What is left is as it was: nothing is announced.
+    assert_eq!(free(&fixture, &free_up, &pinned), FreedCopy::Left(FreeUpDecision::LeavePinned));
+    assert_eq!(free(&fixture, &free_up, &own), FreedCopy::Left(FreeUpDecision::LeaveModifiedHere));
+    assert!(!mend(&fixture, &free_up, &pinned), "its copy is there");
+    assert_eq!(fixture.inotify_bridge.list_queued(), Vec::<Vec<ItemAnnouncement>>::new());
+
+    // A copy that is gone, and a row mended over a copy that went by hand.
+    assert!(matches!(free(&fixture, &free_up, &freed), FreedCopy::Freed { .. }));
+    fs::remove_file(fixture.disk_path("mended.txt")).expect("the copy goes by hand");
+    assert!(mend(&fixture, &free_up, &mended));
+    assert_eq!(
+        fixture.inotify_bridge.list_queued(),
+        [vec![ItemAnnouncement::ContentChanged { item: freed.local_item_id, place: place_of(&freed) }], vec![ItemAnnouncement::ContentChanged { item: mended.local_item_id, place: place_of(&mended) }]],
+        "each by its item and the place the folder shows it at"
+    );
 }

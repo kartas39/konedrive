@@ -98,7 +98,7 @@ fn build_over(backing_directory: Arc<BackingDirectory>, setup: ItemMountSetup, r
         tracing::info!("{removed} entries of {} that were still set aside are removed", folder.display());
     }
 
-    let read_connections = Arc::new(ReadConnections::new(store_path));
+    let read_connections = Arc::new(ReadConnections::new(store_path.clone()));
     let item_handles = Arc::new(ItemHandles::new());
     let download_states = Arc::new(ItemDownloadStates::new(download_after));
 
@@ -120,8 +120,8 @@ fn build_over(backing_directory: Arc<BackingDirectory>, setup: ItemMountSetup, r
         runtime.clone(),
     ));
 
-    let free_up = Arc::new(ItemFreeUp::new(Arc::clone(&place_changes), store.clone(), Arc::clone(&item_handles), Arc::clone(&download_states), Arc::clone(&running_steps)));
-    let item_content_files = Arc::new(ItemContentFiles::new(Arc::clone(&place_changes), store.clone(), Arc::clone(&item_handles)));
+    let free_up = Arc::new(ItemFreeUp::new(Arc::clone(&place_changes), store.clone(), Arc::clone(&item_handles), Arc::clone(&download_states), Arc::clone(&running_steps), Arc::clone(&inotify_bridge)));
+    let item_content_files = Arc::new(ItemContentFiles::new(Arc::clone(&place_changes), store_path, Arc::clone(&item_handles)));
     let lookup = Arc::new(ItemLookup::new(
         Arc::clone(&read_connections),
         Arc::clone(&place_changes),

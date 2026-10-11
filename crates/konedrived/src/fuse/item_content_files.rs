@@ -8,6 +8,14 @@
 //! outside the mount gets at a backing file: the upload worker's own finding of entries
 //! on disk goes (design §11).
 //!
+//! **The rows are read on a connection of the call's own**, opened for reading alone
+//! before `open_at_row_path` is asked and closed with the call: the read closure that
+//! function runs — on its last try under the lock every write operation and every step
+//! begins its place change under — waits for nothing but its own read. Never the store's
+//! one reading thread, which the plan and the bus read through for as long as they need.
+//! The connection sees what was committed before it was opened: the versions a step was
+//! planned from, the commit a mark follows.
+//!
 //! **Answers for:** the bytes a step sends and hashes being those of the version it was
 //! planned from; and design §8's marks after an upload: the OneDrive item id, the
 //! whole-copy state and the cTag the content was confirmed as (whatever agrees a content
@@ -24,6 +32,8 @@
 // test: a_file_freed_or_renamed_during_its_upload_is_marked_through_its_descriptor
 // test: a_directory_made_in_onedrive_is_marked_with_its_item_id_when_it_is_on_disk
 // test: an_item_that_gave_its_binding_up_loses_its_marks
+// test: the_rows_are_read_without_waiting_for_the_stores_reading_thread
+// test: the_time_a_file_is_given_is_its_contents_with_the_nanoseconds
 #![allow(dead_code)]
 
 use std::fs::File;
@@ -34,7 +44,7 @@ use std::sync::Arc;
 
 use konedrive_fs::placeholder::{self, State, XATTR_CTAG, XATTR_ITEM_ID, XATTR_STATE};
 use konedrive_graph::quickxor::QuickXor;
-use konedrive_tree::{ConfirmedItem, ContentPresence, ContentVersion, Item, ItemKind, ItemVersions, LocalItemId, Store};
+use konedrive_tree::{ConfirmedItem, ContentPresence, ContentVersion, Item, ItemKind, ItemVersions, LocalItemId, TreeError, TreeStore};
 
 use super::item_handles::ItemHandles;
 use super::place_changes::{decide_open_trouble, OpenAtRowError, OpenMode, PlaceChanges};
@@ -50,6 +60,14 @@ const HASHED_AT_ONCE: usize = 1 << 20;
 pub(super) fn has_size_and_time_of(content: &ContentVersion, size: u64, mtime: i64, mtime_nsec: u32) -> bool {
     let (content_mtime, content_mtime_nsec) = content.mtime();
     content.size() == size && content_mtime == mtime && (content_mtime_nsec == 0 || content_mtime_nsec == mtime_nsec)
+}
+
+/// The time a file that holds `content` is given: the content's, with its nanoseconds, so
+/// that the file has the size and the time of its row's content to the nanosecond
+/// ([`has_size_and_time_of`]). Pure.
+pub(super) fn to_content_time(content: &ContentVersion) -> std::time::SystemTime {
+    let (mtime, mtime_nsec) = content.mtime();
+    crate::clock::to_system_time(mtime) + std::time::Duration::from_nanos(u64::from(mtime_nsec))
 }
 
 /// The backing file of an item's local content, open for reading, as it was when it was
@@ -156,24 +174,29 @@ pub(super) fn write_whole_copy_marks(file: &File, onedrive_item_id: &str, conten
 /// The local contents of one folder.
 pub struct ItemContentFiles {
     place_changes: Arc<PlaceChanges>,
-    store: Store,
+    /// Where the store is: each call reads the rows on a connection of its own.
+    store_path: PathBuf,
     item_handles: Arc<ItemHandles>,
 }
 
 impl ItemContentFiles {
-    /// Made by the mount's build.
-    pub(super) fn new(place_changes: Arc<PlaceChanges>, store: Store, item_handles: Arc<ItemHandles>) -> Self {
-        Self { place_changes, store, item_handles }
+    /// Made by the mount's build, with the store's path.
+    pub(super) fn new(place_changes: Arc<PlaceChanges>, store_path: PathBuf, item_handles: Arc<ItemHandles>) -> Self {
+        Self { place_changes, store_path, item_handles }
+    }
+
+    /// A connection to the store for reading alone, for one call (the module's doc).
+    fn open_read_connection(&self) -> Result<TreeStore, TreeError> {
+        TreeStore::open_read_only(&self.store_path)
     }
 
     /// Opens the local content of the file `item` was planned as: through
-    /// `PlaceChanges::open_at_row_path`, whose read closure
-    /// (`Store::read_items_blocking`) answers the path only while the row's local content
-    /// is still the planned one; then no program may hold the file open for writing, and
-    /// the file must have that content's size and time. An error of the open is turned
-    /// by `place_changes::decide_open_trouble`. Blocking; it reads through
-    /// `Store::read_items_blocking`, the one reading connection the plan and the bus read
-    /// through too: an open may wait behind a plan that closes a large set.
+    /// `PlaceChanges::open_at_row_path`, whose read closure — over a connection of this
+    /// call's own — answers the path only while the row's local content is still the
+    /// planned one; then no program may hold the file open for writing, and the file must
+    /// have that content's size and time. An error of the open is turned by
+    /// `place_changes::decide_open_trouble`. Blocking; it waits for no other reader of
+    /// the store.
     ///
     /// A row whose local content is another by now is answered as
     /// `StepObstacle::OpenForWriting` while a program writes the file, and as
@@ -188,10 +211,10 @@ impl ItemContentFiles {
     pub fn open_to_send(&self, item: &ItemVersions) -> Result<LocalContentFile, StepTrouble> {
         let id = item.local_item_id;
         let Some(content) = item.local.as_ref().and_then(|local| local.content.clone()) else { return Err(StepTrouble::Obstacle(StepObstacle::ContentChanged)) };
+        let rows = self.open_read_connection().map_err(|error| decide_open_trouble(&OpenAtRowError::Store(error)))?;
         let find_path = || {
-            let planned = content.clone();
-            self.store.read_items_blocking(move |reader| {
-                let is_planned_content = reader.find_item(id)?.is_some_and(|row| row.kind == ItemKind::File && row.local.is_some_and(|local| local.content.as_ref() == Some(&planned)));
+            rows.read_items(|reader| {
+                let is_planned_content = reader.find_item(id)?.is_some_and(|row| row.kind == ItemKind::File && row.local.is_some_and(|local| local.content.as_ref() == Some(&content)));
                 match is_planned_content {
                     true => Ok(reader.find_path(id)?.map(|path| (path.clone(), path))),
                     false => Ok(None),
@@ -234,19 +257,21 @@ impl ItemContentFiles {
         if !is_sent_content || self.item_handles.is_open_for_writing(file.item) {
             return Ok(());
         }
-        placeholder::set_mtime(&file.file, crate::clock::to_system_time(confirmed.mtime().0))?;
+        placeholder::set_mtime(&file.file, to_content_time(confirmed))?;
         write_whole_copy_marks(&file.file, sent.item.item_id.as_str(), confirmed)?;
         file.file.sync_all()
     }
 
     /// Opens what is on disk of the row `find_row` answers for `item`, at the path of its
     /// local version (`PlaceChanges::open_at_row_path`, to read: a mark is written through
-    /// any descriptor, and a directory is opened no other way). `None` when `find_row`
+    /// any descriptor, and a directory is opened no other way), the rows read on a
+    /// connection of this call's own. `None` when `find_row`
     /// answers none, when the folder does not show the item and when nothing of it is on
     /// disk.
     fn open_to_mark(&self, item: LocalItemId, is_marked: fn(&Item) -> bool) -> io::Result<Option<MarkedEntry>> {
+        let rows = self.open_read_connection().map_err(|error| io::Error::other(error.to_string()))?;
         let find_path = || {
-            self.store.read_items_blocking(move |reader| {
+            rows.read_items(|reader| {
                 let Some(row) = reader.find_item(item)?.filter(is_marked) else { return Ok(None) };
                 Ok(reader.find_path(item)?.map(|path| (path, row)))
             })
@@ -293,7 +318,7 @@ impl ItemContentFiles {
         });
         match whole_copy {
             Some(content) => {
-                placeholder::set_mtime(&entry, crate::clock::to_system_time(content.mtime().0))?;
+                placeholder::set_mtime(&entry, to_content_time(content))?;
                 write_whole_copy_marks(&entry, onedrive_item.item_id.as_str(), content)?;
             }
             None if metadata.is_dir() == (row.kind == ItemKind::Directory) => placeholder::write_item_id(&entry, onedrive_item.item_id.as_str())?,

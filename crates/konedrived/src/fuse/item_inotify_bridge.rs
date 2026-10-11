@@ -207,6 +207,14 @@ impl ItemInotifyBridge {
         self.is_queued.notify_one();
     }
 
+    /// What is queued and not performed yet, a change after the other: for the tests of
+    /// what announces — a step towards the folder, a download, a free-up — over a bridge
+    /// whose thread was not started, which is the one way to see what they announced.
+    #[cfg(test)]
+    pub(super) fn list_queued(&self) -> Vec<Vec<ItemAnnouncement>> {
+        crate::panic::lock(&self.queued).iter().cloned().collect()
+    }
+
     /// Whether the kernel's thread id `thread_id` is the bridge's own: its requests are
     /// answered as `item_announcements::find_announced_name` says.
     pub(super) fn is_own_thread(&self, thread_id: u32) -> bool {

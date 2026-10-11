@@ -22,7 +22,7 @@ fn make_files_interface(fixture: &ItemFixture) -> ItemFilesInterface {
         fixture.folder(),
         fixture.runtime(),
     ));
-    let free_up = Arc::new(ItemFreeUp::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.item_handles), Arc::clone(&fixture.download_states), Arc::clone(&fixture.running_steps)));
+    let free_up = Arc::new(ItemFreeUp::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.item_handles), Arc::clone(&fixture.download_states), Arc::clone(&fixture.running_steps), Arc::clone(&fixture.inotify_bridge)));
     ItemFilesInterface::new(fixture.folder(), fixture.store.clone(), Arc::clone(&fixture.download_states), downloader, free_up, Arc::clone(&fixture.item_handles), Arc::clone(&fixture.write_operation_thread), Arc::clone(&fixture.sync_plan_wake))
 }
 

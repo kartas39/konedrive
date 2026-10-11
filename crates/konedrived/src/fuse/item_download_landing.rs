@@ -59,7 +59,7 @@ use std::sync::Arc;
 
 use konedrive_tree::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, ItemVersions, LocalItemId, OneDriveItemId, PlaceChangeRecord, PlaceChangeRecordId, StepCommitOutcome, Store, TreeError};
 
-use super::item_content_files::write_whole_copy_marks;
+use super::item_content_files::{to_content_time, write_whole_copy_marks};
 use super::mount_take_down::{MountTakeDown, TakeDownCause};
 use super::place_changes::{DirectoryMarks, PlaceChange, PlaceChanges, PlaceRefusal, PlaceUndo};
 use crate::folder::running_steps::RunningSteps;
@@ -246,7 +246,7 @@ impl ItemDownloadLanding {
             (LandingDecision::RowsChanged, _) | (LandingDecision::Link { .. }, None) => return Err(ItemLandingOutcome::RowsChanged),
         };
         let change = self.place_changes.begin();
-        let marked = konedrive_fs::placeholder::set_mtime(file, crate::clock::to_system_time(downloaded.mtime().0)).and_then(|()| write_whole_copy_marks(file, onedrive_item_id.as_str(), &downloaded));
+        let marked = konedrive_fs::placeholder::set_mtime(file, to_content_time(&downloaded)).and_then(|()| write_whole_copy_marks(file, onedrive_item_id.as_str(), &downloaded));
         let linked = match marked {
             Ok(()) => change.link_file(file, &path, &marks),
             Err(error) => Err(PlaceRefusal::Disk { errno: to_errno(&error), path: path.clone() }),

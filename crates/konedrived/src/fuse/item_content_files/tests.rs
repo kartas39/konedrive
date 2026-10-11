@@ -11,7 +11,7 @@ use crate::folder::step_outcome::{StepObstacle, StepTrouble};
 use crate::fuse::item_fixture::{DiskMarksRead, ItemFixture, ONEDRIVE_MTIME, START_TIME};
 
 fn make_content_files(fixture: &ItemFixture) -> Arc<ItemContentFiles> {
-    Arc::new(ItemContentFiles::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.item_handles)))
+    Arc::new(ItemContentFiles::new(Arc::clone(&fixture.place_changes), fixture.store_path.clone(), Arc::clone(&fixture.item_handles)))
 }
 
 /// Opens the local content of `item` as a step does: on a thread like the mount's.
@@ -324,4 +324,48 @@ fn an_item_that_gave_its_binding_up_loses_its_marks() {
     assert_eq!(fixture.read_disk_marks("report.txt"), unmarked());
     assert!(xattr::get(fixture.disk_path("report.txt"), konedrive_fs::placeholder::XATTR_PIN).expect("the attributes are read").is_some(), "what else konedrive keeps on it stays");
     assert_eq!(fixture.read_disk_marks("kept.txt"), marks_of_bound, "an item that has a binding keeps its marks");
+}
+
+#[test]
+fn the_rows_are_read_without_waiting_for_the_stores_reading_thread() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    let fixture = ItemFixture::new();
+    let own = fixture.make_own_file("own.txt", b"the user's");
+    let directory = fixture.make_own_directory("made");
+    let content_files = make_content_files(&fixture);
+    // The store's reading thread is taken, as by the plan's read of every row.
+    let ((let_go, held), (taken_sender, taken)) = (mpsc::channel::<()>(), mpsc::channel::<()>());
+    let store = fixture.store.clone();
+    let holder = std::thread::spawn(move || {
+        store.read_items_blocking(move |_| {
+            taken_sender.send(()).unwrap();
+            let _ = held.recv();
+            Ok(())
+        })
+    });
+    taken.recv().unwrap();
+
+    let (answer_sender, answer) = mpsc::channel();
+    let (asked, versions, directory) = (Arc::clone(&content_files), ItemVersions::of(&own), directory.local_item_id);
+    let asker = std::thread::spawn(move || {
+        let opened = asked.open_to_send(&versions).map(|file| file.size());
+        let marked = asked.remove_onedrive_marks(directory).map_err(|error| error.to_string());
+        let _ = answer_sender.send((opened, marked));
+    });
+    let answered = answer.recv_timeout(Duration::from_secs(2));
+    let_go.send(()).unwrap();
+    holder.join().unwrap().unwrap();
+    asker.join().unwrap();
+
+    assert_eq!(answered.map_err(|_| "nothing is answered while the store's reading thread is taken"), Ok((Ok(10), Ok(()))));
+}
+
+#[test]
+fn the_time_a_file_is_given_is_its_contents_with_the_nanoseconds() {
+    use std::time::Duration;
+    let content = ContentVersion::ChangedHere { size: 3, mtime: 1_700_000_000, mtime_nsec: 123_456_789, change_count: 1 };
+    assert_eq!(to_content_time(&content), UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_789), "a file given this time has the size and the time of its content");
+    let listed = ContentVersion::Hashed { size: 3, mtime: 1_600_000_000, mtime_nsec: 0, hash: None, ctag: None };
+    assert_eq!(to_content_time(&listed), UNIX_EPOCH + Duration::from_secs(1_600_000_000));
 }

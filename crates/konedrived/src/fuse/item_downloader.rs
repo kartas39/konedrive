@@ -93,7 +93,7 @@ use tokio::sync::oneshot;
 use super::backing_directory::BackingDirectory;
 use super::download_states::Waiter;
 use super::item_announcements::ItemAnnouncement;
-use super::item_content_files::write_whole_copy_marks;
+use super::item_content_files::{to_content_time, write_whole_copy_marks};
 use super::item_download_landing::{ItemDownloadLanding, ItemLandingOutcome, LandingCondition};
 use super::item_download_states::{DownloadAsker, DownloadKey, DownloadRun, ItemDownloadStart, ItemDownloadStates};
 use super::item_inotify_bridge::ItemInotifyBridge;
@@ -408,7 +408,7 @@ impl ItemDownloader {
         // disk, and a copy that has its name after a power loss has its marks too.
         let (to_sync, onedrive_item_id, content) = (Arc::clone(&staged), file.onedrive_item.item_id.clone(), file.content.clone());
         let synced = tokio::task::spawn_blocking(move || {
-            konedrive_fs::placeholder::set_mtime(&to_sync, crate::clock::to_system_time(content.mtime().0))?;
+            konedrive_fs::placeholder::set_mtime(&to_sync, to_content_time(&content))?;
             write_whole_copy_marks(&to_sync, onedrive_item_id.as_str(), &content)?;
             to_sync.sync_all()
         });
