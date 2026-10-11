@@ -60,6 +60,8 @@ pub fn decide_is_shown_blocked(answer: Option<&ItemAnswer>, has_refusal_for_good
         None => false,
         Some(ItemAnswer::Planned(_)) => false,
         Some(ItemAnswer::Excluded(ExclusionReason::NameIgnored | ExclusionReason::CannotBeShown)) => false,
+        // An item an upload left in OneDrive is the daemon's own to remove: nothing for the user to do.
+        Some(ItemAnswer::Excluded(ExclusionReason::LeftByUpload)) => false,
         // The owner's decision: an item the plan is at fault about is being checked, not blocked.
         Some(ItemAnswer::Fault(_)) => false,
         Some(ItemAnswer::Waiting(wait)) => match wait {
