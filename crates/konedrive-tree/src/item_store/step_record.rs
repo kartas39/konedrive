@@ -8,7 +8,7 @@
 //! One transaction for the conflict's record, where a loss costs the user the notice of
 //! a copy ([`add_conflicts_in`], the form of `TreeStore::add_conflicts` over a
 //! transaction); the plain events of the activity log are a second write by the plan's
-//! task (`sync::sync_plan_task::step_settlement`), which a death in between loses.
+//! task (`sync_plan_task::step_settlement`), which a death in between loses.
 //!
 //! **Tested without the rest:**
 // test: a_conflict_copy_and_its_record_are_written_together
@@ -44,7 +44,7 @@ impl ItemStore<'_> {
     /// `conflict` holds the two full paths as the step renamed on disk.
     ///
     /// Called by the runner of `FolderStep::RenameToConflictCopy`
-    /// (`fuse::folder_steps`), under the tree lock, after the rename on disk.
+    /// (`mount::folder_steps`), under the tree lock, after the rename on disk.
     /// `record` is the record of the place change this commit ends, when one was written:
     /// it goes in this transaction when the commit is written
     /// (`place_change_records::forget_place_change_record_when_written`, or

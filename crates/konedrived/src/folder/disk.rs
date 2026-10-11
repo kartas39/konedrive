@@ -21,15 +21,12 @@ pub fn daemon_owned(name: &OsStr) -> bool {
 }
 
 /// One folder's lock on the modes of its directories, held by everything in this daemon
-/// that lifts a locked directory's write bit and puts it back: the windows of a change
-/// ([`Disk::writable`]) and the drive written on the root. Two such windows on one
+/// that lifts a locked directory's write bit and puts it back: the drive written on the root. Two such windows on one
 /// directory used to be able to interleave — one put the lock back while the other was
 /// still writing, which failed `EACCES`.
 ///
-/// A folder has one, whoever asks ([`Modes::of`]): every [`Disk`] opened on the folder
-/// shares it, and another account's folder has its own. It is not re-entrant: what nests
-/// windows takes it once and passes the hold on ([`Disk::window`]). Never held across an
-/// `.await`.
+/// A folder has one, whoever asks ([`Modes::of`]), and another account's folder has its
+/// own. It is not re-entrant. Never held across an `.await`.
 pub struct Modes(Mutex<()>);
 
 /// A hold on a folder's [`Modes`], released when dropped.
@@ -76,7 +73,7 @@ mod tests;
 // test: the_set_aside_name_of_an_item_is_the_same_at_every_start_and_another_items_is_another
 
 /// How the name begins that an entry of the backing directory is set aside to, in the root,
-/// before it is removed for good (`fuse::place_changes`, `PlaceChange::set_aside`): an
+/// before it is removed for good (`mount::place_changes`, `PlaceChange::set_aside`): an
 /// entry NO row says. After it comes the local item id of the item the entry was of.
 #[allow(dead_code)]
 pub const ASIDE_ENTRY_PREFIX: &str = ".konedrive-aside-";

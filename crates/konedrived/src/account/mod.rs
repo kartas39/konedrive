@@ -161,7 +161,7 @@ const WIDER_GRANT: &str = "Microsoft answered a request for read-only access wit
 /// What the switch between the modes asks of the account's folder (`docs/design/writes.md` §2): how many
 /// changes wait to be uploaded, and dropping them when a switch to read-only is forced — the
 /// files stay, as ordinary local changes. The account's `SyncService` answers
-/// (`crate::sync::mode`); until the outbox exists (the examination and the outbox worker), nothing waits.
+/// (`crate::account_folder::mode`); until the outbox exists (the examination and the outbox worker), nothing waits.
 #[async_trait::async_trait]
 pub trait PendingUploads: Send + Sync {
     async fn pending_uploads(&self) -> u64;
@@ -171,7 +171,7 @@ pub trait PendingUploads: Send + Sync {
     fn quota_read(&self, _quota: &konedrive_graph::drive::DriveQuota) {}
 }
 
-/// What an account's folder asks of its account (`crate::sync`): the one thing the folder
+/// What an account's folder asks of its account (`crate::account_folder`): the one thing the folder
 /// is made with for all of it. The daemon's is the [`AccountService`].
 pub trait FolderAccount: Send + Sync {
     /// The account's state as published: whether somebody is signed in, the mode it runs
@@ -411,7 +411,7 @@ impl AccountService {
     ///
     /// Called whenever one of them may have changed, the folder's outbox worker finding the
     /// write gate closed included ([`FolderAccount::recheck_mode`]). The folder follows
-    /// `Mode` (`crate::sync::mode::follow`).
+    /// `Mode` (`crate::account_folder::mode::follow`).
     fn recompute_mode(&self) {
         // The mode and the recorded drive, from one reading of the file. A
         // file that cannot be read now fails closed: read-only, and `LastError` says why when

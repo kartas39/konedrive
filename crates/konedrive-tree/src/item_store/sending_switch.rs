@@ -37,7 +37,7 @@ impl ItemStore<'_> {
     /// answers the state the plan is given. A folder that is read-only already keeps the
     /// stamp it has. One transaction.
     ///
-    /// Called by the switch of the access mode (`sync::sync_tasks::access_mode_change`)
+    /// Called by the switch of the access mode (`sync_tasks::access_mode_change`)
     /// after the mount's switch was awaited: from then on the mount writes only the last
     /// closes of files that were open, and a close gives no new stamp, so the stamp read
     /// here is the last one given before the switch. MISSING-1.c.

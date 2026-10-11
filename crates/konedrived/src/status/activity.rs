@@ -126,7 +126,7 @@ fn there(path: &str) -> bool {
 ///
 /// - once [`detach`](Self::detach) returns, no write under way still holds a
 ///   clone of the store, which is what lets a Forget remove the store's files
-///   (`sync/start_stop.rs` detaches before the store goes);
+///   (`account_folder/start_stop.rs` detaches before the store goes);
 /// - [`attach`](Self::attach) moves what memory holds into the store and
 ///   hands the store over in the same hold, so nothing recorded meanwhile can
 ///   fall between the two.

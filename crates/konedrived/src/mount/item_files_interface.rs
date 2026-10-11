@@ -1,0 +1,291 @@
+//! What the daemon's bus interface `Files` asks of a mounted folder, by path, over the
+//! rows: what `files_interface` is today over the directory contents.
+//!
+//! **State owned:** none; it holds the parts it asks. A path is turned into an item by
+//! ONE reader (`ItemReader::find_item_by_path`), here and nowhere else in `fuse`.
+//!
+//! **Answers for:** `org.konedrive.Files` (the map's 6.3) and `Folder.FreeUpSpace`,
+//! `PinnedCount`: download now, free up, pin and unpin, the status of a path.
+//!
+//! **Tested without the rest**, over a store in memory and a temporary backing directory:
+// test: a_path_outside_the_folder_and_a_path_the_folder_does_not_show_are_refused
+// test: an_item_with_no_binding_is_not_in_onedrive
+// test: a_download_asked_by_path_is_the_items_download_and_is_awaited
+// test: a_directory_is_freed_file_by_file_each_by_its_own_decision
+// test: a_pin_is_set_by_the_stores_job_and_the_plan_woken
+// test: the_status_of_a_path_is_the_rows_sync_state_its_pin_and_what_runs_for_it
+// test: a_directory_is_downloaded_file_by_file_and_a_failure_is_said_after_the_rest
+// test: what_is_downloaded_below_a_path_is_counted_from_the_rows
+// test: a_free_up_after_the_thread_stopped_is_refused
+#![allow(dead_code)]
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use konedrive_tree::{ContentPresence, FileSyncState, Item, ItemKind, LocalItemId, OneDriveItemReference, PinChange, Store, TreeError};
+use tokio::sync::oneshot;
+
+use super::item_free_up::FreeUpDecision;
+use super::item_download_states::{DownloadAsker, ItemDownloadStates};
+use super::item_downloader::{ItemDownloader, ItemToDownload};
+use super::item_free_up::{FreedCopy, ItemFreeUp};
+use super::item_handles::ItemHandles;
+use super::write_operation_thread::WriteOperationThread;
+use crate::sync_parts::sync_plan_wake::{SyncPlanWake, WakeCause};
+
+/// How many files below a directory are read from the rows, and asked for, at a time.
+const FILES_AT_ONCE: usize = 500;
+
+/// What the bus shows of one path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemPathStatus {
+    pub item: LocalItemId,
+    pub kind: ItemKind,
+    /// The binding: what `WebUrl` asks OneDrive by.
+    pub onedrive_item: OneDriveItemReference,
+    /// `None` for a directory.
+    pub sync_state: Option<FileSyncState>,
+    pub is_pinned: bool,
+    pub is_downloading: bool,
+    pub is_open_for_writing: bool,
+}
+
+/// What a free-up counts for one file it asked about: freed, kept back, or neither — a
+/// file that had nothing to free. Pure.
+pub(super) fn count_freed_copy(freed: FreedSpace, copy: FreedCopy) -> FreedSpace {
+    match copy {
+        FreedCopy::Freed { bytes } => FreedSpace { files: freed.files + 1, bytes: freed.bytes + bytes, ..freed },
+        FreedCopy::Left(FreeUpDecision::NothingToFree) => freed,
+        FreedCopy::Left(_) | FreedCopy::RowsChanged => FreedSpace { kept: freed.kept + 1, ..freed },
+    }
+}
+
+/// The file `item` as a download is asked for: `None` for what has nothing to download —
+/// a directory, a file whose content is on disk, an item OneDrive does not have. Pure.
+pub(super) fn find_file_to_download(item: &Item) -> Option<ItemToDownload> {
+    let content = item.local.as_ref()?.content.clone()?;
+    let is_not_on_disk = item.kind == ItemKind::File && item.content_presence == ContentPresence::NotOnDisk;
+    Some(ItemToDownload { item: item.local_item_id, onedrive_item: item.onedrive_item.clone().filter(|_| is_not_on_disk)?, content })
+}
+
+fn to_refusal(error: TreeError) -> FilesRefusal {
+    FilesRefusal::Io(error.to_string())
+}
+
+/// The `Files` interface of one mount.
+pub struct ItemFilesInterface {
+    /// The folder's path, which is the mount.
+    folder: PathBuf,
+    store: Store,
+    download_states: Arc<ItemDownloadStates>,
+    downloader: Arc<ItemDownloader>,
+    free_up: Arc<ItemFreeUp>,
+    item_handles: Arc<ItemHandles>,
+    write_operation_thread: Arc<WriteOperationThread>,
+    sync_plan_wake: Arc<SyncPlanWake>,
+}
+
+impl ItemFilesInterface {
+    /// Made by the mount's build, last of the parts.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new(
+        folder: PathBuf,
+        store: Store,
+        download_states: Arc<ItemDownloadStates>,
+        downloader: Arc<ItemDownloader>,
+        free_up: Arc<ItemFreeUp>,
+        item_handles: Arc<ItemHandles>,
+        write_operation_thread: Arc<WriteOperationThread>,
+        sync_plan_wake: Arc<SyncPlanWake>,
+    ) -> Self {
+        Self { folder, store, download_states, downloader, free_up, item_handles, write_operation_thread, sync_plan_wake }
+    }
+
+    /// The item of OneDrive the folder shows at `path`, a full path, with whether a pin
+    /// holds for it: by `ItemReader::find_item_by_path`, the one reader that turns a path
+    /// into an item, on the store's reading connection.
+    async fn find_onedrive_item(&self, path: &Path) -> Result<(Item, bool), FilesRefusal> {
+        let relative = path.strip_prefix(&self.folder).map(Path::to_owned).map_err(|_| FilesRefusal::OutsideFolder)?;
+        let read = self.store.read_items(move |reader| {
+            let Some(item) = reader.find_item_by_path(&relative)?.filter(|item| item.onedrive_item.is_some()) else { return Ok(None) };
+            Ok(Some((reader.is_pinned(item.local_item_id)?, item)))
+        });
+        let (is_pinned, item) = read.await.map_err(to_refusal)?.ok_or(FilesRefusal::NotInOneDrive)?;
+        Ok((item, is_pinned))
+    }
+
+    /// The files the folder shows below `directory`, after the file `after`, a part at a
+    /// time (`ItemReader::list_shown_files_below`).
+    async fn list_files_below(&self, directory: LocalItemId, after: Option<LocalItemId>) -> Result<Vec<Item>, FilesRefusal> {
+        self.store.read_items(move |reader| reader.list_shown_files_below(directory, after, FILES_AT_ONCE)).await.map_err(to_refusal)
+    }
+
+    /// The status of `path`, a full path: the item by `ItemReader::find_item_by_path` on
+    /// the store's reading connection, its pin (`is_pinned`), and what runs for it.
+    /// `OutsideFolder` for a path that is not below the folder, `NotInOneDrive` for a name
+    /// the folder does not show and for an item with no binding.
+    pub async fn find_path_status(&self, path: &Path) -> Result<ItemPathStatus, FilesRefusal> {
+        let (item, is_pinned) = self.find_onedrive_item(path).await?;
+        let Some(onedrive_item) = item.onedrive_item.clone() else { return Err(FilesRefusal::NotInOneDrive) };
+        let id = item.local_item_id;
+        Ok(ItemPathStatus { item: id, kind: item.kind, onedrive_item, sync_state: item.file_sync_state(), is_pinned, is_downloading: self.download_states.is_downloading(id), is_open_for_writing: self.item_handles.is_open_for_writing(id) })
+    }
+
+    /// Asks for the download of each of `files` and waits for them all: the first
+    /// failure, when there is one, after the rest was waited for.
+    async fn download_files(&self, files: Vec<ItemToDownload>) -> Result<(), FilesRefusal> {
+        let asked: Vec<oneshot::Receiver<Result<(), i32>>> = files
+            .into_iter()
+            .map(|file| {
+                let (waiter, heard) = oneshot::channel();
+                self.downloader.download(file, DownloadAsker::FilesInterface, Some(waiter));
+                heard
+            })
+            .collect();
+        let mut failure = Ok(());
+        for heard in asked {
+            let downloaded = match heard.await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(errno)) => Err(FilesRefusal::Io(format!("the download failed: {}", std::io::Error::from_raw_os_error(errno)))),
+                Err(_) => Err(FilesRefusal::Io("the download was given up".into())),
+            };
+            failure = failure.and(downloaded);
+        }
+        failure
+    }
+
+    /// `Files.Hydrate`: downloads the file at `path` now and waits for its landing; for a
+    /// directory, every file below it that is not on disk
+    /// (`ItemReader::list_shown_files_below`), a part of them at a time. A file whose
+    /// content is on disk has nothing to download.
+    pub async fn download(&self, path: &Path) -> Result<(), FilesRefusal> {
+        let (item, _) = self.find_onedrive_item(path).await?;
+        if item.kind == ItemKind::File {
+            return self.download_files(find_file_to_download(&item).into_iter().collect()).await;
+        }
+        let (mut after, mut failure) = (None, Ok(()));
+        loop {
+            let files = self.list_files_below(item.local_item_id, after).await?;
+            let Some(last) = files.last() else { return failure };
+            after = Some(last.local_item_id);
+            failure = failure.and(self.download_files(files.iter().filter_map(find_file_to_download).collect()).await);
+        }
+    }
+
+    /// Frees the copy of `item` as one job of the write-operation thread, waited for. A
+    /// thread that is stopped drops the job: the free-up ends there, refused.
+    async fn free_copy(&self, item: LocalItemId) -> Result<FreedCopy, FilesRefusal> {
+        let free_up = Arc::clone(&self.free_up);
+        let freed = self.write_operation_thread.run_and_wait(move || free_up.free_downloaded_copy(item)).await;
+        freed.map_err(|_| FilesRefusal::Io("the free-up was given up: the folder is no longer served".into()))
+    }
+
+    /// Frees the copies at and below `item`: of a file its own, of a directory those of
+    /// the files the rows say are on disk below it, read a part at a time, each freed by
+    /// its own decision in its own job, so that a program's write waits for one file of a
+    /// long free-up and not for all of them.
+    async fn free_up_below(&self, item: &Item) -> Result<FreedSpace, FilesRefusal> {
+        if item.kind == ItemKind::File {
+            return Ok(count_freed_copy(FreedSpace::default(), self.free_copy(item.local_item_id).await?));
+        }
+        let (mut after, mut freed) = (None, FreedSpace::default());
+        loop {
+            let files = self.list_files_below(item.local_item_id, after).await?;
+            let Some(last) = files.last() else { return Ok(freed) };
+            after = Some(last.local_item_id);
+            for file in files.iter().filter(|file| file.content_presence == ContentPresence::OnDisk) {
+                freed = count_freed_copy(freed, self.free_copy(file.local_item_id).await?);
+            }
+        }
+    }
+
+    /// `Files.FreeUp` / `Dehydrate`: frees the copy at `path`, or of every file below a
+    /// directory, each as one job of the write-operation thread
+    /// (`ItemFreeUp::free_downloaded_copy`); what was freed and what was left.
+    pub async fn free_up(&self, path: &Path) -> Result<FreedSpace, FilesRefusal> {
+        let (item, _) = self.find_onedrive_item(path).await?;
+        self.free_up_below(&item).await
+    }
+
+    /// `Folder.FreeUpSpace`: as [`free_up`](Self::free_up) of the root.
+    pub async fn free_up_all(&self) -> Result<FreedSpace, FilesRefusal> {
+        let folder = self.folder.clone();
+        self.free_up(&folder).await
+    }
+
+    /// `Files.Pin` / `Unpin`: `ItemStore::set_item_pin` as one job of the store, then the
+    /// plan woken (`WakeCause::UserAnswered`), which downloads what the pin holds.
+    pub async fn set_pin(&self, path: &Path, is_pinned: bool) -> Result<(), FilesRefusal> {
+        let (item, _) = self.find_onedrive_item(path).await?;
+        let id = item.local_item_id;
+        match self.store.call(move |store| store.item_store().set_item_pin(id, is_pinned)).await.map_err(to_refusal)? {
+            PinChange::Written => {
+                self.sync_plan_wake.wake(WakeCause::UserAnswered);
+                Ok(())
+            }
+            PinChange::NoBinding | PinChange::NoItem => Err(FilesRefusal::NotInOneDrive),
+        }
+    }
+
+    /// `Folder.PinnedCount` (`ItemReader::count_pins`).
+    pub async fn count_pins(&self) -> u64 {
+        self.store.read_items(|reader| reader.count_pins()).await.unwrap_or_else(|error| {
+            tracing::warn!("the pins could not be counted: {error}");
+            0
+        })
+    }
+
+    /// How much is downloaded at and below `path`: the sizes of the local contents of the
+    /// rows there that say on disk (`ItemReader::list_shown_files_below`); the backing
+    /// directory is not walked.
+    pub async fn count_downloaded_below(&self, path: &Path) -> Result<DownloadedSpace, FilesRefusal> {
+        let (item, _) = self.find_onedrive_item(path).await?;
+        let count = |counted: DownloadedSpace, file: &Item| match (file.content_presence, file.local.as_ref().and_then(|local| local.content.as_ref())) {
+            (ContentPresence::OnDisk, Some(content)) if file.kind == ItemKind::File => DownloadedSpace { files: counted.files + 1, bytes: counted.bytes + content.size() },
+            _ => counted,
+        };
+        if item.kind == ItemKind::File {
+            return Ok(count(DownloadedSpace::default(), &item));
+        }
+        let (mut after, mut counted) = (None, DownloadedSpace::default());
+        loop {
+            let files = self.list_files_below(item.local_item_id, after).await?;
+            let Some(last) = files.last() else { return Ok(counted) };
+            after = Some(last.local_item_id);
+            counted = files.iter().fold(counted, count);
+        }
+    }
+}
+
+/// What a free-up did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FreedSpace {
+    pub files: u64,
+    pub bytes: u64,
+    /// Downloaded files left as they are: pinned, being downloaded, or changed here and not
+    /// uploaded yet.
+    pub kept: u64,
+}
+
+/// The space the downloaded copies at and below a path take: how many files, and their
+/// bytes on disk.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DownloadedSpace {
+    pub files: u64,
+    pub bytes: u64,
+}
+
+/// Why the mount refuses what the `Files` interface asked.
+#[derive(Debug, thiserror::Error)]
+pub enum FilesRefusal {
+    #[error("not inside this folder")]
+    OutsideFolder,
+    /// A file or directory that is not in OneDrive yet, or a name the folder does not have.
+    #[error("not in OneDrive")]
+    NotInOneDrive,
+    #[error("{0}")]
+    Io(String),
+}
+
+#[cfg(test)]
+mod tests;

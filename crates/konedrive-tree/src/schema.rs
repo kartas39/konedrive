@@ -7,7 +7,8 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use crate::conflicts::ConflictKind;
-use crate::item_store::{own_upload_contents_schema, place_change_records_schema, step_memory_schema, thumbnail_marks_schema, unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, IMAGE_OR_VIDEO, LEFT_HERE, NOT_PLACED, SHOWN_AGAINST_PLACEMENT};
+use crate::step_memory::schema as step_memory_schema;
+use crate::item_store::{own_upload_contents_schema, place_change_records_schema, thumbnail_marks_schema, unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, IMAGE_OR_VIDEO, LEFT_HERE, NOT_PLACED, SHOWN_AGAINST_PLACEMENT};
 use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK, PLACED};
 use crate::{meta, TreeError, TreeStore};
 
@@ -127,7 +128,7 @@ const OUTBOX_FREES: &str = "base_parent IS NOT NULL AND base_name IS NOT NULL AN
 ///   (`docs/design/writes.md` §5). `staging_gone`: what a delta removes
 ///   while it is staged.
 /// - `deferred`, `outbox_gone`: what a read-write cycle keeps between
-///   cycles ([`crate::reconcile`]). `deferred.waits`: what keeps an item
+///   cycles (the reconcile, which went). `deferred.waits`: what keeps an item
 ///   that is to leave the folder, as the last cycle found it.
 /// - `outbox`, `local_skipped`: the write phase (the outbox, which went).
 ///   `AUTOINCREMENT`: a `seq` is never handed out twice, so a row removed
@@ -143,7 +144,7 @@ const OUTBOX_FREES: &str = "base_parent IS NOT NULL AND base_name IS NOT NULL AN
 ///   session holds in OneDrive with its empty placeholder until then. A row
 ///   points at its session (`session_url`); one no row points at any more
 ///   was given up, and is cancelled
-///   ([`TreeStore::upload_sessions_given_up`]).
+///   (by the upload engine, which went).
 /// - `upload_openings`: the place a new file's session is about to take,
 ///   recorded before the request that opens it, so that a stop
 ///   before its URL is persisted still knows the placeholder it may have

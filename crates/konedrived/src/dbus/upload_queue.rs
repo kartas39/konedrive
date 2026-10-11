@@ -5,7 +5,7 @@ use crate::dbus::fault::Result;
 use crate::dbus::properties::*;
 use crate::dbus::UploadQueue;
 
-fn kept_back(kept: crate::sync::outbox::KeptBack) -> rows::KeptBack {
+fn kept_back(kept: crate::account_folder::outbox::KeptBack) -> rows::KeptBack {
     rows::KeptBack { path: kept.path, reason: kept.reason }
 }
 

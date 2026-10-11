@@ -9,7 +9,7 @@ publish = false
 # Test-only. Off by default; never enable it in a build that ships.
 # `tests/fuse-probe/Cargo.toml` turns it on for the VM suite's own build of this crate. It
 # builds the fake OneDrive (`crate::fake_onedrive`, on wiremock), which the suite runs the
-# daemon's service against inside the VM, and the test support of `sync/` (`sync::testing`),
+# daemon's service against inside the VM, and the test support of `account_folder/` (`account_folder::testing`),
 # which makes a service with a `config.toml` in a temporary directory.
 fault-injection = ["dep:wiremock", "dep:tempfile"]
 # Development builds only (issue #79): each account's `org.konedrive.TokenExport`, which
@@ -26,7 +26,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 dirs.workspace = true
 futures-util.workspace = true
-# The folder as a FUSE mount (`src/fuse.rs`); `vendor/fuser` through the workspace's patch.
+# The folder as a FUSE mount (`src/mount/`); `vendor/fuser` through the workspace's patch.
 fuser = { version = "0.18", default-features = false }
 getrandom.workspace = true
 image.workspace = true
@@ -54,7 +54,7 @@ url.workspace = true
 xattr.workspace = true
 zbus.workspace = true
 # Only with `fault-injection`: the fake OneDrive of the VM suite, and the temporary
-# `config.toml` of `sync::testing`.
+# `config.toml` of `account_folder::testing`.
 wiremock = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 

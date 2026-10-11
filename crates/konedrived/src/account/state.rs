@@ -45,7 +45,7 @@ pub struct AccountSnapshot {
     /// `Account.Mode`: the mode the account runs in (`docs/design/writes.md` §2) — read-write only
     /// while `config.toml` says so, `granted_scopes` carries `Files.ReadWrite`, and
     /// `live_drive` is the drive recorded for it. The account's folder follows it
-    /// (`crate::sync::mode::follow`).
+    /// (`crate::account_folder::mode::follow`).
     pub mode: Mode,
     /// What the account's last token may be used for: the token response's `scope` (or what
     /// was asked for, when it said nothing), never more than was asked for — see

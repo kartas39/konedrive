@@ -16,10 +16,10 @@ use crate::config::{is_valid_client_id, AccountConfig, AccountId, AccountPaths, 
 use crate::account::secret::{AccountSecrets, Wallet};
 use crate::account::state::SignInState;
 use crate::desktop::baloo::Baloo;
-use crate::sync::menu::{self, Menu};
-use crate::sync::registry::Registry;
+use crate::account_folder::menu::{self, Menu};
+use crate::account_folder::registry::Registry;
 use crate::conditions::running::HoldSettings;
-use crate::sync::{OneDrive, Persist, SyncError, SyncPaths, SyncService, Transfers, Wiring};
+use crate::account_folder::{OneDrive, Persist, SyncError, SyncPaths, SyncService, Transfers, Wiring};
 
 /// The drive an account's folder shows, asked once as the account is made
 /// ([`Options::drive`]).
@@ -635,7 +635,7 @@ async fn follow_mode(account: &Account) {
     let changes = account.account.state().subscribe();
     let mode = changes.borrow().mode;
     account.sync.follow_mode(mode).await;
-    let follower = tokio::spawn(crate::sync::mode::follow(changes, Arc::downgrade(&account.sync)));
+    let follower = tokio::spawn(crate::account_folder::mode::follow(changes, Arc::downgrade(&account.sync)));
     crate::panic::lock(&account.signals).push(follower);
 }
 

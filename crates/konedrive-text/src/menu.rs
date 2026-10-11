@@ -3,7 +3,7 @@
 //! `Files.Menu` as it is).
 //!
 //! "Free up space" is disabled with a code (`free-up-why`, the daemon's
-//! `sync/menu.rs`), most of which say beforehand what a refusal of the call
+//! `account_folder/menu.rs`), most of which say beforehand what a refusal of the call
 //! would say: [`WhyText::refusal`] names it, and its long sentence is in
 //! [`crate::files`]. The place of a tooltip: `{by}`, the folder above that
 //! keeps the item on this device (`blocked-by`).

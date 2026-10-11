@@ -12,8 +12,7 @@ pub(crate) const PLACED: &str = "placed";
 /// [`SkipReason`]'s word follows.
 const SKIPPED: &str = "skipped:";
 
-/// SQL for "the row whose placement is `column` is skipped": what
-/// [`placed`] is not.
+/// SQL for "the row whose placement is `column` is skipped".
 pub(crate) fn skipped(column: &str) -> String {
     format!("substr({column}, 1, {}) = '{SKIPPED}'", SKIPPED.len())
 }
@@ -120,7 +119,7 @@ impl Placement {
     /// skipped one reads as placed — a word that cannot be read never
     /// takes an object out of the folder — and a skip with a reason nobody
     /// knows as [`SkipReason::Unsupported`]. SQL reads it the same way
-    /// ([`placed`]).
+    /// ([`skipped`]).
     pub(crate) fn decode(value: &str) -> Self {
         match value.strip_prefix(SKIPPED) {
             None => Placement::Placed,
@@ -145,7 +144,7 @@ pub struct Row {
     pub quickxor: Option<String>,
     pub mime: Option<String>,
     /// The item's own placement; an item inside a skipped folder is not placed
-    /// either, which [`TreeStore::locate`](crate::TreeStore::locate) works out.
+    /// either.
     pub placement: Placement,
 }
 
@@ -299,8 +298,7 @@ impl ItemKind {
         }
     }
 
-    /// What a stored kind says. Any word but a directory's reads as a file, as
-    /// [`Kind::decode`] reads a folder's.
+    /// What a stored kind says. Any word but a directory's reads as a file.
     pub(crate) fn decode(value: &str) -> Self {
         if value == DIRECTORY {
             ItemKind::Directory

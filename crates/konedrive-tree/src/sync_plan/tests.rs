@@ -322,7 +322,7 @@ fn an_item_has_one_step_and_its_place_goes_before_its_content() {
 }
 
 /// The design's "what is not sent: an ignored item". Today nothing is recorded for an
-/// ignored name (`fuse/upload_rules.rs`); here the plan says it leaves the item out.
+/// ignored name (`mount/upload_rules.rs`); here the plan says it leaves the item out.
 #[test]
 fn an_ignored_item_is_left_out_and_waits_for_nothing() {
     let mut given = input(vec![made_directory(2, ROOT, "node_modules"), made_file(3, id(2), "a.js")]);

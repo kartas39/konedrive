@@ -253,7 +253,7 @@ impl konedrived::daemon::manager::Bus for FailingExports {
         connection: &zbus::Connection,
         path: &zbus::zvariant::ObjectPath<'_>,
         account: Arc<konedrived::account::AccountService>,
-        sync: Arc<konedrived::sync::SyncService>,
+        sync: Arc<konedrived::account_folder::SyncService>,
     ) -> zbus::Result<Vec<tokio::task::JoinHandle<()>>> {
         let signals = konedrived::dbus::export::OnBus.export(connection, path, account, sync).await?;
         if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
@@ -337,7 +337,7 @@ impl konedrived::daemon::manager::Bus for HeldServe {
         connection: &zbus::Connection,
         path: &zbus::zvariant::ObjectPath<'_>,
         account: Arc<konedrived::account::AccountService>,
-        sync: Arc<konedrived::sync::SyncService>,
+        sync: Arc<konedrived::account_folder::SyncService>,
     ) -> zbus::Result<Vec<tokio::task::JoinHandle<()>>> {
         konedrived::dbus::export::OnBus.export(connection, path, account, sync).await
     }

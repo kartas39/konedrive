@@ -8,7 +8,7 @@ use crate::model::{ContentPresence, ContentVersion, DriveId, FileSyncState, Item
 
 const ROOT: LocalItemId = LocalItemId::ROOT;
 
-pub(super) fn place(parent: LocalItemId, name: &str) -> ItemPlace {
+pub(crate) fn place(parent: LocalItemId, name: &str) -> ItemPlace {
     ItemPlace { parent_local_item_id: parent, name: name.into() }
 }
 
@@ -22,7 +22,7 @@ fn made_here() -> ContentVersion {
     ContentVersion::ChangedHere { size: 0, mtime: 200, mtime_nsec: 7, change_count: 1 }
 }
 
-pub(super) fn reference(id: &str) -> OneDriveItemReference {
+pub(crate) fn reference(id: &str) -> OneDriveItemReference {
     OneDriveItemReference { drive_id: DriveId::new("d1").unwrap(), item_id: OneDriveItemId::new(id) }
 }
 
@@ -36,21 +36,21 @@ fn made_replacing(place: ItemPlace, replaced: LocalItemId) -> LocalVersionChange
     LocalVersionChange::Made { kind: ItemKind::File, place, content: Some(made_here()), is_name_ignored: false, replaced: Some(replaced) }
 }
 
-pub(super) fn make_file(store: &mut TreeStore, parent: LocalItemId, name: &str) -> LocalItemId {
+pub(crate) fn make_file(store: &mut TreeStore, parent: LocalItemId, name: &str) -> LocalItemId {
     store.item_store().apply(&made(place(parent, name), ItemKind::File)).unwrap()
 }
 
-pub(super) fn make_directory(store: &mut TreeStore, parent: LocalItemId, name: &str) -> LocalItemId {
+pub(crate) fn make_directory(store: &mut TreeStore, parent: LocalItemId, name: &str) -> LocalItemId {
     store.item_store().apply(&made(place(parent, name), ItemKind::Directory)).unwrap()
 }
 
-pub(super) fn item(store: &mut TreeStore, id: LocalItemId) -> Item {
+pub(crate) fn item(store: &mut TreeStore, id: LocalItemId) -> Item {
     store.item_store().find_item(id).unwrap().unwrap_or_else(|| panic!("item {id} has no row"))
 }
 
 /// `id` as it is once OneDrive has it under `onedrive_id` and the two sides agree: bound, on
 /// disk, its synced place the local one, and for a file one hashed content on both sides.
-pub(super) fn synced(store: &mut TreeStore, id: LocalItemId, onedrive_id: &str) -> Item {
+pub(crate) fn synced(store: &mut TreeStore, id: LocalItemId, onedrive_id: &str) -> Item {
     let mut row = item(store, id);
     let local = row.local.as_mut().expect("shown in the folder");
     if row.kind == ItemKind::File {
@@ -64,7 +64,7 @@ pub(super) fn synced(store: &mut TreeStore, id: LocalItemId, onedrive_id: &str) 
 }
 
 /// The code refused what would break a rule of the rows.
-pub(super) fn is_refused<T: std::fmt::Debug>(result: Result<T, TreeError>) -> bool {
+pub(crate) fn is_refused<T: std::fmt::Debug>(result: Result<T, TreeError>) -> bool {
     matches!(&result, Err(TreeError::Refused(_))) || panic!("not refused: {result:?}")
 }
 

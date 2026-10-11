@@ -29,7 +29,7 @@ use konedrive_dbus::accounts::FolderProxies;
 use konedrive_dbus::testing::TestBus;
 use konedrived::account::AccountService;
 use konedrived::account::state::SignInState;
-use konedrived::sync::SyncService;
+use konedrived::account_folder::SyncService;
 
 /// Polls `pred` every 20 ms for up to 5 s — the same shape
 /// `konedrived`'s own tests use for a background listing to catch up.

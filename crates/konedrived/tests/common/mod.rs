@@ -120,7 +120,7 @@ pub async fn start_daemon_with(
     dir: &Path,
     options: konedrived::daemon::manager::Options,
 ) -> konedrived::daemon::startup::Daemon {
-    let registry = konedrived::sync::registry::Registry::new();
+    let registry = konedrived::account_folder::registry::Registry::new();
     konedrived::daemon::startup::start_on(bus.builder(), Paths::in_dir(dir), options, registry).await.unwrap()
 }
 

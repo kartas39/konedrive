@@ -67,13 +67,14 @@ These rules hold for every change:
    `x/tests/` by topic. Integration tests stay in `crates/*/tests/`.
 3. **Layers.** In `konedrived`, a directory of `crates/konedrived/src` uses only the
    directories before it in this order: `config/`, `account/`, `folder/`,
-   `conditions/`, `status/`, `hydration/`, `local/`, `fuse/`, `upload/`, `remote/`, `desktop/`,
-   `sync/`, `daemon/`, `dbus/`. And `remote/` does not use `upload/`. Test code is exempt. What a lower
+   `conditions/`, `status/`, `content_source/`, `local/`, `sync_parts/`, `mount/`,
+   `onedrive_steps/`, `listing/`, `desktop/`, `sync_plan_task/`, `sync_tasks/`, `upload_queue/`,
+   `account_folder/`, `daemon/`, `dbus/`. And `listing/` does not use `onedrive_steps/`. Test code is exempt. What a lower
    directory needs from a higher one, it asks through a trait the higher one implements.
 4. **One D-Bus interface, one file** in `crates/konedrived/src/dbus/`, named like its XML in
    `dbus/`.
-5. **Every `impl SyncService` is in `sync/`.** The directories before `sync/` do not know
-   `SyncService`.
+5. **Every `impl SyncService` is in `account_folder/`.** The directories before
+   `account_folder/` do not know `SyncService`.
 6. **A guard**, `scripts/check-structure.sh`, checks rules 1–3 and 7. It runs on every pull request
    (`.github/workflows/structure.yml`); run it yourself before sending a change:
 
@@ -98,13 +99,12 @@ scripts/check-structure.sh
 7. **Locks.** A lock of `std::sync` is taken through `crate::panic::lock`, `read` or `write`,
    which go on after a holder of the lock panicked; never with `.lock().unwrap()` or a
    recovery written out. What is done under such a lock must therefore not be able to leave
-   its data half-changed. `konedrive-graph` and `konedrive-tree` have a function of their own
+   its data half-changed. `konedrive-graph` has a function of its own
    for it. Not asked of test code, test doubles and the files that hold those
    functions. What the guard does with this rule:
 
-   - **Not checked**: files named `testing.rs` or under `testing/`; and the three files that hold the functions
-     (`konedrived/src/panic.rs`, `konedrive-graph/src/lib.rs`,
-     `konedrive-tree/src/outbox/changes.rs`), where a second lock written with `unwrap` passes.
+   - **Not checked**: files named `testing.rs` or under `testing/`; and the two files that hold the functions
+     (`konedrived/src/panic.rs`, `konedrive-graph/src/lib.rs`), where a second lock written with `unwrap` passes.
    - **Found**: `.lock()`, `.read()` or `.write()` with nothing passed, or `Mutex::lock(…)` and
      the like, followed in the same chain (on the line, or on the next line that is not empty
      or a comment) by `unwrap…`, `expect`, `ok`, `map_err`, `is_ok` or `is_err`.

@@ -7,7 +7,7 @@ use zbus::{fdo, Connection};
 
 use crate::config::{ConfigStore, Paths};
 use crate::account::secret::Slot;
-use crate::sync::registry::Registry;
+use crate::account_folder::registry::Registry;
 use crate::daemon::manager::{AccountManager, Options};
 
 /// How long the migration waits for the wallet to say whether version 1's refresh token is

@@ -70,7 +70,7 @@ pub struct ItemReader<'a> {
 
 impl ItemReader<'_> {
     /// The connection every reader of this module and of the modules beside it reads on.
-    pub(super) fn conn(&self) -> &Connection {
+    pub(crate) fn conn(&self) -> &Connection {
         &self.store.conn
     }
 
@@ -134,7 +134,7 @@ pub struct ItemNotShown {
 impl TreeStore {
     /// Runs `read` over the rows in one read transaction of this connection, which is
     /// ended when `read` returns. The one way to an [`ItemReader`] over a `&TreeStore`.
-    /// Called by the mount's threads over their own connection (`fuse::read_connections`),
+    /// Called by the mount's threads over their own connection (`mount::read_connections`),
     /// by [`Store::read_items`], and by the write-operation thread's jobs over the writer,
     /// where a read must see the job's own last write. On a connection that has a
     /// transaction open already, `read` runs inside that one. `read` must not call the
@@ -169,7 +169,7 @@ impl super::ItemStore<'_> {
 impl Store {
     /// Runs `read` over the rows on the store's read-only connection, in one read
     /// transaction, never waiting for the writer: the plan's reads
-    /// (`sync::sync_plan_task::plan_input::plan_next_steps`) and the bus's questions about
+    /// (`sync_plan_task::plan_input::plan_next_steps`) and the bus's questions about
     /// the queue, the counts and what is not shown. As [`Store::read`], which hands out a
     /// [`ReadStore`](crate::ReadStore); a store in memory is read through its own thread.
     pub async fn read_items<T: Send + 'static>(&self, read: impl FnOnce(&ItemReader<'_>) -> Result<T, TreeError> + Send + 'static) -> Result<T, TreeError> {
@@ -459,12 +459,12 @@ impl ItemReader<'_> {
     /// directory of that name when it has one — what a directory made in the backing
     /// directory above a place is marked with. As many marks as the path has names: the
     /// last is the item's own when it is a directory, and none when it is a file, whose
-    /// name no directory is made under (`fuse::place_changes`, `DirectoryMarks`). The
+    /// name no directory is made under (`mount::place_changes`, `DirectoryMarks`). The
     /// empty path and no mark for the root. `None` for an item the folder does not show
     /// and for an id with no row. One read per directory above,
     /// in this reader's one transaction. Called by the write operations' read of their
     /// case, by the steps towards the folder and by a landing, each before it changes a
-    /// place (`fuse::place_changes`).
+    /// place (`mount::place_changes`).
     pub fn find_path_with_marks(&self, item: LocalItemId) -> Result<Option<(PathBuf, Vec<Option<OneDriveItemId>>)>, TreeError> {
         let mut names_and_marks = Vec::new();
         let mut at = item;

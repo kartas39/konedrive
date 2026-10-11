@@ -17,7 +17,7 @@ use crate::dbus::properties::{self, Changed, Seen, AT_ONCE, COALESCED, DECIDED, 
 use crate::dbus::{ActivityLog, Folder};
 use crate::status::snapshot::SyncSnapshot;
 use crate::status::transfers::Transfer;
-use crate::sync::SyncService;
+use crate::account_folder::SyncService;
 
 /// The shortest time between two coalesced `PropertiesChanged`: at most four
 /// a second.

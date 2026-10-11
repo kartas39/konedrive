@@ -71,11 +71,11 @@ use crate::model::{ContentPresence, ContentVersion, FolderVisibility, Item, Item
 use crate::{FoldedName, RowRefusal, RowRefusalReason, TreeError, TreeStore, MAX_CHAIN};
 
 /// The three operations that move a binding from one item to another.
-mod bindings;
+pub(crate) mod bindings;
 /// Whether a file's content is in the backing directory, written by itself.
 mod content_presence;
 /// A row of `items`: its columns, reading it, and its raw writers.
-mod item_row;
+pub(crate) mod item_row;
 /// An item of OneDrive the folder ceases to show without it being removed here.
 mod local_and_synced_version;
 /// What a listing of OneDrive says of an item, written into its row.
@@ -88,8 +88,6 @@ mod place_change_records;
 mod step_commit;
 /// The removals this client sent a short time ago, counted since their window began.
 mod sent_removal_window;
-/// What a step remembers of an item beyond the versions.
-pub(crate) mod step_memory;
 /// A full listing that was asked for and has not begun.
 mod full_listing_request;
 /// The flag of an ignored name, gone over when the list of ignored names changes.
@@ -98,8 +96,6 @@ mod ignored_names;
 mod item_pins;
 /// The rows for who only reads them: the mount's threads and the bus.
 mod item_reader;
-/// What the steps remember, read through the reader.
-mod memory_reader;
 /// The content an upload of this folder left in OneDrive in place of what it sent.
 mod own_upload_content;
 /// The readers a plan is made from, over the reader.
@@ -114,6 +110,7 @@ mod step_record;
 mod thumbnail_marks;
 
 pub(crate) use bindings::bind_root_once_known;
+pub(crate) use item_row::find_item;
 pub use step_commit::{ConfirmedItem, StepCommitOutcome};
 pub use sent_removal_window::{SentRemovalWindow, SENT_REMOVAL_WINDOW_SECONDS};
 pub use full_listing_request::FullListingCause;
@@ -128,14 +125,8 @@ pub(crate) use thumbnail_marks::{schema as thumbnail_marks_schema, IMAGE_OR_VIDE
 pub use thumbnail_marks::ThumbnailCandidate;
 pub use onedrive_versions::{ConfirmedOneDriveVersion, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay};
 pub(crate) use item_row::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE, SHOWN_AGAINST_PLACEMENT};
-pub use step_memory::{
-    is_content_of, EmptyFileSession, FactStanding, FailedTries, FailedTryStanding, ItemMemory, ItemMemoryParts, ItemRefusalReason, ItemTakenName, MismatchedItem, MismatchedItemStanding, MismatchedItemUpload, OpeningTry, OpeningWindow, Refusal, RefusedVersion,
-    RemovalConfirmation, SpaceFit, SpaceRefusal, StepFact, StepMemory, TakenName, TemporaryName, TimedWait, UnsentRemoval, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
-    UPLOAD_SESSION_OPENING_KEPT,
-};
-pub(crate) use step_memory::schema as step_memory_schema;
 
-use item_row::{delete_item, find_bound_item, find_is_left_here, find_item, find_item_at, insert_item, list_below_in_onedrive, list_changed_in_onedrive, list_children, list_children_in_onedrive, list_children_in_onedrive_with_folded_name, list_children_with_folded_name, list_unsent, set_local_place, set_local_place_aside, write_item};
+use item_row::{delete_item, find_bound_item, find_is_left_here, find_item_at, insert_item, list_below_in_onedrive, list_changed_in_onedrive, list_children, list_children_in_onedrive, list_children_in_onedrive_with_folded_name, list_children_with_folded_name, list_unsent, set_local_place, set_local_place_aside, write_item};
 
 /// The store's rows of `items`, for one job of the store's thread: what finds an item and
 /// what changes one. Borrowed from the store as [`ReadStore`](crate::ReadStore) is
@@ -308,7 +299,7 @@ impl ItemStore<'_> {
 
     /// Runs `work` in a transaction of its own and commits what it did; an error leaves
     /// the rows as they were.
-    fn write<T>(&mut self, work: impl FnOnce(&Transaction<'_>) -> Result<T, TreeError>) -> Result<T, TreeError> {
+    pub(crate) fn write<T>(&mut self, work: impl FnOnce(&Transaction<'_>) -> Result<T, TreeError>) -> Result<T, TreeError> {
         let tx = self.store.conn.transaction()?;
         let done = work(&tx)?;
         tx.commit()?;
@@ -317,7 +308,7 @@ impl ItemStore<'_> {
 }
 
 /// The error of a change the rows' rules refuse: the change wrote nothing.
-fn refuse(what: String) -> TreeError {
+pub(crate) fn refuse(what: String) -> TreeError {
     TreeError::Refused(what.into())
 }
 

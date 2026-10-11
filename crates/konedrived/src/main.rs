@@ -23,9 +23,9 @@ async fn main() -> anyhow::Result<()> {
     // What the unit runs after the daemon's end, however it ended: a folder that shows OneDrive
     // loses the mount the daemon left on it, and is locked.
     if std::env::args().nth(1).is_some_and(|arg| arg == "--tidy") {
-        let folders = konedrived::fuse::tidy_served_folders(&Paths::from_xdg()?.config_file);
+        let folders = konedrived::mount::tidy_served_folders(&Paths::from_xdg()?.config_file);
         // A file manager that showed the mount reads the folder on disk now.
-        let directories = folders.iter().flat_map(|folder| konedrived::fuse::list_directories(folder)).collect();
+        let directories = folders.iter().flat_map(|folder| konedrived::mount::list_directories(folder)).collect();
         konedrived::desktop::dirnotify::read_again(directories).await;
         return Ok(());
     }
@@ -93,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
     // that could not.
     for sync in registry.accounts().iter() {
         if let Some(folder) = sync.unmount().await {
-            konedrived::desktop::dirnotify::read_again(konedrived::fuse::list_directories(&folder)).await;
+            konedrived::desktop::dirnotify::read_again(konedrived::mount::list_directories(&folder)).await;
         }
     }
     // Not through the runtime's drop, which would wait for blocking tasks.

@@ -4,7 +4,7 @@ use zbus::names::ErrorName;
 
 use crate::account::{AccountError, ModeError};
 use crate::daemon::manager::ManagerError;
-use crate::sync::SyncError;
+use crate::account_folder::SyncError;
 
 /// How a call is refused: under a D-Bus error *name* ([`Refusal`]) a client can branch
 /// on, with the sentence beside it as the message. "The file was modified locally" and "the

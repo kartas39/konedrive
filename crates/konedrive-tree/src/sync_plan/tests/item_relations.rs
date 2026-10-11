@@ -246,7 +246,7 @@ fn an_item_that_is_left_here_stays_beside_an_item_of_onedrive_whose_name_only_fo
 /// of its name: one that got its binding while its sending was running and whose name is
 /// ignored now stays in OneDrive under that name, and one renamed here to an ignored name
 /// has its move sent like any other. Differs from today, where nothing of an ignored name
-/// is recorded (`fuse/upload_rules.rs`).
+/// is recorded (`mount/upload_rules.rs`).
 #[test]
 fn a_bound_item_whose_name_is_ignored_is_planned_as_any_bound_item() {
     let ignored = |mut item: Item| {

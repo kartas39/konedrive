@@ -51,7 +51,7 @@ impl ItemStore<'_> {
     /// their own flag changed. One
     /// transaction, however many rows: a plan made meanwhile sees the old list or the new.
     ///
-    /// Called by the change of the account's ignore list (`sync/settings.rs`), under the
+    /// Called by the change of the account's ignore list (`account_folder/settings.rs`), under the
     /// tree lock, so that no write operation gives a name its flag by the old list after
     /// it; the plan's task is woken after it. `is_name_ignored` is the upload rules' pure
     /// question of a name (`fuse::UploadRules::is_name_ignored`). MISSING-4.f.

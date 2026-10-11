@@ -10,7 +10,7 @@ use crate::account::AccountService;
 use crate::daemon::manager::{AccountManager, Bus};
 use crate::dbus::accounts::Accounts;
 use crate::dbus::files::Files;
-use crate::sync::SyncService;
+use crate::account_folder::SyncService;
 use crate::dbus::{ActivityLog, Conflicts, Folder, LocalScan, Transfers, UploadQueue};
 use crate::dbus::signals::start_signals;
 

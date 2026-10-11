@@ -311,7 +311,7 @@ pub(super) fn insert_item(
 }
 
 /// The row of `item.local_item_id` is `item` from now on.
-pub(super) fn write_item(conn: &Connection, item: &Item) -> Result<(), TreeError> {
+pub(crate) fn write_item(conn: &Connection, item: &Item) -> Result<(), TreeError> {
     check_names(item.local.as_ref(), item.synced_place.as_ref())?;
     check_onedrive_item_id(item.onedrive_item.as_ref())?;
     let sets = written_columns().enumerate().map(|(n, column)| format!("{column} = ?{}", n + 1)).collect::<Vec<_>>().join(", ");
@@ -330,7 +330,7 @@ pub(super) fn delete_item(conn: &Connection, item: LocalItemId) -> Result<(), Tr
     Ok(())
 }
 
-pub(super) fn find_item(conn: &Connection, item: LocalItemId) -> Result<Option<Item>, TreeError> {
+pub(crate) fn find_item(conn: &Connection, item: LocalItemId) -> Result<Option<Item>, TreeError> {
     let sql = format!("SELECT {ITEM_COLUMNS} FROM items WHERE local_item_id = ?1");
     Ok(conn.prepare_cached(&sql)?.query_row([item.as_i64()], item_from).optional()?)
 }

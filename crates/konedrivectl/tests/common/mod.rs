@@ -48,7 +48,7 @@ async fn start_daemon_with(
         drive,
         bus: Arc::new(konedrived::dbus::export::OnBus),
     };
-    let registry = konedrived::sync::registry::Registry::new();
+    let registry = konedrived::account_folder::registry::Registry::new();
     let paths = konedrived::config::Paths::in_dir(dir);
     konedrived::daemon::startup::start_on(bus.builder(), paths, options, registry).await.unwrap()
 }

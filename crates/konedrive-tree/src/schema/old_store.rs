@@ -185,7 +185,7 @@ pub(super) fn count_rebuild_loss(conn: &Connection) -> Option<RebuildLoss> {
 /// read: what cannot be read cannot be cancelled, and expires in OneDrive.
 ///
 /// Blocking. Called by the folder's start
-/// (`sync::sync_tasks::start_order::cancel_upload_sessions_of_old_store`) BEFORE
+/// (`sync_tasks::start_order::cancel_upload_sessions_of_old_store`) BEFORE
 /// [`TreeStore::open_with_origin`](crate::TreeStore::open_with_origin) removes such a
 /// store, which only counts them (design §13 (6)).
 pub fn list_old_store_upload_sessions(path: &Path) -> Result<Vec<String>, TreeError> {
@@ -201,7 +201,7 @@ impl crate::TreeStore {
     /// timeout — is returned unchanged and nothing on disk is touched: a failure that
     /// passes is not corruption, and must never cost the user their store.
     ///
-    /// Called by the folder's start (`sync::sync_tasks::start_order`), which runs the check
+    /// Called by the folder's start (`sync_tasks::start_order`), which runs the check
     /// at start and asks for a full listing by the answer; and by `TreeStore::open`.
     pub fn open_with_origin(path: &Path) -> Result<(Self, StoreOrigin), TreeError> {
         if let Some(dir) = path.parent() {

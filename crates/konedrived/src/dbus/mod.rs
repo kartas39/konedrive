@@ -34,7 +34,7 @@ pub mod upload_queue;
 
 use std::sync::Arc;
 
-use crate::sync::SyncService;
+use crate::account_folder::SyncService;
 
 /// The interfaces of one account's folder, each over the same `SyncService`
 /// (definitions: `dbus/org.konedrive.{Folder,Transfers,UploadQueue,Conflicts,LocalScan,ActivityLog}.xml`).

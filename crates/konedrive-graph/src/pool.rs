@@ -18,7 +18,7 @@
 //! waiting for that limit lets the small ones behind it go. A file being opened is outside the
 //! limit and its count: it is never marked large, neither waits for the limit nor
 //! takes room in it, and still takes a slot of the pool. A large pinned download in parts holds
-//! one large slot per stream (`hydration::source::parts`): its extra streams take only
+//! one large slot per stream (`content_source::source::parts`): its extra streams take only
 //! slots nothing waits for ([`TransferPool::waiting`]), and give them back when something does.
 //!
 //! Who gets a free slot: a file being opened first — it may also take [`RESERVE`] slots above

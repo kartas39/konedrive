@@ -49,7 +49,7 @@
 //! confirmation ([`confirm_onedrive_version`]): the version, the eTag and the stamp of the
 //! guard against an outdated listing, in one statement.
 //!
-//! **What the steps remember of the item** ([`step_memory`](super::step_memory)). What a
+//! **What the steps remember of the item** ([`step_memory`](crate::step_memory)). What a
 //! step learnt of a local change that was not sent is answered only while the row has the
 //! stamp of that change, so a commit that makes the two sides agree forgets it by what it
 //! writes, and so does every commit that gives or moves a binding, by the operation on the
@@ -81,7 +81,7 @@ use super::item_row::{confirm_removal_below, find_bound_item, find_item, list_be
 use super::onedrive_versions::{confirm_onedrive_version, ListingUnderWay};
 use super::place_change_records::{forget_place_change_record_when_written, PlaceChangeRecordId};
 use super::sent_removal_window::add_sent_removals;
-use super::step_memory::{
+use crate::step_memory::{
     carry_content, forget_confirmed_request, forget_ended_upload_session, forget_temporary_name_unless_at, forget_temporary_names_of_items_onedrive_lacks, ConfirmedRequest, UploadSessionAddress,
 };
 use super::{check_can_hold, check_directory, check_empty, find_item_at, refuse, ItemStore};

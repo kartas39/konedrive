@@ -22,7 +22,7 @@ use crate::account::state::SignInState;
 use crate::status::overall;
 use crate::status::snapshot::{published_error, published_state, SyncSnapshot};
 use crate::status::transfers::{large_files, Transfer};
-use crate::sync::SyncService;
+use crate::account_folder::SyncService;
 
 /// What the properties are read from: the published state, the downloads under way, and
 /// where the account's sign-in stands.

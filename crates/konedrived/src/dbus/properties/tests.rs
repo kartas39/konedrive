@@ -21,7 +21,7 @@ fn on_the_bus<I: Interface>(interface: &I) -> BTreeSet<String> {
 /// here, with who announces them. And no row names a property that is not there.
 #[tokio::test]
 async fn every_property_on_the_bus_is_a_row_of_the_table() {
-    let service = crate::sync::testing::wiring().build();
+    let service = crate::account_folder::testing::wiring().build();
     let rows = |interface: &str| -> BTreeSet<String> {
         AT_ONCE.iter().chain(COALESCED).chain(DECIDED).filter(|row| row.interface() == interface).map(|row| row.name().to_owned()).collect()
     };

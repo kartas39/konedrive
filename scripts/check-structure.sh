@@ -6,7 +6,7 @@
 #      and nothing more;
 #   2. no Rust source file holds tests;
 #   3. in konedrived, a directory uses only the directories before it in the
-#      layer order, and remote/ does not use upload/. Test code is exempt.
+#      layer order, and listing/ does not use onedrive_steps/. Test code is exempt.
 #   7. a lock of std::sync is taken through the one function that goes on
 #      after a panic (konedrived: panic::lock, read, write), never with
 #      `.lock().unwrap()` or a recovery written out. Test code is exempt.
@@ -39,7 +39,7 @@ BEGIN {
 
     # The daemon: its directories in layer order.
     DAEMON = "crates/konedrived/src/"
-    count = split("config account folder conditions status hydration local fuse upload remote desktop sync daemon dbus", order, " ")
+    count = split("config account folder conditions status content_source local sync_parts mount onedrive_steps listing desktop sync_plan_task sync_tasks upload_queue account_folder daemon dbus", order, " ")
     for (i = 1; i <= count; i++)
         layer[order[i]] = i
 }
@@ -87,7 +87,7 @@ function uses(file, number, line, own, top,    text, name) {
         sub(/^(crate|super)::/, "", name)
         if (!(name in layer))
             continue
-        if (layer[name] > layer[own] || (own == "remote" && name == "upload")) {
+        if (layer[name] > layer[own] || (own == "listing" && name == "onedrive_steps")) {
             found++
             found_file[found] = file
             found_text[found] = file ":" number ": " own "/ uses " name "/ (rule 3: the layer order)"
@@ -99,7 +99,7 @@ function uses(file, number, line, own, top,    text, name) {
 # function and not of test doubles (`testing.rs`, `testing/`):
 # CONTRIBUTING.md, rule 7.
 function locks_checked(file) {
-    if (file == DAEMON "panic.rs" || file == "crates/konedrive-graph/src/lib.rs" || file == "crates/konedrive-tree/src/outbox/changes.rs")
+    if (file == DAEMON "panic.rs" || file == "crates/konedrive-graph/src/lib.rs")
         return 0
     return file !~ /(^|\/)testing(\.rs$|\/)/
 }

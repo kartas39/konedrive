@@ -154,7 +154,7 @@ impl ItemStore<'_> {
     /// it is written again. Written before the file goes
     /// (design §8: "the row says `NotOnDisk` first, then the file goes").
     ///
-    /// Called by free-up (`fuse::item_free_up`), on the write-operation thread under the
+    /// Called by free-up (`mount::item_free_up`), on the write-operation thread under the
     /// tree lock, with the content it decided on.
     pub fn commit_freed_content(&mut self, item: LocalItemId, content: &ContentVersion) -> Result<StepCommitOutcome, TreeError> {
         self.write(|tx| {

@@ -110,7 +110,7 @@ pub struct SyncSnapshot {
 }
 
 /// The folder's registration, worked out from the folder's state in one place
-/// (`sync::publish`).
+/// (`account_folder::publish`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FolderStatus {
     pub root_path: String,
@@ -123,7 +123,7 @@ pub struct FolderStatus {
     pub writable: bool,
 }
 
-/// What the cycles with OneDrive say (`remote::listing`, `remote::live`).
+/// What the cycles with OneDrive say (`remote::listing`, `listing::live`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CycleStatus {
     /// An initial or `410` listing of the drive is running.
@@ -137,7 +137,7 @@ pub struct CycleStatus {
     /// succeeded, 0 for never.
     pub last_checked: i64,
     /// `LiveChanges`: whether changes made in OneDrive arrive at once, through the
-    /// notification socket (`remote::live`).
+    /// notification socket (`listing::live`).
     pub live_changes: LiveChanges,
 }
 
@@ -158,7 +158,7 @@ pub struct LocalStatus {
     pub scan: LocalScan,
 }
 
-/// The outbox as its worker last saw it (`sync/outbox.rs`).
+/// The outbox as its worker last saw it (`account_folder/outbox.rs`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OutboxStatus {
     /// What keeps the outbox's changes from going: the write gate
@@ -186,7 +186,7 @@ pub struct OutboxStatus {
     pub too_big_bytes: u64,
 }
 
-/// Whether the account's background work stops (`sync/pause.rs`).
+/// Whether the account's background work stops (`account_folder/pause.rs`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PauseStatus {
     /// `Paused` and `PausedUntil`: `Some(until)` while paused, unix seconds,
@@ -238,8 +238,8 @@ pub enum TroubleKind {
 }
 
 /// What keeps the outbox's changes from going, and who says so: the write gate's note is
-/// the gate's alone to take back (`Gate::check` in `sync/mode.rs`), the throttle's and the
-/// unopenable folder's are the outbox worker's (its host, `sync/outbox.rs`), the other two are the poller's
+/// the gate's alone to take back (`Gate::check` in `account_folder/mode.rs`), the throttle's and the
+/// unopenable folder's are the outbox worker's (its host, `account_folder/outbox.rs`), the other two are the poller's
 /// (`remote::listing::poller`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutboxNote {
