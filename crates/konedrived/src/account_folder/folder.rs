@@ -36,9 +36,6 @@ pub(super) struct Folder {
     /// a read-only folder's mount takes no change, a read-write one's does.
     pub wanted: Mode,
     pub is: Is,
-    /// The daemon's end reached this folder (`SyncService::end_at_daemon_stop`): its mount
-    /// is stopped, and no sync of it is started any more, whoever asks.
-    pub is_ended_at_daemon_stop: bool,
 }
 
 /// Whether the account takes a folder.
@@ -215,7 +212,7 @@ pub(super) struct TakeDownTry {
 
 impl Folder {
     pub fn new() -> Self {
-        Self { standing: Standing::Active, wanted: Mode::ReadOnly, is: Is::Absent, is_ended_at_daemon_stop: false }
+        Self { standing: Standing::Active, wanted: Mode::ReadOnly, is: Is::Absent }
     }
 
     /// The folder the daemon holds, up or not.

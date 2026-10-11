@@ -27,8 +27,8 @@ impl SyncService {
     /// it answers is put into the state, from where only a change takes it out.
     pub(super) async fn start_sync(&self, stopped: &mut Stopped<'_>) {
         debug_assert!(stopped.folder().running().is_none(), "a sync runs inside a change");
-        // The daemon's end reached the folder: its mount is stopped, and nothing mounts it again.
-        if stopped.folder().is_ended_at_daemon_stop {
+        // The daemon's end reached the account: its folder's mount is stopped, or about to be, and nothing mounts it again.
+        if self.is_ended_at_daemon_stop.load(std::sync::atomic::Ordering::SeqCst) {
             return;
         }
         // What a start reads of the folder is what it is now.

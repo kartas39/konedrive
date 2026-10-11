@@ -187,6 +187,9 @@ pub struct SyncService {
     /// What background work runs now (`running`): the one place every reader of the pause
     /// asks, with the account's settings from `config.toml`.
     running: Arc<running::Running>,
+    /// The daemon's end reached this account (`end_at_daemon_stop`), set before anything of it is waited for:
+    /// no sync of its folder is started any more, whoever asks (`start_sync` reads it).
+    is_ended_at_daemon_stop: std::sync::atomic::AtomicBool,
     /// The start or the stop of the folder's sync that runs now, and what it left when its caller was cut
     /// ([`folder::SyncChangeTask`]).
     sync_change: folder::SyncChangeTask,
@@ -236,6 +239,7 @@ impl SyncService {
             state,
             folder: Arc::new(tokio::sync::RwLock::new(Folder::new())),
             view: watch::Sender::new(View::default()),
+            is_ended_at_daemon_stop: std::sync::atomic::AtomicBool::new(false),
             sync_change: folder::SyncChangeTask::default(),
             me: me.clone(),
             wiring,
@@ -337,10 +341,11 @@ impl SyncService {
     /// caller bounds the wait (`crate::daemon::stop`): the work runs in a task of its
     /// own, which a caller that is cut leaves running until the process exits.
     pub async fn end_at_daemon_stop(&self) -> Option<std::path::PathBuf> {
+        // Nothing starts this folder from here on, also when this call is cut before it has the folder's lock: a
+        // `Refresh()` during the stop's bound, the report of the mount that is being stopped, a change that starts
+        // again what ran — the adoption of this call's own stop among them.
+        self.is_ended_at_daemon_stop.store(true, std::sync::atomic::Ordering::SeqCst);
         let mut stopped = self.change().await;
-        // Nothing starts this folder from here on: a `Refresh()` during the stop's bound, the report of the mount
-        // that is being stopped, a change that starts again what ran.
-        stopped.folder_mut().is_ended_at_daemon_stop = true;
         // A folder a fault took down is not tried again: the daemon ends.
         if let Some(folder::Sync::Stopped(folder::Why::TakenDown { next_try_at, .. })) = stopped.folder_mut().sync_mut() {
             *next_try_at = None;
