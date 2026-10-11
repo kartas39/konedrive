@@ -59,6 +59,7 @@ impl Requests {
             Arc::clone(&fixture.place_changes),
             Arc::clone(&fixture.backing_directory),
             fixture.store.clone(),
+            Arc::clone(&fixture.read_connections),
             Arc::clone(&fixture.item_handles),
             Arc::clone(&fixture.download_states),
             Arc::clone(&fixture.upload_rules),
@@ -844,7 +845,7 @@ fn the_bridges_own_requests_are_answered_from_the_rows_and_make_nothing() {
     // Over a directory of its own: what it would announce is not made in the folder.
     let announced_in = tempfile::tempdir().unwrap();
     let bridge = Arc::new(ItemInotifyBridge::new(announced_in.path().to_owned()));
-    bridge.start(Arc::clone(&fixture.read_connections)).unwrap();
+    bridge.start(Arc::clone(&fixture.read_connections), None).unwrap();
     let mount = Requests::over(fixture, Arc::clone(&bridge));
     let its_thread = find_thread_id(&bridge);
     let kept = mount.fixture.make_own_file("kept.txt", b"kept").local_item_id;

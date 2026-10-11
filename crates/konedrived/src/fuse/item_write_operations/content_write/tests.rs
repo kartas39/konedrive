@@ -468,7 +468,7 @@ fn a_backing_file_that_cannot_be_made_after_its_row_asks_for_the_take_down() {
     // The disk holds something at the name that no row says: the file cannot be made.
     operations.fixture.write_disk_file("remote.txt", b"what no row says");
     assert_eq!(overwrite(&operations, remote).map(|opened| opened.fh), Err(Errno::EIO));
-    assert_eq!(operations.take_downs(), [crate::fuse::mount_take_down::TakeDownCause::UndoFailed { path: "remote.txt".into() }]);
+    assert_eq!(operations.take_downs(), [crate::fuse::mount_take_down::TakeDownCause::BackingFileBehindRow { path: "remote.txt".into() }]);
     assert!(!operations.fixture.access_mode_switch.is_read_write());
     assert!(matches!(operations.list_records()[..], [PlaceChangeRecord::MakeEntry { owner: MadeEntryOwner::Item(item), .. }] if item == remote), "the record stands");
     assert_eq!(operations.fixture.read_disk_file("remote.txt").as_deref(), Some(&b"what no row says"[..]), "nothing was replaced");

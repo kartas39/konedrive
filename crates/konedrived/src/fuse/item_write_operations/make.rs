@@ -29,6 +29,7 @@
 // test: a_file_created_is_made_and_open_for_writing_in_one_transaction
 // test: a_row_refused_after_the_disk_removes_what_was_made
 // test: a_made_entry_that_cannot_be_removed_again_asks_for_the_take_down_and_keeps_its_record
+// test: a_created_file_is_answered_and_has_its_writer_whatever_is_read_after_its_row
 #![allow(dead_code)]
 
 use std::ffi::OsStr;
@@ -179,7 +180,9 @@ impl ItemWriteOperations {
     /// then `forget_place_change_record`): `ItemStore::settle_place_change_record(record,
     /// LocalVersion(Made { kind, place, content, is_name_ignored, replaced }))`, or for a
     /// created file `apply_made_open_for_writing` with the record, after which the writer
-    /// is added to `ItemHandles`.
+    /// is added to `ItemHandles`. The row answered ([`MadeItem::item`]) is read in the job
+    /// that wrote it; the writer is added whatever that read said, and when it said
+    /// nothing the writer is closed again and the program gets `EIO`.
     /// The new file's content is `ContentVersion::ChangedHere` of size 0, the backing
     /// file's time, change count 1. A created file that is closed with nothing written
     /// has that content again (`ClosedUnchanged`): its writer is not marked as having
@@ -216,16 +219,32 @@ impl ItemWriteOperations {
         #[cfg(test)]
         self.reach(super::tests::OperationPoint::DiskChanged);
         let (is_name_ignored, replaced) = (decision.is_name_ignored, decision.replaced);
-        let write = move |store: &mut TreeStore| match (kind, content) {
-            (MadeKind::FileOpenedForWriting, Some(content)) => store.item_store().apply_made_open_for_writing(&place, &content, is_name_ignored, replaced, Some(record)),
-            (_, content) => store.item_store().settle_place_change_record(record, &PlaceChangeRowWrite::LocalVersion(LocalVersionChange::Made { kind: item_kind, place, content, is_name_ignored, replaced })),
+        // The row, and what the answer is made from, out of the one job: read with the
+        // writer that wrote it, before anything else can change it. A read that fails
+        // after the row is written is no failure of the write, and undoes nothing.
+        let write = move |store: &mut TreeStore| {
+            let made = match (kind, content) {
+                (MadeKind::FileOpenedForWriting, Some(content)) => store.item_store().apply_made_open_for_writing(&place, &content, is_name_ignored, replaced, Some(record)),
+                (_, content) => store.item_store().settle_place_change_record(record, &PlaceChangeRowWrite::LocalVersion(LocalVersionChange::Made { kind: item_kind, place, content, is_name_ignored, replaced })),
+            }?;
+            let row = store.item_store().reader().find_item(made).inspect_err(|error| tracing::warn!("the row of item {made}, which was made, could not be read back: {error}")).ok().flatten();
+            Ok((made, row))
         };
-        let (made, _) = self.write_row_or_undo(&change, undo, record, write)?;
+        let ((made, row), _) = self.write_row_or_undo(&change, undo, record, write)?;
         change.end();
-        let item = self.read_item(made)?.ok_or(Errno::EIO)?;
+        // The row of a created file says a writer holds it: the writer is added whatever
+        // was read of the row.
         let fh = match (kind, file) {
             (MadeKind::FileOpenedForWriting, Some(file)) => self.item_handles.add_writer(made, Arc::new(file)).0,
             _ => Fh::NOT_OPENED,
+        };
+        let Some(item) = row else {
+            // Nothing to answer the program with: the handle it will never get is closed,
+            // so that no row keeps the content of before a write with no writer.
+            if fh != Fh::NOT_OPENED {
+                self.close_writer(fh);
+            }
+            return Err(Errno::EIO);
         };
         Ok(MadeItem { item, fh })
     }

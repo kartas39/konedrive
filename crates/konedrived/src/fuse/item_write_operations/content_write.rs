@@ -242,7 +242,7 @@ impl ItemWriteOperations {
             Ok((Some(made), _)) => made,
             refused => {
                 tracing::error!("the backing file {} could not be made after its row was written ({:?}); the mount is taken down", file.path.display(), refused.err());
-                self.mount_take_down.ask(TakeDownCause::UndoFailed { path: file.path.clone() });
+                self.mount_take_down.ask(TakeDownCause::BackingFileBehindRow { path: file.path.clone() });
                 return Err(Errno::EIO);
             }
         };
@@ -346,7 +346,7 @@ impl ItemWriteOperations {
     /// to: the mount's take-down, and `EIO`.
     fn take_down_for_file(&self, path: &Path, error: &std::io::Error) -> Errno {
         tracing::error!("the backing file {} could not be changed after its row was written: {error}; the mount is taken down", path.display());
-        self.mount_take_down.ask(TakeDownCause::UndoFailed { path: path.to_owned() });
+        self.mount_take_down.ask(TakeDownCause::BackingFileBehindRow { path: path.to_owned() });
         Errno::EIO
     }
 

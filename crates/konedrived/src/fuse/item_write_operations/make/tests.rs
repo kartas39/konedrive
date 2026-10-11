@@ -284,3 +284,24 @@ fn a_made_entry_that_cannot_be_removed_again_asks_for_the_take_down_and_keeps_it
     assert!(matches!(operations.list_records()[..], [PlaceChangeRecord::MakeEntry { kind: ItemKind::File, .. }]));
     assert!(operations.fixture.disk_path("made.txt").is_file(), "what could not be removed is still there, for the check at start");
 }
+
+/// The review's S3: what `make` answers comes out of the job that wrote the row, and a
+/// created file has its writer whatever the rows say a moment later. Here the row is
+/// gone again by the time a second read would be made.
+#[test]
+fn a_created_file_is_answered_and_has_its_writer_whatever_is_read_after_its_row() {
+    let operations = OperationsFixture::new();
+    let store = operations.fixture.store.clone();
+    operations.run_at(OperationPoint::RowWritten, move || {
+        store
+            .call_blocking(|store| {
+                let made = store.item_store().reader().find_item_at(LocalItemId::ROOT, OsStr::new("created.txt"))?.expect("the row is written");
+                store.item_store().apply(&LocalVersionChange::Removed { item: made.local_item_id }).map(drop)
+            })
+            .unwrap();
+    });
+    let made = operations.make("created.txt", MadeKind::FileOpenedForWriting).expect("the file was made, and its row written");
+    assert!(made.item.local.is_some() && made.item.content_before_write.is_some(), "the row as it was written: {:?}", made.item);
+    assert_ne!(made.fh, Fh::NOT_OPENED);
+    assert!(operations.fixture.item_handles.is_open_for_writing(made.item.local_item_id), "the writer the row was written for is among the handles");
+}

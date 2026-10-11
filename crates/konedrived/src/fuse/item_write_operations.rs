@@ -278,8 +278,4 @@ impl ItemWriteOperations {
         }
     }
 
-    /// The row of `item` as it is now, read in one job of the store through the writer.
-    fn read_item(&self, item: LocalItemId) -> Result<Option<Item>, Errno> {
-        self.run_store_job("a row could not be read", move |store| store.item_store().reader().find_item(item))
-    }
 }

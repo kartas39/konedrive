@@ -28,6 +28,9 @@ pub enum TakeDownCause {
     /// A change of the backing directory whose row could not be written could not be
     /// undone either: the disk has at `path` what no row says.
     UndoFailed { path: PathBuf },
+    /// A backing file could not be made or cut after the row that says so was written:
+    /// the row says of the file at `path` what the disk does not hold.
+    BackingFileBehindRow { path: PathBuf },
     /// The store failed under a write operation in a way that leaves the disk ahead of the
     /// rows.
     StoreFailed { detail: String },
