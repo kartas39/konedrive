@@ -253,7 +253,7 @@ fn a_row_refused_after_the_disk_removes_what_was_made() {
         let operations = OperationsFixture::new();
         operations.fixture.show_onedrive_directory("docs");
         operations.take_place_at(OperationPoint::DiskChanged, "docs", "made.txt");
-        assert_eq!(operations.make("docs/made.txt", kind).map(|made| made.fh), Err(Errno::EIO), "{kind:?}");
+        assert_eq!(operations.make("docs/made.txt", kind).map(|made| made.fh), Err(Errno::EEXIST), "{kind:?}");
         // The file is gone, and the directory that was made above it with it.
         assert!(!operations.fixture.disk_path("docs/made.txt").exists() && !operations.fixture.disk_path("docs").exists(), "{kind:?}");
         assert_eq!((operations.list_records(), operations.take_downs()), (vec![], vec![]), "{kind:?}");

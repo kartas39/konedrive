@@ -40,7 +40,7 @@
 //!
 //! **Tested without the rest**, over the fixture (`item_fixture`), with no mount (the
 //! tests of each operation are listed in its module):
-// test: a_refusal_and_a_failure_of_the_store_are_both_eio
+// test: a_refusal_of_the_store_is_the_errno_of_its_rule
 // test: a_place_held_on_disk_is_eexist_and_any_other_refusal_the_disks_own_errno
 // test: a_failed_row_is_undone_on_disk_and_the_program_gets_the_errno
 // test: a_death_at_each_point_of_each_operation_is_settled_by_the_check_at_start
@@ -58,7 +58,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::Errno;
-use konedrive_tree::{Item, LocalItemId, PlaceChangeRecord, PlaceChangeRecordId, Store, TreeError, TreeStore};
+use konedrive_tree::{Item, LocalItemId, PlaceChangeRecord, PlaceChangeRecordId, RowRefusalReason, Store, TreeError, TreeStore};
 
 use super::access_mode_switch::AccessModeSwitch;
 use super::backing_directory::BackingDirectory;
@@ -86,15 +86,23 @@ pub(super) use make::{MadeItem, MadeKind};
 pub(super) use rename::RenameMode;
 
 /// The errno a program gets when the store refuses a change of a local version
-/// (`TreeError::Refused`) or fails: `EIO` for both, as today every failed record is
-/// (`write_operations.rs:110-115`). Pure. A refusal that a decision foresaw never reaches
-/// here, and under the tree lock no step writes a local version between an operation's
-/// read and its row: what does reach here is a rule no decision asks (a place deeper than
-/// the walks of the rows go) or a failure of SQLite. `TreeError::Refused` carries a text
-/// and no rule, so a row that is gone is not told from a place that is taken.
+/// (`TreeError::Refused`) or fails. Pure. A refusal names its reason where a program goes
+/// on by the errno — `mkdir -p`, `rm -r`, `mv` and a save by rename, when another program
+/// or a step changed the rows between an operation's read and its row: the item is gone
+/// (`ESTALE`), the place is taken (`EEXIST`), the directory is not empty (`ENOTEMPTY`),
+/// there is no such directory (`ENOENT`). Any other rule (a place deeper than the walks
+/// of the rows go, a writer that holds the file) and a failure of SQLite or the disk are
+/// `EIO`, as today every failed record is (`write_operations.rs:110-115`).
 pub(super) fn decide_store_errno(error: &TreeError) -> Errno {
     match error {
-        TreeError::Refused(_) | TreeError::Sql(_) | TreeError::Io(_) | TreeError::Schema(_) => Errno::EIO,
+        TreeError::Refused(refusal) => match refusal.reason {
+            RowRefusalReason::ItemGone => Errno::ESTALE,
+            RowRefusalReason::PlaceTaken => Errno::EEXIST,
+            RowRefusalReason::DirectoryNotEmpty => Errno::ENOTEMPTY,
+            RowRefusalReason::NoDirectory => Errno::ENOENT,
+            RowRefusalReason::AnotherRule => Errno::EIO,
+        },
+        TreeError::Sql(_) | TreeError::Io(_) | TreeError::Schema(_) => Errno::EIO,
     }
 }
 

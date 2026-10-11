@@ -151,7 +151,7 @@ fn a_row_refused_after_the_disk_puts_the_entry_back() {
     let docs = operations.fixture.show_onedrive_directory("docs").local_item_id;
     operations.fixture.make_directory_on_disk(docs);
     put_row_into(&operations, OperationPoint::DiskChanged, "docs");
-    assert_eq!(operations.remove("docs", ItemKind::Directory), Err(Errno::EIO));
+    assert_eq!(operations.remove("docs", ItemKind::Directory), Err(Errno::ENOTEMPTY));
     assert!(operations.fixture.disk_path("docs").is_dir(), "the directory is back under its name");
     assert_eq!(operations.fixture.read_disk_marks("docs").onedrive_item_id, Some(onedrive_id_of("docs")), "with its mark");
     assert!(operations.fixture.find_item(docs).is_some_and(|row| row.local.is_some()), "and its row stands");
@@ -195,7 +195,7 @@ fn a_directory_that_holds_what_no_row_says_stays_on_disk_unmarked_and_its_row_go
     operations.fixture.make_directory_on_disk(kept);
     operations.fixture.write_disk_file("kept/leftover.txt", b"what no row says");
     put_row_into(&operations, OperationPoint::DiskChanged, "kept");
-    assert_eq!(operations.remove("kept", ItemKind::Directory), Err(Errno::EIO));
+    assert_eq!(operations.remove("kept", ItemKind::Directory), Err(Errno::ENOTEMPTY));
     assert_eq!(operations.fixture.read_disk_marks("kept").onedrive_item_id, Some(onedrive_id_of("kept")));
     assert_eq!(operations.list_records(), []);
 }

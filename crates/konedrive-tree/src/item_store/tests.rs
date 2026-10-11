@@ -859,7 +859,7 @@ fn make_chain(store: &mut TreeStore, name: &str, count: usize) -> Vec<LocalItemI
 
 fn refusal<T: std::fmt::Debug>(result: Result<T, TreeError>) -> String {
     match result {
-        Err(TreeError::Refused(why)) => why,
+        Err(TreeError::Refused(why)) => why.text,
         other => panic!("not refused: {other:?}"),
     }
 }
@@ -1426,6 +1426,8 @@ fn several_changes_are_applied_in_one_transaction_or_none() {
 mod unsent_items;
 /// A listing of OneDrive as a test gives it to the store.
 pub(crate) mod listed_drive;
+/// The reason a refusal names, a test per reason.
+mod row_refusals;
 /// The rules that hold of the rows at all times, asked of rows read whole.
 pub(crate) mod row_rules;
 /// A store with items of OneDrive the folder shows.

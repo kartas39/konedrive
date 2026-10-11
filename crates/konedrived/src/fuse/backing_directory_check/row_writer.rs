@@ -88,7 +88,7 @@ impl<'a, 'store> RowWriter<'a, 'store> {
         match (finding, binding) {
             (DiskFinding::NotShownAnyMore, ItemBinding::Bound) => self.item_store.clear_local_and_synced_version(item),
             (DiskFinding::Removed, ItemBinding::Unbound) => self.item_store.apply(&LocalVersionChange::Removed { item }).map(|_| ()),
-            (finding, binding) => Err(TreeError::Refused(format!("{finding:?} takes no item that is {binding:?} from the folder"))),
+            (finding, binding) => Err(TreeError::Refused(format!("{finding:?} takes no item that is {binding:?} from the folder").into())),
         }
         .map_err(to_refused)
     }

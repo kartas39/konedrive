@@ -31,10 +31,10 @@ use rusqlite::types::Value;
 use rusqlite::{params_from_iter, Connection};
 
 use super::item_row::{check_name, content_from, content_values, find_item, name_value, set_content_presence};
-use super::{apply_change, refuse, ItemStore, StepCommitOutcome};
+use super::{apply_change, refuse, refuse_for, ItemStore, StepCommitOutcome};
 use crate::model::{ContentPresence, ContentVersion, ItemKind, ItemPlace, LocalItemId, LocalVersionChange};
 use crate::outbox::path_from;
-use crate::TreeError;
+use crate::{RowRefusalReason, TreeError};
 
 /// Which record of `place_change_records`: the number the table gave it, never given twice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -221,7 +221,7 @@ impl ItemStore<'_> {
             let item = match write {
                 PlaceChangeRowWrite::LocalVersion(change) => apply_change(tx, change)?,
                 PlaceChangeRowWrite::ContentBeforeWrite { item } => {
-                    let row = find_item(tx, *item)?.ok_or_else(|| refuse(format!("item {item} has no row")))?;
+                    let row = find_item(tx, *item)?.ok_or_else(|| refuse_for(RowRefusalReason::ItemGone, format!("item {item} has no row")))?;
                     if row.local.is_none() || row.content_before_write.is_none() {
                         return Err(refuse(format!("item {item} keeps no content from before a write to put back")));
                     }

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use konedrive_tree::{ContentPresence, ContentVersion, ItemKind, ItemPlace, ItemVersion, LocalVersionChange, OneDriveItemId, OneDriveItemReference, Placement};
+use konedrive_tree::{ContentPresence, ContentVersion, ItemKind, ItemPlace, ItemVersion, LocalVersionChange, OneDriveItemId, OneDriveItemReference, Placement, RowRefusal, RowRefusalReason};
 
 use super::*;
 use crate::fuse::item_fixture::{onedrive_id_of, ItemFixture, DRIVE_ID};
@@ -219,10 +219,19 @@ fn take_wake(runtime: &tokio::runtime::Handle, wake: &Arc<SyncPlanWake>) -> bool
 }
 
 #[test]
-fn a_refusal_and_a_failure_of_the_store_are_both_eio() {
-    assert_eq!(decide_store_errno(&TreeError::Refused("item 7 has no row".into())), Errno::EIO);
+fn a_refusal_of_the_store_is_the_errno_of_its_rule() {
+    let refused = |reason| TreeError::Refused(RowRefusal { reason, text: "the text".into() });
+    // What `mkdir -p`, `rm -r`, `mv` and a save by rename go on by when two programs race.
+    assert_eq!(decide_store_errno(&refused(RowRefusalReason::ItemGone)), Errno::ESTALE);
+    assert_eq!(decide_store_errno(&refused(RowRefusalReason::PlaceTaken)), Errno::EEXIST);
+    assert_eq!(decide_store_errno(&refused(RowRefusalReason::DirectoryNotEmpty)), Errno::ENOTEMPTY);
+    assert_eq!(decide_store_errno(&refused(RowRefusalReason::NoDirectory)), Errno::ENOENT);
+    // A rule no program is answered by, and a real failure.
+    assert_eq!(decide_store_errno(&refused(RowRefusalReason::AnotherRule)), Errno::EIO);
+    assert_eq!(decide_store_errno(&TreeError::Refused("a writer holds item 7".into())), Errno::EIO);
     assert_eq!(decide_store_errno(&TreeError::Io(io::Error::from_raw_os_error(libc::ENOSPC))), Errno::EIO);
     assert_eq!(decide_store_errno(&TreeError::Sql(rusqlite::Error::InvalidQuery)), Errno::EIO);
+    assert_eq!(decide_store_errno(&TreeError::Schema(None)), Errno::EIO);
 }
 
 #[test]
@@ -237,7 +246,7 @@ fn a_failed_row_is_undone_on_disk_and_the_program_gets_the_errno() {
     let operations = OperationsFixture::new();
     operations.take_place_at(OperationPoint::DiskChanged, "", "made");
     let made = operations.make("made", MadeKind::Directory);
-    assert_eq!(made.map(|made| made.item.local_item_id), Err(Errno::EIO));
+    assert_eq!(made.map(|made| made.item.local_item_id), Err(Errno::EEXIST));
     assert!(!operations.fixture.disk_path("made").exists(), "the directory that was made is removed again");
     assert_eq!(operations.list_records(), [], "the record went with the undo");
     assert_eq!(operations.take_downs(), []);

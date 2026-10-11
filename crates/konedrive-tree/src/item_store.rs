@@ -68,7 +68,7 @@ use std::path::PathBuf;
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::model::{ContentPresence, ContentVersion, FolderVisibility, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, LocalVersionChange, OneDriveItemReference, Placement};
-use crate::{FoldedName, TreeError, TreeStore, MAX_CHAIN};
+use crate::{FoldedName, RowRefusal, RowRefusalReason, TreeError, TreeStore, MAX_CHAIN};
 
 /// The three operations that move a binding from one item to another.
 mod bindings;
@@ -290,7 +290,8 @@ impl ItemStore<'_> {
 
     /// Writes one change of an item's local version, in one transaction: all of it or
     /// nothing. The item it is about: the one made, moved, or saved over another. A change
-    /// that would break a rule of the rows is refused ([`TreeError::Refused`]) and changes
+    /// that would break a rule of the rows is refused ([`TreeError::Refused`], with the
+    /// reason where a program is answered by it: [`RowRefusalReason`]) and changes
     /// nothing. A change of the content of a file the folder does not show any more, or
     /// whose row went, is nothing and no error: a program that holds a file open goes on
     /// after the file was removed or saved over.
@@ -317,7 +318,12 @@ impl ItemStore<'_> {
 
 /// The error of a change the rows' rules refuse: the change wrote nothing.
 fn refuse(what: String) -> TreeError {
-    TreeError::Refused(what)
+    TreeError::Refused(what.into())
+}
+
+/// [`refuse`] for a rule a caller answers a program by: `reason` says which.
+fn refuse_for(reason: RowRefusalReason, text: String) -> TreeError {
+    TreeError::Refused(RowRefusal { reason, text })
 }
 
 fn find_path(conn: &Connection, item: LocalItemId) -> Result<Option<PathBuf>, TreeError> {
@@ -340,8 +346,8 @@ fn find_path(conn: &Connection, item: LocalItemId) -> Result<Option<PathBuf>, Tr
 /// The item `id` as the folder shows it, with its local version; refused when it has no
 /// row, or the folder does not show it.
 fn read_shown(conn: &Connection, id: LocalItemId) -> Result<(Item, ItemVersion), TreeError> {
-    let item = find_item(conn, id)?.ok_or_else(|| refuse(format!("item {id} has no row")))?;
-    let local = item.local.clone().ok_or_else(|| refuse(format!("the folder does not show item {id}")))?;
+    let item = find_item(conn, id)?.ok_or_else(|| refuse_for(RowRefusalReason::ItemGone, format!("item {id} has no row")))?;
+    let local = item.local.clone().ok_or_else(|| refuse_for(RowRefusalReason::ItemGone, format!("the folder does not show item {id}")))?;
     Ok((item, local))
 }
 
@@ -416,10 +422,10 @@ fn find_shown_file(conn: &Connection, id: LocalItemId) -> Result<Option<(Item, I
 /// directory the folder shows.
 fn check_directory(conn: &Connection, id: LocalItemId) -> Result<(), TreeError> {
     match find_item(conn, id)? {
-        Some(item) if item.local.is_none() => Err(refuse(format!("the folder does not show item {id}: nothing is placed in it"))),
+        Some(item) if item.local.is_none() => Err(refuse_for(RowRefusalReason::NoDirectory, format!("the folder does not show item {id}: nothing is placed in it"))),
         Some(item) if item.kind == ItemKind::Directory => Ok(()),
         Some(_) => Err(refuse(format!("item {id} is no directory: nothing is placed in it"))),
-        None => Err(refuse(format!("the folder shows no directory {id} to place something in"))),
+        None => Err(refuse_for(RowRefusalReason::NoDirectory, format!("the folder shows no directory {id} to place something in"))),
     }
 }
 
@@ -427,7 +433,7 @@ fn check_directory(conn: &Connection, id: LocalItemId) -> Result<(), TreeError> 
 fn check_empty(conn: &Connection, id: LocalItemId) -> Result<(), TreeError> {
     let holds = conn.prepare_cached("SELECT 1 FROM items WHERE local_parent_id = ?1 LIMIT 1")?.exists([id.as_i64()])?;
     if holds {
-        return Err(refuse(format!("the folder shows something in item {id}: it goes after what is in it")));
+        return Err(refuse_for(RowRefusalReason::DirectoryNotEmpty, format!("the folder shows something in item {id}: it goes after what is in it")));
     }
     Ok(())
 }
@@ -495,7 +501,7 @@ fn check_can_hold(conn: &Connection, directory: LocalItemId, item: LocalItemId) 
 /// `place` already.
 fn check_place_is_free(conn: &Connection, place: &ItemPlace) -> Result<(), TreeError> {
     match find_item_at(conn, place.parent_local_item_id, &place.name)? {
-        Some(holder) => Err(refuse(format!("item {} has the name {:?} in directory {}", holder.local_item_id, place.name, place.parent_local_item_id))),
+        Some(holder) => Err(refuse_for(RowRefusalReason::PlaceTaken, format!("item {} has the name {:?} in directory {}", holder.local_item_id, place.name, place.parent_local_item_id))),
         None => Ok(()),
     }
 }

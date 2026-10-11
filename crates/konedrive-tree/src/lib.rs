@@ -100,7 +100,52 @@ pub enum TreeError {
     /// transaction wrote before it is still in that transaction: a caller that has one open
     /// drops it on this error as on every other.
     #[error("the tree store refuses: {0}")]
-    Refused(String),
+    Refused(RowRefusal),
+}
+
+/// A change the store refused: which rule of the rows it would break, and the text that
+/// says it of the items it was about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowRefusal {
+    pub reason: RowRefusalReason,
+    pub text: String,
+}
+
+/// Why the store refused a change, where a caller answers a program by it: a change of a
+/// local version ([`ItemStore::apply`]) and the row written with the going of a record
+/// ([`ItemStore::settle_place_change_record`]) say the first four.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowRefusalReason {
+    /// The item the change is of has no row, or the folder does not show it.
+    ItemGone,
+    /// The folder shows another item under the name, in the directory.
+    PlaceTaken,
+    /// The folder shows something in the directory that is to go.
+    DirectoryNotEmpty,
+    /// The directory something is to be placed in has no row, or the folder does not
+    /// show it.
+    NoDirectory,
+    /// Any other rule of the rows: the text alone says which.
+    AnotherRule,
+}
+
+impl std::fmt::Display for RowRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.text)
+    }
+}
+
+impl From<String> for RowRefusal {
+    /// A refusal that names no rule a caller answers by.
+    fn from(text: String) -> Self {
+        RowRefusal { reason: RowRefusalReason::AnotherRule, text }
+    }
+}
+
+impl From<&str> for RowRefusal {
+    fn from(text: &str) -> Self {
+        RowRefusal::from(text.to_owned())
+    }
 }
 
 pub struct TreeStore {

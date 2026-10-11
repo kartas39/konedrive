@@ -362,7 +362,7 @@ fn a_row_refused_after_the_disk_renames_back_and_restores_what_was_displaced() {
     let file = operations.fixture.make_own_file("file.txt", b"file").local_item_id;
     operations.fixture.show_onedrive_directory("docs");
     operations.take_place_at(OperationPoint::DiskChanged, "docs", "new.txt");
-    assert_eq!(operations.rename("file.txt", "docs/new.txt"), Err(Errno::EIO));
+    assert_eq!(operations.rename("file.txt", "docs/new.txt"), Err(Errno::EEXIST));
     assert_eq!(operations.fixture.read_disk_file("file.txt").as_deref(), Some(&b"file"[..]), "moved back");
     assert!(!operations.fixture.disk_path("docs").exists(), "and the directory that was made above the new place is gone");
     assert_eq!(operations.fixture.find_item_at("file.txt").map(|row| row.local_item_id), Some(file));
@@ -378,7 +378,7 @@ fn a_row_refused_after_the_disk_renames_back_and_restores_what_was_displaced() {
         let place = ItemPlace { parent_local_item_id: displaced, name: "came-meanwhile".into() };
         store.call_blocking(move |store| store.item_store().apply(&LocalVersionChange::Made { kind: ItemKind::Directory, place, content: None, is_name_ignored: false, replaced: None })).unwrap();
     });
-    assert_eq!(operations.rename("moved", "displaced"), Err(Errno::EIO));
+    assert_eq!(operations.rename("moved", "displaced"), Err(Errno::ENOTEMPTY));
     assert!(operations.fixture.disk_path("moved").is_dir() && operations.fixture.disk_path("displaced").is_dir());
     assert_eq!(operations.fixture.read_disk_marks("displaced").onedrive_item_id, Some(onedrive_id_of("displaced")), "what was displaced is back under its name, as it was");
     assert_eq!(operations.fixture.read_disk_marks("moved").onedrive_item_id, None);
