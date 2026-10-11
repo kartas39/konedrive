@@ -29,7 +29,8 @@ async fn wait_until(what: &str, mut is_so: impl FnMut() -> bool) {
     .unwrap_or_else(|_| panic!("never: {what}"));
 }
 
-/// Waits until a cycle went through whole: `LastChecked` is written.
+/// Waits until a cycle's listing ended: `LastChecked` is written. The cycle itself may be
+/// reading the counts still, and has not said yet how it ended.
 async fn wait_for_first_cycle(folder: &ListedFolder) {
     wait_until("a first cycle ended", || folder.state.get().cycle.last_checked > 0).await;
 }
@@ -92,7 +93,10 @@ async fn a_failed_cycle_is_tried_again_on_the_retry_schedule() {
 
     wait_for_first_cycle(&folder).await;
 
-    assert_eq!(folder.state.get().cycle.sync_trouble, None);
+    // The cycle that failed said its trouble; the one tried again takes it away when it
+    // ends, which is after its listing's end is told.
+    wait_until("the cycle tried again ended with no trouble", || folder.state.get().cycle.sync_trouble.is_none()).await;
+    assert_eq!(count_page_requests(&folder), 2);
     poller.stop().await;
 }
 
