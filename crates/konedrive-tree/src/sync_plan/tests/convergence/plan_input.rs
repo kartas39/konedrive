@@ -29,6 +29,9 @@ pub(crate) struct CallerFacts {
     pub(crate) items_with_running_step: BTreeSet<LocalItemId>,
     pub(crate) is_onedrive_full: bool,
     pub(crate) destinations_of_running_steps: BTreeSet<LocalItemId>,
+    /// The time, in Unix seconds: the plan's `now`, and what the removals sent a short
+    /// time ago are read as of.
+    pub(crate) now: i64,
 }
 
 impl CallerFacts {
@@ -44,6 +47,7 @@ impl CallerFacts {
             items_with_running_step: BTreeSet::new(),
             is_onedrive_full: false,
             destinations_of_running_steps: BTreeSet::new(),
+            now: 0,
         }
     }
 }
@@ -58,8 +62,11 @@ fn places_of(item: &Item) -> impl Iterator<Item = &ItemPlace> {
     item.local.iter().filter_map(|local| local.place.as_ref()).chain(item.onedrive.iter().filter_map(|onedrive| onedrive.place.as_ref())).chain(item.synced_place.iter())
 }
 
+/// Whether `item` is unsent or its OneDrive version is not the synced one, as the store's
+/// two indexes have it: the time of a content is no change of OneDrive's.
 fn differs(item: &Item) -> bool {
-    item.unsent_since.is_some() || item.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone()) != item.synced_place || item.onedrive.as_ref().and_then(|onedrive| onedrive.content.clone()) != item.synced_content
+    let onedrive_content = item.onedrive.as_ref().and_then(|onedrive| onedrive.content.as_ref());
+    item.unsent_since.is_some() || item.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone()) != item.synced_place || !crate::sync_plan::side_change::is_same_content_but_for_time(onedrive_content, item.synced_content.as_ref())
 }
 
 impl GivenItems {
@@ -153,8 +160,8 @@ fn describe(store: &mut TreeStore, facts: &CallerFacts, rows: Vec<Item>) -> Sync
         items_with_confirmed_removal: confirmed,
         unsent_removal_count: items.count_unsent_removals(&all_confirmed).unwrap(),
         places_taken_in_onedrive: facts.places_taken_in_onedrive.clone(),
-        sent_removal_count: if facts.confirms_removals { 0 } else { items.find_sent_removal_window().unwrap().removal_count },
-        now: 0,
+        sent_removal_count: if facts.confirms_removals { 0 } else { items.find_sent_removal_window(facts.now).unwrap().removal_count },
+        now: facts.now,
         next_tries: BTreeMap::new(),
         sending_refusals: BTreeMap::new(),
         items_left_by_start_up_check: BTreeSet::new(),

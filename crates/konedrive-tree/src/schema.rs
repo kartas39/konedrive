@@ -24,7 +24,7 @@ pub use old_store::{decide_old_store, OldStoreDecision, RebuildLoss, StoreOrigin
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "20";
+pub const SCHEMA_VERSION: &str = "21";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with.
@@ -64,7 +64,7 @@ pub const SCHEMA_VERSION: &str = "20";
 ///   something of the row (0: never), the stamp of the guard against an outdated listing;
 ///   `seen_in_full_listing` the id of the full listing that last listed the item
 ///   ([`crate::item_store`]'s `onedrive_versions`). `items_changed_in_onedrive` holds the
-///   rows whose OneDrive place or content is not the synced one, `items_binding_alone` those
+///   rows whose OneDrive place or content is not the synced one, a content's time left out, `items_binding_alone` those
 ///   that are a binding and nothing else, by their stamp, and `items_seen_in_full_listing`
 ///   what OneDrive has, by the full listing that saw it: none of the three is found by
 ///   reading every row. `items_shown_against_placement` holds the rows the folder shows

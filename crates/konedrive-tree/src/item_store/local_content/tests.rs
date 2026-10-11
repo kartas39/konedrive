@@ -45,6 +45,7 @@ fn a_time_set_on_a_clean_copy_leaves_the_file_synced() {
         assert_eq!(after.unsent_since, None, "nothing is unsent");
         assert_eq!(Item { local: before.local.clone(), synced_content: before.synced_content.clone(), ..after.clone() }, before, "nothing else of the row changed");
         assert_eq!(after.onedrive, before.onedrive, "OneDrive's version is OneDrive's");
+        assert_eq!(store.item_store().list_changed_in_onedrive(None, 10).unwrap(), [], "a time is no change of OneDrive's: no plan reads the row");
         assert_rules_hold(&mut store);
     }
 }

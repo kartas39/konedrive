@@ -115,7 +115,7 @@ mod thumbnail_marks;
 
 pub(crate) use bindings::bind_root_once_known;
 pub use step_commit::{ConfirmedItem, StepCommitOutcome};
-pub use sent_removal_window::SentRemovalWindow;
+pub use sent_removal_window::{SentRemovalWindow, SENT_REMOVAL_WINDOW_SECONDS};
 pub use full_listing_request::FullListingCause;
 pub use item_pins::PinChange;
 pub use own_upload_content::OwnUploadContent;

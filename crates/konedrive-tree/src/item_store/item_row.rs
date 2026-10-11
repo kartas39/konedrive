@@ -96,9 +96,12 @@ pub(super) fn find_is_left_here(conn: &Connection, item: LocalItemId) -> Result<
 /// SQL for "the row's OneDrive place or content is not the synced one": what OneDrive
 /// changed, made or removed since the two sides last agreed, and what they never agreed
 /// on. The index `items_changed_in_onedrive` holds these rows, and a query finds them by it
-/// when it asks in these words.
+/// when it asks in these words. The time of a content is not asked: a time alone is no
+/// change of a content (`sync_plan::side_change::is_same_content_but_for_time`), and the
+/// time set on a clean copy here, which OneDrive's content does not have, would keep the
+/// row among these for good.
 pub(crate) const CHANGED_IN_ONEDRIVE: &str = "(onedrive_parent_id IS NOT synced_parent_id OR onedrive_name IS NOT synced_name \
-     OR onedrive_size IS NOT synced_size OR onedrive_mtime IS NOT synced_mtime OR onedrive_mtime_nsec IS NOT synced_mtime_nsec \
+     OR onedrive_size IS NOT synced_size \
      OR onedrive_hash IS NOT synced_hash OR onedrive_ctag IS NOT synced_ctag OR onedrive_change_count IS NOT synced_change_count)";
 
 /// SQL for "the row is a binding and nothing else": no version on either side and nothing

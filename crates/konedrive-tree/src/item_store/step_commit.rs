@@ -76,6 +76,7 @@ use std::ffi::{OsStr, OsString};
 use rusqlite::{Connection, Transaction};
 
 use super::bindings::{bind_item, give_up_binding, merge_items};
+use super::local_content::with_modified_time;
 use super::item_row::{confirm_removal_below, find_bound_item, find_item, list_below_in_onedrive, write_item};
 use super::onedrive_versions::{confirm_onedrive_version, ListingUnderWay};
 use super::place_change_records::{forget_place_change_record_when_written, PlaceChangeRecordId};
@@ -162,9 +163,11 @@ impl ItemStore<'_> {
     /// alone, stamped, for the guard against an outdated listing. That is the row the step
     /// was planned from, unless a file was made at its place meanwhile and took the
     /// binding: that file then gives the binding up to such a row, and is an item OneDrive
-    /// does not have, which the next plan sends as a new one.
-    pub fn commit_send_file_removal(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_send_file_removal(tx, item))
+    /// does not have, which the next plan sends as a new one. `now` is the time, in Unix
+    /// seconds: the removal is counted among those sent a short time ago
+    /// ([`find_sent_removal_window`](Self::find_sent_removal_window)).
+    pub fn commit_send_file_removal(&mut self, item: &ItemVersions, now: i64) -> Result<StepCommitOutcome, TreeError> {
+        self.write(|tx| commit_send_file_removal(tx, item, now))
     }
 
     /// The commit of
@@ -176,9 +179,11 @@ impl ItemStore<'_> {
     /// are their rows', and `below` is all the rows say OneDrive has below the directory —
     /// what [`can_directory_removal_be_sent`](Self::can_directory_removal_be_sent) asks,
     /// of the rows alone. When the rows changed, OneDrive has removed what they still say
-    /// it has: the step asks for a listing.
-    pub fn commit_send_directory_removal(&mut self, item: &ItemVersions, below: &[ItemVersions]) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_send_directory_removal(tx, item, below))
+    /// it has: the step asks for a listing. `now` is the time, in Unix seconds: the
+    /// directory and each of `below` are counted among the removals sent a short time ago
+    /// ([`find_sent_removal_window`](Self::find_sent_removal_window)).
+    pub fn commit_send_directory_removal(&mut self, item: &ItemVersions, below: &[ItemVersions], now: i64) -> Result<StepCommitOutcome, TreeError> {
+        self.write(|tx| commit_send_directory_removal(tx, item, below, now))
     }
 
     /// Whether the removal of the directory of `item`, planned with `below` as what was
@@ -326,7 +331,10 @@ impl ItemStore<'_> {
     }
 
     /// The commit of [`RowStep::AgreeOnContent`](crate::RowStep::AgreeOnContent): OneDrive's
-    /// content version is the local one and the one agreed on.
+    /// content version, with the time the local content has, is the local one and the one
+    /// agreed on. The bytes are the same and no file is written, so the time here stays:
+    /// it is the time of the copy on disk, which the check at start compares the row
+    /// with, and what a program set or saw. OneDrive's content keeps OneDrive's time.
     pub fn commit_agree_on_content(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
         self.write(|tx| forget_tries_when_written(tx, item, commit_agree_on_content(tx, item)?))
     }
@@ -521,7 +529,7 @@ pub(crate) fn commit_send_move(tx: &Transaction<'_>, item: &ItemVersions, parent
 
 /// [`ItemStore::commit_send_file_removal`], inside the caller's transaction, which is
 /// dropped on any error.
-pub(crate) fn commit_send_file_removal(tx: &Transaction<'_>, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
+pub(crate) fn commit_send_file_removal(tx: &Transaction<'_>, item: &ItemVersions, now: i64) -> Result<StepCommitOutcome, TreeError> {
     let id = item.local_item_id;
     let (Some(binding), None) = (&item.onedrive_item, &item.local) else { return Err(refuse_step(id, "it has no binding, or the folder showed it when the step was planned")) };
     let Some(row) = find_bound_item(tx, binding)?.filter(|row| item.are_onedrive_and_synced_those_of(row)) else { return Ok(StepCommitOutcome::RowsChanged) };
@@ -535,7 +543,7 @@ pub(crate) fn commit_send_file_removal(tx: &Transaction<'_>, item: &ItemVersions
         None => row.local_item_id,
     };
     confirm_onedrive_version(tx, removed, &ConfirmedOneDriveVersion::Removed)?;
-    add_sent_removals(tx, 1)?;
+    add_sent_removals(tx, 1, now)?;
     forget_temporary_names_of_items_onedrive_lacks(tx)?;
     Ok(StepCommitOutcome::Written)
 }
@@ -546,7 +554,7 @@ pub(crate) fn commit_send_file_removal(tx: &Transaction<'_>, item: &ItemVersions
 /// was agreed on, under the same stamp. The rows alone are asked: a listing under way and
 /// a request not settled hold a removal back before it is sent, not once OneDrive
 /// confirmed it.
-pub(crate) fn commit_send_directory_removal(tx: &Transaction<'_>, item: &ItemVersions, below: &[ItemVersions]) -> Result<StepCommitOutcome, TreeError> {
+pub(crate) fn commit_send_directory_removal(tx: &Transaction<'_>, item: &ItemVersions, below: &[ItemVersions], now: i64) -> Result<StepCommitOutcome, TreeError> {
     let id = item.local_item_id;
     let Some(row) = find_planned(tx, item)? else { return Ok(StepCommitOutcome::RowsChanged) };
     if row.kind != ItemKind::Directory || row.local.is_some() || row.onedrive_item.is_none() {
@@ -557,7 +565,7 @@ pub(crate) fn commit_send_directory_removal(tx: &Transaction<'_>, item: &ItemVer
     }
     let count = confirm_onedrive_version(tx, id, &ConfirmedOneDriveVersion::Removed)?;
     confirm_removal_below(tx, id, count)?;
-    add_sent_removals(tx, 1 + below.len() as u64)?;
+    add_sent_removals(tx, 1 + below.len() as u64, now)?;
     forget_temporary_names_of_items_onedrive_lacks(tx)?;
     Ok(StepCommitOutcome::Written)
 }
@@ -644,7 +652,8 @@ fn find_planned_file_on_both_sides(conn: &Connection, planned: &ItemVersions) ->
     }
 }
 
-/// OneDrive's content, `content`, is the local content of `row` and the content agreed on.
+/// `content`, OneDrive's or OneDrive's with the time the file has here, is the local
+/// content of `row` and the content agreed on.
 fn write_onedrive_content_as_local(tx: &Transaction<'_>, mut row: Item, content: ContentVersion) -> Result<(), TreeError> {
     if let Some(local) = row.local.as_mut() {
         local.content = Some(content.clone());
@@ -667,6 +676,10 @@ pub(crate) fn commit_take_onedrive_content(tx: &Transaction<'_>, item: &ItemVers
 /// on any error.
 pub(crate) fn commit_agree_on_content(tx: &Transaction<'_>, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
     let Some((row, content)) = find_planned_file_on_both_sides(tx, item)? else { return Ok(StepCommitOutcome::RowsChanged) };
+    let content = match row.local.as_ref().and_then(|local| local.content.as_ref()).map(ContentVersion::mtime) {
+        Some((mtime, mtime_nsec)) => with_modified_time(&content, mtime, mtime_nsec),
+        None => content,
+    };
     write_onedrive_content_as_local(tx, row, content)?;
     Ok(StepCommitOutcome::Written)
 }

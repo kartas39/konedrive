@@ -104,15 +104,32 @@ pub(crate) fn compare_local_content(local: Option<&ContentVersion>, other: Optio
     }
 }
 
+/// Whether two contents are one content version but for the time: the same size, the same
+/// hash and cTag, each there or not on both, and for a content changed here the same count
+/// of changes. A time by itself tells no content from another: it is set here on a clean
+/// copy without a byte changing, and changed in OneDrive likewise.
+pub(crate) fn is_same_content_but_for_time(one: Option<&ContentVersion>, other: Option<&ContentVersion>) -> bool {
+    match (one, other) {
+        (None, None) => true,
+        (None, Some(_)) | (Some(_), None) => false,
+        (Some(ContentVersion::Hashed { size, hash, ctag, .. }), Some(ContentVersion::Hashed { size: other_size, hash: other_hash, ctag: other_ctag, .. })) => (size, hash, ctag) == (other_size, other_hash, other_ctag),
+        (Some(ContentVersion::ChangedHere { size, change_count, .. }), Some(ContentVersion::ChangedHere { size: other_size, change_count: other_count, .. })) => (size, change_count) == (other_size, other_count),
+        (Some(ContentVersion::Hashed { .. }), Some(ContentVersion::ChangedHere { .. })) | (Some(ContentVersion::ChangedHere { .. }), Some(ContentVersion::Hashed { .. })) => false,
+    }
+}
+
 /// The content OneDrive has of a file against the synced one: the same, or changed. The
-/// same content version, a hash on both that is the same, or, where a hash is missing, a
-/// cTag on both that is the same, with the same size: the same. Never "not known": what
-/// OneDrive has cannot be hashed here.
+/// same content version, whatever its time ([`is_same_content_but_for_time`]), a hash on
+/// both that is the same, or, where a hash is missing, a cTag on both that is the same,
+/// with the same size: the same. Never "not known": what OneDrive has cannot be hashed
+/// here. A row whose two contents are one but for the time is not among those the store
+/// reads as changed in OneDrive (`item_row::CHANGED_IN_ONEDRIVE`), so it must read as the
+/// same here too: a plan given every row says what a plan given what differs says.
 pub(crate) fn compare_onedrive_content(onedrive: Option<&ContentVersion>, synced: Option<&ContentVersion>) -> ContentChange {
     match (onedrive, synced) {
         (None, None) => ContentChange::Same,
         (None, Some(_)) | (Some(_), None) => ContentChange::Changed,
-        (Some(onedrive), Some(synced)) if onedrive == synced => ContentChange::Same,
+        (Some(onedrive), Some(synced)) if is_same_content_but_for_time(Some(onedrive), Some(synced)) => ContentChange::Same,
         (Some(onedrive), Some(synced)) if onedrive.size() != synced.size() => ContentChange::Changed,
         (Some(onedrive), Some(synced)) => {
             let same = match (hash_of(onedrive), hash_of(synced)) {

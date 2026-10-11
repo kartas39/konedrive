@@ -35,7 +35,7 @@ use crate::sync_plan::ItemVersions;
 use crate::TreeError;
 
 /// `content` with another modification time: the same bytes, told as they were.
-fn with_modified_time(content: &ContentVersion, mtime: i64, mtime_nsec: u32) -> ContentVersion {
+pub(super) fn with_modified_time(content: &ContentVersion, mtime: i64, mtime_nsec: u32) -> ContentVersion {
     match content.clone() {
         ContentVersion::Hashed { size, hash, ctag, .. } => ContentVersion::Hashed { size, mtime, mtime_nsec, hash, ctag },
         ContentVersion::ChangedHere { size, change_count, .. } => ContentVersion::ChangedHere { size, mtime, mtime_nsec, change_count },
@@ -72,14 +72,11 @@ impl ItemStore<'_> {
     /// A time set on a clean copy stays local, as today
     /// (`write_operations/write.rs:183-191`): the row's local content and the content
     /// agreed on stay one, so nothing is unsent and the copy can still be freed, as the
-    /// content with the time that was set. OneDrive's content keeps OneDrive's time.
-    // OPEN: the time set on a clean copy is taken back by the next plan. The row is then
-    // among those changed in OneDrive (`onedrive_mtime IS NOT synced_mtime`), and the
-    // plan's cell "its content", same on both sides (`sync_plan::item_decision::decide_content`,
-    // the `(Same, Same)` arm), asks `local == onedrive` exactly: it answers
-    // `RowStep::AgreeOnContent`, whose commit writes OneDrive's content, with OneDrive's
-    // time, as the local and the synced one. The backing file keeps the time that was set.
-    // To be settled in the plan's comparison, not here.
+    /// content with the time that was set. OneDrive's content keeps OneDrive's time, and
+    /// no plan takes the time back: a time alone is no change of a content, so the row is
+    /// not among those changed in OneDrive (`item_row::CHANGED_IN_ONEDRIVE`) and the
+    /// plan's cell for a content that is the same on both sides answers that nothing is
+    /// to do (`sync_plan::item_decision::decide_content`).
     pub fn set_local_modified_time(&mut self, item: LocalItemId, mtime: i64, mtime_nsec: u32) -> Result<(), TreeError> {
         self.write(|tx| {
             let mut row = find_item(tx, item)?.ok_or_else(|| refuse(format!("item {item} has no row")))?;

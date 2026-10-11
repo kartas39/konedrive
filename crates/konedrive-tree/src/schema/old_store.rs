@@ -23,12 +23,14 @@
 //! cancels the ones it can read before the tables go, so that their empty files do not
 //! hold names in OneDrive. Here they are only counted.
 //!
-//! **Two raises of the schema's version**, each by one hand. The first, before any body
+//! **The raises of the schema's version**, each by one hand. The first, before any body
 //! of the daemon (step 0b, version 20), only ADDS: the tables `thumbnail_marks` and
 //! `own_upload_contents` with a trigger each, the indexes `items_not_placed` and
-//! `items_image_or_video`, and two keys of `meta`; no column for a directory's time. The
-//! second is the switch's: the tables that go, which today's code reads until then.
-//! Neither has a migration step: a store of the version before is rebuilt.
+//! `items_image_or_video`, and two keys of `meta`; no column for a directory's time.
+//! Version 21 changes what one index holds: `items_changed_in_onedrive` does not ask the
+//! time of a content any more. The last is the switch's: the tables that go, which
+//! today's code reads until then. None has a migration step: a store of the version
+//! before is rebuilt.
 //!
 //! **Tested without the rest:**
 // test: a_store_of_todays_version_is_used

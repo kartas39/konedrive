@@ -224,14 +224,16 @@ pub struct SyncPlanInput {
     /// own rule for comparing names says.
     pub places_taken_in_onedrive: BTreeMap<LocalItemId, ItemPlace>,
     /// How many items the removals took from OneDrive that this client sent a short time
-    /// ago: what the store counted since the window of that time began
-    /// ([`ItemStore::find_sent_removal_window`](crate::ItemStore::find_sent_removal_window)),
-    /// whatever listing ended meanwhile. The guard against a mass removal counts them
-    /// with the unsent ones, so that removals that come one by one, with a plan made
-    /// between them, are held like those of one plan. The caller begins the window anew
-    /// ([`ItemStore::begin_sent_removal_window`](crate::ItemStore::begin_sent_removal_window))
-    /// when that time has passed with no removal sent, and when the removals of a mass
-    /// removal the user confirmed have been sent.
+    /// ago: what the store counted, as of `now`
+    /// ([`ItemStore::find_sent_removal_window`](crate::ItemStore::find_sent_removal_window),
+    /// its `removal_count`), whatever listing ended meanwhile. The guard against a mass
+    /// removal counts them with the unsent ones, so that removals that come one by one,
+    /// with a plan made between them, are held like those of one plan. The window ends by
+    /// itself, a fixed time after the last removal sent; the caller owes it only the time
+    /// — the same `now` here, to the reading and to the commit of each removal. *Not
+    /// enforced*: a commit given a time long past counts its removal in no window, and
+    /// the next plan holds less; one given a time to come holds more, until that time has
+    /// passed by the window's length.
     pub sent_removal_count: u64,
     /// The time now, in Unix seconds: what a time the caller gives is compared with.
     pub now: i64,

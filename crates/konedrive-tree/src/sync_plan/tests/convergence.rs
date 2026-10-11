@@ -331,9 +331,17 @@ impl World {
         }
         for row in rows.iter().filter(|row| !left_as_they_are.contains(&row.local_item_id)) {
             let is_no_item = row.local.is_none() && row.onedrive.is_none() && row.synced_place.is_none() && row.synced_content.is_none();
-            let agrees = row.local.is_some() && row.local == row.onedrive && row.synced_place == row.local.as_ref().and_then(|local| local.place.clone()) && row.synced_content == row.local.as_ref().and_then(|local| local.content.clone());
+            // The time of a content here stays local: OneDrive's content is the one agreed
+            // on but for its time, where the two were agreed on without a file written.
+            let (place, content) = (|version: &Option<ItemVersion>| version.as_ref().and_then(|version| version.place.clone()), |version: &Option<ItemVersion>| version.as_ref().and_then(|version| version.content.clone()));
+            let agrees = row.local.is_some()
+                && row.onedrive.is_some()
+                && place(&row.local) == place(&row.onedrive)
+                && row.synced_place == place(&row.local)
+                && row.synced_content == content(&row.local)
+                && crate::sync_plan::side_change::is_same_content_but_for_time(content(&row.onedrive).as_ref(), row.synced_content.as_ref());
             if !is_no_item && !agrees {
-                return Err(format!("item {} does not have its three versions equal, and waits for nothing", row.local_item_id));
+                return Err(format!("item {} does not have its three versions equal but for the time of OneDrive's content, and waits for nothing", row.local_item_id));
             }
         }
         if !self.changes.gives_ignored_names && !left_as_they_are.is_empty() {

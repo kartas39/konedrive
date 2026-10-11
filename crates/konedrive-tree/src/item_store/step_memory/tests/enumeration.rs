@@ -879,8 +879,8 @@ fn act(scene: &mut Scene, operation: Operation) {
         CommitSendRemoval => {
             scene.step(|store| {
                 is_written(match kind {
-                    ItemKind::File => store.item_store().commit_send_file_removal(&planned_from),
-                    ItemKind::Directory => store.item_store().commit_send_directory_removal(&planned_from, &[]),
+                    ItemKind::File => store.item_store().commit_send_file_removal(&planned_from, 0),
+                    ItemKind::Directory => store.item_store().commit_send_directory_removal(&planned_from, &[], 0),
                 })
             });
             (scene.happening.is_request_confirmed, scene.happening.is_removal_confirmed) = (true, true);
@@ -888,7 +888,7 @@ fn act(scene: &mut Scene, operation: Operation) {
         CommitSendRemovalOfTheDirectory => {
             scene.step(|store| {
                 let removed_directory = versions(store, directory);
-                is_written(store.item_store().commit_send_directory_removal(&removed_directory, &[planned_from]));
+                is_written(store.item_store().commit_send_directory_removal(&removed_directory, &[planned_from], 0));
             });
             (scene.happening.is_request_confirmed, scene.happening.is_removal_confirmed) = (true, true);
         }

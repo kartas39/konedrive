@@ -248,7 +248,7 @@ fn the_removal_of_a_file_sent_leaves_its_row_with_its_binding_alone_stamped() {
     let mut store = store_with_listed_root();
     let file = show_file(&mut store, "A", "a.txt");
     store.item_store().apply(&LocalVersionChange::Removed { item: file }).unwrap();
-    commit(&mut store, file, |items, planned_from| items.commit_send_file_removal(planned_from));
+    commit(&mut store, file, |items, planned_from| items.commit_send_file_removal(planned_from, 0));
     let removed = row(&mut store, file);
     assert!(is_binding_alone(&removed), "{removed:?}");
     assert_eq!((removed.confirmed_at_count, removed.unsent_since), (1, None));
@@ -269,9 +269,9 @@ fn the_removal_of_a_directory_sent_takes_all_that_was_removed_with_it() {
     // One of those removed with it changed since: nothing is written.
     let outdated = [below[0].clone(), ItemVersions { onedrive_etag: Some("e-outdated".to_owned()), ..below[1].clone() }];
     let planned_from = versions(&mut store, directory);
-    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &outdated)));
+    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &outdated, 0)));
 
-    commit(&mut store, directory, |items, planned_from| items.commit_send_directory_removal(planned_from, &below));
+    commit(&mut store, directory, |items, planned_from| items.commit_send_directory_removal(planned_from, &below, 0));
     for removed in [directory, inner, file] {
         let removed = row(&mut store, removed);
         assert!(is_binding_alone(&removed) && removed.confirmed_at_count > 0, "{removed:?}");
@@ -496,8 +496,12 @@ fn a_content_both_sides_have_is_onedrives_content_version_here_and_agreed_on() {
     write_listing_of_changes(&mut store, &[listed_file("A", "R", "a.txt", (8, "h-new"), "e-A-2")]);
     commit(&mut store, file, |items, planned_from| items.commit_agree_on_content(planned_from));
     let agreed = row(&mut store, file);
-    assert!(agrees(&agreed), "{agreed:?}");
-    assert_eq!((agreed.synced_content, agreed.content_presence), (Some(listed_content(8, "h-new")), ContentPresence::OnDisk));
+    // OneDrive's content version, with the time the file has here: that of the bytes on
+    // disk, which the check at start compares the row with.
+    let with_local_time = ContentVersion::Hashed { size: 8, mtime: 300, mtime_nsec: 9, hash: Some("h-new".to_owned()), ctag: Some("c-h-new".to_owned()) };
+    assert_eq!((agreed.local.as_ref().and_then(|local| local.content.clone()), agreed.synced_content.clone(), agreed.content_presence), (Some(with_local_time.clone()), Some(with_local_time), ContentPresence::OnDisk));
+    assert_eq!(agreed.onedrive.as_ref().and_then(|onedrive| onedrive.content.clone()), Some(listed_content(8, "h-new")), "OneDrive's time is OneDrive's");
+    assert_eq!((agreed.unsent_since, store.item_store().list_changed_in_onedrive(None, 10).unwrap()), (None, vec![]), "nothing is unsent, and nothing reads as changed in OneDrive");
 }
 
 /// What no plan asks for is an error, not "the rows changed": a step of a kind of item it is
@@ -510,7 +514,7 @@ fn a_step_no_plan_asks_for_is_refused() {
     let is_refused = |result: Result<StepCommitOutcome, TreeError>| matches!(result, Err(TreeError::Refused(_))) || panic!("not refused: {result:?}");
     let mut items = store.item_store();
     assert!(is_refused(items.commit_send_content(&planned_from, &confirmed("other", "R", "a.txt", Some(confirmed_content(3, "h")), "e"), None)));
-    assert!(is_refused(items.commit_send_file_removal(&planned_from)), "the folder shows it");
+    assert!(is_refused(items.commit_send_file_removal(&planned_from, 0)), "the folder shows it");
     assert!(is_refused(items.commit_show_item(&planned_from, false)), "the folder shows it");
     assert!(is_refused(items.commit_agree_on_removal(&planned_from)));
     assert!(is_refused(items.commit_make_directory(&planned_from, &reference("R"), "a.txt".as_ref(), &confirmed("N", "R", "a.txt", None, "e"))));
@@ -619,7 +623,7 @@ fn a_move_into_a_directory_onedrive_does_not_have_any_more_is_not_written() {
     move_here(&mut store, file, ROOT, "g");
     store.item_store().apply(&LocalVersionChange::Removed { item: directory }).unwrap();
     let removal = versions(&mut store, directory);
-    assert_eq!(store.item_store().commit_send_directory_removal(&removal, &[]).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_send_directory_removal(&removal, &[], 0).unwrap(), StepCommitOutcome::Written);
     let moved = confirmed("G", "D", "g", Some(listed_content(3, "h-G")), "e-moved");
     assert!(is_left_unwritten(&mut store, |items| items.commit_send_move(&planned_from, &reference("D"), "g".as_ref(), &moved)));
 }

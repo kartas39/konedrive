@@ -167,35 +167,77 @@ fn a_move_into_a_directory_whose_answer_was_lost_holds_the_directorys_removal_un
     }
 }
 
-/// The second review's S2 (the first's S6), through the plan: forty shown, the user's
-/// confirmation not given; six files are removed and their removals sent; a listing begins
-/// and ends, as one does after every removal this client sends; six more are removed. The
-/// twelve are one mass removal: the second six wait for the user.
-#[test]
-fn a_mass_removal_in_two_halves_with_a_listing_between_them_is_held() {
+/// The caller's clock goes on by `seconds`: the plan's `now` and the time the commits are
+/// given.
+fn pass_time(world: &mut World, seconds: i64) {
+    world.facts.now += seconds;
+    world.stand_in.now = world.facts.now;
+}
+
+/// Forty shown, the user's confirmation not given, and nobody ever began a window of sent
+/// removals in this store.
+fn world_of_forty_shown() -> World {
     let mut world = World::new(1);
     let listed: Vec<Change> = (0..31).map(|number| listed_file(&format!("M{number}"), "R", &format!("m{number}"), (600 + number, &format!("h{}-1000", 600 + number)), "e")).collect();
     write_listing_of_changes(&mut world.store, &listed);
     assert_eq!(run_and_tell_steps(&mut world).len(), 31);
     assert_eq!(world.store.item_store().count_shown_items().unwrap(), 40);
     world.facts.confirms_removals = false;
-    world.store.item_store().begin_sent_removal_window().unwrap();
+    pass_time(&mut world, 1_700_000_000);
+    world
+}
+
+/// The second review's S2 (the first's S6), through the plan: six files are removed and
+/// their removals sent; a listing begins and ends, as one does after every removal this
+/// client sends; six more are removed a few seconds later. The twelve are one mass removal:
+/// the second six wait for the user. Once the window's time has passed with no removal
+/// sent, six are none.
+#[test]
+fn a_mass_removal_in_two_halves_with_a_listing_between_them_is_held() {
+    let mut world = world_of_forty_shown();
     let files: Vec<LocalItemId> = (0..12).map(|number| find(&mut world, ROOT, &format!("m{number}"))).collect();
     for file in &files[..6] {
         remove(&mut world, *file);
     }
     assert_eq!(run_and_tell_steps(&mut world).len(), 6, "six of forty are no mass removal");
     write_listing_of_changes(&mut world.store, &[]);
-    assert_eq!(world.store.item_store().find_sent_removal_window().unwrap().removal_count, 6);
+    pass_time(&mut world, 5);
+    assert_eq!(world.store.item_store().find_sent_removal_window(world.facts.now).unwrap().removal_count, 6);
     for file in &files[6..] {
         remove(&mut world, *file);
     }
     let (_, plan) = plan_next_steps(&mut world.store, &world.facts, &mut world.widening);
     assert!(plan.steps.is_empty(), "{:?}", plan.steps);
     assert_eq!(plan.waits.iter().filter(|wait| wait.reason == WaitReason::User(Reason::MassDelete)).count(), 6);
-    // The window begun anew — the user confirmed, or its time passed: six are none.
-    world.store.item_store().begin_sent_removal_window().unwrap();
+    pass_time(&mut world, crate::SENT_REMOVAL_WINDOW_SECONDS);
     assert_eq!(run_and_tell_steps(&mut world).len(), 6);
+}
+
+/// The third review's S7, its sequence: one file is removed, planned, its removal
+/// committed, a listing; fourteen times, in a store in which nobody ever began a window.
+/// A day apart, each removal is a single one and is sent: no removal waits for the user
+/// because others were once sent. Within a few seconds of one another, the tenth of forty
+/// is a mass removal, and waits.
+#[test]
+fn single_removals_a_day_apart_are_never_held_and_those_of_a_short_time_are() {
+    let mut world = world_of_forty_shown();
+    let files: Vec<LocalItemId> = (0..31).map(|number| find(&mut world, ROOT, &format!("m{number}"))).collect();
+    for (number, file) in files[..14].iter().enumerate() {
+        remove(&mut world, *file);
+        assert_eq!(run_and_tell_steps(&mut world), [format!("{file}:SendFileRemoval")], "removal {number}");
+        write_listing_of_changes(&mut world.store, &[]);
+        pass_time(&mut world, 86_400);
+    }
+    let mut held = Vec::new();
+    for (number, file) in files[14..28].iter().enumerate() {
+        remove(&mut world, *file);
+        if run_and_tell_steps(&mut world).is_empty() {
+            held.push(number);
+        }
+        write_listing_of_changes(&mut world.store, &[]);
+        pass_time(&mut world, 2);
+    }
+    assert_eq!(held, [9, 10, 11, 12, 13], "the tenth is the first mass removal: nine sent and one unsent");
 }
 
 /// From the review of the check at start: after a store was rebuilt, the check binds an
@@ -224,4 +266,24 @@ fn an_entry_bound_by_its_mark_at_another_place_than_onedrive_has_the_item_gives_
     let own = row(&mut world, copy);
     assert!(own.onedrive_item.is_some() && own.onedrive_item != listed.onedrive_item && own.local == own.onedrive, "{own:?}");
     assert_eq!((local_place(&own), content_of(&own.local)), (Some(place(d, "a.txt")), Some("h888-5888".to_owned())));
+}
+
+/// Stage 0b's §2.1, through the store: the time of a clean copy is set here. No plan takes
+/// it back: nothing is to do, the row keeps the time that was set, on both the local
+/// content and the content agreed on, and OneDrive's keeps OneDrive's.
+#[test]
+fn a_time_set_on_a_clean_copy_is_not_taken_back_by_the_plan() {
+    let mut world = World::new(1);
+    let g = find(&mut world, ROOT, "g");
+    world.store.item_store().set_content_presence(g, ContentPresence::OnDisk).unwrap();
+    let before = row(&mut world, g);
+    world.store.item_store().set_local_modified_time(g, 5000, 7).unwrap();
+
+    assert_eq!(run_and_tell_steps(&mut world), Vec::<String>::new());
+    let plan = make_sync_plan(&describe_every_item(&mut world.store, &world.facts));
+    assert_eq!((plan.steps, plan.waits, plan.faults), (vec![], vec![], vec![]), "nor does a plan given every row");
+    let after = row(&mut world, g);
+    let time = |content: Option<&ContentVersion>| content.map(ContentVersion::mtime);
+    assert_eq!((time(after.local.as_ref().and_then(|local| local.content.as_ref())), time(after.synced_content.as_ref())), (Some((5000, 7)), Some((5000, 7))));
+    assert_eq!((&after.onedrive, after.unsent_since, after.content_presence), (&before.onedrive, None, ContentPresence::OnDisk));
 }

@@ -199,6 +199,33 @@ fn content_whose_bytes_are_the_same_and_whose_versions_are_not_one_agrees() {
     assert_eq!(answer(&given, 2), row_step(RowStep::AgreeOnContent { item: versions(&given, 2) }));
 }
 
+/// Stage 0b's §2.1: the time of a clean copy was set here (`touch`), which writes the time
+/// into the local content and the content agreed on; OneDrive's keeps OneDrive's time. The
+/// three are one content but for the time, and the time here stays local: nothing is to
+/// do, on disk or not, and a pin still downloads the file. The same row is what a time
+/// OneDrive changed alone leaves: it is not taken over either.
+#[test]
+fn a_clean_copy_whose_time_alone_is_not_onedrives_is_left_as_it_is() {
+    let touched = |mut file: Item| {
+        let with_time = ContentVersion::Hashed { size: 3, mtime: 5000, mtime_nsec: 7, hash: Some("h2".to_owned()), ctag: Some("c-h2".to_owned()) };
+        file.local.as_mut().unwrap().content = Some(with_time.clone());
+        file.synced_content = Some(with_time);
+        file
+    };
+    for file in [touched(on_disk(synced_file(2, ROOT, "a.txt"))), touched(synced_file(2, ROOT, "a.txt"))] {
+        let mut given = input(vec![file.clone()]);
+        assert_eq!(answer(&given, 2), Answer::Nothing, "{:?}", file.content_presence);
+        given.pinned_items = [id(2)].into();
+        let pinned = if file.content_presence == ContentPresence::OnDisk { Answer::Nothing } else { folder_step(FolderStep::DownloadContent { item: versions(&given, 2) }) };
+        assert_eq!(answer(&given, 2), pinned);
+    }
+    // Where more than the time differs, the versions are made one as before.
+    let mut retagged = touched(on_disk(synced_file(2, ROOT, "a.txt")));
+    retagged.onedrive.as_mut().unwrap().content = Some(ContentVersion::Hashed { size: 3, mtime: 100, mtime_nsec: 0, hash: Some("h2".to_owned()), ctag: Some("c-retagged".to_owned()) });
+    let given = input(vec![retagged]);
+    assert_eq!(answer(&given, 2), row_step(RowStep::AgreeOnContent { item: versions(&given, 2) }));
+}
+
 /// New: a file the folder shows and OneDrive has in one row, with nothing agreed on (two
 /// new files that were merged; a file the start-up check bound by its mark). The content
 /// table's last cell holds: the same hash agrees, another keeps both, none is hashed first.

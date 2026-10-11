@@ -285,7 +285,7 @@ fn a_removed_file_whose_removal_was_sent_is_not_found_by_its_synced_place() {
     let removed = row(&mut store, file);
     assert_eq!(store.item_store().reader().find_removed_file_at_synced_place(ROOT, OsStr::new("f")).unwrap(), Some(removed.clone()));
 
-    assert_eq!(store.item_store().commit_send_file_removal(&ItemVersions::of(&removed)).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_send_file_removal(&ItemVersions::of(&removed), 0).unwrap(), StepCommitOutcome::Written);
     assert!(store.item_store().find_item(file).unwrap().is_some(), "the row stays, with its binding alone");
     assert_eq!(store.item_store().reader().find_removed_file_at_synced_place(ROOT, OsStr::new("f")).unwrap(), None);
 }
@@ -456,6 +456,6 @@ fn the_unsent_removals_are_read_in_the_order_they_came_to_be_unsent() {
     assert_eq!(removals(&mut store, stamp_of_inside, 10), [directory, first]);
 
     let sent = row(&mut store, second);
-    store.item_store().commit_send_file_removal(&ItemVersions::of(&sent)).unwrap();
+    store.item_store().commit_send_file_removal(&ItemVersions::of(&sent), 0).unwrap();
     assert_eq!(removals(&mut store, None, 10), [inside, directory, first], "a removal that was sent is unsent no more");
 }

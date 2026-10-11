@@ -39,6 +39,8 @@ pub(crate) enum StepOutcome {
 
 pub(crate) struct StepStandIn {
     answer_count: u64,
+    /// The time the commits are given, in Unix seconds: the caller's clock.
+    pub(crate) now: i64,
     /// What the steps remember of a name OneDrive answered is taken.
     pub(crate) places_taken_in_onedrive: BTreeMap<LocalItemId, ItemPlace>,
 }
@@ -49,7 +51,7 @@ fn local_place(item: &ItemVersions) -> ItemPlace {
 
 impl StepStandIn {
     pub(crate) fn new() -> Self {
-        Self { answer_count: 0, places_taken_in_onedrive: BTreeMap::new() }
+        Self { answer_count: 0, now: 0, places_taken_in_onedrive: BTreeMap::new() }
     }
 
     fn next_answer(&mut self) -> u64 {
@@ -126,14 +128,15 @@ impl StepStandIn {
     /// The commit of `step`, whose request OneDrive confirmed with `confirmed`: the item as
     /// it has it now, or nothing for a removal.
     pub(crate) fn commit_confirmed(&mut self, store: &mut TreeStore, step: &OneDriveStep, confirmed: Option<&ConfirmedItem>) -> StepOutcome {
+        let now = self.now;
         let mut items = store.item_store();
         let outcome = match (step, confirmed) {
             (OneDriveStep::MakeDirectory { item, parent, name }, Some(made)) => items.commit_make_directory(item, parent, name, made),
             (OneDriveStep::SendNewFile { item, parent, name }, Some(made)) => items.commit_send_new_file(item, parent, name, made, None),
             (OneDriveStep::SendContent { item }, Some(sent)) => items.commit_send_content(item, sent, None),
             (OneDriveStep::SendMove { item, parent, name }, Some(moved)) => items.commit_send_move(item, parent, name, moved),
-            (OneDriveStep::SendFileRemoval { item }, _) => items.commit_send_file_removal(item),
-            (OneDriveStep::SendDirectoryRemoval { item, below }, _) => items.commit_send_directory_removal(item, below),
+            (OneDriveStep::SendFileRemoval { item }, _) => items.commit_send_file_removal(item, now),
+            (OneDriveStep::SendDirectoryRemoval { item, below }, _) => items.commit_send_directory_removal(item, below, now),
             (_, None) => panic!("OneDrive confirmed {step:?} with no item"),
         };
         match outcome.unwrap_or_else(|error| panic!("the commit of {step:?} failed: {error}")) {
@@ -177,8 +180,8 @@ impl StepStandIn {
                 let moved = ConfirmedItem { parent: parent.clone(), name: name.clone(), ..moved };
                 store.item_store().commit_send_move(item, parent, name, &moved)
             }
-            OneDriveStep::SendFileRemoval { item } => store.item_store().commit_send_file_removal(item),
-            OneDriveStep::SendDirectoryRemoval { item, below } => store.item_store().commit_send_directory_removal(item, below),
+            OneDriveStep::SendFileRemoval { item } => store.item_store().commit_send_file_removal(item, self.now),
+            OneDriveStep::SendDirectoryRemoval { item, below } => store.item_store().commit_send_directory_removal(item, below, self.now),
         };
         match outcome.unwrap_or_else(|error| panic!("the commit of {step:?} failed: {error}")) {
             StepCommitOutcome::Written => StepOutcome::Written,

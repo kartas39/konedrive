@@ -13,7 +13,7 @@ use konedrive_reason::Reason;
 
 use super::removed_directory::{decide_directory_removal, is_directory_removed_here, DirectoryRemovalOutcome, ItemBelowRemovedDirectory};
 use super::sending_obstacle::{find_sending_obstacle, SentPart, SendingConditions, SendingObstacle};
-use super::side_change::{compare_local_content, ContentChange, PlaceChange, SideChange};
+use super::side_change::{compare_local_content, is_same_content_but_for_time, ContentChange, PlaceChange, SideChange};
 use super::sync_step::{FolderStep, ItemVersions, OneDriveStep, RowStep, SyncStep};
 use super::{ExclusionReason, PlanFault, WaitReason};
 use crate::model::{ContentPresence, FolderVisibility, Item, ItemKind, LocalItemId, OneDriveItemReference};
@@ -645,7 +645,11 @@ pub(crate) fn decide_place(case: &ItemCase<'_>, here: PlaceChange, in_onedrive: 
 /// The table "its content", for a file both sides have.
 ///
 /// - Same on both sides: nothing, unless the content versions are not one yet though the
-///   bytes are (a hash computed here, a cTag or a time OneDrive changed): agree.
+///   bytes are (a hash computed here, a cTag OneDrive changed): agree. A time alone makes
+///   no two versions: where the local content is the one agreed on and OneDrive's is that
+///   one but for its time, nothing is to do. The time here stays local — it was set on a
+///   clean copy here, or OneDrive changed its own, which the rows cannot tell apart —
+///   and the folder goes on showing the time the row has.
 /// - Same here, changed in OneDrive: the file takes OneDrive's content, and the copy on
 ///   disk goes.
 /// - Changed here, same in OneDrive: the content is sent.
@@ -656,7 +660,7 @@ pub(crate) fn decide_content(case: &ItemCase<'_>, here: ContentChange, in_onedri
     let local = item.local.as_ref().and_then(|local| local.content.as_ref());
     let onedrive = item.onedrive.as_ref().and_then(|onedrive| onedrive.content.as_ref());
     match (here, in_onedrive) {
-        (ContentChange::Same, ContentChange::Same) if local == onedrive && local == item.synced_content.as_ref() => ItemDecision::NothingToDo,
+        (ContentChange::Same, ContentChange::Same) if local == item.synced_content.as_ref() && is_same_content_but_for_time(onedrive, item.synced_content.as_ref()) => ItemDecision::NothingToDo,
         (ContentChange::Same, ContentChange::Same) => row_step(RowStep::AgreeOnContent { item: case.versions() }),
         (ContentChange::Same, ContentChange::Changed | ContentChange::NotKnownWithoutHash) => folder_step(FolderStep::TakeOneDriveContent { item: case.versions() }),
         (ContentChange::Changed | ContentChange::NotKnownWithoutHash, ContentChange::Same) => {

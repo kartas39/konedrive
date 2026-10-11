@@ -88,6 +88,26 @@ fn the_content_in_onedrive_is_the_same_or_changed_and_never_not_known() {
     assert_eq!(content_in_onedrive(no_hash("c-other", 3)), ContentChange::Changed);
     assert_eq!(content_in_onedrive(no_hash("c-h2", 4)), ContentChange::Changed, "another size");
     assert_eq!(compare_onedrive_content(Some(&hashed("h2")), Some(&written_here())), ContentChange::Changed, "what OneDrive has is not hashed here");
+    // A time alone is no change of a content, whatever tells the content.
+    let at = |mtime, hash: Option<&str>, ctag: Option<&str>| ContentVersion::Hashed { size: 3, mtime, mtime_nsec: 0, hash: hash.map(str::to_owned), ctag: ctag.map(str::to_owned) };
+    for (hash, ctag) in [(Some("h"), Some("c")), (None, Some("c")), (Some("h"), None), (None, None)] {
+        assert_eq!(compare_onedrive_content(Some(&at(500, hash, ctag)), Some(&at(100, hash, ctag))), ContentChange::Same, "{hash:?} {ctag:?}");
+    }
+}
+
+#[test]
+fn two_contents_are_one_but_for_the_time_when_all_else_that_tells_them_is_the_same() {
+    let other_time = ContentVersion::Hashed { size: 3, mtime: 5000, mtime_nsec: 7, hash: Some("h2".to_owned()), ctag: Some("c-h2".to_owned()) };
+    assert!(is_same_content_but_for_time(Some(&hashed("h2")), Some(&hashed("h2"))));
+    assert!(is_same_content_but_for_time(Some(&other_time), Some(&hashed("h2"))));
+    assert!(is_same_content_but_for_time(None, None), "a directory has no content");
+    assert!(!is_same_content_but_for_time(Some(&hashed("h2")), None));
+    assert!(!is_same_content_but_for_time(Some(&hashed_here("h2")), Some(&hashed("h2"))), "one has a cTag and the other none");
+    assert!(!is_same_content_but_for_time(Some(&hashed("theirs")), Some(&hashed("h2"))));
+    assert!(!is_same_content_but_for_time(Some(&written_here()), Some(&hashed("h2"))));
+    let written_later = ContentVersion::ChangedHere { size: 3, mtime: 900, mtime_nsec: 0, change_count: 1 };
+    assert!(is_same_content_but_for_time(Some(&written_here()), Some(&written_later)));
+    assert!(!is_same_content_but_for_time(Some(&written_here()), Some(&ContentVersion::ChangedHere { size: 3, mtime: 200, mtime_nsec: 7, change_count: 2 })));
 }
 
 /// New (the brief's §5): a copy's cTag mark survives an edit in place, so a content the rows
