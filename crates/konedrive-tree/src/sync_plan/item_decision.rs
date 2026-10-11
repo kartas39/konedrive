@@ -539,8 +539,16 @@ fn show_onedrive_item(case: &ItemCase<'_>) -> ItemDecision {
 /// binding was then a guess — the check at start bound an entry to the item its mark
 /// names, and the entry is a copy of that file, or a hard link to it, made while no daemon
 /// ran. Nobody moved anything: the place here is no move to send, and OneDrive's place is
-/// none to move the entry to. (Two new items that were merged are in one directory under
-/// one name as OneDrive compares names, and are not this.)
+/// none to move the entry to. Two new items that were merged are not this: the commit of
+/// their merge writes what they were merged for as agreed on
+/// ([`ItemStore::commit_merge_items`](crate::ItemStore::commit_merge_items)).
+///
+/// The rows cannot tell a guess from a binding that was none: an entry renamed or moved
+/// while no store was there — the store was rebuilt, and the check at start bound the
+/// entry by its mark — reads the same. That binding is given up too: the entry is sent as
+/// a new item and OneDrive's is shown at its own place, two items where there was one, a
+/// file's content twice. Nothing is lost. Telling the two apart needs the check to say
+/// which bindings it guessed, as a fact the plan is given.
 fn is_bound_by_guess(item: &Item) -> bool {
     let place = |version: &Option<crate::model::ItemVersion>| version.as_ref().and_then(|version| version.place.as_ref()).map(|place| (place.parent_local_item_id, crate::FoldedName::of(&place.name)));
     item.synced_place.is_none() && item.synced_content.is_none() && item.local.is_some() && item.onedrive.is_some() && place(&item.local) != place(&item.onedrive)

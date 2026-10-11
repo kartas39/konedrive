@@ -225,7 +225,8 @@ impl OneDriveSteps {
     /// content: the item comes back" or "only moved it: the removal is sent" as rows,
     /// with the eTag a listing wrote (today `file_changed`, `meta.rs:251`, read the item
     /// and tried three times in place).
-    /// Commit: `commit_send_file_removal(item)`, which forgets what was kept for the
+    /// Commit: `commit_send_file_removal(item, now)`, `now` in Unix seconds, which counts
+    /// the removal among those sent a short time ago and forgets what was kept for the
     /// request. `RowsChanged`: a listing cycle is asked for.
     async fn run_send_file_removal(&self, item: &ItemVersions) -> StepOutcome {
         todo!()
@@ -238,14 +239,16 @@ impl OneDriveSteps {
     /// `delete_folder` (`G/write.rs:153`). 404 is a confirmation. BEFORE the request
     /// leaves, under the tree lock: `ItemStore::can_directory_removal_be_sent(item,
     /// below, items_with_running_step, destinations_of_running_steps)`, the two sets as
-    /// the plan is given them — every item a request not settled yet is about, and every
-    /// directory such a request sends an item into, this step's own left out; when it
+    /// the plan is given them and with nothing taken out — every item a request not
+    /// settled yet is about, and every directory such a request sends an item into; the
+    /// store leaves this step's own request out itself; when it
     /// answers no, nothing is sent and the step ends `RowsChanged(Nothing)` — an
     /// unguarded removal takes all OneDrive has in the directory, and it is sent only
     /// while the rows still say that all of it was shown here and removed here, no
     /// listing is under way and no request not settled is about any of it.
-    /// Commit: `commit_send_directory_removal(item, below)`, which asks the same of the
-    /// rows alone. `RowsChanged`: the directory is gone in OneDrive with what the rows
+    /// Commit: `commit_send_directory_removal(item, below, now)`, which asks the same of
+    /// the rows alone and counts the directory and each of `below` among the removals
+    /// sent a short time ago. `RowsChanged`: the directory is gone in OneDrive with what the rows
     /// still say it has: a listing cycle is asked for.
     async fn run_send_directory_removal(&self, item: &ItemVersions, below: &[ItemVersions]) -> StepOutcome {
         todo!()

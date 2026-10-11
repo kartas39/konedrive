@@ -127,8 +127,10 @@ pub enum SendingState {
 ///    (their length) agrees always, and enforces nothing. What covers the time after the
 ///    reading: the step asks the store again before its request leaves
 ///    ([`ItemStore::can_directory_removal_be_sent`](crate::ItemStore::can_directory_removal_be_sent)),
-///    and its commit once more; for what OneDrive made in the directory after the last
-///    listing, nothing does.
+///    and its commit once more; for what OneDrive made in the directory or moved into
+///    it after the last listing, nothing does: an item the folder shows that another
+///    client moved into it goes with the removal, and is then taken off the folder as
+///    one OneDrive removed.
 /// 3. for a directory the folder shows that OneDrive does not have, and for one OneDrive
 ///    has where the folder cannot show it (the caller asks
 ///    [`ItemStore::find_folder_visibility`](crate::ItemStore::find_folder_visibility) of

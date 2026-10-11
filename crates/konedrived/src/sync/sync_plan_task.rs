@@ -204,8 +204,8 @@ impl SyncPlanTask {
 
     /// What the daemon knows beside the rows, as values, read now: the items with a
     /// running step (`RunningSteps::list_items`), whether OneDrive is full, the time, the
-    /// destinations of the running steps, the rows the check at start left, the begin of
-    /// the window of sent removals, and whether this plan asks the reader that scans (a
+    /// destinations of the running steps, the rows the check at start left,
+    /// and whether this plan asks the reader that scans (a
     /// listing's page or the user's answer is among `causes`). What is open for
     /// writing is NOT gathered here: it is read from the rows of the plan's own moment.
     fn gather_daemon_facts(&self, causes: &BTreeSet<WakeCause>) -> DaemonFacts {

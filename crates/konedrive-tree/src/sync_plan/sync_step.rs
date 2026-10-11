@@ -114,9 +114,10 @@ pub enum OneDriveStep {
     /// The removal of a file that was removed here is sent, guarded by the eTag.
     SendFileRemoval { item: ItemVersions },
     /// The removal of a directory is sent, with no guard: it removes all OneDrive has in
-    /// the directory, and stands whatever OneDrive changed of that since. `below` is all
-    /// the rows say OneDrive has in it and below it, at any depth, each of which was shown
-    /// here and removed here: a removal is planned on that condition alone, the step asks
+    /// the directory, and stands where OneDrive renamed or moved that since. `below` is
+    /// all the rows say OneDrive has in it and below it, at any depth, each of which was
+    /// shown here and removed here, and none a file whose content OneDrive changed since:
+    /// a removal is planned on that condition alone, the step asks
     /// it again before its request leaves, and the commit once more
     /// ([`ItemStore::can_directory_removal_be_sent`](crate::ItemStore::can_directory_removal_be_sent)).
     /// Those rows are left with their binding alone by the confirmation, as the
@@ -198,7 +199,8 @@ pub enum RowStep {
     /// sends the item as a new one.
     GiveUpBinding { item: ItemVersions },
     /// A new item here (`local`) and a new item in OneDrive (`onedrive`) are one
-    /// ([`ItemStore::merge_items`](crate::ItemStore::merge_items)).
+    /// ([`ItemStore::merge_items`](crate::ItemStore::merge_items)), and what they were
+    /// merged for is agreed on: the place, and for two files the content.
     MergeItems { local: ItemVersions, onedrive: ItemVersions },
     /// Both sides removed the item: that is agreed on. What they agreed on before is
     /// forgotten, and the row is left with its binding alone; it goes later, by the guard
@@ -208,17 +210,17 @@ pub enum RowStep {
     /// the row is that of an item of OneDrive the folder never showed. For a file removed
     /// here whose content OneDrive changed, where the folder cannot show it: it cannot come
     /// back, and its removal is not sent. And for a directory removed here while OneDrive
-    /// has below it what the folder never showed: its removal is of the folder alone, and
-    /// the plan made after it shows the directory again, where the folder can show it,
-    /// with what it never showed.
+    /// has below it what the folder never showed — an item, or the content of a file that
+    /// was removed here —: its removal is of the folder alone, and the plan made after it
+    /// shows the directory again, where the folder can show it, with what it never showed.
     ForgetSyncedVersion { item: ItemVersions },
     /// The local content is hashed, and the hash written into the local content version:
     /// the plan made after it can ask whether the two sides have the same content.
     HashLocalContent { item: ItemVersions },
     /// The two sides have the item at one place already: that place is the synced one.
     AgreeOnPlace { item: ItemVersions },
-    /// The two sides have the same content already: OneDrive's content version is the local
-    /// and the synced one.
+    /// The two sides have the same content already: OneDrive's content version, with the
+    /// time the content has here, is the local and the synced one.
     AgreeOnContent { item: ItemVersions },
 }
 

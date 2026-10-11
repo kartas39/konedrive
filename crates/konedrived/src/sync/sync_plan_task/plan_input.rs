@@ -31,7 +31,7 @@
 // test: an_item_refused_for_good_or_too_big_for_the_space_is_given_as_refused_with_the_reason
 // test: the_items_the_check_left_are_given_as_left_by_it
 // test: the_rows_of_the_directories_running_steps_send_into_are_given_as_destinations
-// test: the_removals_sent_since_the_user_confirmed_are_counted_from_that_count
+// test: the_removals_sent_a_short_time_ago_are_read_as_of_the_time_the_facts_give
 // test: the_quiet_time_of_a_changed_file_ends_that_long_after_its_time
 // test: a_name_onedrive_cannot_hold_is_refused_with_its_reason
 // test: the_plan_made_through_this_caller_converges_as_the_tests_caller_does
@@ -157,7 +157,8 @@ pub fn give_items_in_directory(items: &ItemReader<'_>, given: &mut GivenItems, d
 /// What the plan is given for `given`: with what the store says of each row (whether the
 /// folder can show it, whether it is left here, whether a pin holds for it, whether a
 /// listing is under way, the count of shown items, the count of unsent removals, the
-/// removals sent since the user confirmed, the folder's state of sending); what the rows
+/// removals sent a short time ago (`find_sent_removal_window(facts.now)`, its
+/// `removal_count`), the folder's state of sending); what the rows
 /// themselves say is open for writing (`content_before_write` set); what the step memory
 /// says — the confirmed removals (`list_items_with_confirmed_removal`), the names
 /// OneDrive answered are taken (`list_taken_names` of each directory given), the next

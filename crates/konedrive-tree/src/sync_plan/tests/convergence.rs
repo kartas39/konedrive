@@ -14,16 +14,16 @@
 //!    commit finds the rows changed or whose name OneDrive answers is taken: the steps of
 //!    one plan run in an order made at random;
 //! 2. the rules of the rows hold after every step;
-//! 3. at the end every item has its three versions equal, but an item that is left here and
+//! 3. at the end every item has its three versions equal but for the time of OneDrive's
+//!    content, which the content here need not have, but an item that is left here and
 //!    what is in one;
 //! 4. nothing is lost ([`ExpectedEnd`]): every content that one side alone had, new or
 //!    changed there, is on both sides under some name; every item one side alone had is on
 //!    both sides; every item both sides had, that neither removed, still is; and what the
-//!    user made is in the folder whatever became of it in OneDrive. One loss is the
-//!    design's own and is left out: what OneDrive changed of an item the user removed with
-//!    a directory goes with that removal, which stands. What OneDrive made in such a
-//!    directory, and the folder never showed, is no such loss: it is on both sides at the
-//!    end;
+//!    user made is in the folder whatever became of it in OneDrive. No removal of a
+//!    directory is such a loss: what OneDrive made in a directory that was removed here,
+//!    and the content OneDrive gave since to a file the user removed in it, the folder
+//!    never showed, and both are on both sides at the end;
 //! 5. a plan over every row of what has converged has no step;
 //! 6. no step leaves that must not ([`step_rules`]): asked of every step of every run, in
 //!    words of its own, beside the plan's and the commits';
@@ -461,12 +461,11 @@ impl World {
 ///   or that was moved here with its content on disk, is sent again, and is on both sides
 ///   at the end.
 ///
-/// Left out, by the design: what the folder showed and the user removed below a directory
-/// that was removed here, whatever OneDrive changed of it since — that removal is sent and
-/// stands. Not left out: what OneDrive has below such a directory that the folder never
-/// showed, which no removal takes. And what is left
-/// here, which is never sent, with what the folder shows in a directory that is left here:
-/// an item of OneDrive moved here into one waits for the user, with all of it.
+/// Not left out: what OneDrive has below a directory that was removed here and that the
+/// folder never showed — an item, or the content OneDrive gave since to a file the user
+/// removed —, which no removal takes. Left out: what is left here, which is never sent,
+/// with what the folder shows in a directory that is left here: an item of OneDrive moved
+/// here into one waits for the user, with all of it.
 struct ExpectedEnd {
     contents: BTreeSet<String>,
     /// The contents of the files the folder alone has: of what the user made.
@@ -485,18 +484,6 @@ impl ExpectedEnd {
     fn of(store: &mut TreeStore) -> Self {
         let rows = rows(store);
         let by_id: BTreeMap<LocalItemId, &Item> = rows.iter().map(|row| (row.local_item_id, row)).collect();
-        let is_directory_removed_here = |row: &Item| row.kind == ItemKind::Directory && row.local.is_none() && row.onedrive.is_some() && row.synced_place.is_some();
-        let goes_with_a_removal = |row: &Item| {
-            let directory_of = |row: &Item| row.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()).and_then(|place| by_id.get(&place.parent_local_item_id).copied());
-            let mut above = directory_of(row);
-            let mut is_below_removed = false;
-            for _ in 0..rows.len() {
-                let Some(directory) = above else { break };
-                is_below_removed |= is_directory_removed_here(directory);
-                above = directory_of(directory);
-            }
-            row.local.is_none() && is_below_removed && (row.synced_place.is_some() || row.synced_content.is_some())
-        };
         let cannot_be_shown: BTreeSet<LocalItemId> =
             rows.iter().filter(|row| row.onedrive.is_some() && store.item_store().find_folder_visibility(row.local_item_id).unwrap() != FolderVisibility::CanBeShown).map(|row| row.local_item_id).collect();
         // Left here, or shown in a directory that is: left as it is, with all of it.
@@ -545,7 +532,7 @@ impl ExpectedEnd {
                     expected.sent_again.insert(row.local_item_id);
                 }
             }
-            if row.onedrive.is_some() && !goes_with_a_removal(row) {
+            if row.onedrive.is_some() {
                 expected.contents.extend(content_of(&row.onedrive).filter(|content| Some(content) != agreed_on.as_ref()));
                 if row.local.is_none() && row.synced_place.is_none() && row.synced_content.is_none() {
                     expected.new_in_onedrive.extend(row.onedrive_item.clone());

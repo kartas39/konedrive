@@ -415,7 +415,7 @@ fn the_removal_of_a_directory_waits_for_what_was_moved_out_of_it() {
 }
 
 // B4c, "the removal of a directory stands whatever OneDrive changed in it", is in
-// `directory_removal`, beside the rule that replaced its other half.
+// `directory_removal`, beside the rules that replaced it but for a rename or a move.
 
 /// Open: an item the folder shows that OneDrive moved into a directory that was removed
 /// here. The design says the removal "is sent and stands" whatever OneDrive changed below
