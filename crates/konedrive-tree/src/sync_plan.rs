@@ -468,7 +468,7 @@ fn find_onedrive_directory_not_given(items: &PlanItems<'_>, item: &Item) -> Opti
 /// another item of OneDrive than the listed one, whatever it remembers.
 fn find_local_place_availability(input: &SyncPlanInput, items: &PlanItems<'_>, item: &Item) -> LocalPlaceAvailability {
     let Some(place) = item.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()) else { return LocalPlaceAvailability::NoOneDrivePlace };
-    // TODO: check what becomes of an item the folder does not show that OneDrive has under its temporary name (removed here, its content changed in OneDrive: it comes back), and fix if needed: it has no local place to be sent on to, and is shown under the temporary name as the place of any item.
+    // TODO: the owner's to decide, nothing is lost meanwhile: an item the folder does not show that OneDrive has under its temporary name (an exchange of names was killed in the middle, the item was then removed here, and its content changed in OneDrive, so it comes back) is shown under the temporary name, as the place of any item — it has no local place to be sent on to. What is missing is the decision whether it is to be shown at the place it was on its way to (`TemporaryName::toward`) and renamed so in OneDrive, or stays as it is for the user to rename.
     if item.local.is_some() && input.temporary_names.get(&item.local_item_id).is_some_and(|temporary_name| temporary_name.is_at(place)) {
         return LocalPlaceAvailability::IsTemporaryName;
     }
