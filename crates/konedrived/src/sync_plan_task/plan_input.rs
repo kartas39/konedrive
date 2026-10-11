@@ -37,6 +37,8 @@
 // test: the_quiet_time_of_a_changed_file_ends_that_long_after_its_time
 // test: a_name_onedrive_cannot_hold_is_refused_with_its_reason
 // test: the_plan_made_through_this_caller_converges_as_the_tests_caller_does
+// test: each_case_of_a_reading_is_enough_or_reads_more
+// test: unsent_items_that_wait_for_the_user_do_not_hold_the_window_while_another_step_is_planned
 // test: the_unsent_that_will_not_be_sent_by_themselves_are_the_refused_for_good_those_the_check_left_and_what_waits_for_them
 // test: the_count_the_account_waits_for_leaves_out_what_will_not_be_sent_by_itself
 
@@ -216,6 +218,20 @@ pub struct PlannedRound {
     pub unsent_to_send_count: u64,
 }
 
+/// Where the wait of `item` ends, as `waits` say it: the item that waits for no other item
+/// of them, with its own wait, when the chain of waits for another item ends at one; none
+/// for an item that does not wait, and for a chain that ends at an item with no wait.
+fn find_wait_end<'a>(waits: &BTreeMap<LocalItemId, &'a WaitReason>, item: LocalItemId) -> Option<(LocalItemId, &'a WaitReason)> {
+    let mut at = item;
+    for _ in 0..=waits.len() {
+        match waits.get(&at)? {
+            WaitReason::AnotherItem(another) => at = *another,
+            reason => return Some((at, reason)),
+        }
+    }
+    None
+}
+
 /// How many of the unsent items `plan` was given will not be sent by themselves: those the
 /// check at start left (`WaitReason::StartUpCheck`), those OneDrive refuses for good as
 /// they are (a wait for the user, with a refusal kept in `memories`), and those that wait
@@ -225,19 +241,76 @@ pub struct PlannedRound {
 /// Pure.
 pub fn count_unsent_not_to_send(input: &SyncPlanInput, plan: &SyncPlan, memories: &BTreeMap<LocalItemId, ItemMemory>) -> u64 {
     let waits: BTreeMap<LocalItemId, &WaitReason> = plan.waits.iter().map(|wait| (wait.item, &wait.reason)).collect();
-    let is_not_to_send = |item: LocalItemId| {
-        let mut at = item;
-        for _ in 0..=waits.len() {
-            match waits.get(&at) {
-                Some(WaitReason::AnotherItem(another)) => at = *another,
-                Some(WaitReason::StartUpCheck) => return true,
-                Some(WaitReason::User(_)) => return memories.get(&at).is_some_and(|memory| memory.refusal.is_some()),
-                Some(WaitReason::ItemNotGiven(_) | WaitReason::Time { .. } | WaitReason::RunningStep | WaitReason::Listing | WaitReason::ItemsInDirectoryNotGiven(_)) | None => return false,
-            }
-        }
-        false
+    let is_not_to_send = |item: LocalItemId| match find_wait_end(&waits, item) {
+        Some((_, WaitReason::StartUpCheck)) => true,
+        Some((refused, WaitReason::User(_))) => memories.get(&refused).is_some_and(|memory| memory.refusal.is_some()),
+        Some((_, WaitReason::AnotherItem(_) | WaitReason::ItemNotGiven(_) | WaitReason::Time { .. } | WaitReason::RunningStep | WaitReason::Listing | WaitReason::ItemsInDirectoryNotGiven(_))) | None => false,
     };
     input.items.iter().filter(|item| item.unsent_since.is_some() && is_not_to_send(item.local_item_id)).count() as u64
+}
+
+/// How many rows a plan's reading reads at most: of the unsent items, and of each other
+/// kind of item that differs ([`read_differing_items`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadWindow {
+    pub unsent: usize,
+    pub of_each_other_kind: usize,
+}
+
+/// What a reading of a [`ReadWindow`] brought, and what the plan made of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowReading {
+    /// How many unsent items were read, and whether those are all there are.
+    pub unsent_read: usize,
+    pub is_unsent_read_whole: bool,
+    /// How many of the unsent items read wait for the user, or were left by the check at
+    /// start, themselves or by the item their wait ends at: none of them can have a step
+    /// until the user did something ([`count_unsent_waiting_for_user`]).
+    pub unsent_waiting_for_user: usize,
+    /// Whether every kind was read whole.
+    pub is_all_read: bool,
+    /// Whether the plan has a step at all.
+    pub has_step: bool,
+}
+
+/// Whether a plan's reading is enough.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowDecision {
+    /// The plan stands.
+    Enough,
+    /// More is read, and the plan made again.
+    ReadMore(ReadWindow),
+}
+
+/// Whether what `window` read is enough, `items_read_at_once` being what a plan reads at
+/// first. Everything read: enough. No step at all while more is there: twice as many of
+/// every kind. And the unsent items that wait for the user must not hold the window: the
+/// unsent are read oldest first, so a window full of items that cannot be sent would keep
+/// every newer one from ever being planned while any other step (a download, a change of
+/// OneDrive's) is. While more unsent items are there and fewer than `items_read_at_once`
+/// of those read can have a step, twice as many unsent are read: the window moves on past
+/// those that wait for the user. Ends: each case that reads more is one of more being
+/// there. Pure.
+pub fn decide_window(items_read_at_once: usize, window: ReadWindow, reading: WindowReading) -> WindowDecision {
+    if reading.is_all_read {
+        return WindowDecision::Enough;
+    }
+    if !reading.has_step {
+        return WindowDecision::ReadMore(ReadWindow { unsent: window.unsent.saturating_mul(2), of_each_other_kind: window.of_each_other_kind.saturating_mul(2) });
+    }
+    let unsent_that_can_have_a_step = reading.unsent_read.saturating_sub(reading.unsent_waiting_for_user);
+    if !reading.is_unsent_read_whole && unsent_that_can_have_a_step < items_read_at_once {
+        return WindowDecision::ReadMore(ReadWindow { unsent: window.unsent.saturating_mul(2), ..window });
+    }
+    WindowDecision::Enough
+}
+
+/// How many of `unsent`, the unsent items a reading read, `plan` answers cannot have a step
+/// until the user did something: a wait for the user, or for a check at start that
+/// decides, their own or that of the item their wait ends at. Pure.
+pub fn count_unsent_waiting_for_user(unsent: &[LocalItemId], plan: &SyncPlan) -> usize {
+    let waits: BTreeMap<LocalItemId, &WaitReason> = plan.waits.iter().map(|wait| (wait.item, &wait.reason)).collect();
+    unsent.iter().filter(|item| matches!(find_wait_end(&waits, **item), Some((_, WaitReason::User(_) | WaitReason::StartUpCheck)))).count()
 }
 
 /// The round's plan: reads `items_read_at_once` of each kind of item that differs
@@ -247,10 +320,13 @@ pub fn count_unsent_not_to_send(input: &SyncPlanInput, plan: &SyncPlan, memories
 /// what the plan answers it was not given, gives it and makes the plan again: for
 /// `WaitReason::ItemNotGiven(item)` the row; for `ItemsInDirectoryNotGiven(directory)`
 /// ([`give_items_in_directory`]) all OneDrive has below a directory removed here, or what
-/// the folder shows in one it shows, with its count. While no step can run and more is
-/// there, it reads twice as many: since the plan is told what is refused and what waits
-/// for its next try, a window whose every item waits has no step, and is widened — the
-/// oldest unsent items being blocked starves nothing.
+/// the folder shows in one it shows, with its count. Then [`decide_window`] says whether
+/// what was read is enough: while no step can run and more is there, twice as many of
+/// every kind are read — since the plan is told what is refused and what waits for its
+/// next try, a window whose every item waits has no step, and is widened —; and while the
+/// unsent items that wait for the user leave fewer than a window of those that can have a
+/// step, twice as many unsent: the oldest unsent items being blocked starves nothing,
+/// whatever other step is planned.
 ///
 /// Called by the plan's task as ONE read closure (`Store::read_items`): it must not await
 /// and reads nothing but the store. Bounded: the doubling ends when everything that
@@ -260,11 +336,13 @@ pub fn plan_next_steps(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Pl
     let folder_input = describe_folder(items, facts)?;
     let item_counts = items.count_items()?;
     let unsent_count = items.count_unsent()?.count;
-    let mut read_at_once = facts.settings.items_read_at_once.max(1);
+    let items_read_at_once = facts.settings.items_read_at_once.max(1);
+    let mut window = ReadWindow { unsent: items_read_at_once, of_each_other_kind: items_read_at_once };
     loop {
-        let (rows, is_all_read) = read_differing_items(items, read_at_once)?;
+        let read = read_differing_items(items, window)?;
+        let is_all_read = read.is_all_read;
         let mut given = GivenItems::default();
-        given.give(rows);
+        given.give(read.rows);
         let mut input = folder_input.clone();
         // No more askings than rows and directories: each gives what was not given.
         let mut directories_given = BTreeSet::new();
@@ -294,29 +372,54 @@ pub fn plan_next_steps(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Pl
                 break plan;
             }
         };
-        // TODO: an item beyond the window is planned only when the plan of the window has no step at all (the review's S9): with a window full of unsent items that cannot be sent, newer ones wait while any step (a download, a change of OneDrive's) is planned; check and fix if needed.
-        if !plan.steps.is_empty() || is_all_read {
+        let reading = WindowReading {
+            unsent_read: read.unsent.len(),
+            is_unsent_read_whole: read.is_unsent_read_whole,
+            unsent_waiting_for_user: count_unsent_waiting_for_user(&read.unsent, &plan),
+            is_all_read,
+            has_step: !plan.steps.is_empty(),
+        };
+        if let WindowDecision::ReadMore(wider) = decide_window(items_read_at_once, window, reading) {
+            window = wider;
+            continue;
+        }
+        {
             let unsent_to_send_count = unsent_count.saturating_sub(count_unsent_not_to_send(&input, &plan, &given.memories));
             return Ok(PlannedRound { input, plan, memories: given.memories, local_step_tries, is_all_read, item_counts, unsent_to_send_count });
         }
-        read_at_once = read_at_once.saturating_mul(2);
     }
 }
 
-/// The first `read_at_once` of: what is unsent (`list_unsent`, the oldest first), what
+/// The rows one reading of a [`ReadWindow`] brought.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DifferingItemsRead {
+    /// Every row read, of every kind.
+    pub rows: Vec<Item>,
+    /// The unsent items among them, in the order read: the oldest first.
+    pub unsent: Vec<LocalItemId>,
+    pub is_unsent_read_whole: bool,
+    /// Whether every kind was read whole.
+    pub is_all_read: bool,
+}
+
+/// The first `window.unsent` of what is unsent (`list_unsent`, the oldest first), and the
+/// first `window.of_each_other_kind` of each of: what
 /// OneDrive changed (`list_changed_in_onedrive`), the shown items that cannot be shown any
 /// more (`list_shown_items_that_cannot_be_shown`, by its index), and the pinned files that
 /// are only to be downloaded (`list_pinned_files_to_download`: with every plan, as a plan
 /// that left them out would drop the downloads the last one planned and never plan those
 /// of a file a listing just showed); and whether each was read whole.
-pub fn read_differing_items(items: &ItemReader<'_>, read_at_once: usize) -> Result<(Vec<Item>, bool), TreeError> {
-    let unsent = items.list_unsent(None, read_at_once)?;
+pub fn read_differing_items(items: &ItemReader<'_>, window: ReadWindow) -> Result<DifferingItemsRead, TreeError> {
+    let read_at_once = window.of_each_other_kind;
+    let unsent = items.list_unsent(None, window.unsent)?;
     let changed = items.list_changed_in_onedrive(None, read_at_once)?;
     let cannot_be_shown = items.list_shown_items_that_cannot_be_shown(None, read_at_once)?;
     // TODO: this reader scans all below the pinned directories with every plan, and every finished download makes a plan: N pinned downloads ending one by one are N scans (the review's S-c). A flag "no pinned file is missing its content", kept by the task and cleared by a pin, a listing's page and a content taken off the disk, would bound it; check the cost on a large pinned tree and fix if needed.
     let pinned = items.list_pinned_files_to_download(None, read_at_once)?;
-    let is_all_read = [unsent.len(), changed.len(), cannot_be_shown.len(), pinned.len()].iter().all(|read| *read < read_at_once);
-    Ok((unsent.into_iter().chain(changed).chain(cannot_be_shown).chain(pinned).collect(), is_all_read))
+    let is_unsent_read_whole = unsent.len() < window.unsent;
+    let is_all_read = is_unsent_read_whole && [changed.len(), cannot_be_shown.len(), pinned.len()].iter().all(|read| *read < read_at_once);
+    let unsent_ids = unsent.iter().map(|item| item.local_item_id).collect();
+    Ok(DifferingItemsRead { rows: unsent.into_iter().chain(changed).chain(cannot_be_shown).chain(pinned).collect(), unsent: unsent_ids, is_unsent_read_whole, is_all_read })
 }
 
 /// Gives, with every row of `given` that was not closed yet, what `SyncPlanInput` says
