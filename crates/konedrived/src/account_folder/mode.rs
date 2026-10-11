@@ -220,9 +220,13 @@ impl PendingUploads for SyncService {
         parts.running_steps.list_steps().iter().any(|step| matches!(step.class, StepClass::Content | StepClass::Metadata))
     }
 
-    /// How many changes made here are unsent. A change saved a moment ago counts: the
-    /// folder's mount writes each one before it answers the program that made it. 0 for
-    /// an account with no folder and for a folder whose store is not open.
+    /// How many changes made here are unsent, every one (`ItemReader::count_unsent`). A
+    /// change saved a moment ago counts: the folder's mount writes each one before it
+    /// answers the program that made it. 0 for an account with no folder and for a folder
+    /// whose store is not open. With only changes unsent that will not be sent by
+    /// themselves (refused for good, left by the check at start) this is not 0 while the
+    /// plan's report is (`SyncPlanTaskParts::unsent_count_report`): a wish for read-only
+    /// asked then is kept, and the plan's next report makes the switch.
     async fn pending_uploads(&self) -> u64 {
         let Some(store) = self.tree_store() else { return 0 };
         match store.read_items(|reader| reader.count_unsent()).await {

@@ -166,12 +166,16 @@ pub struct SyncPlanTaskParts {
     /// it brought, so the nudge of the cycle alone finds no file to make a thumbnail
     /// for. `None` with no filler.
     pub after_folder_steps: Option<Arc<tokio::sync::Notify>>,
-    /// Called after every published plan with how many changes that plan's reading
-    /// counted as unsent (`ItemReader::count_unsent`, read in the plan's closure): who
-    /// shows the count and waits for "nothing is unsent now" — the account that keeps a
-    /// wish for read-only (`FolderAccount::tell_unsent_count`). The task is the ONE that
-    /// says it; nobody asks the count on a timer. It must not block.
-    // TODO: the count is of every unsent item, so it never reaches 0 while an item is refused for good or left by the check at start: a kept wish for read-only then waits for ever, and the user must force it. Whether such items are to be left out of the count (the switch then holds them here) is the owner's to say; check and fix if needed.
+    /// Called after every published plan with how many changes are unsent and will be
+    /// sent without the user doing anything (`PlannedRound::unsent_to_send_count`, of the
+    /// plan's own reading): every unsent change but those OneDrive refuses for good, those
+    /// the check at start left, and what waits for one of them. Who shows the count and
+    /// waits for "nothing is left to send" — the account that keeps a wish for read-only
+    /// (`FolderAccount::tell_unsent_count`): a switch waits for what will be sent, and
+    /// what will not stays here under the hold as after a forced switch. It is NOT the
+    /// count a Forget warns with (`SyncService::count_unsent`: every unsent change, as
+    /// all of them stay only here). The task is the ONE that says it; nobody asks the
+    /// count on a timer. It must not block.
     pub unsent_count_report: Arc<dyn Fn(u64) + Send + Sync>,
 }
 
@@ -923,7 +927,7 @@ impl SyncPlanTask {
         if !marks_changed.is_empty() {
             (parts.marks_announcer)(marks_changed);
         }
-        (parts.unsent_count_report)(round.unsent_count);
+        (parts.unsent_count_report)(round.unsent_to_send_count);
 
         let note = match hold {
             Some(SendingHold::Throttled { until }) => Some(OutboxNote::Throttled(*until)),

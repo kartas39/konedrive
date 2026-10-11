@@ -54,7 +54,10 @@ impl SyncService {
     /// (`View::parts`), whether or not its sync runs; for a folder that keeps no open
     /// store (not up, taken down) `sync_tasks::stop_order::count_unsent_of_closed_store`
     /// of its store's file, off the runtime; 0 with no folder. Every unsent change counts,
-    /// whatever holds it — the three counts of the queue's properties do not add up to
+    /// whatever holds it, also one OneDrive refused for good and one the check at start
+    /// left: all of them stay only here after a Forget. (The count a switch to read-only
+    /// waits for is another one, and leaves those out:
+    /// `SyncPlanTaskParts::unsent_count_report`.) — the three counts of the queue's properties do not add up to
     /// it (the rows below a held directory are in none). The bus's
     /// `UploadQueue.UnsentCount()` answers exactly this: the one member the window and
     /// `konedrivectl` read before `Folder.Unregister` and `Accounts.Remove`.

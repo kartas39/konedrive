@@ -37,6 +37,8 @@
 // test: the_quiet_time_of_a_changed_file_ends_that_long_after_its_time
 // test: a_name_onedrive_cannot_hold_is_refused_with_its_reason
 // test: the_plan_made_through_this_caller_converges_as_the_tests_caller_does
+// test: the_unsent_that_will_not_be_sent_by_themselves_are_the_refused_for_good_those_the_check_left_and_what_waits_for_them
+// test: the_count_the_account_waits_for_leaves_out_what_will_not_be_sent_by_itself
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
@@ -205,9 +207,37 @@ pub struct PlannedRound {
     pub is_all_read: bool,
     /// The folder's counts for the bus, of the same reading as the plan.
     pub item_counts: ItemCounts,
-    /// How many changes are unsent (`ItemReader::count_unsent`), of the same reading: what
-    /// the task reports after the plan (`SyncPlanTaskParts::unsent_count_report`).
-    pub unsent_count: u64,
+    /// How many changes are unsent and will be sent without the user doing anything, of
+    /// the same reading: every unsent change (`ItemReader::count_unsent`) but those this
+    /// plan answers will not be sent by themselves ([`count_unsent_not_to_send`]). What
+    /// the task reports after the plan (`SyncPlanTaskParts::unsent_count_report`), and
+    /// what a kept wish for read-only waits for to be 0. NOT the count a Forget warns
+    /// with (`SyncService::count_unsent`), which is of every unsent change.
+    pub unsent_to_send_count: u64,
+}
+
+/// How many of the unsent items `plan` was given will not be sent by themselves: those the
+/// check at start left (`WaitReason::StartUpCheck`), those OneDrive refuses for good as
+/// they are (a wait for the user, with a refusal kept in `memories`), and those that wait
+/// for such an item (a file made in a directory OneDrive refuses), however long the chain.
+/// A refusal for lack of space is not among them: a read of the quota ends it. Nor is any
+/// other wait for the user — a file held open, a name OneDrive cannot hold, OneDrive full.
+/// Pure.
+pub fn count_unsent_not_to_send(input: &SyncPlanInput, plan: &SyncPlan, memories: &BTreeMap<LocalItemId, ItemMemory>) -> u64 {
+    let waits: BTreeMap<LocalItemId, &WaitReason> = plan.waits.iter().map(|wait| (wait.item, &wait.reason)).collect();
+    let is_not_to_send = |item: LocalItemId| {
+        let mut at = item;
+        for _ in 0..=waits.len() {
+            match waits.get(&at) {
+                Some(WaitReason::AnotherItem(another)) => at = *another,
+                Some(WaitReason::StartUpCheck) => return true,
+                Some(WaitReason::User(_)) => return memories.get(&at).is_some_and(|memory| memory.refusal.is_some()),
+                Some(WaitReason::ItemNotGiven(_) | WaitReason::Time { .. } | WaitReason::RunningStep | WaitReason::Listing | WaitReason::ItemsInDirectoryNotGiven(_)) | None => return false,
+            }
+        }
+        false
+    };
+    input.items.iter().filter(|item| item.unsent_since.is_some() && is_not_to_send(item.local_item_id)).count() as u64
 }
 
 /// The round's plan: reads `items_read_at_once` of each kind of item that differs
@@ -266,7 +296,8 @@ pub fn plan_next_steps(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Pl
         };
         // TODO: an item beyond the window is planned only when the plan of the window has no step at all (the review's S9): with a window full of unsent items that cannot be sent, newer ones wait while any step (a download, a change of OneDrive's) is planned; check and fix if needed.
         if !plan.steps.is_empty() || is_all_read {
-            return Ok(PlannedRound { input, plan, memories: given.memories, local_step_tries, is_all_read, item_counts, unsent_count });
+            let unsent_to_send_count = unsent_count.saturating_sub(count_unsent_not_to_send(&input, &plan, &given.memories));
+            return Ok(PlannedRound { input, plan, memories: given.memories, local_step_tries, is_all_read, item_counts, unsent_to_send_count });
         }
         read_at_once = read_at_once.saturating_mul(2);
     }
@@ -549,3 +580,6 @@ pub fn decide_quiet_until(content: &ContentVersion, quiet_time: i64, now: i64) -
 pub fn find_name_refusal(name: &OsStr) -> Option<Reason> {
     crate::local::names::refused(name).map(|refused| refused.reason())
 }
+
+#[cfg(test)]
+mod tests;

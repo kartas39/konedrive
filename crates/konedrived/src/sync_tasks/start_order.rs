@@ -216,7 +216,7 @@ pub struct FolderStartInput {
     /// again after its pause.
     pub take_down_report: TakeDownReport,
     /// Called by the plan's task after every published plan with how many changes are
-    /// unsent (`SyncPlanTaskParts::unsent_count_report`): the owner tells the account
+    /// unsent and will be sent by themselves (`SyncPlanTaskParts::unsent_count_report`, which says what is left out): the owner tells the account
     /// (`FolderAccount::tell_unsent_count`), which may show the count and wait for 0 with
     /// a switch to read-only. It must not block.
     pub unsent_count_report: Arc<dyn Fn(u64) + Send + Sync>,
