@@ -22,23 +22,27 @@ use crate::TreeError;
 /// removal that takes what is below a directory, the commit of a step OneDrive confirmed a
 /// move or a removal to — and in that writer's transaction:
 ///
-/// - `taken_name_holder_left`: a row's place in OneDrive is no more the one it was. Every
-///   taken name at the place it left, the holder's name compared as OneDrive compares
-///   names, is forgotten: the item that held the name was moved, renamed or removed.
+/// - `taken_name_holder_left`: the place in OneDrive of a row that keeps its binding is no
+///   more the one it was. Every taken name at the place it left, the holder's name
+///   compared as OneDrive compares names, is forgotten: the item that held the name was
+///   moved, renamed or removed.
 /// - `taken_name_other_item_came`: a row is given a place in OneDrive that another row has
 ///   already. OneDrive said that another item has the name now; every taken name there is
 ///   forgotten, and the plan decides from the rows.
 ///
 /// A row that is given the place first — the holder itself, listed after the answer —
 /// forgets nothing: the rows then say what the taken name says. A binding that moves to
-/// another row moves the place with it, and no row is left or joined by that.
+/// another row takes OneDrive's place with it, and that is no answer of OneDrive: a row
+/// that gives its binding up loses the place with the binding, which the first trigger
+/// does not take for a holder that left; a row that hands its binding over goes; and the
+/// row that takes the binding finds no other row at the place.
 pub(super) fn taken_name_triggers() -> String {
     let is_another_place = "(NEW.onedrive_parent_id IS NOT OLD.onedrive_parent_id OR NEW.onedrive_folded_name IS NOT OLD.onedrive_folded_name)";
     let cleared = memory_row::TAKEN_NAME_CLEARED;
     format!(
         "
          CREATE TRIGGER taken_name_holder_left AFTER UPDATE OF onedrive_parent_id, onedrive_folded_name ON items
-             WHEN OLD.onedrive_parent_id IS NOT NULL AND {is_another_place} BEGIN
+             WHEN OLD.onedrive_parent_id IS NOT NULL AND NEW.onedrive_item_id IS NOT NULL AND {is_another_place} BEGIN
              UPDATE step_memory SET {cleared} WHERE taken_parent_id = OLD.onedrive_parent_id AND taken_holder_folded_name = OLD.onedrive_folded_name;
          END;
          CREATE TRIGGER taken_name_other_item_came AFTER UPDATE OF onedrive_parent_id, onedrive_folded_name ON items

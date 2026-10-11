@@ -162,3 +162,31 @@ fn a_new_item_merged_with_the_item_under_its_temporary_name_keeps_the_name() {
     write_listing_of_changes(&mut store, &[listed_directory("N", "R", "plans", "e-N")]);
     assert_eq!(kept(&store, plans).temporary_name, None, "a listing says OneDrive has it under another name");
 }
+
+/// The item that holds a taken name gives its binding up — it was changed here and in
+/// OneDrive, and is sent again as a new item — or its file is saved over: the binding, and
+/// OneDrive's place with it, is another row's from then on. OneDrive answered nothing
+/// about the name, which the item of that binding holds still: the taken name stays.
+#[test]
+fn a_holder_whose_binding_moves_to_another_row_leaves_the_name_taken() {
+    use crate::item_store::tests::listed_drive::{listed_file, reference, store_with_listed_root, write_listing_of_changes};
+    for is_saved_over in [false, true] {
+        let mut store = store_with_listed_root();
+        write_listing_of_changes(&mut store, &[listed_file("H", "R", "Holder", (3, "h-H"), "e-H")]);
+        let holder = store.item_store().find_bound_item(&reference("H")).unwrap().unwrap().local_item_id;
+        let planned_from = crate::sync_plan::ItemVersions::of(&item(&mut store, holder));
+        assert_eq!(store.item_store().commit_show_item(&planned_from, false).unwrap(), crate::item_store::StepCommitOutcome::Written);
+        let file = make_file(&mut store, ROOT, "report");
+        assert_eq!(remember_taken(&mut store, file, &TakenName { place: place(ROOT, "report"), holder_name: "Holder".into() }), StillSaid);
+        if is_saved_over {
+            let saved = make_file(&mut store, ROOT, "holder.tmp");
+            store.item_store().apply(&LocalVersionChange::SavedOver { replacing: saved, replaced: holder }).unwrap();
+        } else {
+            change_content(&mut store, holder);
+            store.item_store().give_up_binding(holder, false).unwrap();
+        }
+        let has_the_name = store.item_store().find_bound_item(&reference("H")).unwrap().unwrap();
+        assert_ne!(has_the_name.local_item_id, holder, "another row has the binding");
+        assert_eq!(store.step_memory().list_taken_names(ROOT).unwrap().into_iter().map(|taken| taken.item).collect::<Vec<_>>(), [file], "saved over: {is_saved_over}");
+    }
+}
