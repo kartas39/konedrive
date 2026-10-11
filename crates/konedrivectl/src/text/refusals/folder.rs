@@ -18,7 +18,6 @@ use konedrive_text::Client;
 
 use super::SyncAction;
 use crate::text::files::pinned_parts;
-use crate::text::formats::shell_word;
 
 /// What was refused, and what the sentences are made of.
 #[derive(Clone, Copy)]
@@ -173,12 +172,6 @@ fn shared(told: &Told<'_>, refusal: &Refusal) -> String {
             "the account is not signed in, and `{prefix} sync register` binds the folder to the \
              account's OneDrive. Sign in first with `{prefix} login`"
         ),
-        Refusal::PendingUploads => format!(
-            "the sync folder{folder} is still registered, and nothing was changed: {detail}. `{prefix} \
-             sync outbox` lists what waits; `{prefix} account mode read-only --force` drops it — the \
-             files stay here as they are, and OneDrive does not get the changes — and the folder can \
-             be forgotten then"
-        ),
         Refusal::NoAccount => "that account is gone: it was removed meanwhile. `konedrivectl \
              account list` shows the accounts there are"
             .to_owned(),
@@ -288,7 +281,6 @@ fn forget(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::Overlaps
         | Refusal::NoAccount
         | Refusal::NotUploaded
-        | Refusal::PendingUploads
         | Refusal::Unreachable
         | Refusal::Failed
         | Refusal::WritesNotAllowed
@@ -308,18 +300,7 @@ fn forget(told: &Told<'_>, refusal: &Refusal) -> String {
 /// `account remove`: `Accounts.Remove` forgets the folder first, under Forget's rule.
 fn remove(told: &Told<'_>, refusal: &Refusal) -> String {
     let SyncAction::Remove(label) = told.action else { return shared(told, refusal) };
-    let detail = told.detail;
     match refusal {
-        // The changes waiting to upload would go with the account's folder.
-        Refusal::PendingUploads => {
-            let prefix = format!("konedrivectl --account {}", shell_word(label));
-            format!(
-                "the account {label} was not removed, and nothing was changed: {detail}. `{prefix} sync \
-                 outbox` lists what waits; `{prefix} account mode read-only --force` drops it — the \
-                 files stay here as they are, and OneDrive does not get the changes — and the account \
-                 can be removed then"
-            )
-        }
         Refusal::NoAccount => format!(
             "there is no account {label} any more, so nothing was removed. `konedrivectl account \
              list` shows the accounts there are"
@@ -376,7 +357,6 @@ fn refresh(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::Overlaps
         | Refusal::NoAccount
         | Refusal::NotUploaded
-        | Refusal::PendingUploads
         | Refusal::Unreachable
         | Refusal::Failed
         | Refusal::WritesNotAllowed
@@ -416,7 +396,6 @@ fn hydrate(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::Overlaps
         | Refusal::NoAccount
         | Refusal::NotUploaded
-        | Refusal::PendingUploads
         | Refusal::Unreachable
         | Refusal::Failed
         | Refusal::WritesNotAllowed
@@ -452,7 +431,6 @@ fn dehydrate(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::Overlaps
         | Refusal::NoAccount
         | Refusal::NotUploaded
-        | Refusal::PendingUploads
         | Refusal::Unreachable
         | Refusal::Failed
         | Refusal::WritesNotAllowed
@@ -488,7 +466,6 @@ fn free_up_space(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::Overlaps
         | Refusal::NoAccount
         | Refusal::NotUploaded
-        | Refusal::PendingUploads
         | Refusal::Unreachable
         | Refusal::Failed
         | Refusal::WritesNotAllowed
@@ -543,7 +520,6 @@ fn uploads(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::Overlaps
         | Refusal::NoAccount
         | Refusal::NotUploaded
-        | Refusal::PendingUploads
         | Refusal::Unreachable
         | Refusal::Failed
         | Refusal::WritesNotAllowed
@@ -579,7 +555,6 @@ fn settings(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::Overlaps
         | Refusal::NoAccount
         | Refusal::NotUploaded
-        | Refusal::PendingUploads
         | Refusal::Unreachable
         | Refusal::Failed
         | Refusal::WritesNotAllowed

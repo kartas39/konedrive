@@ -104,7 +104,7 @@ pub enum ManagerError {
     Failed(String),
     #[error("there is no account {0}")]
     NoAccount(String),
-    /// What the account's folder refused, under the folder's names (`PendingUploads`, …).
+    /// What the account's folder refused, under the folder's names (`NoHelper`, …).
     #[error(transparent)]
     Sync(#[from] SyncError),
     /// What `Accounts.SignIn` refuses under a name of `Account.BeginSignIn`'s (`NoClientId`).

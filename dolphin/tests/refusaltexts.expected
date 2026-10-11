@@ -32,8 +32,6 @@ keep|org.konedrive.Error.NoAccount||Keeping “doc.bin” on this device failed:
 keep|org.konedrive.Error.NoAccount|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 keep|org.konedrive.Error.NotUploaded||Keeping “doc.bin” on this device failed: org.konedrive.Error.NotUploaded
 keep|org.konedrive.Error.NotUploaded|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
-keep|org.konedrive.Error.PendingUploads||Keeping “doc.bin” on this device failed: org.konedrive.Error.PendingUploads
-keep|org.konedrive.Error.PendingUploads|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 keep|org.konedrive.Error.Unreachable||OneDrive could not be reached.
 keep|org.konedrive.Error.Unreachable|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|OneDrive could not be reached: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 keep|org.konedrive.Error.NotUp||Keeping “doc.bin” on this device failed: org.konedrive.Error.NotUp
@@ -110,8 +108,6 @@ unpin|org.konedrive.Error.NoAccount||Unpinning “doc.bin” failed: org.konedri
 unpin|org.konedrive.Error.NoAccount|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 unpin|org.konedrive.Error.NotUploaded||Unpinning “doc.bin” failed: org.konedrive.Error.NotUploaded
 unpin|org.konedrive.Error.NotUploaded|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
-unpin|org.konedrive.Error.PendingUploads||Unpinning “doc.bin” failed: org.konedrive.Error.PendingUploads
-unpin|org.konedrive.Error.PendingUploads|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 unpin|org.konedrive.Error.Unreachable||OneDrive could not be reached.
 unpin|org.konedrive.Error.Unreachable|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|OneDrive could not be reached: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 unpin|org.konedrive.Error.NotUp||Unpinning “doc.bin” failed: org.konedrive.Error.NotUp
@@ -188,8 +184,6 @@ free-up|org.konedrive.Error.NoAccount||Freeing up “doc.bin” failed: org.kone
 free-up|org.konedrive.Error.NoAccount|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 free-up|org.konedrive.Error.NotUploaded||“doc.bin” is not uploaded yet, so freeing it up would lose the changes made here. It was left exactly as it is.
 free-up|org.konedrive.Error.NotUploaded|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not uploaded yet, so freeing it up would lose the changes made here. It was left exactly as it is.
-free-up|org.konedrive.Error.PendingUploads||Freeing up “doc.bin” failed: org.konedrive.Error.PendingUploads
-free-up|org.konedrive.Error.PendingUploads|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 free-up|org.konedrive.Error.Unreachable||OneDrive could not be reached.
 free-up|org.konedrive.Error.Unreachable|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|OneDrive could not be reached: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 free-up|org.konedrive.Error.NotUp||Freeing up “doc.bin” failed: org.konedrive.Error.NotUp
@@ -266,8 +260,6 @@ open-online|org.konedrive.Error.NoAccount||Opening “doc.bin” in OneDrive fai
 open-online|org.konedrive.Error.NoAccount|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 open-online|org.konedrive.Error.NotUploaded||“doc.bin” is not uploaded yet, so it has no page in OneDrive.
 open-online|org.konedrive.Error.NotUploaded|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not uploaded yet, so it has no page in OneDrive.
-open-online|org.konedrive.Error.PendingUploads||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.PendingUploads
-open-online|org.konedrive.Error.PendingUploads|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 open-online|org.konedrive.Error.Unreachable||OneDrive could not be reached.
 open-online|org.konedrive.Error.Unreachable|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|OneDrive could not be reached: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 open-online|org.konedrive.Error.NotUp||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.NotUp

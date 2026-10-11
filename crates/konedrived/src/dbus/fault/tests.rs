@@ -82,7 +82,6 @@ fn the_mode_and_the_accounts_refuse_under_their_names() {
     let mode = |error: ModeError| name_and_message(&Fault::from(error));
     assert_eq!(mode(ModeError::WritesNotAllowed(why())), said("org.konedrive.Error.WritesNotAllowed"));
     assert_eq!(mode(ModeError::ModeNotGranted(why())), said("org.konedrive.Error.ModeNotGranted"));
-    assert_eq!(mode(ModeError::PendingUploads(why())), said("org.konedrive.Error.PendingUploads"));
     assert_eq!(mode(ModeError::NotSignedIn(why())), said("org.konedrive.Error.NotSignedIn"));
     assert_eq!(mode(ModeError::Failed(why())), said("org.konedrive.Error.Failed"));
     assert_eq!(mode(ModeError::InvalidMode(why())), said("org.freedesktop.DBus.Error.InvalidArgs"));

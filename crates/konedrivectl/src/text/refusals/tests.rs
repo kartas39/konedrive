@@ -1,29 +1,11 @@
 use super::{account_refusal_text, dev_refusal_text, refusal_text, refusal_text_in, AccountAction, Context, SyncAction};
 
-/// `account remove` and `sync forget` refused while changes wait say how
-/// to see them and how to drop them.
-#[test]
-fn a_remove_or_forget_refused_while_changes_wait_says_what_to_do() {
-    let detail = "2 change(s) made here have not been uploaded yet";
-    let removed = refusal_text(SyncAction::Remove("Test"), Some("org.konedrive.Error.PendingUploads"), detail, "/home/u/OneDrive");
-    assert!(removed.contains("was not removed") && removed.contains(detail), "{removed}");
-    assert!(removed.contains("`konedrivectl --account Test account mode read-only --force`"), "{removed}");
-    let forgot = refusal_text(SyncAction::Forget, Some("org.konedrive.Error.PendingUploads"), detail, "/home/u/OneDrive");
-    assert!(forgot.contains("still registered") && forgot.contains("`konedrivectl account mode read-only --force`"), "{forgot}");
-}
-
 /// `account mode` and `export-access-token --read-write` explain each refusal by its
-/// name (`docs/design/desktop.md` §2.6): uploads waiting, a read-only account, and, for the token
+/// name (`docs/design/desktop.md` §2.6): a read-only account, and, for the token
 /// alone, a drive `write_test_drive_ids` does not list.
 #[test]
 fn a_refused_mode_is_explained_by_its_name() {
     let prefix = "konedrivectl --account Test";
-    let pending = account_refusal_text(
-        AccountAction::SetMode("Test", "read-only", prefix),
-        Some("org.konedrive.Error.PendingUploads"),
-        "3 changes made here have not been uploaded yet",
-    );
-    assert!(pending.contains("3 changes") && pending.contains("konedrivectl --account Test account mode read-only --force"), "{pending}");
     let signed_out = account_refusal_text(AccountAction::SetMode("Test", "read-write", prefix), Some("org.konedrive.Error.NotSignedIn"), "x");
     assert!(signed_out.contains("`konedrivectl --account Test login`"), "{signed_out}");
     let other = account_refusal_text(AccountAction::SetMode("Test", "read-write", prefix), Some("org.konedrive.Error.Failed"), "no client id");

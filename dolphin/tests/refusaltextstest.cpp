@@ -18,7 +18,7 @@ class RefusalTextsTest : public QObject
         // Every name the daemon refuses a call under (konedrive-dbus, `Refusal`).
         for (const char *refusal : {"NotEmpty",       "Unsupported",       "InUse",       "NoRoot",         "NoHelper",       "NotManaged",
                                     "NotHydrated",    "ModifiedLocally",   "OutsideRoot", "AlreadyRegistered", "NotSignedIn", "NoSource",
-                                    "NoConflict",     "NotAllowed",        "Overlaps",    "NoAccount",      "NotUploaded",    "PendingUploads",
+                                    "NoConflict",     "NotAllowed",        "Overlaps",    "NoAccount",      "NotUploaded",
                                     "Unreachable",    "NotUp",             "Failed",      "WritesNotAllowed", "ModeNotGranted",
                                     // One this plugin does not know.
                                     "SomethingNew"}) {

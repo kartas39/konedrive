@@ -112,8 +112,6 @@ public:
     /// SetMode("read-write") is refused Failed with these words, when not empty: a test that
     /// loads the whole window keeps the sign-in, and so the browser, from starting.
     QString readWriteFails;
-    /// Changes waiting to be uploaded, for SetMode("read-only").
-    uint pendingUploads = 0;
 
 public Q_SLOTS:
     QString BeginSignIn()
@@ -147,8 +145,8 @@ public Q_SLOTS:
         set({{QStringLiteral("Label"), label.trimmed()}});
     }
     /// As the daemon's: the sign-in state, for read-write, which
-    /// answers a sign-in URL (grantReadWrite() then ends it); PendingUploads for
-    /// read-only while `pendingUploads` is not 0, unless forced, which drops them.
+    /// answers a sign-in URL (grantReadWrite() then ends it); read-only is
+    /// switched to at once, forced or not.
     QString SetMode(const QString &mode, bool force, const QDBusMessage &message)
     {
         calls << QStringLiteral("SetMode:%1:%2").arg(mode, force ? QStringLiteral("force") : QStringLiteral("no-force"));
@@ -168,11 +166,6 @@ public Q_SLOTS:
             return QStringLiteral("https://login.example/authorize?scope=Files.ReadWrite&account=") + id();
         }
         if (mode == QLatin1String("read-only")) {
-            if (pendingUploads > 0 && !force) {
-                return refuse(QStringLiteral("org.konedrive.Error.PendingUploads"),
-                              QStringLiteral("%1 changes made here have not been uploaded yet").arg(pendingUploads));
-            }
-            pendingUploads = 0;
             set({{QStringLiteral("Mode"), QStringLiteral("read-only")}});
             return QString();
         }

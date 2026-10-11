@@ -194,8 +194,7 @@ private Q_SLOTS:
         QObject *page = window->findChild<QObject *>(QStringLiteral("accountPage"));
         QObject *uploadSwitch = window->findChild<QObject *>(QStringLiteral("uploadSwitch"));
         QObject *explain = window->findChild<QObject *>(QStringLiteral("uploadDialog"));
-        QObject *drop = window->findChild<QObject *>(QStringLiteral("dropUploadsDialog"));
-        QVERIFY(page && uploadSwitch && explain && drop);
+        QVERIFY(page && uploadSwitch && explain);
         QTRY_VERIFY(uploadSwitch->property("enabled").toBool());
         QVERIFY(!uploadSwitch->property("checked").toBool());
 
@@ -213,14 +212,9 @@ private Q_SLOTS:
         fake.account->set({{QStringLiteral("Mode"), QStringLiteral("read-write")}});
         QTRY_VERIFY(uploadSwitch->property("checked").toBool());
 
-        // Off, with changes waiting: asked first, then forced.
-        fake.account->pendingUploads = 2;
+        // Off: asked of the daemon at once, with no question.
         QMetaObject::invokeMethod(page, "setUploads", Q_ARG(QVariant, false));
-        QTRY_VERIFY(shown(drop));
-        QVERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-only:no-force")));
-        QTRY_VERIFY(uploadSwitch->property("checked").toBool());
-        QMetaObject::invokeMethod(drop, "confirm");
-        QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-only:force")));
+        QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-only:no-force")));
         QTRY_COMPARE(accounts.at(0)->account()->mode(), QStringLiteral("read-only"));
         QTRY_VERIFY(accounts.at(0)->account()->switchingTo().isEmpty());
         QVERIFY(!uploadSwitch->property("checked").toBool());

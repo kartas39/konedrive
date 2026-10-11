@@ -189,28 +189,27 @@ private Q_SLOTS:
                  QStringLiteral("Uploading was not turned off: disk full"));
     }
 
-    /// Changes waiting to be uploaded make the switch to read-only a
-    /// question; forced, it goes through.
-    void aSwitchToReadOnlyAsksBeforeDroppingUploads()
+    /// A switch to read-only is asked of the daemon as it was asked for,
+    /// forced or not, and is no error.
+    void aSwitchToReadOnlyIsAskedForcedOrNot()
     {
         startFake();
         m_daemon->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}, {QStringLiteral("Mode"), QStringLiteral("read-write")}});
-        m_daemon->account->pendingUploads = 3;
         AccountController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.mode(), QStringLiteral("read-write"));
-        QSignalSpy asked(&controller, &AccountController::pendingUploadsRefused);
 
         controller.setMode(QStringLiteral("read-only"));
         QCOMPARE(controller.switchingTo(), QStringLiteral("read-only"));
-        QTRY_COMPARE(asked.count(), 1);
+        QTRY_COMPARE(controller.mode(), QStringLiteral("read-only"));
+        QTRY_COMPARE(controller.switchingTo(), QString());
         QCOMPARE(controller.actionError(), QString());
-        QCOMPARE(controller.switchingTo(), QString());
-        QCOMPARE(controller.mode(), QStringLiteral("read-write"));
+        QVERIFY(m_daemon->account->calls.contains(QStringLiteral("SetMode:read-only:no-force")));
 
+        m_daemon->account->set({{QStringLiteral("Mode"), QStringLiteral("read-write")}});
+        QTRY_COMPARE(controller.mode(), QStringLiteral("read-write"));
         controller.setMode(QStringLiteral("read-only"), true);
         QTRY_COMPARE(controller.mode(), QStringLiteral("read-only"));
         QTRY_COMPARE(controller.switchingTo(), QString());
-        QCOMPARE(asked.count(), 1);
         QVERIFY(m_daemon->account->calls.contains(QStringLiteral("SetMode:read-only:force")));
     }
 

@@ -41,9 +41,7 @@
          not uploaded stays here, not sent and not lost, and is sent when
          the account is read-write again. Nothing is dropped. To read-write
          while the wish is kept takes the wish back. No sign-in: the next
-         token refresh asks for Files.Read. (Until the wish is kept in
-         config.toml the daemon still refuses the unforced switch with
-         PendingUploads.) -->
+         token refresh asks for Files.Read. -->
     <method name="SetMode">
       <arg name="mode" type="s" direction="in"/>
       <arg name="force" type="b" direction="in"/>

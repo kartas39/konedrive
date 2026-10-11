@@ -102,9 +102,6 @@ pub enum ModeError {
     /// The account's token does not carry `Files.ReadWrite`.
     #[error("{0}")]
     ModeNotGranted(String),
-    /// Changes wait to be uploaded, and the switch to read-only was not forced.
-    #[error("{0}")]
-    PendingUploads(String),
     #[error("{0}")]
     NotSignedIn(String),
     #[error("{0}")]

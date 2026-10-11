@@ -75,8 +75,7 @@ public:
     Q_INVOKABLE void refreshAccountInfo();
     Q_INVOKABLE void copySignInUrl();
     /// SetMode(mode, force). To read-write, the sign-in URL it answers is opened like
-    /// signIn()'s, and the switch waits for it (modeSignInPending). To read-only, a refusal
-    /// for changes still waiting to upload is pendingUploadsRefused(), not an actionError.
+    /// signIn()'s, and the switch waits for it (modeSignInPending).
     Q_INVOKABLE void setMode(const QString &mode, bool force = false);
     /// Gives up a switch to read-write waiting for its sign-in (CancelSignIn).
     Q_INVOKABLE void cancelModeSwitch();
@@ -91,9 +90,6 @@ Q_SIGNALS:
     void signInUrlChanged();
     void actionErrorChanged();
     void modeSwitchChanged();
-    /// SetMode("read-only") was refused because changes made here still wait to be
-    /// uploaded: the window asks whether to drop them, then calls setMode("read-only", true).
-    void pendingUploadsRefused();
     /// BeginSignIn returned the authorization URL; the UI opens it in the browser.
     void openUrlRequested(const QString &url);
     /// The user asked to sign out from this window (the Notifier stays quiet about it).

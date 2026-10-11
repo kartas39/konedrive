@@ -63,9 +63,10 @@
          changes), cancels a sign-in under way, deletes its refresh token, its
          cached name and quota and its tree store, then removes the object.
          The folder's files and the rescued files are kept. NoAccount for a
-         path that names no account. Refused PendingUploads, as
-         Folder.Unregister is, while changes made here wait to be
-         uploaded. Failed when the token cannot be deleted or config.toml
+         path that names no account. Never refused for changes made here
+         that are not sent, as Folder.Unregister is not: the caller warns
+         with UploadQueue.UnsentCount before it calls. Failed when the token
+         cannot be deleted or config.toml
          cannot be written after the folder was forgotten: the account stays,
          and the message says what was done to its folder and its sign-in. -->
     <method name="Remove">

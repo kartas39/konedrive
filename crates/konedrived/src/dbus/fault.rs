@@ -128,8 +128,6 @@ impl From<ModeError> for Fault {
             ModeError::WritesNotAllowed(why) => Fault::Refused(Refusal::WritesNotAllowed, why),
             // The account's token does not carry `Files.ReadWrite`.
             ModeError::ModeNotGranted(why) => Fault::Refused(Refusal::ModeNotGranted, why),
-            // Changes wait to be uploaded, and the switch to read-only was not forced.
-            ModeError::PendingUploads(why) => Fault::Refused(Refusal::PendingUploads, why),
             ModeError::NotSignedIn(why) => Fault::Refused(Refusal::NotSignedIn, why),
             ModeError::InvalidMode(why) => Fault::Refused(Refusal::InvalidArgs, why),
             ModeError::Failed(why) => Fault::Refused(Refusal::Failed, why),

@@ -13,7 +13,7 @@ use crate::error_name;
 
 /// Every name a call to the daemon is refused under.
 ///
-/// The first twenty-three are the daemon's own, under [`ERROR_PREFIX`](crate::ERROR_PREFIX);
+/// The first twenty-two are the daemon's own, under [`ERROR_PREFIX`](crate::ERROR_PREFIX);
 /// then the bus's names the daemon and its object server answer with; and a name this build
 /// does not know, kept as it came ([`Refusal::Other`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -54,8 +54,6 @@ pub enum Refusal {
     /// A free-up of a file whose change waits to be uploaded, or the page of an item
     /// OneDrive does not have yet.
     NotUploaded,
-    /// Changes wait to be uploaded, and the call would drop them.
-    PendingUploads,
     /// OneDrive did not answer a question that needs it now.
     Unreachable,
     /// A folder is recorded and not up, or its sync is not running; the message says why.
@@ -85,7 +83,7 @@ pub enum Refusal {
 
 impl Refusal {
     /// Every variant but [`Refusal::Other`].
-    pub const ALL: [Refusal; 29] = [
+    pub const ALL: [Refusal; 28] = [
         Self::NotEmpty,
         Self::Unsupported,
         Self::InUse,
@@ -103,7 +101,6 @@ impl Refusal {
         Self::Overlaps,
         Self::NoAccount,
         Self::NotUploaded,
-        Self::PendingUploads,
         Self::Unreachable,
         Self::NotUp,
         Self::Failed,
@@ -137,7 +134,6 @@ impl Refusal {
             Self::Overlaps => "org.konedrive.Error.Overlaps",
             Self::NoAccount => "org.konedrive.Error.NoAccount",
             Self::NotUploaded => "org.konedrive.Error.NotUploaded",
-            Self::PendingUploads => "org.konedrive.Error.PendingUploads",
             Self::Unreachable => "org.konedrive.Error.Unreachable",
             Self::NotUp => "org.konedrive.Error.NotUp",
             Self::Failed => "org.konedrive.Error.Failed",

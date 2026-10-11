@@ -231,11 +231,7 @@ void AccountController::setMode(const QString &mode, bool force)
         const QDBusPendingReply<QString> reply = *w;
         if (reply.isError()) {
             endModeSwitch();
-            if (reply.error().name() == QLatin1String("org.konedrive.Error.PendingUploads")) {
-                Q_EMIT pendingUploadsRefused();
-            } else {
-                setActionError(modeRefusalText(mode, reply.error().name(), reply.error().message()));
-            }
+            setActionError(modeRefusalText(mode, reply.error().name(), reply.error().message()));
             return;
         }
         const QString url = reply.value();

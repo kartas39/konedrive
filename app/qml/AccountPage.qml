@@ -29,8 +29,7 @@ FormCard.FormCardPage {
     readonly property var window: QQC2.ApplicationWindow.window
 
     /// "Upload changes made on this computer" turned on or off. On explains
-    /// first, and signs in only once the user goes on; off switches at once,
-    /// and asks only if changes still wait to be uploaded.
+    /// first, and signs in only once the user goes on; off is asked at once.
     function setUploads(on) {
         if (on) {
             uploadDialog.open();
@@ -49,13 +48,6 @@ FormCard.FormCardPage {
 
     objectName: "accountPage"
     title: window ? window.accountTitle(i18nc("@title", "Account")) : i18nc("@title", "Account")
-
-    Connections {
-        target: page.account
-        function onPendingUploadsRefused() {
-            dropUploadsDialog.open();
-        }
-    }
 
     Kirigami.InlineMessage {
         Layout.fillWidth: true
@@ -630,53 +622,6 @@ FormCard.FormCardPage {
             target: Current
             function onChanged() {
                 uploadDialog.close();
-            }
-        }
-    }
-
-    // A switch to read-only refused because changes still wait to be uploaded.
-    Kirigami.PromptDialog {
-        id: dropUploadsDialog
-        objectName: "dropUploadsDialog"
-
-        /// The account it was opened for (an AccountItem); null once that account is gone.
-        property QtObject item: null
-
-        function confirm() {
-            if (item) {
-                item.account.setMode("read-only", true);
-            }
-            close();
-        }
-
-        title: i18nc("@title:window", "Stop Uploading?")
-        subtitle: item && item.sync.pendingCount > 0
-            ? i18np("1 change made on this computer has not been uploaded yet. If you turn uploading off now, it never will be: the file stays here as it is, but OneDrive does not get the change.",
-                    "%1 changes made on this computer have not been uploaded yet. If you turn uploading off now, they never will be: the files stay here as they are, but OneDrive does not get these changes.",
-                    item.sync.pendingCount)
-            : i18n("Some changes made on this computer have not been uploaded yet. If you turn uploading off now, they never will be: the files stay here as they are, but OneDrive does not get these changes.")
-        onAboutToShow: item = Current.item
-        dialogType: Kirigami.PromptDialog.Warning
-        maximumWidth: Math.min(absoluteMaximumWidth, Kirigami.Units.gridUnit * 30)
-        standardButtons: Kirigami.Dialog.NoButton
-        customFooterActions: [
-            Kirigami.Action {
-                text: i18nc("@action:button", "Turn Off Without Uploading")
-                icon.name: "process-stop"
-                enabled: dropUploadsDialog.item !== null
-                onTriggered: dropUploadsDialog.confirm()
-            },
-            Kirigami.Action {
-                text: i18nc("@action:button", "Keep Uploading")
-                icon.name: "dialog-cancel"
-                onTriggered: dropUploadsDialog.close()
-            }
-        ]
-
-        Connections {
-            target: Current
-            function onChanged() {
-                dropUploadsDialog.close();
             }
         }
     }

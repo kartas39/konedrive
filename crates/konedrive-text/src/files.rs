@@ -141,7 +141,7 @@ const OUTSIDE: Sentence = Each {
 const NOT_ALLOWED_KEPT: Sentence = Desktop("Could not change what is kept on this device: {detail}");
 
 /// Every name of [`Refusal`], in its order.
-pub static REFUSALS: [RefusalText; 29] = [
+pub static REFUSALS: [RefusalText; 28] = [
     as_failed(Refusal::NotEmpty),
     as_failed(Refusal::Unsupported),
     every_listed(
@@ -279,7 +279,6 @@ pub static REFUSALS: [RefusalText; 29] = [
         without_detail: None,
         several: OF_ONE,
     },
-    as_failed(Refusal::PendingUploads),
     // "Open in OneDrive" asks OneDrive each time. The daemon's message is the
     // cause (no network, a locked secret storage, an answer that cannot be read).
     RefusalText {
