@@ -52,8 +52,22 @@
 //!
 //! **The attributes a write operation's reply carries** (make, truncate, the time) are
 //! made in the operation's job, on the write-operation thread, by [`WriteReplyAttributes`]:
-//! from the row read through the writer and the backing file — never through
-//! `ItemLookup`, which reads on the connection of a thread of the mount.
+//! by `ItemLookup`'s own code (`describe_through`, `describe_node`), given the row and the
+//! path read through the writer — never on the connection of a thread of the mount, which
+//! that thread has none of.
+//!
+//! **Through a handle, bytes of the content it was opened as, or none.** [`decide_read`]
+//! answers bytes from three places: the handle's own backing file; the backing file the
+//! row names once the content landed (the row and its path are read in one read
+//! transaction, and the row must still say that content is on disk, or kept from before
+//! a write: `decide_not_on_disk_read_origin`); and the file of the running download of
+//! that very item and content, below a mark the download's source raises only for
+//! answers it has told to be of that content (`item_downloader::download_source`). A
+//! content OneDrive answered a download of with another one is `ESTALE`
+//! (`ItemDownloadStates::is_another_content`) and no range of it is asked for.
+//! [`fetch_read_range`] answers what the range fetcher lets through
+//! (`item_range_fetcher::decide_is_another_content`), which through Graph cannot tell
+//! another content of the item until a download or a listing did.
 //!
 //! **Nothing is announced to the inotify bridge here.** What a program asks for through
 //! the mount the kernel tells its watchers itself; the bridge is for what a step towards
@@ -92,34 +106,37 @@
 // test: a_request_by_a_handle_that_is_not_open_is_ebadf
 // test: a_file_opened_to_be_overwritten_is_cut_and_nothing_is_downloaded
 // test: the_time_set_on_a_file_is_what_its_reply_and_the_next_getattr_say
+// test: a_read_through_a_handle_is_never_answered_from_a_download_of_another_content
+// test: a_read_past_the_threshold_starts_no_download_again_while_downloads_end_without_landing
+// test: a_reader_whose_content_landed_reads_the_backing_file_beside_a_writer_that_opened_since
+// test: a_part_of_a_directory_reading_hands_out_the_kept_listing_and_copies_nothing
 #![allow(dead_code)]
 
 use std::ffi::OsStr;
 use std::fs::File;
-use std::os::unix::fs::{FileExt, MetadataExt};
+use std::os::unix::fs::FileExt;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
 use fuser::{Errno, FileAttr};
-use konedrive_tree::{ContentPresence, Item, ItemKind, LocalItemId, Store};
+use konedrive_tree::{Item, ItemKind, LocalItemId, Store, TreeError};
 use tokio::sync::oneshot;
 
 use super::access_mode_switch::AccessModeSwitch;
-use super::backing_directory::EntryKind;
 use super::errno::to_errno;
 use super::item_announcements::{find_announced_name, AnnouncedName, ItemAnnouncement};
-use super::item_attributes::{to_item_attributes, to_open_file_attributes, BackingFileFacts, OpenFileFacts, SizeAndTimes};
 use super::item_download_states::{DownloadAsker, DownloadKey, ItemDownloadStates};
 use super::item_downloader::{ItemDownloader, ItemToDownload};
 use super::item_free_up::ItemFreeUp;
 use super::item_handles::{ItemHandles, OpenItemFile};
 use super::item_inotify_bridge::ItemInotifyBridge;
-use super::item_lookup::{ItemLookup, ShownEntry};
+use super::item_lookup::{to_node_row, ItemLookup, ShownEntry};
 use super::item_range_fetcher::{ItemRangeFetcher, RangeRefusal};
 use super::item_read_origin::{decide_not_on_disk_read_origin, decide_open_to_read, NotOnDiskReadOrigin, OpenToRead, RangeSource};
 use super::item_write_operations::{FileToFill, ItemWriteOperations, MadeKind, RenameMode};
 use super::open_handles::Fh;
-use super::place_changes::{decide_open_errno, OpenAtRowError, OpenMode, PlaceChanges, RowPathStat};
+use super::place_changes::{decide_open_errno, OpenAtRowError, OpenMode, PlaceChanges};
 use super::read_connections::ReadConnections;
 use super::write_operation_thread::WriteOperationThread;
 
@@ -262,67 +279,32 @@ fn read_file_range(file: &File, offset: u64, size: u32) -> Result<Vec<u8>, Errno
     Ok(bytes)
 }
 
-/// What `fstat` says of the file a handle holds.
-fn read_open_file_facts(file: &File) -> Result<OpenFileFacts, Errno> {
-    let metadata = file.metadata().map_err(|error| to_errno(&error))?;
-    Ok(OpenFileFacts { size: metadata.size(), mtime: metadata.mtime(), mtime_nsec: metadata.mtime_nsec() as u32, blocks: metadata.blocks() })
-}
-
 /// The attributes a write operation's reply carries, made on the write-operation thread
 /// once the operation wrote its row: of the item mkdir, mknod and create made, and of the
 /// node a truncation or a time was set on.
 ///
-/// **State owned:** none. It reads the row through the writer (`Store::call_blocking`),
-/// as every job of that thread reads, and the backing file through the writer's handle
-/// or `PlaceChanges::stat_at_row_path`; `ItemLookup` does the same for the reading
-/// requests on the connection of a thread of the mount, which this thread has none of.
+/// **State owned:** none. It reads the row and the path through the writer
+/// (`Store::call_blocking`), as every job of that thread reads, and hands both to
+/// `ItemLookup`, whose code makes the attributes for the reading requests too: one code
+/// for what getattr answers and for what a reply carries.
 struct WriteReplyAttributes {
     store: Store,
-    place_changes: Arc<PlaceChanges>,
-    item_handles: Arc<ItemHandles>,
-    access_mode_switch: Arc<AccessModeSwitch>,
-    /// Unix seconds: the time of a directory that has none of its own.
-    mount_started_at: i64,
+    lookup: Arc<ItemLookup>,
 }
 
 impl WriteReplyAttributes {
-    /// What the backing directory says of `item`, which the folder shows: as
-    /// `ItemLookup::read_backing_file_facts` says it, with the path read through the
-    /// writer.
-    fn read_backing_file_facts(&self, item: &Item) -> BackingFileFacts {
-        let no_facts = BackingFileFacts { size_and_times: SizeAndTimes::OfLocalContent, blocks: 0, directory_mtime: None };
-        let node = item.local_item_id;
-        if item.kind == ItemKind::File {
-            if let Some(Ok(facts)) = self.item_handles.find_writer_file(node).map(|file| read_open_file_facts(&file)) {
-                return BackingFileFacts { size_and_times: SizeAndTimes::OfWritersFile { size: facts.size, mtime: facts.mtime, mtime_nsec: facts.mtime_nsec }, blocks: facts.blocks, directory_mtime: None };
-            }
-            if item.content_presence == ContentPresence::NotOnDisk {
-                return no_facts;
-            }
-        }
-        let store = &self.store;
-        let stat = self.place_changes.stat_at_row_path(|| store.call_blocking(move |store| Ok(store.item_store().reader().find_path(node)?.map(|path| (path, ())))));
-        match (stat, item.kind) {
-            (Ok(RowPathStat::Facts { facts, row: () }), ItemKind::File) if facts.kind == EntryKind::File => BackingFileFacts { blocks: facts.blocks, ..no_facts },
-            (Ok(RowPathStat::Facts { facts, row: () }), ItemKind::Directory) if facts.kind == EntryKind::Directory => {
-                let modified = facts.modified.duration_since(UNIX_EPOCH).unwrap_or_default();
-                BackingFileFacts { directory_mtime: Some((modified.as_secs() as i64, modified.subsec_nanos())), ..no_facts }
-            }
-            (Ok(_), _) => no_facts,
-            (Err(error), _) => {
-                tracing::warn!("the path of item {node} could not be read for the attributes of a reply: {error}");
-                no_facts
-            }
-        }
+    /// The path of the local version of `node`, read through the writer.
+    fn find_path(&self, node: LocalItemId) -> Result<Option<PathBuf>, TreeError> {
+        self.store.call_blocking(move |store| store.item_store().reader().find_path(node))
     }
 
     /// The attributes of `item`, a row the folder shows; `ESTALE` for one it does not.
-    fn describe(&self, item: &Item) -> Result<FileAttr, Errno> {
-        to_item_attributes(item, self.access_mode_switch.access_mode(), &self.read_backing_file_facts(item), self.mount_started_at).ok_or(Errno::ESTALE)
+    fn describe(&self, item: Item) -> Result<ShownEntry, Errno> {
+        self.lookup.describe_through(item, &|node| self.find_path(node))
     }
 
     /// The attributes of `node` after a truncation or a time set on it, as getattr
-    /// answers them (`ItemLookup::find_attributes`): of its row when the folder shows it;
+    /// answers them (`ItemLookup::describe_node`): of its row when the folder shows it;
     /// of the file `fh` holds when the row is gone or shows nothing and the handle is
     /// that node's (design §3); `ESTALE` otherwise.
     fn find_attributes(&self, node: LocalItemId, fh: Option<Fh>) -> Result<FileAttr, Errno> {
@@ -330,13 +312,7 @@ impl WriteReplyAttributes {
             tracing::warn!("the row of item {node} could not be read for the attributes of a reply: {error}");
             Errno::EIO
         })?;
-        if let Some(item) = row.filter(|row| row.local.is_some()) {
-            return self.describe(&item);
-        }
-        match fh.and_then(|fh| self.item_handles.find_file(fh)) {
-            Some(OpenItemFile::Writing { item, backing_file } | OpenItemFile::ReadingBackingFile { item, backing_file }) if item == node => Ok(to_open_file_attributes(node, self.access_mode_switch.access_mode(), &read_open_file_facts(&backing_file)?)),
-            Some(_) | None => Err(Errno::ESTALE),
-        }
+        self.lookup.describe_node(to_node_row(row), node, fh, &|node| self.find_path(node))
     }
 }
 
@@ -360,10 +336,9 @@ pub struct ItemKernelRequests {
 }
 
 impl ItemKernelRequests {
-    /// Made by the mount's build, last before the session. `store` and
-    /// `mount_started_at` are for the attributes a write operation's reply carries
-    /// ([`WriteReplyAttributes`]); `access_mode_switch` also refuses a change of a
-    /// read-only folder before it is queued.
+    /// Made by the mount's build, last before the session. `store` is for the attributes
+    /// a write operation's reply carries ([`WriteReplyAttributes`]); `access_mode_switch`
+    /// refuses a change of a read-only folder before it is queued.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         lookup: Arc<ItemLookup>,
@@ -379,10 +354,9 @@ impl ItemKernelRequests {
         free_up: Arc<ItemFreeUp>,
         access_mode_switch: Arc<AccessModeSwitch>,
         store: Store,
-        mount_started_at: i64,
         runtime: tokio::runtime::Handle,
     ) -> Self {
-        let reply_attributes = Arc::new(WriteReplyAttributes { store, place_changes: Arc::clone(&place_changes), item_handles: Arc::clone(&item_handles), access_mode_switch: Arc::clone(&access_mode_switch), mount_started_at });
+        let reply_attributes = Arc::new(WriteReplyAttributes { store, lookup: Arc::clone(&lookup) });
         Self { lookup, read_connections, place_changes, item_handles, write_operations, write_operation_thread, inotify_bridge, downloader, download_states, range_fetcher, free_up, access_mode_switch, reply_attributes, runtime }
     }
 
@@ -428,23 +402,21 @@ impl ItemKernelRequests {
         }
     }
 
-    /// readdir and readdirplus: the items of the directory from `offset` on. A reading
-    /// from the start (`offset` 0) calls `ItemLookup::list_entries` and keeps it
+    /// readdir and readdirplus: the listing the items of a part are taken from — the
+    /// whole of it, kept and handed out, never copied: the caller skips to `offset` and
+    /// clones the items it puts into its reply, so that a part costs what it answers. A
+    /// reading from the start (`offset` 0) calls `ItemLookup::list_entries` and keeps it
     /// (`ItemHandles::keep_listed_items`); a later part reads what was kept, as today:
     /// offsets are places in that one listing. readdirplus then calls
     /// [`describe_listed_item`](Self::describe_listed_item) for each item it puts into
     /// its reply.
-    pub(super) fn answer_readdir(&self, node: LocalItemId, fh: Fh, offset: usize) -> Result<Vec<Item>, Errno> {
-        let kept = self.item_handles.find_listed_items(fh).filter(|_| offset > 0);
-        let listed = match kept {
-            Some(kept) => kept,
-            None => {
-                let listed = Arc::new(self.lookup.list_entries(node)?);
-                self.item_handles.keep_listed_items(fh, Arc::clone(&listed));
-                listed
-            }
-        };
-        Ok(listed.iter().skip(offset).cloned().collect())
+    pub(super) fn answer_readdir(&self, node: LocalItemId, fh: Fh, offset: usize) -> Result<Arc<Vec<Item>>, Errno> {
+        if let Some(kept) = self.item_handles.find_listed_items(fh).filter(|_| offset > 0) {
+            return Ok(kept);
+        }
+        let listed = Arc::new(self.lookup.list_entries(node)?);
+        self.item_handles.keep_listed_items(fh, Arc::clone(&listed));
+        Ok(listed)
     }
 
     /// readdirplus, for one item of the listing: `ItemLookup::describe`. The attributes
@@ -511,9 +483,11 @@ impl ItemKernelRequests {
     /// read, on the mount's thread. A handle on a backing file reads it. One opened not
     /// on disk: the row is read again and `decide_not_on_disk_read_origin` asked with the
     /// content the handle was opened as; then the backing file once the content landed
-    /// (`PlaceChanges::open_at_row_path`, `ItemHandles::switch_to_backing_file`), or the
-    /// file of the running download of that content
-    /// (`ItemDownloadStates::find_running_download`), or a range to fetch
+    /// (`PlaceChanges::open_at_row_path`, whose closure asks the same decision of the row
+    /// it reads the path with; `ItemHandles::switch_to_backing_file`), or `ESTALE` once
+    /// OneDrive answered a download of that content with another
+    /// (`ItemDownloadStates::is_another_content`), or the file of the running download of
+    /// that content (`ItemDownloadStates::find_running_download`), or a range to fetch
     /// ([`decide_range_origin`]). `EBADF` for an `fh` that holds no file.
     pub(super) fn decide_read(&self, fh: Fh, offset: u64, size: u32) -> Result<ReadAnswer, Errno> {
         let (item, content) = match self.item_handles.find_file(fh).ok_or(Errno::EBADF)? {
@@ -526,9 +500,11 @@ impl ItemKernelRequests {
                 NotOnDiskReadOrigin::OneDriveRange(source) => source,
                 NotOnDiskReadOrigin::LandedSince => {
                     let opened = self.place_changes.open_at_row_path(OpenMode::Read, || {
-                        self.read_connections.read(|reader| match reader.find_item(item)? {
-                            Some(row) if row.content_presence == ContentPresence::OnDisk && row.local.as_ref().and_then(|local| local.content.as_ref()) == Some(&content) => Ok(reader.find_path(item)?.map(|path| (path, ()))),
-                            Some(_) | None => Ok(None),
+                        // The row the path is read with, in one read: it must still say
+                        // the content the handle was opened as is on disk.
+                        self.read_connections.read(|reader| match decide_not_on_disk_read_origin(&to_node_row(reader.find_item(item)?), &content) {
+                            NotOnDiskReadOrigin::LandedSince => Ok(reader.find_path(item)?.map(|path| (path, ()))),
+                            NotOnDiskReadOrigin::OneDriveRange(_) | NotOnDiskReadOrigin::Refused(_) => Ok(None),
                         })
                     });
                     match opened {
@@ -548,7 +524,13 @@ impl ItemKernelRequests {
                     }
                 }
             };
-            let running_download = self.download_states.find_running_download(&DownloadKey { item, content: content.clone() });
+            let key = DownloadKey { item, content: content.clone() };
+            if self.download_states.is_another_content(&key) {
+                // OneDrive has another content of the item by now, and no listing said
+                // so yet: a range would be of that one.
+                return Err(Errno::ESTALE);
+            }
+            let running_download = self.download_states.find_running_download(&key);
             return match decide_range_origin(content.size(), running_download.as_ref().map(|running| running.written_up_to), offset, size) {
                 RangeOrigin::Nothing => Ok(ReadAnswer::Bytes(Vec::new())),
                 RangeOrigin::RunningDownload { from, end } => match running_download {
@@ -641,8 +623,8 @@ impl ItemKernelRequests {
     /// the disk, then `LocalVersionChange::Made`; a created file made and opened in one
     /// transaction. The operation answers the made item's row (`MadeItem::item`): the
     /// attributes of the reply are made here, in the job, from that row
-    /// ([`WriteReplyAttributes`]: `item_attributes::to_item_attributes`, with the facts of
-    /// the backing file).
+    /// ([`WriteReplyAttributes`]: `ItemLookup::describe_through`, with the facts of the
+    /// backing file).
     /// For the bridge's own thread (mkdir, mknod): answered from the rows, on the mount's
     /// thread, nothing made.
     pub(super) fn queue_make(&self, directory: LocalItemId, name: &OsStr, kind: MadeKind, thread_id: u32, reply: ReplyTo<MadeEntry>) {
@@ -652,8 +634,7 @@ impl ItemKernelRequests {
         let (write_operations, reply_attributes, name) = (Arc::clone(&self.write_operations), Arc::clone(&self.reply_attributes), name.to_owned());
         self.queue_change(reply, move || {
             let made = write_operations.make(directory, &name, kind)?;
-            let attributes = reply_attributes.describe(&made.item)?;
-            Ok(MadeEntry { entry: ShownEntry { item: made.item, attributes }, fh: made.fh })
+            Ok(MadeEntry { entry: reply_attributes.describe(made.item)?, fh: made.fh })
         });
     }
 

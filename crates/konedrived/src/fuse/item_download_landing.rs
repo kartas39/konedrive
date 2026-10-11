@@ -14,14 +14,17 @@
 //! only marks, links, syncs the directory and commits: no write operation waits for a
 //! large file to reach the disk.
 //!
-//! **The time and the marks** are written by the job, through the descriptor, before the
-//! file has a name; they are not synced by themselves (the downloader synced the data,
-//! and the job syncs the directory after them). The copy keeps its write bit: the folder's
-//! write bits are the backing directory's to take off when no mount lies over it.
+//! **The time and the marks** are on the file when it comes: the downloader writes them
+//! before its sync, which covers them, so that a copy that has its name after a power
+//! loss has them too. The job writes them once more, through the descriptor, before the
+//! file has a name — the same time and marks, but for the item id, which is the one the
+//! row's binding has NOW. The copy keeps its write bit: the folder's write bits are the
+//! backing directory's to take off when no mount lies over it.
 //!
-//! **An undo that fails** (the named file cannot be removed again) leaves the record: the
-//! check at start removes the file, which the row does not say. The landing asks for no
-//! take-down — it holds no way to — and answers the errno.
+//! **An undo that fails** (the named file cannot be removed again) leaves the record and
+//! asks for the mount's take-down (`TakeDownCause::UndoFailed`), as a step's and a write
+//! operation's failed undo does: the disk has under the item's name a file its row does
+//! not say, and the check at start settles it from the record.
 //!
 //! **On record before the link:** `PlaceChangeRecord::LinkFile { item, place, content }`,
 //! `content` the content version that was downloaded, written
@@ -47,6 +50,7 @@
 // test: the_decision_of_a_landing_has_a_case_for_each_row_it_can_meet
 // test: a_landing_of_content_the_row_says_is_on_disk_already_links_nothing
 // test: a_death_after_the_record_or_after_the_link_is_settled_by_the_check_at_start
+// test: a_landing_whose_undo_fails_keeps_its_record_and_asks_for_the_mounts_take_down
 #![allow(dead_code)]
 
 use std::fs::File;
@@ -56,6 +60,7 @@ use std::sync::Arc;
 use konedrive_tree::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, ItemVersions, LocalItemId, OneDriveItemId, PlaceChangeRecord, PlaceChangeRecordId, StepCommitOutcome, Store, TreeError};
 
 use super::item_content_files::write_whole_copy_marks;
+use super::mount_take_down::{MountTakeDown, TakeDownCause};
 use super::place_changes::{DirectoryMarks, PlaceChange, PlaceChanges, PlaceRefusal, PlaceUndo};
 use crate::folder::running_steps::RunningSteps;
 
@@ -151,6 +156,12 @@ pub(super) struct ItemDownloadLanding {
     /// Told when the landing of the plan's download begins to commit: from then on a
     /// stop leaves that step alone.
     running_steps: Arc<RunningSteps>,
+    /// Asked when a file that was named cannot be removed again.
+    mount_take_down: Arc<MountTakeDown>,
+    /// What a test runs between the link and the commit of the next landing, as a
+    /// listing's page comes there.
+    #[cfg(test)]
+    before_commit: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 fn to_errno(error: &std::io::Error) -> i32 {
@@ -158,9 +169,17 @@ fn to_errno(error: &std::io::Error) -> i32 {
 }
 
 impl ItemDownloadLanding {
-    /// Made by the mount's build, with the folder's running steps.
-    pub(super) fn new(place_changes: Arc<PlaceChanges>, store: Store, running_steps: Arc<RunningSteps>) -> Self {
-        Self { place_changes, store, running_steps }
+    /// Made by the mount's build, with the folder's running steps and the mount's
+    /// take-down.
+    pub(super) fn new(place_changes: Arc<PlaceChanges>, store: Store, running_steps: Arc<RunningSteps>, mount_take_down: Arc<MountTakeDown>) -> Self {
+        Self {
+            place_changes,
+            store,
+            running_steps,
+            mount_take_down,
+            #[cfg(test)]
+            before_commit: std::sync::Mutex::new(None),
+        }
     }
 
     /// Lands the unnamed file `file`, whole, checked and synced, as the copy of the item
@@ -188,7 +207,13 @@ impl ItemDownloadLanding {
             }
         }
         match self.link_on_record(file, condition) {
-            Ok((change, linked)) => self.commit_linked(&change, linked, condition),
+            Ok((change, linked)) => {
+                #[cfg(test)]
+                if let Some(hook) = crate::panic::lock(&self.before_commit).take() {
+                    hook();
+                }
+                self.commit_linked(&change, linked, condition)
+            }
             Err(outcome) => outcome,
         }
     }
@@ -246,7 +271,8 @@ impl ItemDownloadLanding {
 
     /// The second half: the commit `condition` names, which takes the record; when it
     /// finds the rows changed, or fails, the named file is removed again and the record
-    /// taken by itself. `change` ends with this call.
+    /// taken by itself; an undo that fails leaves the record standing and asks for the
+    /// mount's take-down. `change` ends with this call.
     fn commit_linked(&self, change: &PlaceChange<'_>, linked: LinkedFile, condition: &LandingCondition) -> ItemLandingOutcome {
         let LinkedFile { place, path, record, undo } = linked;
         let (item, committed_as) = (condition.item(), condition.clone());
@@ -268,8 +294,9 @@ impl ItemDownloadLanding {
                 refused
             }
             Err(error) => {
-                // The record stands: the check at start removes what the row does not say.
+                // The record stands: the check at start settles the file by it.
                 tracing::error!("the downloaded copy of item {item} at {} is not its row's and could not be removed again: {error}", path.display());
+                self.mount_take_down.ask(TakeDownCause::UndoFailed { path });
                 ItemLandingOutcome::Failed { errno: to_errno(&error) }
             }
         }

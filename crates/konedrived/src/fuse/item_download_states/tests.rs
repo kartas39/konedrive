@@ -40,7 +40,7 @@ fn start(download_states: &ItemDownloadStates, key: &DownloadKey) -> Option<(Dow
 fn start_as(download_states: &ItemDownloadStates, key: &DownloadKey, asker: DownloadAsker, waiter: Option<Waiter>) -> Option<(DownloadRun, Option<Arc<File>>)> {
     match download_states.start_or_join(key, &asker, waiter) {
         ItemDownloadStart::Started { run, unfinished_file } => Some((run, unfinished_file)),
-        ItemDownloadStart::Joined => None,
+        ItemDownloadStart::Joined | ItemDownloadStart::Stopped => None,
     }
 }
 
@@ -127,8 +127,8 @@ fn every_waiter_is_answered_when_the_download_ends_however_it_ends() {
 #[test]
 fn an_end_told_by_an_older_download_of_the_key_changes_nothing_of_the_newer() {
     let download_states = download_states();
-    let older = start_anew(&download_states, &key(5, "c1"));
-    download_states.abort_all();
+    let (older, _) = start_as(&download_states, &key(5, "c1"), plan_pin(), None).unwrap();
+    assert!(download_states.abort_if_plan_alone_asked(&key(5, "c1")));
     let (waiter, mut told) = oneshot::channel();
     let (newer, _) = start_as(&download_states, &key(5, "c1"), DownloadAsker::Read, Some(waiter)).unwrap();
     assert_ne!(older, newer, "of one key, and not the same download");
@@ -276,20 +276,149 @@ async fn every_download_is_aborted_and_its_waiters_answered_when_the_mount_stops
     let second_run = start_anew(&download_states, &key(6, "c1"));
     let second = spawn_download();
     let failed = fail_download(&download_states, &key(7, "c1"));
-    download_states.abort_all();
+    download_states.stop();
     assert_eq!(told.await, Ok(Err(libc::EIO)));
     assert!(first.await.unwrap_err().is_cancelled());
     assert!(!download_states.is_downloading(LocalItemId::new(5)) && !download_states.is_downloading(LocalItemId::new(6)));
-    // The handle that comes after the abort aborts its task at once: also when the next
-    // download of the key runs by then, whose own handle is another.
+    assert_eq!(Arc::strong_count(&failed), 2, "what a failed download left is kept");
+    // The handle that comes after the stop aborts its task at once.
+    download_states.keep_abort_handle(&second_run, second.abort_handle());
+    assert!(second.await.unwrap_err().is_cancelled());
+}
+
+/// A handle that comes after its download was aborted aborts its task at once, also when
+/// the next download of the key runs by then, whose own handle is another.
+#[tokio::test]
+async fn a_handle_kept_after_the_abort_aborts_its_own_task_and_leaves_the_next_download_of_the_key() {
+    let download_states = download_states();
+    let (aborted_run, _) = start_as(&download_states, &key(6, "c1"), plan_pin(), None).unwrap();
+    let aborted = spawn_download();
+    assert!(download_states.abort_if_plan_alone_asked(&key(6, "c1")));
     let next_run = start_anew(&download_states, &key(6, "c1"));
     let next = spawn_download();
     download_states.keep_abort_handle(&next_run, next.abort_handle());
-    download_states.keep_abort_handle(&second_run, second.abort_handle());
-    assert!(second.await.unwrap_err().is_cancelled());
+    download_states.keep_abort_handle(&aborted_run, aborted.abort_handle());
+    assert!(aborted.await.unwrap_err().is_cancelled());
     tokio::task::yield_now().await;
     assert!(!next.is_finished(), "the newer download keeps its own handle");
-    download_states.abort_all();
+    download_states.stop();
     assert!(next.await.unwrap_err().is_cancelled());
-    assert_eq!(Arc::strong_count(&failed), 2, "what a failed download left is kept");
+}
+
+#[test]
+fn a_download_whose_file_is_whole_keeps_no_unfinished_file_however_it_ends() {
+    let download_states = download_states();
+    // It failed at its landing: the file had a name, perhaps, and lost it.
+    let run = start_anew(&download_states, &key(5, "c1"));
+    let whole = unnamed_file();
+    download_states.begin_writing(&run, Arc::clone(&whole));
+    download_states.end_writing(&run);
+    assert!(download_states.find_running_download(&key(5, "c1")).is_some(), "a read is answered from it while the download runs");
+    download_states.finish(&run, Err(libc::ENOENT));
+    assert_eq!(Arc::strong_count(&whole), 1, "the file is let go");
+    start_anew(&download_states, &key(5, "c1"));
+    // The plan gave it up while its landing ran.
+    let (run, _) = start_as(&download_states, &key(6, "c1"), plan_pin(), None).unwrap();
+    download_states.begin_writing(&run, Arc::clone(&whole));
+    download_states.end_writing(&run);
+    assert!(download_states.abort_if_plan_alone_asked(&key(6, "c1")));
+    assert_eq!(Arc::strong_count(&whole), 1);
+    start_anew(&download_states, &key(6, "c1"));
+    // What an older download of the key says of its file changes nothing of the newer one's.
+    let older = start_anew(&download_states, &key(7, "c1"));
+    download_states.finish(&older, Ok(()));
+    let newer = start_anew(&download_states, &key(7, "c1"));
+    let unfinished = unnamed_file();
+    download_states.begin_writing(&newer, Arc::clone(&unfinished));
+    download_states.end_writing(&older);
+    download_states.finish(&newer, Err(libc::EIO));
+    assert!(Arc::ptr_eq(&start(&download_states, &key(7, "c1")).unwrap().1.unwrap(), &unfinished));
+}
+
+#[test]
+fn a_download_onedrive_answered_with_another_content_is_remembered_until_the_next_download_of_the_key() {
+    let download_states = download_states();
+    assert!(!download_states.is_another_content(&key(5, "c1")));
+    let (waiter, told) = oneshot::channel();
+    let (run, _) = start_as(&download_states, &key(5, "c1"), DownloadAsker::Read, Some(waiter)).unwrap();
+    let file = unnamed_file();
+    download_states.begin_writing(&run, Arc::clone(&file));
+    assert!(!download_states.is_another_content(&key(5, "c1")), "nothing is known while it runs");
+
+    download_states.finish_as_another_content(&run);
+
+    assert_eq!(told.blocking_recv(), Ok(Err(libc::ESTALE)));
+    assert!(download_states.is_another_content(&key(5, "c1")));
+    assert!(!download_states.is_another_content(&key(5, "c2")), "of that content alone");
+    assert!(!download_states.is_downloading(LocalItemId::new(5)));
+    assert_eq!(Arc::strong_count(&file), 1, "nothing of its file is kept");
+    // Said twice, or by a download that runs no more: nothing.
+    download_states.finish_as_another_content(&run);
+    download_states.finish(&run, Ok(()));
+    assert!(download_states.is_another_content(&key(5, "c1")));
+    // Asked again: OneDrive is asked again, and what it answers then counts.
+    let run = start_anew(&download_states, &key(5, "c1"));
+    assert!(!download_states.is_another_content(&key(5, "c1")));
+    download_states.finish_as_another_content(&run);
+    // Forgotten with the item.
+    download_states.forget_item(LocalItemId::new(5));
+    assert!(!download_states.is_another_content(&key(5, "c1")));
+}
+
+#[test]
+fn a_download_asked_for_after_the_stop_is_not_started() {
+    let download_states = download_states();
+    let running = start_anew(&download_states, &key(5, "c1"));
+    download_states.stop();
+    assert!(!download_states.is_downloading(LocalItemId::new(5)));
+    for asker in [DownloadAsker::Read, DownloadAsker::OpenForWriting, DownloadAsker::FilesInterface, plan_pin()] {
+        let (waiter, told) = oneshot::channel();
+        assert!(matches!(download_states.start_or_join(&key(6, "c1"), &asker, Some(waiter)), ItemDownloadStart::Stopped), "{asker:?}");
+        assert_eq!(told.blocking_recv(), Ok(Err(libc::EIO)), "{asker:?}");
+    }
+    assert!(matches!(download_states.start_or_join(&key(5, "c1"), &DownloadAsker::Read, None), ItemDownloadStart::Stopped));
+    assert!(!download_states.is_downloading(LocalItemId::new(5)) && !download_states.is_downloading(LocalItemId::new(6)));
+    // What the aborted download still says changes nothing.
+    download_states.finish(&running, Ok(()));
+    assert!(!download_states.is_downloading(LocalItemId::new(5)));
+}
+
+#[tokio::test]
+async fn a_download_of_the_plans_is_told_when_anything_else_asks_for_it() {
+    let download_states = download_states();
+    let is_told = |run: &DownloadRun| {
+        let mut waited = std::pin::pin!(download_states.wait_for_asker_beyond_plan(run));
+        std::future::Future::poll(waited.as_mut(), &mut std::task::Context::from_waker(std::task::Waker::noop())).is_ready()
+    };
+    // The plan's own, and the plan asking once more: not told.
+    let (run, _) = start_as(&download_states, &key(5, "c1"), plan_pin(), None).unwrap();
+    assert!(start_as(&download_states, &key(5, "c1"), plan_pin(), None).is_none());
+    assert!(!is_told(&run));
+    // Told while it waits, by each of the three that are not the plan.
+    for (item, asker) in [(6, DownloadAsker::Read), (7, DownloadAsker::OpenForWriting), (8, DownloadAsker::FilesInterface)] {
+        let key = key(item, "c1");
+        let (run, _) = start_as(&download_states, &key, plan_pin(), None).unwrap();
+        let waited = tokio::time::timeout(std::time::Duration::from_secs(20), download_states.wait_for_asker_beyond_plan(&run));
+        let (told, joined) = tokio::join!(waited, async { start_as(&download_states, &key, asker.clone(), None).is_none() });
+        assert!(joined, "{asker:?} joins");
+        assert!(told.is_ok(), "{asker:?} asked for it");
+    }
+    // One that anything else started is told at once.
+    let run = start_anew(&download_states, &key(9, "c1"));
+    assert!(is_told(&run));
+    // One that runs no more is never told: its task ends, or is aborted.
+    download_states.finish(&run, Ok(()));
+    assert!(!is_told(&run));
+}
+
+#[test]
+fn the_count_of_bytes_read_as_ranges_starts_over_once_it_reached_the_threshold() {
+    let download_states = download_states();
+    let item = LocalItemId::new(5);
+    assert!(!download_states.count_bytes_read(item, 99, 1000));
+    assert!(download_states.count_bytes_read(item, 1, 1000), "100 bytes of it were read: a download is started");
+    // The download ended without landing, or still runs: the next reads start none.
+    assert!(!download_states.count_bytes_read(item, 4, 1000));
+    assert!(!download_states.count_bytes_read(item, 95, 1000));
+    assert!(download_states.count_bytes_read(item, 1, 1000), "as many bytes read again");
 }

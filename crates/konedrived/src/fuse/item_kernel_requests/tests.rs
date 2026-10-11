@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use fuser::FileType;
 use konedrive_fs::placeholder::XATTR_ITEM_ID;
-use konedrive_tree::{ContentVersion, ItemPlace};
+use konedrive_tree::{ContentPresence, ContentVersion, ItemPlace};
 
 use super::*;
 use crate::folder::disk::HOLDING;
@@ -44,6 +44,13 @@ impl Requests {
 
     /// The requests with `inotify_bridge` as the bridge whose own requests they tell.
     fn over(fixture: ItemFixture, inotify_bridge: Arc<ItemInotifyBridge>) -> Self {
+        let source = fixture.content_source();
+        Self::downloading_from(fixture, inotify_bridge, source)
+    }
+
+    /// The requests whose downloads fetch through `source`; a range is fetched through
+    /// the fixture's own source, as ever.
+    fn downloading_from(fixture: ItemFixture, inotify_bridge: Arc<ItemInotifyBridge>, source: Arc<dyn crate::hydration::source::ContentSource>) -> Self {
         let lookup = Arc::new(ItemLookup::new(
             Arc::clone(&fixture.read_connections),
             Arc::clone(&fixture.place_changes),
@@ -69,14 +76,14 @@ impl Requests {
             Arc::clone(&fixture.sync_plan_wake),
             Arc::clone(&fixture.mount_take_down),
         ));
-        let landing = Arc::new(ItemDownloadLanding::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.running_steps)));
+        let landing = Arc::new(ItemDownloadLanding::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.running_steps), Arc::clone(&fixture.mount_take_down)));
         let downloader = Arc::new(ItemDownloader::new(
             Arc::clone(&fixture.backing_directory),
             Arc::clone(&fixture.download_states),
             landing,
             Arc::clone(&fixture.inotify_bridge),
             Arc::clone(&fixture.write_operation_thread),
-            fixture.content_source(),
+            source,
             Arc::clone(&fixture.pool),
             Arc::clone(&fixture.split_download_share),
             Report::nowhere(),
@@ -98,7 +105,6 @@ impl Requests {
             free_up,
             Arc::clone(&fixture.access_mode_switch),
             fixture.store.clone(),
-            START_TIME,
             fixture.runtime(),
         ));
         Requests { requests, write_operations, fixture }
@@ -213,6 +219,22 @@ impl Requests {
         self.wait_for_queued_jobs();
     }
 
+    /// A part of a directory reading as the switch makes it: the items of the listing
+    /// from `offset` on.
+    fn readdir(&self, node: LocalItemId, fh: Fh, offset: usize) -> Result<Vec<Item>, Errno> {
+        let listed = self.ask(move |requests| requests.answer_readdir(node, fh, offset))?;
+        Ok(listed.iter().skip(offset).cloned().collect())
+    }
+
+    /// Waits until no download of `item` runs, for no longer than twenty seconds.
+    fn wait_until_not_downloading(&self, item: LocalItemId) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while self.fixture.download_states.is_downloading(item) {
+            assert!(Instant::now() < deadline, "the download of item {item} did not end");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
     fn decide_read(&self, fh: Fh, offset: u64, size: u32) -> Result<ReadAnswer, Errno> {
         self.ask(move |requests| requests.decide_read(fh, offset, size))
     }
@@ -298,17 +320,17 @@ fn the_reading_requests_answer_what_the_rows_show() {
 
     assert_eq!(mount.ask(move |requests| requests.answer_opendir(file)).err(), Some(Errno::ENOTDIR));
     let fh = mount.ask(move |requests| requests.answer_opendir(docs)).unwrap();
-    let listed = mount.ask(move |requests| requests.answer_readdir(docs, fh, 0)).unwrap();
+    let listed = mount.readdir(docs, fh, 0).unwrap();
     assert_eq!(listed.iter().map(local_name).collect::<Vec<_>>(), ["a.txt"]);
     let described = mount.ask(move |requests| requests.describe_listed_item(listed[0].clone())).unwrap();
     assert_eq!((described.attributes.ino, described.attributes.size), (to_node_id(file), 5));
 
     // A reading in parts reads the listing of its start; a reading from the start lists anew.
     mount.make("docs/b.txt", MadeKind::File).unwrap();
-    assert_eq!(mount.ask(move |requests| requests.answer_readdir(docs, fh, 1)).unwrap().len(), 0);
-    let listed = mount.ask(move |requests| requests.answer_readdir(docs, fh, 0)).unwrap();
+    assert_eq!(mount.readdir(docs, fh, 1).unwrap().len(), 0);
+    let listed = mount.readdir(docs, fh, 0).unwrap();
     assert_eq!(listed.iter().map(local_name).collect::<Vec<_>>(), ["a.txt", "b.txt"]);
-    assert_eq!(mount.ask(move |requests| requests.answer_readdir(docs, fh, 1)).unwrap().iter().map(local_name).collect::<Vec<_>>(), ["b.txt"]);
+    assert_eq!(mount.readdir(docs, fh, 1).unwrap().iter().map(local_name).collect::<Vec<_>>(), ["b.txt"]);
     mount.ask(move |requests| requests.answer_releasedir(fh));
     assert!(mount.fixture.item_handles.find_listed_items(fh).is_none(), "the directory is closed");
 
@@ -326,7 +348,7 @@ fn a_request_by_a_node_whose_row_is_gone_is_stale() {
     assert_eq!(mount.getattr(LocalItemId::new(NO_ITEM_ID), None).err(), stale);
     assert_eq!(mount.ask(|requests| requests.answer_opendir(LocalItemId::new(NO_ITEM_ID))).err(), stale);
     let fh = mount.ask(|requests| requests.answer_opendir(ROOT)).unwrap();
-    assert_eq!(mount.ask(move |requests| requests.answer_readdir(LocalItemId::new(NO_ITEM_ID), fh, 0)).err(), stale);
+    assert_eq!(mount.readdir(LocalItemId::new(NO_ITEM_ID), fh, 0).err(), stale);
     assert_eq!(mount.ask(|requests| requests.answer_getxattr(LocalItemId::new(NO_ITEM_ID), OsStr::new(XATTR_ITEM_ID))).err(), stale);
     assert_eq!(mount.ask(|requests| requests.answer_listxattr(LocalItemId::new(NO_ITEM_ID))).err(), stale);
     assert_eq!(mount.open_to_read(LocalItemId::new(NO_ITEM_ID)).err(), stale);
@@ -769,7 +791,7 @@ fn a_directory_read_during_renames_describes_each_listed_item_as_itself() {
     let large = mount.fixture.make_own_file("a", &vec![7u8; 1 << 16]).local_item_id;
     let empty = mount.fixture.make_own_file("b", b"").local_item_id;
     let fh = mount.ask(|requests| requests.answer_opendir(ROOT)).unwrap();
-    let listed = mount.ask(move |requests| requests.answer_readdir(ROOT, fh, 0)).unwrap();
+    let listed = mount.readdir(ROOT, fh, 0).unwrap();
     assert_eq!(listed.iter().map(local_name).collect::<Vec<_>>(), ["a", "b"]);
 
     // Between the listing and its attributes the names change hands: `a` is the empty file's now.
@@ -780,7 +802,7 @@ fn a_directory_read_during_renames_describes_each_listed_item_as_itself() {
     let facts: Vec<_> = described.iter().map(|entry| (entry.attributes.ino, entry.attributes.size, entry.attributes.blocks > 0)).collect();
     assert_eq!(facts, [(to_node_id(large), 1 << 16, true), (to_node_id(empty), 0, false)], "each entry has its own item's attributes, the blocks of its own file among them");
     // The next part of the reading is of the same listing.
-    assert_eq!(mount.ask(move |requests| requests.answer_readdir(ROOT, fh, 1)).unwrap().iter().map(|item| item.local_item_id).collect::<Vec<_>>(), [empty]);
+    assert_eq!(mount.readdir(ROOT, fh, 1).unwrap().iter().map(|item| item.local_item_id).collect::<Vec<_>>(), [empty]);
 }
 
 #[test]
@@ -924,4 +946,131 @@ fn a_row_the_store_refuses_reaches_the_reply_with_the_errno_of_its_rule() {
     assert!(!mount.fixture.disk_path("removed/new").exists());
 
     assert_eq!(mount.fixture.write_rows(|store| store.item_store().list_place_change_records()), [], "the record went with the undo");
+}
+
+#[test]
+fn a_part_of_a_directory_reading_hands_out_the_kept_listing_and_copies_nothing() {
+    let mount = Requests::new();
+    for name in ["a", "b", "c"] {
+        mount.fixture.show_onedrive_file(name, b"");
+    }
+    let fh = mount.ask(|requests| requests.answer_opendir(ROOT)).unwrap();
+    let first = mount.ask(move |requests| requests.answer_readdir(ROOT, fh, 0)).unwrap();
+    assert_eq!(first.iter().map(local_name).collect::<Vec<_>>(), ["a", "b", "c"]);
+    // Each later part is the listing that was kept, whole: the switch skips to its offset.
+    for offset in [1, 2, 3] {
+        let part = mount.ask(move |requests| requests.answer_readdir(ROOT, fh, offset)).unwrap();
+        assert!(Arc::ptr_eq(&part, &first), "the part at {offset} is the kept listing itself");
+    }
+    assert!(Arc::ptr_eq(&mount.fixture.item_handles.find_listed_items(fh).unwrap(), &first));
+    // A reading from the start lists anew.
+    assert!(!Arc::ptr_eq(&mount.ask(move |requests| requests.answer_readdir(ROOT, fh, 0)).unwrap(), &first));
+}
+
+/// A content source for a download whose item OneDrive has another content of by now:
+/// a whole fetch is answered with `size` bytes of `b'b'` under a version of their own,
+/// `served` of which come before the stream waits for ever.
+struct AnotherContentSource {
+    size: u64,
+    served: usize,
+}
+
+/// A stream that gives `left` bytes of `b'b'` and then waits for ever.
+struct HeldStream {
+    left: usize,
+}
+
+impl tokio::io::AsyncRead for HeldStream {
+    fn poll_read(mut self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
+        let given = self.left.min(buf.remaining());
+        if given == 0 {
+            return std::task::Poll::Pending;
+        }
+        buf.put_slice(&vec![b'b'; given]);
+        self.left -= given;
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::hydration::source::ContentSource for AnotherContentSource {
+    async fn fetch(&self, _item_id: &str, from: u64, _end: Option<u64>) -> Result<crate::hydration::source::Fetched, crate::hydration::source::SourceError> {
+        let version = crate::hydration::source::Version { ctag: "c-new".into(), quick_xor: Some([7; konedrive_graph::quickxor::LEN]) };
+        Ok(crate::hydration::source::Fetched { served_from: from, size: self.size, mtime: std::time::UNIX_EPOCH, version: Some(version), stream: Box::new(HeldStream { left: self.served }) })
+    }
+}
+
+/// The review's sequence: a handle opened as one content, OneDrive with another content
+/// of the same size by now, which no listing said, and the download a read started.
+#[test]
+fn a_read_through_a_handle_is_never_answered_from_a_download_of_another_content() {
+    const SIZE: usize = 3 << 20;
+    const SERVED: usize = SIZE - (1 << 19);
+    let fixture = ItemFixture::new();
+    let bridge = Arc::clone(&fixture.inotify_bridge);
+    let mount = Requests::downloading_from(fixture, bridge, Arc::new(AnotherContentSource { size: SIZE as u64, served: SERVED }));
+    let row = mount.fixture.show_onedrive_file("big.bin", &vec![b'a'; SIZE]);
+    let file = row.local_item_id;
+    let fh = mount.open_to_read(file).unwrap().fh;
+
+    // The program reads the first MiB as ranges, which reaches the threshold: the whole
+    // file is downloaded, and what OneDrive answers that download is the other content.
+    assert!(mount.read(fh, 0, DOWNLOAD_AFTER as u32).unwrap().iter().all(|byte| *byte == b'a'));
+    let key = DownloadKey { item: file, content: local_content(&row) };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    // Until the download ended, or wrote all the other content it is given.
+    while mount.fixture.download_states.is_downloading(file) && mount.fixture.download_states.find_running_download(&key).is_none_or(|running| running.written_up_to < SERVED as u64) {
+        assert!(Instant::now() < deadline, "the download neither ended nor wrote what it was given");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    let read = |offset: u64| match mount.decide_read(fh, offset, 16) {
+        Ok(ReadAnswer::Bytes(bytes)) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+        Ok(ReadAnswer::Range(range)) => Ok(format!("a range from {}", range.from)),
+        Err(errno) => Err(errno),
+    };
+    assert_eq!(read(0), Err(Errno::ESTALE), "no byte of the other content is answered through the handle");
+    assert_eq!(read(1 << 20), Err(Errno::ESTALE));
+    assert!(!mount.fixture.download_states.is_downloading(file), "the download ended at its first answer");
+    assert_eq!(mount.fixture.read_disk_file("big.bin"), None, "nothing is written under the item's name");
+    assert_eq!(mount.row(file).content_presence, ContentPresence::NotOnDisk);
+    assert_eq!(mount.row(file).local, row.local, "the row is as it was");
+}
+
+#[test]
+fn a_read_past_the_threshold_starts_no_download_again_while_downloads_end_without_landing() {
+    let mount = Requests::new();
+    let content = vec![b'a'; 2 << 20];
+    let file = mount.fixture.show_onedrive_file("big.bin", &content).local_item_id;
+    let fh = mount.open_to_read(file).unwrap().fh;
+    // Its place is held on disk by what no row says: every download ends at its landing.
+    mount.fixture.write_disk_file("big.bin", b"nobody's");
+    let count_whole_fetches = || mount.list_fetched_ranges().into_iter().filter(|fetch| fetch.1.is_none()).count();
+
+    assert_eq!(mount.read(fh, 0, DOWNLOAD_AFTER as u32).unwrap().len(), DOWNLOAD_AFTER as usize);
+    mount.wait_until_not_downloading(file);
+    assert_eq!(count_whole_fetches(), 1, "the threshold starts the download");
+    for read in 0..5u64 {
+        assert_eq!(mount.read(fh, DOWNLOAD_AFTER + read * 4096, 4096).unwrap().len(), 4096);
+        mount.wait_until_not_downloading(file);
+    }
+    assert_eq!(count_whole_fetches(), 1, "the reads that follow start none");
+    assert_eq!(mount.fixture.read_disk_file("big.bin").as_deref(), Some(&b"nobody's"[..]));
+}
+
+#[test]
+fn a_reader_whose_content_landed_reads_the_backing_file_beside_a_writer_that_opened_since() {
+    let mount = Requests::new();
+    let file = mount.fixture.show_onedrive_file("a.txt", b"0123456789").local_item_id;
+    let reader = mount.open_to_read(file).unwrap().fh;
+    assert!(matches!(mount.fixture.item_handles.find_file(reader), Some(OpenItemFile::ReadingNotOnDisk { .. })));
+
+    // A program opens the file for writing: it is downloaded, and its row's content is
+    // the writer's from here on, with the content the reader opened kept from before.
+    let writer = mount.open_to_write(file).unwrap().fh;
+    assert!(mount.row(file).content_before_write.is_some());
+
+    assert!(matches!(mount.decide_read(reader, 2, 4), Ok(ReadAnswer::Bytes(bytes)) if bytes == b"2345"), "{:?}", mount.decide_read(reader, 2, 4));
+    assert!(matches!(mount.fixture.item_handles.find_file(reader), Some(OpenItemFile::ReadingBackingFile { item, .. }) if item == file), "the handle goes on from the backing file");
+    mount.release(writer);
 }

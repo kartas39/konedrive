@@ -11,7 +11,16 @@ use crate::folder::running_steps::{RunningStep, StepClass};
 use crate::fuse::item_fixture::{DiskMarksRead, ItemFixture, ONEDRIVE_MTIME};
 
 fn make_landing(fixture: &ItemFixture) -> Arc<ItemDownloadLanding> {
-    Arc::new(ItemDownloadLanding::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.running_steps)))
+    Arc::new(ItemDownloadLanding::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.running_steps), Arc::clone(&fixture.mount_take_down)))
+}
+
+impl ItemDownloadLanding {
+    /// `hook` runs once, between the link and the commit of the next landing, on the
+    /// write-operation thread: for the tests of what calls the landing, which change a
+    /// row there as a listing's page does, which takes no tree lock.
+    pub(in crate::fuse) fn run_before_commit(&self, hook: impl FnOnce() + Send + 'static) {
+        *crate::panic::lock(&self.before_commit) = Some(Box::new(hook));
+    }
 }
 
 /// A file with no name that holds `content`, synced: what a download hands its landing.
@@ -360,4 +369,28 @@ fn a_death_after_the_record_or_after_the_link_is_settled_by_the_check_at_start()
     assert_eq!(fixture.read_disk_file("docs/linked.txt").as_deref(), Some(&b"linked"[..]));
     fixture.assert_rows_and_disk_agree();
     assert_eq!(fixture.read_rows(|reader| reader.list_unsent(None, 10)), Vec::new(), "nothing is to send that nobody did");
+}
+
+#[test]
+fn a_landing_whose_undo_fails_keeps_its_record_and_asks_for_the_mounts_take_down() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = ItemFixture::new();
+    fixture.show_onedrive_directory("docs");
+    let shown = fixture.show_onedrive_file("docs/report.txt", b"the report");
+    let landing = make_landing(&fixture);
+    let (store, id, docs) = (fixture.store.clone(), shown.local_item_id, fixture.disk_path("docs"));
+
+    // Between the link and the commit the content becomes another, and the directory
+    // takes no removal any more.
+    let read_only = docs.clone();
+    let landed = land_with(&fixture, &landing, b"the report", &content_unchanged(&shown), move || {
+        store.call_blocking(move |store| store.item_store().apply(&LocalVersionChange::OpenedForWriting { item: id })).expect("a writer's open");
+        fs::set_permissions(&read_only, fs::Permissions::from_mode(0o555)).expect("the directory is made read-only");
+    });
+    fs::set_permissions(&docs, fs::Permissions::from_mode(0o755)).expect("the directory takes changes again");
+
+    assert_eq!(landed, ItemLandingOutcome::Failed { errno: libc::EACCES });
+    assert_eq!(*fixture.take_downs.lock().unwrap(), [crate::fuse::mount_take_down::TakeDownCause::UndoFailed { path: "docs/report.txt".into() }], "the disk has what no row says: the mount is taken down");
+    assert_eq!(count_records(&fixture), 1, "the record stands for the check at start");
+    assert_eq!(fixture.read_disk_file("docs/report.txt").as_deref(), Some(&b"the report"[..]));
 }

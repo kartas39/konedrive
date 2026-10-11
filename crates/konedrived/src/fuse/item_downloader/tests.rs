@@ -1,11 +1,13 @@
+use std::collections::VecDeque;
 use std::os::unix::fs::MetadataExt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use konedrive_tree::{ContentPresence, Item, LocalVersionChange};
 
-use super::download_source::decide_refusal;
+use super::download_source::{decide_answer_use, decide_refusal, find_gravest_refusal, AnswerUse};
 use super::*;
 use crate::folder::running_steps::{RunningStep, StepClass};
 use crate::fuse::item_fixture::ItemFixture;
@@ -54,11 +56,15 @@ impl ContentSource for HeldSource {
 }
 
 fn make_downloader(fixture: &ItemFixture, source: &Arc<HeldSource>) -> Arc<ItemDownloader> {
-    let landing = Arc::new(ItemDownloadLanding::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.running_steps)));
-    Arc::new(ItemDownloader::new(
+    make_downloader_and_landing(fixture, source).0
+}
+
+fn make_downloader_and_landing(fixture: &ItemFixture, source: &Arc<HeldSource>) -> (Arc<ItemDownloader>, Arc<ItemDownloadLanding>) {
+    let landing = Arc::new(ItemDownloadLanding::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.running_steps), Arc::clone(&fixture.mount_take_down)));
+    let downloader = Arc::new(ItemDownloader::new(
         Arc::clone(&fixture.backing_directory),
         Arc::clone(&fixture.download_states),
-        landing,
+        Arc::clone(&landing),
         Arc::clone(&fixture.inotify_bridge),
         Arc::clone(&fixture.write_operation_thread),
         Arc::clone(source) as Arc<dyn ContentSource>,
@@ -67,7 +73,8 @@ fn make_downloader(fixture: &ItemFixture, source: &Arc<HeldSource>) -> Arc<ItemD
         Report::nowhere(),
         fixture.folder(),
         fixture.runtime(),
-    ))
+    ));
+    (downloader, landing)
 }
 
 fn to_download(row: &Item) -> ItemToDownload {
@@ -88,6 +95,65 @@ fn ask(downloader: &Arc<ItemDownloader>, row: &Item, asker: DownloadAsker) -> on
 
 fn hear(heard: oneshot::Receiver<Result<(), i32>>) -> Result<(), i32> {
     heard.blocking_recv().expect("the waiter is answered")
+}
+
+/// What the waiter hears within five seconds; `None` when nothing answers it by then.
+fn hear_soon(fixture: &ItemFixture, heard: oneshot::Receiver<Result<(), i32>>) -> Option<Result<(), i32>> {
+    fixture.runtime().block_on(async { tokio::time::timeout(Duration::from_secs(5), heard).await.ok().map(|heard| heard.expect("the waiter is answered")) })
+}
+
+/// A content source that answers what the test queued, an answer per fetch, and keeps
+/// what it was asked.
+#[derive(Default)]
+struct QueuedSource {
+    answers: Mutex<VecDeque<Result<QueuedAnswer, SourceError>>>,
+    fetches: Mutex<Vec<(u64, Option<u64>)>>,
+}
+
+/// One answer: the item's size and version, where the stream starts, and its bytes.
+struct QueuedAnswer {
+    size: u64,
+    version: Option<Version>,
+    served_from: u64,
+    bytes: Vec<u8>,
+}
+
+impl QueuedSource {
+    fn queue(&self, answer: Result<QueuedAnswer, SourceError>) {
+        self.answers.lock().unwrap().push_back(answer);
+    }
+
+    /// The whole of `content` from `served_from` on, as the content OneDrive would tell
+    /// for these bytes.
+    fn queue_content(&self, content: &[u8], served_from: u64) {
+        self.queue(Ok(QueuedAnswer { size: content.len() as u64, version: Some(version_of(content)), served_from, bytes: content[served_from as usize..].to_vec() }));
+    }
+}
+
+#[async_trait::async_trait]
+impl ContentSource for QueuedSource {
+    async fn fetch(&self, _item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
+        self.fetches.lock().unwrap().push((from, end));
+        let answer = self.answers.lock().unwrap().pop_front().expect("an answer the test queued")?;
+        Ok(Fetched { served_from: answer.served_from, size: answer.size, mtime: SystemTime::UNIX_EPOCH, version: answer.version, stream: Box::new(std::io::Cursor::new(answer.bytes)) })
+    }
+}
+
+/// The version OneDrive tells for `content`, as the fixture's source says it.
+fn version_of(content: &[u8]) -> Version {
+    Version { ctag: format!("c-{}", crate::fake_onedrive::qx(content)), quick_xor: decode_base64(&crate::fake_onedrive::qx(content)) }
+}
+
+/// Runs a future that waits for nothing but its own lines.
+fn run<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread().build().expect("a runtime").block_on(future)
+}
+
+async fn read_whole(fetched: Fetched) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let (mut stream, mut bytes) = (fetched.stream, Vec::new());
+    stream.read_to_end(&mut bytes).await.expect("the stream is read");
+    bytes
 }
 
 /// Waits until `is_so` answers yes: for what a task of the runtime does by itself.
@@ -240,6 +306,7 @@ fn a_download_of_content_onedrive_no_longer_has_lands_nothing() {
 
     assert_eq!(hear(ask(&downloader, &shown, DownloadAsker::Read)), Err(libc::ESTALE));
     assert_eq!(fixture.read_disk_file("report.txt"), None, "the new content does not land as the old");
+    assert!(fixture.download_states.is_another_content(&key_of(&shown)), "and whoever reads through a handle of the old content is told");
 
     begin_download_step(&fixture, &shown);
     let planned = fixture.runtime().block_on(downloader.download_and_land(to_download(&shown), ItemVersions::of(&shown)));
@@ -272,9 +339,10 @@ fn a_download_that_fails_keeps_its_unfinished_file_and_goes_on_from_it() {
 
     let heard = ask(&downloader, &shown, DownloadAsker::Read);
     let file_of_first = wait_until_it_writes(&fixture, &shown);
-    source.refuse(Some(|| SourceError::NotFound("the test says so".into())));
-    source.gate.add_permits(1);
-    assert_eq!(hear(heard), Err(libc::ESTALE), "OneDrive does not have the item");
+    // The network fails, at the fetch and at each time it is tried again.
+    source.refuse(Some(|| SourceError::Transient("the test says so".into())));
+    source.gate.add_permits(3);
+    assert_eq!(hear(heard), Err(libc::EIO));
 
     source.refuse(None);
     let heard = ask(&downloader, &shown, DownloadAsker::Read);
@@ -295,9 +363,16 @@ fn the_file_is_synced_before_the_landing_job_is_queued() {
     let source = HeldSource::open(&fixture);
     let downloader = make_downloader(&fixture, &source);
     let (let_thread_go, thread_held) = mpsc::channel::<()>();
+    let (tell_taken, thread_taken) = mpsc::channel::<()>();
     fixture.write_operation_thread.run(move || {
+        let _ = tell_taken.send(());
         let _ = thread_held.recv();
     });
+    // The thread runs the job that holds it: nothing is queued, and the one job that
+    // is queued from here on is the landing's. (Counted before the thread took the
+    // holding job, that job itself is "one job queued", with no download begun.)
+    thread_taken.recv().expect("the thread took the job that holds it");
+    assert_eq!(fixture.write_operation_thread.count_queued_jobs(), 0);
 
     let heard = ask(&downloader, &shown, DownloadAsker::Read);
     wait_until("the landing's job is queued", || fixture.write_operation_thread.count_queued_jobs() == 1);
@@ -417,8 +492,9 @@ fn a_plan_that_joins_a_reads_download_is_answered_that_the_rows_changed() {
     let (plans, file) = (Arc::clone(&downloader), to_download(&shown));
     let planned_from = ItemVersions::of(&shown);
     let step = fixture.runtime().spawn(async move { plans.download_and_land(file, planned_from).await });
-    // The plan's asking joined: one download, and no second fetch.
-    std::thread::sleep(Duration::from_millis(20));
+    // The plan's asking joined — the read's waiter and the plan's wait for the one
+    // download — before the source is let go: one download, and no second fetch.
+    wait_until("the plan's asking joined the read's download", || fixture.download_states.count_waiters(&key_of(&shown)) == 2);
     source.let_go();
 
     assert_eq!(hear(read), Ok(()));
@@ -464,4 +540,166 @@ fn a_stop_aborts_every_download() {
     source.let_go();
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!((fixture.read_disk_file("a.txt"), fixture.read_disk_file("b.txt")), (None, None), "nothing lands after the stop");
+}
+
+#[test]
+fn an_answer_of_the_source_is_used_by_its_content_and_its_place_case_by_case() {
+    let asked = ItemFixture::onedrive_content_of(b"the content");
+    let (same, other) = (version_of(b"the content"), version_of(b"THE CONTENT"));
+    // The one stream of the file: what is on disk counts from where it starts.
+    assert_eq!(decide_answer_use(&asked, 11, Some(&same), 0, 0, None), AnswerUse::WrittenInOrder { from: 0 });
+    assert_eq!(decide_answer_use(&asked, 11, Some(&same), 4, 4, None), AnswerUse::WrittenInOrder { from: 4 }, "gone on from a checkpoint, or after a break");
+    // A stream that starts elsewhere than asked is refused by the download: nothing is counted.
+    assert_eq!(decide_answer_use(&asked, 11, Some(&same), 0, 4, None), AnswerUse::NotCounted);
+    assert_eq!(decide_answer_use(&asked, 11, Some(&same), 8, 4, None), AnswerUse::NotCounted);
+    // A part of a download in parts tells nothing of how far the file is written.
+    assert_eq!(decide_answer_use(&asked, 11, Some(&same), 4, 4, Some(8)), AnswerUse::NotCounted);
+    // Another content, of the same size: whole, gone on, or a part.
+    assert_eq!(decide_answer_use(&asked, 11, Some(&other), 0, 0, None), AnswerUse::AnotherContent);
+    assert_eq!(decide_answer_use(&asked, 11, Some(&other), 4, 4, None), AnswerUse::AnotherContent);
+    assert_eq!(decide_answer_use(&asked, 11, Some(&other), 4, 4, Some(8)), AnswerUse::AnotherContent);
+    // Another size, whatever the version says.
+    assert_eq!(decide_answer_use(&asked, 12, Some(&same), 0, 0, None), AnswerUse::AnotherContent);
+    assert_eq!(decide_answer_use(&asked, 12, None, 0, 0, None), AnswerUse::AnotherContent);
+    // A source that says no version: the size alone tells.
+    assert_eq!(decide_answer_use(&asked, 11, None, 0, 0, None), AnswerUse::WrittenInOrder { from: 0 });
+}
+
+#[test]
+fn an_answer_of_another_content_ends_the_download_before_the_mark_is_raised_or_a_byte_read() {
+    let asked = ItemFixture::onedrive_content_of(b"the content");
+    // The first answer is of another content of the same size.
+    let (inner, written_up_to) = (QueuedSource::default(), Arc::new(AtomicU64::new(0)));
+    inner.queue_content(b"THE CONTENT", 0);
+    let source = DownloadSource::new(&inner, asked.clone(), Arc::clone(&written_up_to));
+    let fetched = run(source.fetch("id", 0, None));
+    assert!(matches!(fetched, Err(SourceError::NotFound(_))), "answered as a file OneDrive does not have: the download ends at once");
+    assert_eq!(written_up_to.load(Ordering::SeqCst), 0, "nothing is said to be written");
+    assert_eq!(source.find_refusal(), Some(DownloadRefusal::ItemGone));
+    assert_eq!(*inner.fetches.lock().unwrap(), [(0, None)]);
+
+    // The asked content first, and another content after a break: the mark stays where
+    // the bytes of the asked content got to, and nothing of the other is read.
+    let (inner, written_up_to) = (QueuedSource::default(), Arc::new(AtomicU64::new(0)));
+    inner.queue(Ok(QueuedAnswer { size: 11, version: Some(version_of(b"the content")), served_from: 0, bytes: b"the c".to_vec() }));
+    inner.queue_content(b"THE CONTENT", 5);
+    let source = DownloadSource::new(&inner, asked.clone(), Arc::clone(&written_up_to));
+    let read = run(async { read_whole(source.fetch("id", 0, None).await.ok().expect("the asked content")).await });
+    assert_eq!((read.as_slice(), written_up_to.load(Ordering::SeqCst)), (&b"the c"[..], 5), "counted as it is read");
+    assert!(matches!(run(source.fetch("id", 5, None)), Err(SourceError::NotFound(_))));
+    assert_eq!(written_up_to.load(Ordering::SeqCst), 5);
+    assert_eq!(source.find_refusal(), Some(DownloadRefusal::ItemGone));
+
+    // A part of another content is refused as the one stream is; a part of the asked
+    // content is handed on and tells nothing of how far the file is written.
+    let (inner, written_up_to) = (QueuedSource::default(), Arc::new(AtomicU64::new(0)));
+    inner.queue(Ok(QueuedAnswer { size: 11, version: Some(version_of(b"the content")), served_from: 4, bytes: b"cont".to_vec() }));
+    inner.queue(Ok(QueuedAnswer { size: 11, version: Some(version_of(b"THE CONTENT")), served_from: 0, bytes: b"THE ".to_vec() }));
+    let source = DownloadSource::new(&inner, asked, Arc::clone(&written_up_to));
+    assert_eq!(run(async { read_whole(source.fetch("id", 4, Some(8)).await.ok().expect("a part of the asked content")).await }), b"cont");
+    assert!(matches!(run(source.fetch("id", 0, Some(4))), Err(SourceError::NotFound(_))));
+    assert_eq!(written_up_to.load(Ordering::SeqCst), 0);
+    assert_eq!(source.find_refusal(), Some(DownloadRefusal::ItemGone));
+}
+
+#[test]
+fn a_refusal_is_kept_until_the_same_range_is_answered_and_the_gravest_is_told() {
+    let (transient, throttled) = (DownloadRefusal::Transient { detail: "no network".into() }, DownloadRefusal::Throttled { retry_after: None });
+    assert_eq!(find_gravest_refusal([]), None);
+    assert_eq!(find_gravest_refusal([transient.clone(), throttled.clone()]), Some(throttled.clone()));
+    assert_eq!(find_gravest_refusal([throttled.clone(), DownloadRefusal::SignedOut, transient.clone()]), Some(DownloadRefusal::SignedOut));
+    assert_eq!(find_gravest_refusal([DownloadRefusal::SignedOut, DownloadRefusal::ItemGone]), Some(DownloadRefusal::ItemGone));
+
+    let asked = ItemFixture::onedrive_content_of(b"the content");
+    let part = |served_from: u64, bytes: &[u8]| Ok(QueuedAnswer { size: 11, version: Some(version_of(b"the content")), served_from, bytes: bytes.to_vec() });
+    let inner = QueuedSource::default();
+    let source = DownloadSource::new(&inner, asked, Arc::default());
+    assert_eq!(source.find_refusal(), None, "nothing was fetched");
+    // One part is throttled; another part, answered after it, takes nothing back.
+    inner.queue(Err(SourceError::Throttled { detail: "429".into(), retry_after: None }));
+    inner.queue(part(4, b"cont"));
+    assert!(run(source.fetch("id", 0, Some(4))).is_err());
+    assert!(run(source.fetch("id", 4, Some(8))).is_ok());
+    assert_eq!(source.find_refusal(), Some(throttled));
+    // The same part answered: its refusal is taken back.
+    inner.queue(part(0, b"the "));
+    assert!(run(source.fetch("id", 0, Some(4))).is_ok());
+    assert_eq!(source.find_refusal(), None);
+    // The one stream: its last answer counts.
+    inner.queue(Err(SourceError::Transient("no network".into())));
+    assert!(run(source.fetch("id", 0, None)).is_err());
+    assert_eq!(source.find_refusal(), Some(transient));
+    inner.queue(part(0, b"the content"));
+    assert!(run(source.fetch("id", 0, None)).is_ok());
+    assert_eq!(source.find_refusal(), None);
+}
+
+#[test]
+fn a_download_asked_for_after_the_stop_answers_eio_and_fetches_nothing() {
+    let fixture = ItemFixture::new();
+    let shown = fixture.show_onedrive_file("a.txt", b"a");
+    let source = HeldSource::open(&fixture);
+    let downloader = make_downloader(&fixture, &source);
+
+    downloader.stop();
+
+    assert_eq!(hear_soon(&fixture, ask(&downloader, &shown, DownloadAsker::FilesInterface)), Some(Err(libc::EIO)));
+    downloader.download(to_download(&shown), DownloadAsker::Read, None);
+    begin_download_step(&fixture, &shown);
+    let planned = fixture.runtime().block_on(downloader.download_and_land(to_download(&shown), ItemVersions::of(&shown)));
+    assert!(matches!(planned, Err(DownloadRefusal::Transient { .. })), "{planned:?}");
+    assert!(!fixture.download_states.is_downloading(shown.local_item_id));
+    assert_eq!(fixture.fixture_content_source().list_fetches().len(), 0, "nothing is fetched after the stop");
+    assert_eq!(fixture.read_disk_file("a.txt"), None);
+}
+
+#[test]
+fn an_open_for_writing_that_joins_the_plans_download_does_not_wait_for_the_pause() {
+    let fixture = ItemFixture::new();
+    let shown = fixture.show_onedrive_file("a.txt", b"the content");
+    let source = HeldSource::open(&fixture);
+    let downloader = make_downloader(&fixture, &source);
+    // "Pause syncing": the pool hands out no slot of the plan's class.
+    fixture.pool.set_paused(true);
+    begin_download_step(&fixture, &shown);
+    let (plans, file) = (Arc::clone(&downloader), to_download(&shown));
+    let planned_from = ItemVersions::of(&shown);
+    let step = fixture.runtime().spawn(async move { plans.download_and_land(file, planned_from).await });
+    wait_until("the plan's download is asked for", || fixture.download_states.count_waiters(&key_of(&shown)) == 1);
+    assert_eq!(fixture.fixture_content_source().list_fetches().len(), 0, "held by the pause");
+
+    // A program opens the file for writing: its open joins the plan's download.
+    let writer = ask(&downloader, &shown, DownloadAsker::OpenForWriting);
+
+    assert_eq!(hear_soon(&fixture, writer), Some(Ok(())), "the open is answered while syncing is paused");
+    assert_eq!(fixture.read_disk_file("a.txt").as_deref(), Some(&b"the content"[..]));
+    assert!(matches!(fixture.runtime().block_on(step).expect("the step's task"), Ok(ItemLandingOutcome::Landed { .. })), "the landing committed as the plan's step");
+    assert!(fixture.pool.set_paused(false), "it was paused all along");
+}
+
+#[test]
+fn a_download_whose_landing_removed_what_it_named_starts_the_next_with_a_new_file() {
+    let fixture = Arc::new(ItemFixture::new());
+    let shown = fixture.show_onedrive_file("report.txt", b"the report");
+    let source = HeldSource::open(&fixture);
+    let (downloader, landing) = make_downloader_and_landing(&fixture, &source);
+    // A listing's page comes between the link and the commit of the plan's landing:
+    // another eTag, the same content. The step's versions are the row's no more.
+    let listing = Arc::clone(&fixture);
+    landing.run_before_commit(move || {
+        listing.list_onedrive_file("report.txt", b"the report");
+    });
+    begin_download_step(&fixture, &shown);
+    let planned = fixture.runtime().block_on(downloader.download_and_land(to_download(&shown), ItemVersions::of(&shown)));
+    assert_eq!(planned, Ok(ItemLandingOutcome::RowsChanged));
+    assert_eq!(fixture.read_disk_file("report.txt"), None, "what was named is removed again");
+
+    // The file that had a name can never be named again: the next download of the same
+    // item and content must not go on from it.
+    let row = fixture.find_item(shown.local_item_id).expect("the row");
+    assert_eq!(key_of(&row), key_of(&shown), "the same item and content");
+    assert_eq!(hear(ask(&downloader, &row, DownloadAsker::Read)), Ok(()));
+    assert_eq!(fixture.read_disk_file("report.txt").as_deref(), Some(&b"the report"[..]));
+    assert_eq!(presence_of(&fixture, &shown), ContentPresence::OnDisk);
+    fixture.assert_rows_and_disk_agree();
 }

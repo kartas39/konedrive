@@ -46,6 +46,7 @@
 use std::ffi::OsStr;
 use std::fs::File;
 use std::os::unix::fs::MetadataExt;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
@@ -67,6 +68,10 @@ use super::read_connections::ReadConnections;
 use super::upload_rules::UploadRules;
 use crate::folder::published_plan::{ItemAnswer, PublishedPlan};
 use crate::folder::running_steps::RunningSteps;
+
+/// How the path of an item's local version is read: on the connection of the calling
+/// thread of the mount, or through the writer, for the write-operation thread.
+pub(super) type FindPath<'a> = &'a dyn Fn(LocalItemId) -> Result<Option<PathBuf>, TreeError>;
 
 /// What the rows say of a node id the kernel asks by.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,7 +106,7 @@ pub(super) fn decide_directory_errno(row: &NodeRow) -> Option<Errno> {
 }
 
 /// What a row says of the folder's view of it.
-fn to_node_row(item: Option<Item>) -> NodeRow {
+pub(super) fn to_node_row(item: Option<Item>) -> NodeRow {
     match item {
         Some(item) if item.local.is_some() => NodeRow::Shown(item),
         Some(_) => NodeRow::NotShown,
@@ -258,13 +263,29 @@ impl ItemLookup {
         self.describe(item.ok_or(Errno::ENOENT)?)
     }
 
+    /// The path of the local version of `node`, on the calling thread's connection: how a
+    /// thread of the mount finds a backing file.
+    fn find_path(&self, node: LocalItemId) -> Result<Option<PathBuf>, TreeError> {
+        self.read_connections.read(|reader| reader.find_path(node))
+    }
+
     /// Getattr: the attributes of `node`. A shown item: [`describe`](Self::describe). A
     /// row that is gone or not shown: when the request carries a handle with a file
     /// (`fh`: a writer's, a reader's backing file), the attributes of that file by
     /// `fstat`, under the node id asked; otherwise `ESTALE`.
     pub(super) fn find_attributes(&self, node: LocalItemId, fh: Option<Fh>) -> Result<FileAttr, Errno> {
-        let row = match self.find_node_row(node)? {
-            NodeRow::Shown(item) => return Ok(self.describe(item)?.attributes),
+        self.describe_node(self.find_node_row(node)?, node, fh, &|node| self.find_path(node))
+    }
+
+    /// The attributes getattr answers for `node`, whose row was read as `row`, with the
+    /// path of a backing file found by `find_path`
+    /// ([`find_attributes`](Self::find_attributes) reads both on the connection of a
+    /// thread of the mount). For the write-operation thread, which answers a truncation
+    /// and a time set "as getattr answers" and reads its rows through the writer: it has
+    /// no connection here, and must see the row it wrote a moment ago.
+    pub(super) fn describe_node(&self, row: NodeRow, node: LocalItemId, fh: Option<Fh>, find_path: FindPath<'_>) -> Result<FileAttr, Errno> {
+        let row = match row {
+            NodeRow::Shown(item) => return Ok(self.describe_through(item, find_path)?.attributes),
             row => row,
         };
         let errno = decide_node_errno(&row).unwrap_or(Errno::ESTALE);
@@ -315,6 +336,13 @@ impl ItemLookup {
     /// `fstat`: no path is looked at for it. An error of the store or of the `fstat` is
     /// logged and answers no facts: the attributes are then the row's.
     pub(super) fn read_backing_file_facts(&self, item: &Item) -> BackingFileFacts {
+        self.read_backing_file_facts_through(item, &|node| self.find_path(node))
+    }
+
+    /// [`read_backing_file_facts`](Self::read_backing_file_facts), with the path of the
+    /// item's local version found by `find_path`: the one reading of these facts, for a
+    /// thread of the mount and for the write-operation thread alike.
+    pub(super) fn read_backing_file_facts_through(&self, item: &Item, find_path: FindPath<'_>) -> BackingFileFacts {
         let no_facts = BackingFileFacts { size_and_times: SizeAndTimes::OfLocalContent, blocks: 0, directory_mtime: None };
         if item.local.is_none() {
             return no_facts;
@@ -331,7 +359,7 @@ impl ItemLookup {
                 return no_facts;
             }
         }
-        let stat = self.place_changes.stat_at_row_path(|| self.read_connections.read(|reader| Ok(reader.find_path(node)?.map(|path| (path, ())))));
+        let stat = self.place_changes.stat_at_row_path(|| Ok(find_path(node)?.map(|path| (path, ()))));
         match (stat, item.kind) {
             (Ok(RowPathStat::Facts { facts, row: () }), ItemKind::File) if facts.kind == EntryKind::File => BackingFileFacts { blocks: facts.blocks, ..no_facts },
             (Ok(RowPathStat::Facts { facts, row: () }), ItemKind::Directory) if facts.kind == EntryKind::Directory => {
@@ -352,7 +380,14 @@ impl ItemLookup {
     /// getattr and each name of a readdirplus.
     /// `ESTALE` for an item the folder does not show.
     pub(super) fn describe(&self, item: Item) -> Result<ShownEntry, Errno> {
-        let facts = self.read_backing_file_facts(&item);
+        self.describe_through(item, &|node| self.find_path(node))
+    }
+
+    /// [`describe`](Self::describe), with the path of the item's local version found by
+    /// `find_path`: for the reply of a write operation, made on the write-operation
+    /// thread.
+    pub(super) fn describe_through(&self, item: Item, find_path: FindPath<'_>) -> Result<ShownEntry, Errno> {
+        let facts = self.read_backing_file_facts_through(&item, find_path);
         let attributes = to_item_attributes(&item, self.access_mode_switch.access_mode(), &facts, self.mount_started_at).ok_or(Errno::ESTALE)?;
         Ok(ShownEntry { item, attributes })
     }

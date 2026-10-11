@@ -151,8 +151,8 @@ impl ItemMount {
 
     /// Stops the mount, once: the write-operation thread (the job in flight is waited
     /// for, the jobs that wait are dropped), the bridge, every download aborted and its
-    /// waiters failed (`ItemDownloadStates::abort_all`, which is all
-    /// `ItemDownloader::stop` is to do, then `fail_waiters`), the session (when served)
+    /// waiters failed, and none started from then on (`ItemDownloader::stop`, which is
+    /// `ItemDownloadStates::stop`), the session (when served)
     /// unmounted and waited for, the reading connections closed; then the write bits are
     /// taken off the folder on disk, through the backing directory's own descriptor: no
     /// mount lies over it, and nothing is put into it by mistake. After it, and once
