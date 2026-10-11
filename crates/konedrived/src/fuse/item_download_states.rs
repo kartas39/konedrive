@@ -4,11 +4,12 @@
 //! **State owned:** per (item, content version): a running download with who waits for
 //! it, how far it was written, its file and whether that file is whole; or a failed one
 //! with its unfinished file kept to go on from; or the word that OneDrive stated another
-//! content in its answer to the last download of it; the handle each running download's task is
-//! aborted by, which download of its key it is, and whether anything but the plan asked
-//! for it; whether the mount stopped; and how many bytes of each item were read as
-//! ranges since the last download a read started. Changed by the downloader and by read
-//! alone, through the functions here; no I/O.
+//! content in its last answer to a download of it, which the next download of it carries
+//! until it is answered; the handle each running download's task is aborted by, which
+//! download of its key it is, and whether anything but the plan asked for it; whether
+//! the mount stopped; and how many bytes of each item were read as ranges since the last
+//! download a read started. Changed by the downloader and by read alone, through the
+//! functions here; no I/O.
 //!
 //! **Answers for:** the questions of the review's M4: who dedups (a download of the same
 //! item and content that runs is joined, whoever asks: a read, an open for writing,
@@ -18,10 +19,14 @@
 //! the row changed and drops its file.
 //!
 //! **Another content, remembered.** That OneDrive stated another content than the key's
-//! is a fact from one answer, and is void when OneDrive is asked again: the next download
-//! of the key forgets it at its start, and so does `forget_item`. It answers no request
-//! by itself: a read of a remembered key asks for the whole download, which asks
-//! OneDrive anew (`item_kernel_requests`). Only an answer that states a version or a size
+//! is a fact from one answer, and is void when OneDrive has answered again, not when it
+//! is asked: the next download of the key carries it while it runs, until its source
+//! accepts an answer as of the key's content
+//! ([`forget_another_content`](ItemDownloadStates::forget_another_content)); a download
+//! that ends with no such answer leaves it as it was; and `forget_item` forgets it. It
+//! answers no request by itself: a read of a remembered key asks for the whole download,
+//! or joins the one that runs and has no answer yet, which asks OneDrive anew
+//! (`item_kernel_requests`). Only an answer that states a version or a size
 //! that disagrees is remembered so; a file OneDrive does not have and a size it did not
 //! say are failures like any other ([`finish`](ItemDownloadStates::finish)). The latest
 //! [`ANOTHER_CONTENTS_REMEMBERED`] are kept.
@@ -37,7 +42,7 @@
 // test: a_download_anything_but_the_plan_asked_for_is_not_aborted_by_the_plans_cancel
 // test: an_end_told_by_an_older_download_of_the_key_changes_nothing_of_the_newer
 // test: a_download_whose_file_is_whole_keeps_no_unfinished_file_however_it_ends
-// test: a_download_onedrive_answered_with_another_content_is_remembered_until_the_next_download_of_the_key
+// test: a_download_onedrive_answered_with_another_content_is_remembered_until_the_next_download_of_the_key_is_answered
 // test: a_download_asked_for_after_the_stop_is_not_started
 // test: a_download_of_the_plans_is_told_when_anything_else_asks_for_it
 // test: the_count_of_bytes_read_as_ranges_starts_over_once_it_reached_the_threshold
@@ -58,10 +63,10 @@ use super::download_states::{reaches_download_threshold, RunningDownloadFile, Wa
 const UNFINISHED_FILES_KEPT: usize = 16;
 
 /// How many contents OneDrive stated another one for are remembered: the latest ones. One
-/// goes with the next download of its key and with its item; what stays is of handles
-/// nobody reads through any more, and of rows a program wrote since. A read of a content
-/// that is remembered no more fetches ranges, as of any content, until the next whole
-/// download tells again.
+/// goes with the first answer the next download of its key accepts and with its item;
+/// what stays is of handles nobody reads through any more, and of rows a program wrote
+/// since. A read of a content that is remembered no more fetches ranges, as of any
+/// content, until the next whole download tells again.
 pub(super) const ANOTHER_CONTENTS_REMEMBERED: usize = 256;
 
 /// What a download is of.
@@ -131,12 +136,17 @@ enum State {
         /// Whether anything but the plan's pin asked for it, with a waiter or without;
         /// the download's task waits on it while it waits for the plan's slot.
         is_asked_beyond_plan: tokio::sync::watch::Sender<bool>,
+        /// The number of the download of the key before this one, when OneDrive stated
+        /// another content in its answer to that one and this one's source has accepted
+        /// no answer yet: the key is remembered as before
+        /// (`State::AnotherContent`) until OneDrive has answered again.
+        another_content: Option<u64>,
     },
     Failed { unfinished_file: Arc<File>, failure_number: u64 },
     /// OneDrive stated another content than the key's in its answer to the download
-    /// `number`, the last of the key: a read through a handle opened as this content
-    /// asks for the whole download, until the next download of the key is started or the
-    /// item is forgotten.
+    /// `number`, the last of the key that was answered: a read through a handle opened
+    /// as this content asks for the whole download, until the next download of the key
+    /// accepts an answer or the item is forgotten.
     AnotherContent { number: u64 },
 }
 
@@ -155,6 +165,9 @@ struct TakenDownload {
     /// The file it wrote into, when that file is not whole: what may be gone on from.
     unfinished_file: Option<Arc<File>>,
     abort: Option<tokio::task::AbortHandle>,
+    /// The number of the download OneDrive answered with another content of the key,
+    /// when this one carried that word to its end: no answer of its own was accepted.
+    another_content: Option<u64>,
 }
 
 impl TakenDownload {
@@ -176,7 +189,7 @@ fn take_running(states: &mut HashMap<DownloadKey, State>, key: &DownloadKey) -> 
         return None;
     }
     match states.remove(key) {
-        Some(State::Running { waiters, file, is_file_whole, abort, .. }) => Some(TakenDownload { waiters, unfinished_file: file.filter(|_| !is_file_whole), abort }),
+        Some(State::Running { waiters, file, is_file_whole, abort, another_content, .. }) => Some(TakenDownload { waiters, unfinished_file: file.filter(|_| !is_file_whole), abort, another_content }),
         Some(State::Failed { .. } | State::AnotherContent { .. }) | None => None,
     }
 }
@@ -199,6 +212,18 @@ fn keep_unfinished_file(states: &mut HashMap<DownloadKey, State>, key: &Download
     states.remove(&oldest);
 }
 
+/// A download of `key` failed or was given up, and `taken` is what it left: the word that
+/// OneDrive stated another content, when the download carried it to its end — no answer
+/// was accepted, so its file holds nothing to go on from —, is remembered as before;
+/// else its unfinished file is kept.
+fn keep_left_by_download(states: &mut HashMap<DownloadKey, State>, key: &DownloadKey, taken: &TakenDownload) {
+    match (taken.another_content, &taken.unfinished_file) {
+        (Some(number), _) => remember_another_content(states, key, number),
+        (None, Some(file)) => keep_unfinished_file(states, key, Arc::clone(file)),
+        (None, None) => {}
+    }
+}
+
 /// The key and the failure number of every `Failed` state.
 fn list_failure_numbers(states: &HashMap<DownloadKey, State>) -> impl Iterator<Item = (&DownloadKey, u64)> {
     states.iter().filter_map(|(key, state)| match state {
@@ -207,10 +232,11 @@ fn list_failure_numbers(states: &HashMap<DownloadKey, State>) -> impl Iterator<I
     })
 }
 
-/// OneDrive stated another content than `run`'s key in its answer to `run`: remembered,
-/// and the oldest such word beyond [`ANOTHER_CONTENTS_REMEMBERED`] is forgotten.
-fn remember_another_content(states: &mut HashMap<DownloadKey, State>, run: &DownloadRun) {
-    states.insert(run.key.clone(), State::AnotherContent { number: run.number });
+/// OneDrive stated another content than `key`'s in its answer to the download `number`
+/// of it: remembered, and the oldest such word beyond [`ANOTHER_CONTENTS_REMEMBERED`] is
+/// forgotten.
+fn remember_another_content(states: &mut HashMap<DownloadKey, State>, key: &DownloadKey, number: u64) {
+    states.insert(key.clone(), State::AnotherContent { number });
     if list_another_content_numbers(states).count() <= ANOTHER_CONTENTS_REMEMBERED {
         return;
     }
@@ -250,7 +276,9 @@ impl ItemDownloadStates {
     /// of it ([`wait_for_asker_beyond_plan`](Self::wait_for_asker_beyond_plan)). After
     /// the stop nothing is started: `waiter` is answered `EIO`. A download that is started
     /// asks OneDrive anew: what was remembered of the key from the answer to its last
-    /// download ([`is_another_content`](Self::is_another_content)) is forgotten here.
+    /// download ([`is_another_content`](Self::is_another_content)) stays remembered
+    /// while this one runs, until an answer to it is accepted
+    /// ([`forget_another_content`](Self::forget_another_content)).
     /// Called by `ItemDownloader::download` alone.
     pub(super) fn start_or_join(&self, key: &DownloadKey, asker: &DownloadAsker, waiter: Option<Waiter>) -> ItemDownloadStart {
         let is_asker_beyond_plan = !matches!(asker, DownloadAsker::PlanPin { .. });
@@ -270,6 +298,11 @@ impl ItemDownloadStates {
             return ItemDownloadStart::Joined;
         }
         let number = self.last_run_number.fetch_add(1, Ordering::SeqCst) + 1;
+        let (unfinished_file, another_content) = match states.by_key.remove(key) {
+            Some(State::Failed { unfinished_file, .. }) => (Some(unfinished_file), None),
+            Some(State::AnotherContent { number }) => (None, Some(number)),
+            Some(State::Running { .. }) | None => (None, None),
+        };
         let running = State::Running {
             number,
             waiters: waiter.into_iter().collect(),
@@ -278,11 +311,9 @@ impl ItemDownloadStates {
             is_file_whole: false,
             abort: None,
             is_asked_beyond_plan: tokio::sync::watch::Sender::new(is_asker_beyond_plan),
+            another_content,
         };
-        let unfinished_file = match states.by_key.insert(key.clone(), running) {
-            Some(State::Failed { unfinished_file, .. }) => Some(unfinished_file),
-            Some(State::Running { .. } | State::AnotherContent { .. }) | None => None,
-        };
+        states.by_key.insert(key.clone(), running);
         ItemDownloadStart::Started { run: DownloadRun { key: key.clone(), number }, unfinished_file }
     }
 
@@ -321,7 +352,8 @@ impl ItemDownloadStates {
 
     /// The plan gives the download of `key` up: aborted when the plan's pin alone asked
     /// for it — nothing else started or joined it, with a waiter or without — its waiters
-    /// answered `EIO` and its unfinished file kept as after a failure. Whether it was
+    /// answered `EIO` and its unfinished file kept as after a failure, or the key
+    /// remembered as before where no answer was accepted yet. Whether it was
     /// aborted. A download a read, an open for writing or `Files.Hydrate` asked for too
     /// goes on, whoever still listens.
     ///
@@ -336,9 +368,7 @@ impl ItemDownloadStates {
                 return false;
             }
             let Some(taken) = take_running(&mut states.by_key, key) else { return false };
-            if let Some(file) = &taken.unfinished_file {
-                keep_unfinished_file(&mut states.by_key, key, Arc::clone(file));
-            }
+            keep_left_by_download(&mut states.by_key, key, &taken);
             taken
         };
         taken.abort();
@@ -402,8 +432,10 @@ impl ItemDownloadStates {
 
     /// The download `run` ended: its waiters are answered `outcome` (the errno of a
     /// failure); a failure keeps the unfinished file, unless it is whole
-    /// ([`end_writing`](Self::end_writing)). Nothing for a download that runs no
-    /// more — it was aborted, or this is said twice.
+    /// ([`end_writing`](Self::end_writing)) — or, where the download accepted no answer
+    /// of OneDrive, what was remembered of the key before it
+    /// ([`is_another_content`](Self::is_another_content)). Nothing for a download that
+    /// runs no more — it was aborted, or this is said twice.
     pub(super) fn finish(&self, run: &DownloadRun, outcome: Result<(), i32>) {
         let key = &run.key;
         let waiters = {
@@ -412,8 +444,8 @@ impl ItemDownloadStates {
                 return;
             }
             let Some(taken) = take_running(&mut states.by_key, key) else { return };
-            if let (Err(_), Some(file)) = (outcome, taken.unfinished_file) {
-                keep_unfinished_file(&mut states.by_key, key, file);
+            if outcome.is_err() {
+                keep_left_by_download(&mut states.by_key, key, &taken);
             }
             taken.waiters
         };
@@ -440,7 +472,7 @@ impl ItemDownloadStates {
                 return;
             }
             let Some(taken) = take_running(&mut states.by_key, &run.key) else { return };
-            remember_another_content(&mut states.by_key, run);
+            remember_another_content(&mut states.by_key, &run.key, run.number);
             taken.waiters
         };
         for waiter in waiters {
@@ -448,18 +480,37 @@ impl ItemDownloadStates {
         }
     }
 
-    /// Whether OneDrive stated another content than the key's in its answer to the last
-    /// download of `key`: a read through a handle opened as that content asks OneDrive
-    /// for no range then — the source over Graph would answer one with the other
-    /// content's bytes and no word of it — but for the whole download, which asks
-    /// OneDrive anew. Forgotten when a download of the key is started again, and with
-    /// the item ([`forget_item`](Self::forget_item)). Called by read.
+    /// Whether OneDrive stated another content than the key's in the last answer it
+    /// gave to a download of `key`, and has given none since: also while the next
+    /// download of the key runs and its source has accepted no answer. A read through a
+    /// handle opened as that content asks for the whole download then, or joins the one
+    /// that runs, which asks OneDrive anew; what reads it decides what else is asked
+    /// (`item_kernel_requests`). Forgotten when a download of the key accepts an answer
+    /// ([`forget_another_content`](Self::forget_another_content)), and with the item
+    /// ([`forget_item`](Self::forget_item)); a key beyond the latest
+    /// [`ANOTHER_CONTENTS_REMEMBERED`] is remembered no more. Called by read, and by the
+    /// downloader for what it tells of a download.
     pub(super) fn is_another_content(&self, key: &DownloadKey) -> bool {
-        matches!(crate::panic::lock(&self.states).by_key.get(key), Some(State::AnotherContent { .. }))
+        matches!(crate::panic::lock(&self.states).by_key.get(key), Some(State::AnotherContent { .. } | State::Running { another_content: Some(_), .. }))
+    }
+
+    /// OneDrive answered the download `run` with the content of its key: what was
+    /// remembered of the key from the answer to the download before it
+    /// ([`is_another_content`](Self::is_another_content)) is void from here on. Called
+    /// by the download's source for every answer it accepts
+    /// (`item_downloader::download_source`). Nothing for a download that runs no more,
+    /// whatever runs for the key since.
+    pub(super) fn forget_another_content(&self, run: &DownloadRun) {
+        if let Some(State::Running { number, another_content, .. }) = crate::panic::lock(&self.states).by_key.get_mut(&run.key) {
+            if *number == run.number {
+                *another_content = None;
+            }
+        }
     }
 
     /// The download `run` was dropped without an end — a panic, an abort of its task from
-    /// outside the states: its waiters get `EIO`, and nothing of it is kept. What a guard
+    /// outside the states: its waiters get `EIO`, and nothing of it is kept; the key is
+    /// remembered as before it where it accepted no answer. What a guard
     /// the task holds calls when it is dropped, whatever dropped it: for a download that
     /// ended or was aborted here it changes nothing.
     pub(super) fn abandon(&self, run: &DownloadRun) {
@@ -468,7 +519,11 @@ impl ItemDownloadStates {
             if !is_running(&states.by_key, run) {
                 return;
             }
-            take_running(&mut states.by_key, &run.key)
+            let taken = take_running(&mut states.by_key, &run.key);
+            if let Some(number) = taken.as_ref().and_then(|taken| taken.another_content) {
+                remember_another_content(&mut states.by_key, &run.key, number);
+            }
+            taken
         };
         for waiter in taken.into_iter().flat_map(|taken| taken.waiters) {
             let _ = waiter.send(Err(libc::EIO));
@@ -499,9 +554,17 @@ impl ItemDownloadStates {
     /// Called by the steps towards the folder that remove an item or take OneDrive's
     /// content (what "the bytes-read count never forgetting a file" lacked: design §14).
     pub(super) fn forget_item(&self, item: LocalItemId) {
-        // The unfinished files of every content of it; a download of it that runs is left
-        // to its landing, which finds the row changed.
-        crate::panic::lock(&self.states).by_key.retain(|key, state| key.item != item || matches!(state, State::Running { .. }));
+        // The unfinished files of every content of it, and what was remembered of each; a
+        // download of it that runs is left to its landing, which finds the row changed.
+        crate::panic::lock(&self.states).by_key.retain(|key, state| match state {
+            State::Running { another_content, .. } => {
+                if key.item == item {
+                    *another_content = None;
+                }
+                true
+            }
+            State::Failed { .. } | State::AnotherContent { .. } => key.item != item,
+        });
         crate::panic::lock(&self.bytes_read_as_ranges).remove(&item);
     }
 

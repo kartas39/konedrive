@@ -1109,8 +1109,9 @@ fn a_reader_whose_content_landed_reads_the_backing_file_beside_a_writer_that_ope
     mount.release(writer);
 }
 
-/// What a [`ScriptedDownloadSource`] answers its first whole fetch with.
-enum FirstAnswer {
+/// What a [`ScriptedDownloadSource`] answers a fetch with, where the test says so.
+#[derive(Clone, Copy)]
+enum ScriptedAnswer {
     /// `SourceError::NotFound`: OneDrive says it has no such item.
     NoSuchItem,
     /// The true bytes, said to be of another version.
@@ -1120,17 +1121,31 @@ enum FirstAnswer {
 }
 
 /// A content source for downloads that answers its first fetch as the test says and every
-/// later one as the fixture's source does — or never, when the test holds them.
+/// later one as the fixture's source does — or, when the test holds them, not before the
+/// test lets them go, and then as it says.
 struct ScriptedDownloadSource {
     inner: Arc<dyn crate::hydration::source::ContentSource>,
-    first: std::sync::Mutex<Option<FirstAnswer>>,
-    holds_later_fetches: bool,
+    first: std::sync::Mutex<Option<ScriptedAnswer>>,
+    /// A later fetch takes one permit and gives none back: the test hands them out.
+    later_fetches: tokio::sync::Semaphore,
+    /// What a later fetch is answered with; `None`: as the fixture's source does.
+    later: std::sync::Mutex<Option<ScriptedAnswer>>,
     fetches: std::sync::atomic::AtomicUsize,
 }
 
 impl ScriptedDownloadSource {
-    fn new(fixture: &ItemFixture, first: FirstAnswer, holds_later_fetches: bool) -> Arc<Self> {
-        Arc::new(ScriptedDownloadSource { inner: fixture.content_source(), first: std::sync::Mutex::new(Some(first)), holds_later_fetches, fetches: Default::default() })
+    fn new(fixture: &ItemFixture, first: ScriptedAnswer, holds_later_fetches: bool) -> Arc<Self> {
+        let source = ScriptedDownloadSource { inner: fixture.content_source(), first: std::sync::Mutex::new(Some(first)), later_fetches: tokio::sync::Semaphore::new(0), later: Default::default(), fetches: Default::default() };
+        if !holds_later_fetches {
+            source.let_later_fetches_go(None);
+        }
+        Arc::new(source)
+    }
+
+    /// Every later fetch is answered from now on, with `answer`.
+    fn let_later_fetches_go(&self, answer: Option<ScriptedAnswer>) {
+        *self.later.lock().unwrap() = answer;
+        self.later_fetches.add_permits(1 << 20);
     }
 
     fn count_fetches(&self) -> usize {
@@ -1144,18 +1159,24 @@ impl crate::hydration::source::ContentSource for ScriptedDownloadSource {
         use crate::hydration::source::{Fetched, SourceError, Version};
         let first = self.first.lock().unwrap().take();
         self.fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        match first {
-            Some(FirstAnswer::NoSuchItem) => Err(SourceError::NotFound(format!("the test said {item_id} is gone, once"))),
-            Some(FirstAnswer::AnotherVersion) => {
+        let scripted = match first {
+            Some(first) => Some(first),
+            None => {
+                self.later_fetches.acquire().await.expect("the gate is never closed").forget();
+                *self.later.lock().unwrap()
+            }
+        };
+        match scripted {
+            Some(ScriptedAnswer::NoSuchItem) => Err(SourceError::NotFound(format!("the test said {item_id} is gone, once"))),
+            Some(ScriptedAnswer::AnotherVersion) => {
                 let fetched = self.inner.fetch(item_id, from, end).await?;
                 Ok(Fetched { version: Some(Version { ctag: "c-new".into(), quick_xor: Some([7; konedrive_graph::quickxor::LEN]) }), ..fetched })
             }
-            Some(FirstAnswer::OtherBytesOfSameVersion) => {
+            Some(ScriptedAnswer::OtherBytesOfSameVersion) => {
                 let fetched = self.inner.fetch(item_id, from, end).await?;
                 let other = vec![b'b'; (fetched.size - fetched.served_from) as usize];
                 Ok(Fetched { stream: Box::new(std::io::Cursor::new(other)), ..fetched })
             }
-            None if self.holds_later_fetches => std::future::pending().await,
             None => self.inner.fetch(item_id, from, end).await,
         }
     }
@@ -1168,7 +1189,7 @@ impl crate::hydration::source::ContentSource for ScriptedDownloadSource {
 fn a_read_of_a_content_onedrive_answered_with_another_once_asks_anew_and_succeeds() {
     const SIZE: usize = 2 << 20;
     let fixture = ItemFixture::new();
-    let source = ScriptedDownloadSource::new(&fixture, FirstAnswer::AnotherVersion, false);
+    let source = ScriptedDownloadSource::new(&fixture, ScriptedAnswer::AnotherVersion, false);
     let bridge = Arc::clone(&fixture.inotify_bridge);
     let mount = Requests::downloading_from(fixture, bridge, Arc::clone(&source) as Arc<dyn crate::hydration::source::ContentSource>);
     let row = mount.fixture.show_onedrive_file("big.bin", &vec![b'a'; SIZE]);
@@ -1247,7 +1268,7 @@ fn every_read_is_stale_and_costs_one_asking_while_onedrive_states_another_conten
 fn a_read_of_an_item_onedrive_did_not_have_once_goes_on_as_ranges() {
     const SIZE: usize = 2 << 20;
     let fixture = ItemFixture::new();
-    let source = ScriptedDownloadSource::new(&fixture, FirstAnswer::NoSuchItem, false);
+    let source = ScriptedDownloadSource::new(&fixture, ScriptedAnswer::NoSuchItem, false);
     let bridge = Arc::clone(&fixture.inotify_bridge);
     let mount = Requests::downloading_from(fixture, bridge, Arc::clone(&source) as Arc<dyn crate::hydration::source::ContentSource>);
     let row = mount.fixture.show_onedrive_file("big.bin", &vec![b'a'; SIZE]);
@@ -1273,7 +1294,7 @@ fn a_read_of_an_item_onedrive_did_not_have_once_goes_on_as_ranges() {
 fn a_read_is_not_answered_from_a_downloads_file_once_its_bytes_failed_the_hash() {
     const SIZE: usize = 3 << 20;
     let fixture = ItemFixture::new();
-    let source = ScriptedDownloadSource::new(&fixture, FirstAnswer::OtherBytesOfSameVersion, true);
+    let source = ScriptedDownloadSource::new(&fixture, ScriptedAnswer::OtherBytesOfSameVersion, true);
     let bridge = Arc::clone(&fixture.inotify_bridge);
     let mount = Requests::downloading_from(fixture, bridge, Arc::clone(&source) as Arc<dyn crate::hydration::source::ContentSource>);
     let row = mount.fixture.show_onedrive_file("big.bin", &vec![b'a'; SIZE]);
@@ -1298,4 +1319,74 @@ fn a_read_is_not_answered_from_a_downloads_file_once_its_bytes_failed_the_hash()
     assert_eq!(read(0), Ok("a range from 0".into()), "nothing below the old mark is answered from the file");
     assert_eq!(read(1 << 20), Ok("a range from 1048576".into()));
     assert_eq!(mount.fixture.download_states.find_running_download(&key).map(|running| running.written_up_to), Some(0), "the mark is 0 from the moment the mismatch was found");
+}
+
+/// The third review's sequence W: a content is remembered as another one, read A asks for
+/// the whole download, and OneDrive has not answered it when reads B and C come.
+fn read_a_remembered_content_while_its_download_has_no_answer(agrees: bool) {
+    const SIZE: usize = 2 << 20;
+    let fixture = ItemFixture::new();
+    let source = ScriptedDownloadSource::new(&fixture, ScriptedAnswer::AnotherVersion, true);
+    let bridge = Arc::clone(&fixture.inotify_bridge);
+    let mount = Requests::downloading_from(fixture, bridge, Arc::clone(&source) as Arc<dyn crate::hydration::source::ContentSource>);
+    let row = mount.fixture.show_onedrive_file("big.bin", &vec![b'a'; SIZE]);
+    let file = row.local_item_id;
+    let key = DownloadKey { item: file, content: local_content(&row) };
+    let fh = mount.open_to_read(file).unwrap().fh;
+    assert!(mount.read(fh, 0, DOWNLOAD_AFTER as u32).unwrap().iter().all(|byte| *byte == b'a'));
+    mount.wait_until_not_downloading(file);
+    assert!(mount.fixture.download_states.is_another_content(&key), "remembered after the first download");
+    let fetched_before = mount.list_fetched_ranges();
+
+    // What a read is decided as, and the rest of it running on the runtime.
+    let read = |fh: Fh, offset: u64| match mount.decide_read(fh, offset, 16) {
+        Ok(ReadAnswer::WholeDownload(range)) => {
+            let requests = Arc::clone(&mount.requests);
+            ("a whole download", Some(mount.fixture.runtime().spawn(async move { requests.fetch_range_after_download(range).await })))
+        }
+        Ok(ReadAnswer::Range(_)) => ("a range", None),
+        Ok(ReadAnswer::Bytes(_)) => ("bytes", None),
+        Err(_) => ("an error", None),
+    };
+    let wait_until = |what: &str, is_so: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !is_so() {
+            assert!(Instant::now() < deadline, "waited too long for: {what}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+
+    let (decided, read_a) = read(fh, 0);
+    assert_eq!(decided, "a whole download", "read A");
+    wait_until("the fetch of read A's download", &|| source.count_fetches() == 2);
+    let (decided, read_b) = read(fh, 4096);
+    assert_eq!(decided, "a whole download", "read B, through the same handle, while OneDrive has not answered");
+    let new_fh = mount.open_to_read(file).expect("an open asks nothing").fh;
+    let (decided, read_c) = read(new_fh, 1 << 20);
+    assert_eq!(decided, "a whole download", "read C, through a new open");
+    wait_until("reads B and C joining the download", &|| mount.fixture.download_states.count_waiters(&key) == 3);
+    assert!(mount.fixture.download_states.is_another_content(&key), "remembered until OneDrive has answered");
+    assert_eq!(source.count_fetches(), 2, "one download for the three");
+    assert_eq!(mount.list_fetched_ranges(), fetched_before, "nothing is asked of OneDrive meanwhile but that download");
+
+    source.let_later_fetches_go((!agrees).then_some(ScriptedAnswer::AnotherVersion));
+    let answers: Vec<Result<Vec<u8>, Errno>> = [read_a, read_b, read_c]
+        .into_iter()
+        .map(|read| mount.fixture.runtime().block_on(async { tokio::time::timeout(Duration::from_secs(20), read.expect("a read that runs")).await }).expect("the read is answered").expect("the read ran"))
+        .collect();
+    assert_eq!(source.count_fetches(), 2);
+    assert_eq!(mount.fixture.download_states.is_another_content(&key), !agrees);
+    if agrees {
+        assert_eq!(answers, vec![Ok(vec![b'a'; 16]); 3], "OneDrive stated the asked content: all three are answered");
+    } else {
+        assert_eq!(answers, vec![Err(Errno::ESTALE); 3], "OneDrive stated another content again: all three are stale");
+        let count_ranges = |fetched: &[(u64, Option<u64>)]| fetched.iter().filter(|(_, end)| end.is_some()).count();
+        assert_eq!(count_ranges(&mount.list_fetched_ranges()), count_ranges(&fetched_before), "and no range was asked of OneDrive for them");
+    }
+}
+
+#[test]
+fn reads_of_a_remembered_content_join_its_download_until_onedrive_has_answered() {
+    read_a_remembered_content_while_its_download_has_no_answer(true);
+    read_a_remembered_content_while_its_download_has_no_answer(false);
 }

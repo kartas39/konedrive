@@ -64,6 +64,17 @@ fn make_downloader_and_landing(fixture: &ItemFixture, source: &Arc<HeldSource>) 
 }
 
 fn make_downloader_from(fixture: &ItemFixture, source: Arc<dyn ContentSource>) -> (Arc<ItemDownloader>, Arc<ItemDownloadLanding>) {
+    make_downloader_reporting_to(fixture, source, Report::nowhere())
+}
+
+/// A report whose activity keeps the events of the fixture's folder.
+fn make_report(fixture: &ItemFixture) -> Report {
+    let mut snapshot = crate::status::snapshot::SyncSnapshot::default();
+    snapshot.folder.root_path = fixture.folder().display().to_string();
+    Report { activity: Arc::new(activity::Activity::new(crate::status::snapshot::SyncStateHandle::new(snapshot))), ..Report::nowhere() }
+}
+
+fn make_downloader_reporting_to(fixture: &ItemFixture, source: Arc<dyn ContentSource>, report: Report) -> (Arc<ItemDownloader>, Arc<ItemDownloadLanding>) {
     let landing = Arc::new(ItemDownloadLanding::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.running_steps), Arc::clone(&fixture.mount_take_down)));
     let downloader = Arc::new(ItemDownloader::new(
         Arc::clone(&fixture.backing_directory),
@@ -74,7 +85,7 @@ fn make_downloader_from(fixture: &ItemFixture, source: Arc<dyn ContentSource>) -
         source,
         Arc::clone(&fixture.pool),
         Arc::clone(&fixture.split_download_share),
-        Report::nowhere(),
+        report,
         fixture.folder(),
         fixture.runtime(),
     ));
@@ -140,6 +151,16 @@ impl ContentSource for QueuedSource {
         self.fetches.lock().unwrap().push((from, end));
         let answer = self.answers.lock().unwrap().pop_front().expect("an answer the test queued")?;
         Ok(Fetched { served_from: answer.served_from, size: answer.size, mtime: SystemTime::UNIX_EPOCH, version: answer.version, stream: Box::new(std::io::Cursor::new(answer.bytes)) })
+    }
+}
+
+/// Download states of its own with one download of `asked` that runs, for a source that
+/// is tested without a downloader.
+fn start_download_alone(asked: &ContentVersion) -> (ItemDownloadStates, DownloadRun) {
+    let download_states = ItemDownloadStates::new(0);
+    match download_states.start_or_join(&DownloadKey { item: LocalItemId::new(5), content: asked.clone() }, &DownloadAsker::Read, None) {
+        ItemDownloadStart::Started { run, .. } => (download_states, run),
+        ItemDownloadStart::Joined | ItemDownloadStart::Stopped => panic!("no download of it runs"),
     }
 }
 
@@ -589,10 +610,11 @@ fn an_answer_of_the_source_is_used_by_its_content_and_its_place_case_by_case() {
 #[test]
 fn an_answer_of_another_content_ends_the_download_before_the_mark_is_raised_or_a_byte_read() {
     let asked = ItemFixture::onedrive_content_of(b"the content");
+    let alone = start_download_alone(&asked);
     // The first answer is of another content of the same size.
     let (inner, written_up_to) = (QueuedSource::default(), Arc::new(AtomicU64::new(0)));
     inner.queue_content(b"THE CONTENT", 0);
-    let source = DownloadSource::new(&inner, asked.clone(), Arc::clone(&written_up_to));
+    let source = DownloadSource::new(&inner, asked.clone(), Arc::clone(&written_up_to), &alone.0, &alone.1);
     let fetched = run(source.fetch("id", 0, None));
     assert!(matches!(fetched, Err(SourceError::NotFound(_))), "answered as a file OneDrive does not have: the download ends at once");
     assert_eq!(written_up_to.load(Ordering::SeqCst), 0, "nothing is said to be written");
@@ -604,7 +626,7 @@ fn an_answer_of_another_content_ends_the_download_before_the_mark_is_raised_or_a
     let (inner, written_up_to) = (QueuedSource::default(), Arc::new(AtomicU64::new(0)));
     inner.queue(Ok(QueuedAnswer { size: 11, version: Some(version_of(b"the content")), served_from: 0, bytes: b"the c".to_vec() }));
     inner.queue_content(b"THE CONTENT", 5);
-    let source = DownloadSource::new(&inner, asked.clone(), Arc::clone(&written_up_to));
+    let source = DownloadSource::new(&inner, asked.clone(), Arc::clone(&written_up_to), &alone.0, &alone.1);
     let read = run(async { read_whole(source.fetch("id", 0, None).await.ok().expect("the asked content")).await });
     assert_eq!((read.as_slice(), written_up_to.load(Ordering::SeqCst)), (&b"the c"[..], 5), "counted as it is read");
     assert!(matches!(run(source.fetch("id", 5, None)), Err(SourceError::NotFound(_))));
@@ -616,7 +638,7 @@ fn an_answer_of_another_content_ends_the_download_before_the_mark_is_raised_or_a
     let (inner, written_up_to) = (QueuedSource::default(), Arc::new(AtomicU64::new(0)));
     inner.queue(Ok(QueuedAnswer { size: 11, version: Some(version_of(b"the content")), served_from: 4, bytes: b"cont".to_vec() }));
     inner.queue(Ok(QueuedAnswer { size: 11, version: Some(version_of(b"THE CONTENT")), served_from: 0, bytes: b"THE ".to_vec() }));
-    let source = DownloadSource::new(&inner, asked, Arc::clone(&written_up_to));
+    let source = DownloadSource::new(&inner, asked, Arc::clone(&written_up_to), &alone.0, &alone.1);
     assert_eq!(run(async { read_whole(source.fetch("id", 4, Some(8)).await.ok().expect("a part of the asked content")).await }), b"cont");
     assert!(matches!(run(source.fetch("id", 0, Some(4))), Err(SourceError::NotFound(_))));
     assert_eq!(written_up_to.load(Ordering::SeqCst), 0);
@@ -635,7 +657,8 @@ fn a_refusal_is_kept_until_the_same_range_is_answered_and_the_gravest_is_told() 
     let asked = ItemFixture::onedrive_content_of(b"the content");
     let part = |served_from: u64, bytes: &[u8]| Ok(QueuedAnswer { size: 11, version: Some(version_of(b"the content")), served_from, bytes: bytes.to_vec() });
     let inner = QueuedSource::default();
-    let source = DownloadSource::new(&inner, asked, Arc::default());
+    let alone = start_download_alone(&asked);
+    let source = DownloadSource::new(&inner, asked, Arc::default(), &alone.0, &alone.1);
     assert_eq!(source.find_refusal(), None, "nothing was fetched");
     // One part is throttled; another part, answered after it, takes nothing back.
     inner.queue(Err(SourceError::Throttled { detail: "429".into(), retry_after: None }));
@@ -767,7 +790,8 @@ fn a_size_the_source_does_not_tell_is_no_other_content() {
     inner.queue(Ok(QueuedAnswer { size: 0, version: Some(version_of(b"the content")), served_from: 0, bytes: b"the content".to_vec() }));
     inner.queue(Ok(QueuedAnswer { size: 0, version: None, served_from: 0, bytes: b"the content".to_vec() }));
     inner.queue(Ok(QueuedAnswer { size: 0, version: Some(version_of(b"")), served_from: 0, bytes: Vec::new() }));
-    let source = DownloadSource::new(&inner, asked.clone(), Arc::default());
+    let alone = start_download_alone(&asked);
+    let source = DownloadSource::new(&inner, asked.clone(), Arc::default(), &alone.0, &alone.1);
     assert!(run(source.fetch("id", 0, None)).is_ok());
     assert!(run(source.fetch("id", 0, None)).is_ok(), "neither told: nothing disagrees");
     assert_eq!(source.find_refusal(), None);
@@ -777,7 +801,8 @@ fn a_size_the_source_does_not_tell_is_no_other_content() {
     let inner = QueuedSource::default();
     inner.queue_content(b"", 0);
     inner.queue_content(b"bytes", 0);
-    let source = DownloadSource::new(&inner, empty, Arc::default());
+    let alone = start_download_alone(&empty);
+    let source = DownloadSource::new(&inner, empty, Arc::default(), &alone.0, &alone.1);
     assert!(run(source.fetch("id", 0, None)).is_ok());
     assert!(matches!(run(source.fetch("id", 0, None)), Err(SourceError::NotFound(_))));
 
@@ -796,10 +821,11 @@ fn a_size_the_source_does_not_tell_is_no_other_content() {
 #[test]
 fn the_mark_is_taken_back_the_moment_the_download_does_not_trust_what_is_on_disk() {
     let asked = ItemFixture::onedrive_content_of(b"the content");
+    let alone = start_download_alone(&asked);
     let (inner, written_up_to) = (QueuedSource::default(), Arc::new(AtomicU64::new(0)));
     inner.queue_content(b"the content", 0);
     inner.queue_content(b"the content", 0);
-    let source = DownloadSource::new(&inner, asked, Arc::clone(&written_up_to));
+    let source = DownloadSource::new(&inner, asked, Arc::clone(&written_up_to), &alone.0, &alone.1);
     run(async { read_whole(source.fetch("id", 0, None).await.ok().expect("the asked content")).await });
     assert_eq!(written_up_to.load(Ordering::SeqCst), 11);
 
@@ -810,4 +836,83 @@ fn the_mark_is_taken_back_the_moment_the_download_does_not_trust_what_is_on_disk
     // What it writes when it starts over counts again.
     run(async { read_whole(source.fetch("id", 0, None).await.ok().expect("the asked content")).await });
     assert_eq!(written_up_to.load(Ordering::SeqCst), 11);
+}
+
+#[test]
+fn what_was_remembered_of_a_key_is_void_at_the_first_answer_its_next_download_accepts() {
+    let asked = ItemFixture::onedrive_content_of(b"the content");
+    let (download_states, first) = start_download_alone(&asked);
+    let key = first.key().clone();
+    let start = || match download_states.start_or_join(&key, &DownloadAsker::Read, None) {
+        ItemDownloadStart::Started { run, .. } => run,
+        ItemDownloadStart::Joined | ItemDownloadStart::Stopped => panic!("no download of it runs"),
+    };
+    download_states.finish_as_another_content(&first);
+
+    // The one stream: neither a refusal nor an answer of another content voids it.
+    let (run_again, inner) = (start(), QueuedSource::default());
+    let source = DownloadSource::new(&inner, asked.clone(), Arc::default(), &download_states, &run_again);
+    assert!(download_states.is_another_content(&key), "asked for, and OneDrive has not answered");
+    inner.queue(Err(SourceError::Transient("no network".into())));
+    assert!(run(source.fetch("id", 0, None)).is_err());
+    assert!(download_states.is_another_content(&key), "a refusal is no answer about the content");
+    inner.queue_content(b"THE CONTENT", 0);
+    assert!(run(source.fetch("id", 0, None)).is_err());
+    assert!(download_states.is_another_content(&key), "another content again");
+    inner.queue_content(b"the content", 0);
+    let fetched = run(source.fetch("id", 0, None)).ok().expect("the asked content");
+    assert!(!download_states.is_another_content(&key), "void at the answer, before a byte of it is read");
+    drop(fetched);
+    download_states.finish_as_another_content(&run_again);
+
+    // A part of a download in parts is an answer as well.
+    let (run_again, inner) = (start(), QueuedSource::default());
+    let source = DownloadSource::new(&inner, asked, Arc::default(), &download_states, &run_again);
+    inner.queue(Ok(QueuedAnswer { size: 11, version: Some(version_of(b"the content")), served_from: 4, bytes: b"cont".to_vec() }));
+    assert!(download_states.is_another_content(&key));
+    assert!(run(source.fetch("id", 4, Some(8))).is_ok());
+    assert!(!download_states.is_another_content(&key));
+}
+
+#[test]
+fn the_end_of_a_download_is_news_per_case() {
+    let another_content: DownloadEnd = Err(DownloadRefusal::AnotherContent);
+    assert_eq!(decide_end_news(&another_content, false), DownloadEndNews::Changed, "the first time OneDrive states another content");
+    assert_eq!(decide_end_news(&another_content, true), DownloadEndNews::AnotherContentAgain, "OneDrive states what is remembered of the key");
+    // Whatever else it ended as is told, also where OneDrive did not answer about the content.
+    for end in [Ok(ItemLandingOutcome::RowsChanged), Ok(ItemLandingOutcome::Failed { errno: libc::EIO }), Err(DownloadRefusal::ItemGone), Err(DownloadRefusal::SignedOut), Err(DownloadRefusal::Transient { detail: "no network".into() })] {
+        assert_eq!(decide_end_news(&end, true), DownloadEndNews::Changed, "{end:?}");
+        assert_eq!(decide_end_news(&end, false), DownloadEndNews::Changed, "{end:?}");
+    }
+}
+
+#[test]
+fn a_content_onedrive_keeps_stating_another_one_for_is_told_once() {
+    let fixture = ItemFixture::new();
+    let shown = fixture.show_onedrive_file("report.txt", b"the report");
+    let item = shown.local_item_id;
+    // OneDrive has another content by now, which no listing has told the rows yet.
+    fixture.serve_content(item, b"THE REPORT");
+    let report = make_report(&fixture);
+    let (downloader, _) = make_downloader_reporting_to(&fixture, fixture.content_source(), report.clone());
+    let count_events = |kind: EventKind| report.activity.recent(100).expect("the activity kept in memory").iter().filter(|event| event.kind == kind).count();
+    let count_announcements = || fixture.inotify_bridge.list_queued().iter().flatten().filter(|announcement| matches!(announcement, ItemAnnouncement::ContentChanged { item: announced, .. } if *announced == item)).count();
+    let announced_before = count_announcements();
+
+    // The first time the content is found to be another one: everything is told.
+    assert_eq!(hear(ask(&downloader, &shown, DownloadAsker::Read)), Err(libc::ESTALE));
+    assert_eq!((count_events(EventKind::Failed), count_announcements() - announced_before), (1, 2));
+
+    // Each read asks OneDrive anew, which states the same: nothing changed to be told.
+    for _read in 0..3 {
+        assert_eq!(hear(ask(&downloader, &shown, DownloadAsker::Read)), Err(libc::ESTALE));
+    }
+    assert!(fixture.download_states.is_another_content(&key_of(&shown)));
+    assert_eq!((count_events(EventKind::Failed), count_announcements() - announced_before), (1, 2), "the failure and the announcements of the first download only");
+
+    // OneDrive states the asked content again: the download is told as any is, from its
+    // first answer on.
+    fixture.serve_content(item, b"the report");
+    assert_eq!(hear(ask(&downloader, &shown, DownloadAsker::Read)), Ok(()));
+    assert_eq!((count_events(EventKind::Failed), count_events(EventKind::Downloaded), count_announcements() - announced_before), (1, 1, 3));
 }

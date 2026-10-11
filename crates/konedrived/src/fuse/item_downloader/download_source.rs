@@ -20,6 +20,12 @@
 //! typed: `DownloadRefusal::AnotherContent`, where the source's own "no such item" is
 //! `DownloadRefusal::ItemGone` ([`decide_refusal`]).
 //!
+//! **An answer that is let through voids what was remembered of the key.** That OneDrive
+//! stated another content in its answer to the download before this one stays remembered
+//! while this one asks; the first answer accepted here is OneDrive's word since, and the
+//! download states are told at that answer (`ItemDownloadStates::forget_another_content`),
+//! not when the download is started and not when it ends.
+//!
 //! **A size that was not told** disagrees with nothing ([`find_told_size`]): the answer
 //! is held against the asked content by its version alone, and with no version either it
 //! states no other content. The download then refuses it as it refuses a size of 0 for a
@@ -42,6 +48,7 @@ use std::sync::Arc;
 use konedrive_tree::ContentVersion;
 
 use super::{decide_is_asked_content, DownloadRefusal};
+use crate::fuse::item_download_states::{DownloadRun, ItemDownloadStates};
 use crate::hydration::source::{ContentSource, Fetched, SourceError, Version};
 
 /// What `error` of the content source is, by what the plan's task does about it. Pure.
@@ -113,6 +120,10 @@ pub(super) struct DownloadSource<'a> {
     /// How far the file is written in order. A download in parts (`end` given) writes out
     /// of order and tells nothing.
     written_up_to: Arc<AtomicU64>,
+    /// The download this is the source of, and the states that are told when OneDrive
+    /// answered it with the asked content.
+    download_states: &'a ItemDownloadStates,
+    run: &'a DownloadRun,
     /// What the source last refused, by the end of the range that was asked for: a
     /// download in parts fetches several at once, and an answer for one part says nothing
     /// of the refusal of another.
@@ -120,8 +131,10 @@ pub(super) struct DownloadSource<'a> {
 }
 
 impl<'a> DownloadSource<'a> {
-    pub(super) fn new(inner: &'a dyn ContentSource, asked: ContentVersion, written_up_to: Arc<AtomicU64>) -> Self {
-        DownloadSource { inner, asked, written_up_to, refusals: std::sync::Mutex::default() }
+    /// The source of the download `run` of `asked`, which fetches through `inner` and
+    /// tells `written_up_to` and `download_states`.
+    pub(super) fn new(inner: &'a dyn ContentSource, asked: ContentVersion, written_up_to: Arc<AtomicU64>, download_states: &'a ItemDownloadStates, run: &'a DownloadRun) -> Self {
+        DownloadSource { inner, asked, written_up_to, download_states, run, refusals: std::sync::Mutex::default() }
     }
 
     /// What the source refused and no later answer for the same range took back, the
@@ -175,6 +188,9 @@ impl ContentSource for DownloadSource<'_> {
             AnswerUse::NotCounted => {}
         }
         crate::panic::lock(&self.refusals).remove(&end);
+        // OneDrive has answered, with the asked content: what its answer to the download
+        // before this one stated is void from here on.
+        self.download_states.forget_another_content(self.run);
         Ok(fetched)
     }
 

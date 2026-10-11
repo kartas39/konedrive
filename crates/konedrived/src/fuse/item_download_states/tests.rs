@@ -323,7 +323,7 @@ fn a_download_whose_file_is_whole_keeps_no_unfinished_file_however_it_ends() {
 }
 
 #[test]
-fn a_download_onedrive_answered_with_another_content_is_remembered_until_the_next_download_of_the_key() {
+fn a_download_onedrive_answered_with_another_content_is_remembered_until_the_next_download_of_the_key_is_answered() {
     let download_states = download_states();
     assert!(!download_states.is_another_content(&key(5, "c1")));
     let (waiter, told) = oneshot::channel();
@@ -343,11 +343,41 @@ fn a_download_onedrive_answered_with_another_content_is_remembered_until_the_nex
     download_states.finish_as_another_content(&run);
     download_states.finish(&run, Ok(()));
     assert!(download_states.is_another_content(&key(5, "c1")));
-    // Asked again: OneDrive is asked again, and what it answers then counts.
+    // Asked again: remembered until OneDrive has answered, not until it is asked.
+    let older = start_anew(&download_states, &key(5, "c1"));
+    assert!(download_states.is_another_content(&key(5, "c1")), "the download that asks anew has no answer yet");
+    assert!(download_states.is_downloading(LocalItemId::new(5)));
+    // It ends with no answer, however it ends: remembered as before.
+    download_states.finish(&older, Err(libc::EIO));
+    assert!(download_states.is_another_content(&key(5, "c1")), "a failure with no answer");
+    let (run, unfinished_file) = start(&download_states, &key(5, "c1")).unwrap();
+    assert!(unfinished_file.is_none(), "and no file is gone on from: no answer was written into one");
+    download_states.begin_writing(&run, unnamed_file());
+    download_states.abandon(&run);
+    assert!(download_states.is_another_content(&key(5, "c1")), "a download that was dropped");
+    let run = start_as(&download_states, &key(5, "c1"), plan_pin(), None).unwrap().0;
+    assert!(download_states.abort_if_plan_alone_asked(&key(5, "c1")));
+    assert!(download_states.is_another_content(&key(5, "c1")), "one the plan gave up");
+    download_states.forget_another_content(&run);
+    assert!(download_states.is_another_content(&key(5, "c1")), "what a download that runs no more accepted changes nothing");
+    // An answer that states another content again: remembered still.
     let run = start_anew(&download_states, &key(5, "c1"));
-    assert!(!download_states.is_another_content(&key(5, "c1")));
     download_states.finish_as_another_content(&run);
-    // Forgotten with the item.
+    assert!(download_states.is_another_content(&key(5, "c1")));
+    // An answer of the key's content: void from that answer on, while the download runs.
+    let run = start_anew(&download_states, &key(5, "c1"));
+    download_states.forget_another_content(&older);
+    assert!(download_states.is_another_content(&key(5, "c1")), "an older download of the key says nothing of this one");
+    download_states.forget_another_content(&run);
+    assert!(!download_states.is_another_content(&key(5, "c1")));
+    download_states.finish(&run, Err(libc::EIO));
+    assert!(!download_states.is_another_content(&key(5, "c1")), "a failure after an answer of the key's content");
+    // Forgotten with the item, also while the next download has no answer.
+    download_states.finish_as_another_content(&start_anew(&download_states, &key(5, "c1")));
+    download_states.forget_item(LocalItemId::new(5));
+    assert!(!download_states.is_another_content(&key(5, "c1")));
+    download_states.finish_as_another_content(&start_anew(&download_states, &key(5, "c1")));
+    let _run = start_anew(&download_states, &key(5, "c1"));
     download_states.forget_item(LocalItemId::new(5));
     assert!(!download_states.is_another_content(&key(5, "c1")));
 }

@@ -29,10 +29,18 @@
 //! file is kept, and the download states remember it
 //! (`ItemDownloadStates::finish_as_another_content`). So a read is answered from a
 //! running download's file only once that download is known to be of the content the
-//! handle was opened as. What is remembered answers nothing by itself: it is forgotten
-//! when the next download of that item and content starts, which asks OneDrive anew — a
-//! read of such a content asks for exactly that (`item_kernel_requests`), and the plan's
-//! next step for a pinned file does.
+//! handle was opened as. What is remembered answers nothing by itself: the next download
+//! of that item and content asks OneDrive anew — a read of such a content asks for
+//! exactly that (`item_kernel_requests`), and the plan's next step for a pinned file
+//! does — and it is forgotten at the first answer that download's source accepts
+//! (`download_source`), not at its start.
+//!
+//! **A download of a content that is remembered so** is shown and told from OneDrive's
+//! answer on, not from its asking: it is not announced as being downloaded at its start,
+//! and where its first answer states another content again, its end is no news
+//! ([`decide_end_news`]) — no activity event, no count of the space, no announcement.
+//! The first time a content is found to be another one, everything is told. (`Transfers`
+//! shows its entry from the fetch on, as for every download: `hydration::tracked`.)
 //!
 //! **An item OneDrive does not have** (`DownloadRefusal::ItemGone`: the source's "no such
 //! item"), and an answer that tells neither a size nor a version, state no other content:
@@ -90,6 +98,9 @@
 // test: a_download_of_an_item_onedrive_does_not_have_fails_and_keeps_its_unfinished_file
 // test: a_size_the_source_does_not_tell_is_no_other_content
 // test: the_mark_is_taken_back_the_moment_the_download_does_not_trust_what_is_on_disk
+// test: what_was_remembered_of_a_key_is_void_at_the_first_answer_its_next_download_accepts
+// test: the_end_of_a_download_is_news_per_case
+// test: a_content_onedrive_keeps_stating_another_one_for_is_told_once
 #![allow(dead_code)]
 
 use std::fs::File;
@@ -197,6 +208,30 @@ pub(super) fn decide_download_failure(errno: i32, refusal: Option<DownloadRefusa
     match refusal {
         Some(refusal) => Err(refusal),
         None => Ok(ItemLandingOutcome::Failed { errno }),
+    }
+}
+
+/// Whether the end of a download is news to whoever is told of downloads: the activity,
+/// the count of the space, the folder's watchers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DownloadEndNews {
+    /// It is: the download landed, or failed, or OneDrive stated another content than
+    /// anything known of the key said.
+    Changed,
+    /// It is not: OneDrive stated another content in the first answer to a download of a
+    /// key the download states remembered so already. Nothing changed since that was
+    /// told.
+    AnotherContentAgain,
+}
+
+/// Whether a download that ended as `end` is news, by whether the download states still
+/// remember its key as another content then (`is_another_content_remembered`:
+/// `ItemDownloadStates::is_another_content`, asked before the end is told to them — an
+/// answer the download accepted would have voided it). Pure.
+pub(super) fn decide_end_news(end: &DownloadEnd, is_another_content_remembered: bool) -> DownloadEndNews {
+    match end {
+        Err(DownloadRefusal::AnotherContent) if is_another_content_remembered => DownloadEndNews::AnotherContentAgain,
+        Ok(_) | Err(_) => DownloadEndNews::Changed,
     }
 }
 
@@ -336,11 +371,22 @@ impl ItemDownloader {
     /// ([`fetch_and_land`](Self::fetch_and_land)), the activity told — but for the plan's
     /// pin, whose step is told by the plan's task —, the space counted again, and the
     /// change announced.
+    ///
+    /// A download of a key remembered as another content
+    /// (`ItemDownloadStates::is_another_content`) is not announced at its start: it asks
+    /// OneDrive anew, and nothing is known to change yet. Where it ends as
+    /// [`DownloadEndNews::AnotherContentAgain`], nothing is told at its end either.
     async fn run_download(self: &Arc<Self>, file: &ItemToDownload, asker: &DownloadAsker, run: &DownloadRun, unfinished_file: Option<Arc<File>>) -> DownloadEnd {
         let Some((place, path)) = self.download_landing.find_shown_place(file.item).await else { return Ok(ItemLandingOutcome::RowsChanged) };
         let shown_path = self.folder.join(&path).display().to_string();
-        self.inotify_bridge.announce(vec![ItemAnnouncement::ContentChanged { item: file.item, place: place.clone() }]);
+        if !self.download_states.is_another_content(run.key()) {
+            self.inotify_bridge.announce(vec![ItemAnnouncement::ContentChanged { item: file.item, place: place.clone() }]);
+        }
         let end = self.fetch_and_land(file, asker, run, unfinished_file, &shown_path).await;
+        // Asked before the end is told to the states, which remember the key anew then.
+        if decide_end_news(&end, self.download_states.is_another_content(run.key())) == DownloadEndNews::AnotherContentAgain {
+            return end;
+        }
         if !matches!(asker, DownloadAsker::PlanPin { .. }) {
             let event = match (&end, decide_waiters_answer(&end)) {
                 (Ok(ItemLandingOutcome::Landed { path, .. }), _) => activity::event(EventKind::Downloaded, self.folder.join(path).display().to_string(), activity::human_size(file.content.size())),
@@ -400,9 +446,10 @@ impl ItemDownloader {
             _ => Tracked::new(Arc::clone(&self.source), self.report.transfers.clone(), shown_path),
         };
         // What of the download is on disk in order, for the reads that come meanwhile:
-        // raised by the source alone, and only for answers of the asked content.
+        // raised by the source alone, and only for answers of the asked content. The
+        // source also tells the states of the first such answer.
         let written_up_to = self.download_states.begin_writing(run, Arc::clone(&staged));
-        let source = DownloadSource::new(&tracked, file.content.clone(), written_up_to);
+        let source = DownloadSource::new(&tracked, file.content.clone(), written_up_to, &self.download_states, run);
         // A large file that nothing waits to open (a pinned one) goes in parallel parts,
         // the slot held here being its first stream's.
         let split = (class != Class::Open && Size::of(size) == Size::Large).then(|| Split::new(Arc::clone(&self.pool), Arc::clone(&self.split_download_share)));
