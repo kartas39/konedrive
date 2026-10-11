@@ -107,7 +107,7 @@ plugin opens a file in the folder.
 
 %build
 # The Rust workspace, offline. The vendored .cargo/config.toml replaces
-# crates.io with vendor/. Cargo's home and output stay in the build directory.
+# crates.io with crates-io/. Cargo's home and output stay in the build directory.
 # RUSTFLAGS come from Fedora's build flags. fault-injection is the tests'
 # alone and never packaged; dev-tools (the token export)
 # only with `--with dev_tools`, a local development package.

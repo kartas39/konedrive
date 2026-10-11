@@ -131,8 +131,10 @@ tar -czf "$top/SOURCES/$name.tar.gz" -C "$top/tree" "$name"
 # also stops the build if the rewritten lock file does not fit Cargo.toml.
 stage="$top/vendor-stage"
 mkdir -p "$stage/.cargo"
-(cd "$stage" && cargo vendor --locked --manifest-path "$tree/Cargo.toml" vendor) >"$stage/.cargo/config.toml"
-tar -czf "$top/SOURCES/$name-vendor.tar.gz" -C "$stage" vendor .cargo
+# The directory is crates-io, not vendor: the tree has a vendor/ of its own (vendor/fuser, a
+# path dependency), which a directory source must not hold.
+(cd "$stage" && cargo vendor --locked --manifest-path "$tree/Cargo.toml" crates-io) >"$stage/.cargo/config.toml"
+tar -czf "$top/SOURCES/$name-vendor.tar.gz" -C "$stage" crates-io .cargo
 rm -rf "$stage" "$top/tree"
 
 if [ "$sources_only" = yes ]; then
