@@ -496,8 +496,8 @@ impl ItemKernelRequests {
         self.lookup.find_xattr(node, name)
     }
 
-    /// listxattr. `ItemLookup::list_xattr_names`: one read of the row, where today each of
-    /// six names resolves the node again.
+    /// listxattr. `ItemLookup::list_xattr_names`: no name; the row is read for the node's
+    /// `ESTALE` alone.
     pub(super) fn answer_listxattr(&self, node: LocalItemId) -> Result<Vec<&'static str>, Errno> {
         self.lookup.list_xattr_names(node)
     }

@@ -144,7 +144,8 @@ pub(super) struct XattrFacts {
     pub(super) has_refusal_for_good: bool,
 }
 
-/// The names of the attributes an item may have, in the order `listxattr` names them.
+/// The names of the attributes an item may have: each is read by its name, and `listxattr`
+/// names none of them ([`ItemLookup::list_xattr_names`]).
 const ITEM_XATTR_NAMES: [&str; 4] = [XATTR_ITEM_ID, XATTR_STATE, XATTR_PIN, XATTR_SYNC];
 /// The names of the folder's own attributes: on the root alone, read from the backing
 /// directory, where the folder's registration wrote them.
@@ -456,11 +457,18 @@ impl ItemLookup {
         decide_xattr_value(name, &item, &facts).ok_or(Errno::ENODATA)
     }
 
-    /// Listxattr: the names of the attributes `node` has. One read of the row.
+    /// Listxattr: no name, whatever `node` has. The attributes are the daemon's account of
+    /// an item of THIS folder — its item of OneDrive, its state, its pin, the folder's own
+    /// registration — and are read by name ([`find_xattr`](Self::find_xattr)) by who knows
+    /// them: Dolphin's plugin, `konedrivectl`. A program that copies a file with its
+    /// attributes (`mv` to another filesystem, `cp -a`, an archiver) asks for the list and
+    /// writes every name of it on the copy; a copy that carried them would say outside the
+    /// folder, in another sync folder, or back in this one beside the original, that it is
+    /// an item of OneDrive which it is not. `ESTALE` for a node whose row is gone or shows
+    /// nothing, as every request by a node.
     pub(super) fn list_xattr_names(&self, node: LocalItemId) -> Result<Vec<&'static str>, Errno> {
-        let (item, facts) = self.read_xattr_facts(node, None)?;
-        let of_folder = FOLDER_XATTR_NAMES.into_iter().filter(|name| node == LocalItemId::ROOT && self.backing_directory.read_folder_attribute(name).is_some());
-        Ok(of_folder.chain(ITEM_XATTR_NAMES.into_iter().filter(|name| decide_xattr_value(name, &item, &facts).is_some())).collect())
+        self.read_xattr_facts(node, None)?;
+        Ok(Vec::new())
     }
 }
 

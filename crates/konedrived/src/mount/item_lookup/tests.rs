@@ -543,38 +543,37 @@ fn the_folders_own_attributes_are_the_roots_alone() {
     for name in [XATTR_ROOT, XATTR_DRIVE] {
         assert_eq!(errno_of(find_xattr(&fixture, &lookup, ROOT, name)), Some(Errno::ENODATA), "a folder that carries none");
     }
-    assert_eq!(ask(&fixture, &lookup, |lookup| lookup.list_xattr_names(ROOT)).unwrap(), [XATTR_ITEM_ID]);
     // What the folder's registration wrote on the backing directory.
     xattr::set(fixture.folder(), XATTR_ROOT, b"1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d").unwrap();
     xattr::set(fixture.folder(), XATTR_DRIVE, b"D-AbC").unwrap();
     assert_eq!(find_xattr(&fixture, &lookup, ROOT, XATTR_ROOT).unwrap(), "1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d");
     assert_eq!(find_xattr(&fixture, &lookup, ROOT, XATTR_DRIVE).unwrap(), "D-AbC", "as it was written, not as the rows spell the drive");
-    assert_eq!(ask(&fixture, &lookup, |lookup| lookup.list_xattr_names(ROOT)).unwrap(), [XATTR_ROOT, XATTR_DRIVE, XATTR_ITEM_ID]);
     // No other node has them, whatever its backing directory carries.
     fixture.make_directory_on_disk(docs.local_item_id);
     xattr::set(fixture.disk_path("docs"), XATTR_ROOT, b"1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d").unwrap();
     assert_eq!(errno_of(find_xattr(&fixture, &lookup, docs.local_item_id, XATTR_ROOT)), Some(Errno::ENODATA));
-    let node = docs.local_item_id;
-    assert_eq!(ask(&fixture, &lookup, move |lookup| lookup.list_xattr_names(node)).unwrap(), [XATTR_ITEM_ID]);
 }
 
 #[test]
-fn the_attributes_a_node_has_are_named_by_one_read() {
+fn no_attribute_is_named_in_a_list_though_each_is_read_by_its_name() {
     let fixture = ItemFixture::new();
     let lookup = lookup(&fixture);
     let list = |node: LocalItemId| ask(&fixture, &lookup, move |lookup| lookup.list_xattr_names(node)).unwrap();
+    let has = |node: LocalItemId, name: &'static str| find_xattr(&fixture, &lookup, node, name).is_ok();
+    xattr::set(fixture.folder(), XATTR_ROOT, b"1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d").unwrap();
+    xattr::set(fixture.folder(), XATTR_DRIVE, b"D-AbC").unwrap();
+    assert!(has(ROOT, XATTR_ROOT) && has(ROOT, XATTR_DRIVE) && has(ROOT, XATTR_ITEM_ID));
+    assert!(list(ROOT).is_empty(), "a copy of the folder carries no registration");
     let file = fixture.show_onedrive_file("a.txt", b"hello");
     let node = file.local_item_id;
-    assert_eq!(list(node), [XATTR_ITEM_ID, XATTR_STATE]);
     fixture.write_rows(move |store| store.item_store().set_item_pin(node, true));
-    assert_eq!(list(node), [XATTR_ITEM_ID, XATTR_STATE, XATTR_PIN]);
     fixture.land_copy(node, b"hello");
     fixture.change_file_here(node, b"changed here");
-    assert_eq!(list(node), [XATTR_ITEM_ID, XATTR_STATE, XATTR_PIN, XATTR_SYNC]);
+    assert!([XATTR_ITEM_ID, XATTR_STATE, XATTR_PIN, XATTR_SYNC].into_iter().all(|name| has(node, name)));
+    assert!(list(node).is_empty(), "a copy of the file carries no item of OneDrive, no state, no pin and no sync mark");
     let own = fixture.make_own_file("own.txt", b"abc");
-    assert_eq!(list(own.local_item_id), [XATTR_SYNC], "a file made here and not sent");
-    let ignored = fixture.make_own_file("notes.tmp", b"abc");
-    assert!(list(ignored.local_item_id).is_empty(), "a file that is left here has none");
+    assert!(has(own.local_item_id, XATTR_SYNC));
+    assert!(list(own.local_item_id).is_empty());
 }
 
 #[test]

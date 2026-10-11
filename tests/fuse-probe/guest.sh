@@ -79,7 +79,7 @@ service() {
     echo "type: $(awk -v m=$f '$2==m{print $3}' /proc/self/mounts)"
     echo "listing: $($U find $f | sort | tr '\n' ' ')"
     echo "status: $(ask status)"
-    echo "root attributes: $($U python3 -c "import os,sys; print(sorted(os.listxattr(sys.argv[1])))" $f)"
+    echo "root attributes, by name: $($U python3 -c "import os,sys; print([n for n in ('root', 'drive', 'item-id') if os.getxattr(sys.argv[1], 'user.konedrive.' + n)]); print('listed:', os.listxattr(sys.argv[1]))" $f | tr '\n' ' ')"
     echo "state a.txt: $(ask state $f/a.txt); a.txt: $($U cat $f/a.txt)"; sleep 1; echo "state a moment after it was read whole: $(ask state $f/a.txt)"
     echo "-- a look at the start of a big file"
     echo "the first 32 KiB equal to the cloud's: $(cmp <($U head -c 32768 $f/docs/big.bin) <(head -c 32768 $src/big) && echo yes); state after: $(ask state $f/docs/big.bin); on disk: $($U stat -c %b $f/docs/big.bin) blocks"

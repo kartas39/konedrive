@@ -1,3 +1,2 @@
 dead_mount_is_taken_off_at_once_after_a_kill	the tidy step asks the folder for its attributes, which the kernel answers from memory for a second after the daemon's death: it sees no dead mount and leaves it
 daemon_started_at_once_after_a_kill_serves_the_folder	a daemon started within that second does not see the dead mount either, and the folder stays down: 'the sync folder is not at ... any more'
-file_moved_out_of_the_folder_carries_none_of_konedrives_attributes	the mount lists user.konedrive.item-id and user.konedrive.state among a file's attributes, and mv (as cp -a) copies them to where the file goes

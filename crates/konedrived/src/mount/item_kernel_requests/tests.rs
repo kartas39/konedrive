@@ -354,7 +354,7 @@ fn the_reading_requests_answer_what_the_rows_show() {
 
     let item_id = mount.ask(move |requests| requests.answer_getxattr(file, OsStr::new(XATTR_ITEM_ID))).unwrap();
     assert_eq!(String::from_utf8(item_id).unwrap(), onedrive_id_of("docs/a.txt"));
-    assert!(mount.ask(move |requests| requests.answer_listxattr(file)).unwrap().contains(&XATTR_ITEM_ID));
+    assert!(mount.ask(move |requests| requests.answer_listxattr(file)).unwrap().is_empty(), "read by its name, and named in no list");
     assert_eq!(mount.ask(move |requests| requests.answer_getxattr(file, OsStr::new("user.other"))).err(), Some(Errno::ENODATA));
 }
 
