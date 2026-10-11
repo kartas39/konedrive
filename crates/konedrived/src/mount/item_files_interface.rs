@@ -26,13 +26,14 @@ use konedrive_tree::{ContentPresence, FileSyncState, Item, ItemKind, LocalItemId
 use tokio::sync::oneshot;
 
 use super::item_free_up::FreeUpDecision;
-use super::item_download_states::{DownloadAsker, DownloadKey, ItemDownloadStates, RunningDownloadFile};
+use super::item_download_states::{DownloadAsker, ItemDownloadStates};
 use super::item_downloader::{ItemDownloader, ItemToDownload};
 use super::item_free_up::{FreedCopy, ItemFreeUp};
 use super::item_announcements::ItemAnnouncement;
 use super::item_handles::ItemHandles;
 use super::item_inotify_bridge::ItemInotifyBridge;
 use super::write_operation_thread::WriteOperationThread;
+use crate::sync_parts::running_steps::RunningSteps;
 use crate::sync_parts::sync_plan_wake::{SyncPlanWake, WakeCause};
 
 /// How many files below a directory are read from the rows, and asked for, at a time.
@@ -73,14 +74,7 @@ impl ItemPathStatus {
     /// of `sync_state` and `is_downloading`): what `Files.Menu` shows a file as. `None`
     /// for a directory and for a file that is no file of OneDrive's.
     pub fn find_state_attribute(&self) -> Option<konedrive_fs::placeholder::State> {
-        use konedrive_fs::placeholder::State;
-        // TODO: contract — `item_lookup::decide_state_attribute` takes the row (`mount/item_lookup.rs`) and the status keeps none, only the row's `sync_state`: its cases are written here a second time, in its order. One of the two is to take `Option<FileSyncState>`.
-        match (self.sync_state?, self.is_downloading) {
-            (FileSyncState::LocalOnly, _) => None,
-            (FileSyncState::Synced | FileSyncState::ModifiedHere | FileSyncState::RemoteOnly, true) => Some(State::Hydrating),
-            (FileSyncState::Synced | FileSyncState::ModifiedHere, false) => Some(State::Hydrated),
-            (FileSyncState::RemoteOnly, false) => Some(State::OnlineOnly),
-        }
+        super::item_lookup::decide_state_attribute(self.sync_state, self.is_downloading)
     }
 }
 
@@ -119,6 +113,9 @@ pub struct ItemFilesInterface {
     sync_plan_wake: Arc<SyncPlanWake>,
     /// Told when a pin was set or taken off (`ItemAnnouncement::MarksChanged`).
     inotify_bridge: Arc<ItemInotifyBridge>,
+    /// Whether a step runs for an item: what a free-up leaves a file for
+    /// ([`decide_free_up`](Self::decide_free_up) reads it as the free-up does).
+    running_steps: Arc<RunningSteps>,
 }
 
 impl ItemFilesInterface {
@@ -134,8 +131,9 @@ impl ItemFilesInterface {
         write_operation_thread: Arc<WriteOperationThread>,
         sync_plan_wake: Arc<SyncPlanWake>,
         inotify_bridge: Arc<ItemInotifyBridge>,
+        running_steps: Arc<RunningSteps>,
     ) -> Self {
-        Self { folder, store, download_states, downloader, free_up, item_handles, write_operation_thread, sync_plan_wake, inotify_bridge }
+        Self { folder, store, download_states, downloader, free_up, item_handles, write_operation_thread, sync_plan_wake, inotify_bridge, running_steps }
     }
 
     /// The item of OneDrive the folder shows at `path`, a full path, with whether a pin
@@ -312,44 +310,31 @@ impl ItemFilesInterface {
             // A directory above holds it, whatever the item's own pin is.
             Some(_) => true,
         };
-        // TODO: contract — a free-up also leaves a file a step runs for (`ItemFreeUp::write_not_on_disk`: `RunningSteps::has_running_step`), and this interface holds no `RunningSteps` and `ItemFreeUp` hands out neither it nor its reading (`mount/item_free_up.rs`): a file that is being sent is answered here as one that would be freed, and the free-up itself then leaves it.
-        let is_downloading_or_sent = self.download_states.is_downloading(id);
+        // As the free-up reads it (`ItemFreeUp::write_not_on_disk`): a file a step runs for is left as one that is being downloaded is.
+        let is_downloading_or_sent = self.download_states.is_downloading(id) || self.running_steps.has_running_step(id);
         Ok(super::item_free_up::decide_item_free_up(&item, is_pinned, is_downloading_or_sent, self.item_handles.is_open_for_writing(id)))
     }
 
-    /// The files whose whole download began and has not landed: a download that runs now
-    /// (`ItemDownloadStates`), and the unfinished files earlier downloads left in the
-    /// backing directory to be gone on from. Of each: its full path, its size on disk and
+    /// The files whose whole download began and has not landed: a download that runs now,
+    /// and the unfinished files earlier downloads left to be gone on from
+    /// (`ItemDownloadStates::list_unfinished_files`, which holds them: none has a name in
+    /// the backing directory). Of each: its full path, its size on disk and
     /// its checkpoint (`user.konedrive.progress`; none where none was written). For the
     /// test support of the daemon (`account_folder::testing::staged`); no member of the
     /// bus asks it.
     pub async fn list_unfinished_downloads(&self) -> Result<Vec<(PathBuf, u64, Option<u64>)>, FilesRefusal> {
-        // TODO: contract — `ItemDownloadStates` has no reader of the files its downloads write into or left (`mount/item_download_states.rs`: only `find_running_download` by the key of one download). So the running downloads are found by asking it for every file the folder shows, and the unfinished files of downloads that failed (`State::Failed`), which have no name in the backing directory and are held there alone, are not listed at all.
-        let (mut after, mut unfinished) = (None, Vec::new());
-        loop {
-            let files = self.list_files_below(LocalItemId::ROOT, after).await?;
-            let Some(last) = files.last() else { return Ok(unfinished) };
-            after = Some(last.local_item_id);
-            let running: Vec<(LocalItemId, RunningDownloadFile)> = files
-                .iter()
-                .filter_map(|file| {
-                    let key = DownloadKey { item: file.local_item_id, content: file.local.as_ref()?.content.clone()? };
-                    Some((file.local_item_id, self.download_states.find_running_download(&key)?))
-                })
-                .collect();
-            if running.is_empty() {
-                continue;
-            }
-            let items: Vec<LocalItemId> = running.iter().map(|(item, _)| *item).collect();
-            let paths = self.store.read_items(move |reader| items.into_iter().map(|item| reader.find_path(item)).collect::<Result<Vec<_>, _>>()).await.map_err(to_refusal)?;
-            for ((_, download), path) in running.into_iter().zip(paths) {
-                // A file the folder shows no more by now has no path to list it under.
-                let Some(path) = path else { continue };
-                let size = download.file.metadata().map_err(|error| FilesRefusal::Io(error.to_string()))?.len();
-                let checkpoint = konedrive_fs::placeholder::read_progress(&download.file).map_err(|error| FilesRefusal::Io(error.to_string()))?.map(|progress| progress.bytes);
-                unfinished.push((self.folder.join(path), size, checkpoint));
-            }
+        let files = self.download_states.list_unfinished_files();
+        let items: Vec<LocalItemId> = files.iter().map(|(item, _)| *item).collect();
+        let paths = self.store.read_items(move |reader| items.into_iter().map(|item| reader.find_path(item)).collect::<Result<Vec<_>, _>>()).await.map_err(to_refusal)?;
+        let mut unfinished = Vec::new();
+        for ((_, file), path) in files.into_iter().zip(paths) {
+            // A file the folder shows no more by now has no path to list it under.
+            let Some(path) = path else { continue };
+            let size = file.metadata().map_err(|error| FilesRefusal::Io(error.to_string()))?.len();
+            let checkpoint = konedrive_fs::placeholder::read_progress(&file).map_err(|error| FilesRefusal::Io(error.to_string()))?.map(|progress| progress.bytes);
+            unfinished.push((self.folder.join(path), size, checkpoint));
         }
+        Ok(unfinished)
     }
 
     /// `Folder.PinnedCount` (`ItemReader::count_pins`).

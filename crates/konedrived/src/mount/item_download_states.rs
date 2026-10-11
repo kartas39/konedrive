@@ -564,6 +564,26 @@ impl ItemDownloadStates {
         }
     }
 
+    /// The files of the downloads that began and did not land, each with its item: the
+    /// file a running download writes into, unless it is whole already and on its way to
+    /// its landing ([`end_writing`](Self::end_writing)), and the unfinished file kept of
+    /// a download that failed, to be gone on from. None has a name in the backing
+    /// directory: they are held here alone. In no order. For the test support of the
+    /// daemon (`ItemFilesInterface::list_unfinished_downloads`).
+    pub(super) fn list_unfinished_files(&self) -> Vec<(LocalItemId, Arc<File>)> {
+        let states = crate::panic::lock(&self.states);
+        states
+            .by_key
+            .iter()
+            .filter_map(|(key, state)| match state {
+                State::Running { file: Some(file), is_file_whole: false, .. } => Some((key.item, Arc::clone(file))),
+                State::Running { file: None, .. } | State::Running { is_file_whole: true, .. } => None,
+                State::Failed { unfinished_file, .. } => Some((key.item, Arc::clone(unfinished_file))),
+                State::AnotherContent { .. } => None,
+            })
+            .collect()
+    }
+
     /// Whether a download of `item` runs, of any content: the state attribute, free-up.
     pub(super) fn is_downloading(&self, item: LocalItemId) -> bool {
         crate::panic::lock(&self.states).by_key.iter().any(|(key, state)| key.item == item && matches!(state, State::Running { .. }))

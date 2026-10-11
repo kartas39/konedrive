@@ -111,7 +111,10 @@ impl ItemWriteOperations {
     /// [`remove`](Self::remove), on the write-operation thread, after the decision and
     /// before the errno is answered; a failure of it is a warning and changes no answer.
     fn tell_directory_not_removable(&self, directory: LocalItemId) {
-        // TODO: contract — `ItemWriteOperations` keeps no set of the directories it told of (`mount/item_write_operations.rs` has no such field): the event is recorded at every `rmdir` that is refused so, not once per directory while the mount is up.
+        // Once per directory in a run of the mount: a program that tries again is not told again.
+        if !crate::panic::lock(&self.directories_told_not_removable).insert(directory) {
+            return;
+        }
         let path = match self.store.call_blocking(move |store| store.item_store().reader().find_path(directory)) {
             Ok(Some(path)) => path,
             Ok(None) => return,
@@ -120,15 +123,7 @@ impl ItemWriteOperations {
                 return;
             }
         };
-        // TODO: contract — `ItemWriteOperations` is given no path of the folder (`mount/item_write_operations.rs`), and the activity log holds full paths: the folder's path is read here from the link the kernel keeps for the backing directory's descriptor, which is the path the mount is at.
-        let folder = match std::fs::read_link(self.backing_directory.resolve_root_path()) {
-            Ok(folder) => folder,
-            Err(error) => {
-                tracing::warn!("cannot say that {} cannot be removed here: the folder's path cannot be read: {error}", path.display());
-                return;
-            }
-        };
-        let event = crate::status::activity::event(konedrive_tree::ActivityKind::NotRemovedHere, folder.join(path).display().to_string(), "");
+        let event = crate::status::activity::event(konedrive_tree::ActivityKind::NotRemovedHere, self.folder.join(path).display().to_string(), "");
         self.report.activity.record_blocking(vec![event]);
     }
 

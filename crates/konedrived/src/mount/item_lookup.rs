@@ -160,7 +160,7 @@ const FOLDER_XATTR_NAMES: [&str; 2] = [XATTR_ROOT, XATTR_DRIVE];
 pub(super) fn decide_xattr_value(name: &str, item: &Item, facts: &XattrFacts) -> Option<Vec<u8>> {
     let value: &str = match name {
         XATTR_ITEM_ID => item.onedrive_item.as_ref()?.item_id.as_str(),
-        XATTR_STATE => decide_state_attribute(item, facts.is_downloading)?.as_str(),
+        XATTR_STATE => decide_state_attribute(item.file_sync_state(), facts.is_downloading)?.as_str(),
         XATTR_PIN if facts.is_pinned => "1",
         XATTR_SYNC => decide_sync_mark(item, facts.is_ignored, facts.has_running_step, facts.answer.as_ref(), facts.has_refusal_for_good)?.as_str(),
         _ => return None,
@@ -168,12 +168,15 @@ pub(super) fn decide_xattr_value(name: &str, item: &Item, facts: &XattrFacts) ->
     Some(value.as_bytes().to_vec())
 }
 
-/// What `user.konedrive.state` says of `item`: `None` for what is no file of OneDrive (a
-/// directory, a file with no binding, an item the folder does not show); `hydrating`
-/// while its whole content is being downloaded; else `online-only` for content that is
-/// not on disk and `hydrated` for content that is. Pure: of `Item::file_sync_state`.
-pub(super) fn decide_state_attribute(item: &Item, is_downloading: bool) -> Option<State> {
-    match item.file_sync_state()? {
+/// What `user.konedrive.state` says of an item whose row says `sync_state`
+/// (`Item::file_sync_state`): `None` for what is no file of OneDrive (a directory, a file
+/// with no binding, an item the folder does not show); `hydrating` while its whole
+/// content is being downloaded; else `online-only` for content that is not on disk and
+/// `hydrated` for content that is. Pure. Of the two facts both its callers have: the
+/// attribute's answer from the row, and the status of a path for the bus
+/// (`ItemPathStatus::find_state_attribute`), which keeps no row.
+pub(super) fn decide_state_attribute(sync_state: Option<FileSyncState>, is_downloading: bool) -> Option<State> {
+    match sync_state? {
         FileSyncState::LocalOnly => None,
         _ if is_downloading => Some(State::Hydrating),
         FileSyncState::Synced | FileSyncState::ModifiedHere => Some(State::Hydrated),

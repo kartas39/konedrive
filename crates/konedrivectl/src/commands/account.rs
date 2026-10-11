@@ -44,14 +44,14 @@ pub(crate) async fn account(daemon: &Daemon, option: Option<&str>, command: Acco
             result.map_err(|e| anyhow!(explain_account_error(action, &e)))?;
             println!("Renamed {} to {}.", target.label, label.trim());
         }
-        AccountCmd::Remove { named } => {
+        AccountCmd::Remove { named, yes } => {
             let accounts = daemon.accounts().await?;
             daemon.check_loaded(&accounts).await?;
             let target = choose(&accounts, Some((&named, Source::Argument)))?;
             let sync = daemon.sync(&target.path).await?;
             let folder = sync.folder.path().await.unwrap_or_default();
             // Never refused for what is unsent: the user is told what stays only here, and may leave it.
-            if !super::sync::folder::warn_of_unsent_changes(&sync).await? {
+            if !super::sync::folder::warn_of_unsent_changes(&sync, yes).await? {
                 return Ok(());
             }
             // Read first: the list goes with the account. Where each listed file was rescued

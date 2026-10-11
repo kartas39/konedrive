@@ -492,15 +492,15 @@ fn the_state_attribute_per_case() {
     let directory = Item { onedrive_item: binding, ..shown_item(8, ItemKind::Directory, None) };
     let not_shown = Item { local: None, ..synced.clone() };
     for is_downloading in [false, true] {
-        assert_eq!(decide_state_attribute(&local_only, is_downloading), None, "a file that is not in OneDrive has none");
-        assert_eq!(decide_state_attribute(&directory, is_downloading), None);
-        assert_eq!(decide_state_attribute(&not_shown, is_downloading), None);
+        assert_eq!(decide_state_attribute(local_only.file_sync_state(), is_downloading), None, "a file that is not in OneDrive has none");
+        assert_eq!(decide_state_attribute(directory.file_sync_state(), is_downloading), None);
+        assert_eq!(decide_state_attribute(not_shown.file_sync_state(), is_downloading), None);
     }
-    assert_eq!(decide_state_attribute(&synced, false), Some(State::Hydrated));
-    assert_eq!(decide_state_attribute(&modified_here, false), Some(State::Hydrated));
-    assert_eq!(decide_state_attribute(&remote_only, false), Some(State::OnlineOnly));
+    assert_eq!(decide_state_attribute(synced.file_sync_state(), false), Some(State::Hydrated));
+    assert_eq!(decide_state_attribute(modified_here.file_sync_state(), false), Some(State::Hydrated));
+    assert_eq!(decide_state_attribute(remote_only.file_sync_state(), false), Some(State::OnlineOnly));
     for file in [&synced, &modified_here, &remote_only] {
-        assert_eq!(decide_state_attribute(file, true), Some(State::Hydrating));
+        assert_eq!(decide_state_attribute(file.file_sync_state(), true), Some(State::Hydrating));
     }
 }
 

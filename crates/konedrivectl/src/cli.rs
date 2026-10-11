@@ -95,7 +95,8 @@ pub(crate) enum AccountCmd {
     },
     /// Remove an account: forget its folder, sign it out, delete its token and cached data
     ///
-    /// Asks nothing. Deleted: the refresh token, the cached name and quota, the list of
+    /// Asks only when changes were not sent to OneDrive: they stay only on this computer
+    /// (`--yes` skips the question). Deleted: the refresh token, the cached name and quota, the list of
     /// OneDrive items, the activity and the conflicts list. Kept: what the folder holds on
     /// this computer — the files that were downloaded and your own (a file that was never
     /// downloaded is not there) — and rescued files.
@@ -103,6 +104,9 @@ pub(crate) enum AccountCmd {
         /// The account: its id, label or email
         #[arg(value_name = "ACCOUNT", allow_hyphen_values = true)]
         named: String,
+        /// Do not ask: go on also with changes that were not sent to OneDrive
+        #[arg(long)]
+        yes: bool,
     },
     /// Show the account's mode, or switch it to read-only or read-write
     ///
@@ -182,7 +186,14 @@ pub(crate) enum FolderCmd {
     /// Bind an empty folder to the account
     Register { path: String },
     /// Forget the account's folder (local files are left as they are)
-    Forget,
+    ///
+    /// Changes that were not sent to OneDrive stay only on this computer: with any, it
+    /// says how many and asks whether to go on.
+    Forget {
+        /// Do not ask: go on also with changes that were not sent
+        #[arg(long)]
+        yes: bool,
+    },
     /// List what is in OneDrive but not in the folder, and why
     Skipped,
     /// Ask OneDrive for changes now

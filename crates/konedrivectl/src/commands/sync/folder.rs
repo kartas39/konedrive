@@ -34,9 +34,9 @@ pub(super) async fn folder_command(
             fail_if_not_recovered(proxy, &absolute).await?;
             println!("{tag}{}", said::registered_text(&absolute));
         }
-        FolderCmd::Forget => {
+        FolderCmd::Forget { yes } => {
             // Never refused for what is unsent: the user is told what stays only here, and may leave it.
-            if !warn_of_unsent_changes(proxy).await? {
+            if !warn_of_unsent_changes(proxy, yes).await? {
                 return Ok(());
             }
             explained(chosen, proxy, SyncAction::Forget, proxy.folder.unregister().await).await?;
@@ -204,10 +204,12 @@ async fn ignore(chosen: &Chosen, proxy: &FolderProxies<'_>, action: IgnoreCmd) -
 /// what is unsent: reads how many changes made here are not sent
 /// (`UploadQueue.UnsentCount()`, answered for a folder in any state) and, when it is not
 /// 0, says "N changes were not sent to OneDrive and will stay only on this computer" and
-/// asks whether to go on (a `--yes` of the command answers it). Whether the caller goes
-/// on; `true` at once for 0. A count that cannot be read is said, and asked about too.
+/// asks whether to go on; with `is_asking_skipped` — the command's `--yes` — it says it
+/// and goes on unasked, as a script needs. Whether the caller goes on; `true` at once for
+/// 0. A count that cannot be read is said, and asked about too. Input that ends with no
+/// answer is a no.
 // TODO: wording
-pub(crate) async fn warn_of_unsent_changes(proxy: &FolderProxies<'_>) -> anyhow::Result<bool> {
+pub(crate) async fn warn_of_unsent_changes(proxy: &FolderProxies<'_>, is_asking_skipped: bool) -> anyhow::Result<bool> {
     use std::io::Write as _;
     let warning = match proxy.queue.unsent_count().await {
         Ok(0) => return Ok(true),
@@ -215,8 +217,10 @@ pub(crate) async fn warn_of_unsent_changes(proxy: &FolderProxies<'_>) -> anyhow:
         Ok(count) => format!("{count} changes were not sent to OneDrive and will stay only on this computer."),
         Err(error) => format!("Could not read how many changes were not sent to OneDrive ({error}); any that were not will stay only on this computer."),
     };
-    // TODO: contract — neither `sync forget` nor `account remove` has a `--yes` (`crates/konedrivectl/src/cli.rs`), and this function is given none: the question is always asked, and input that ends without an answer (a script) is a no.
     eprintln!("{warning}");
+    if is_asking_skipped {
+        return Ok(true);
+    }
     eprint!("Go on? [y/N] ");
     std::io::stderr().flush().context("cannot write the question")?;
     let mut answer = String::new();

@@ -18,7 +18,7 @@
 
 use std::collections::BTreeMap;
 
-use konedrive_tree::{ExclusionReason, LocalItemId, PlanFault, Reason, WaitReason};
+use konedrive_tree::{ExclusionReason, Group, LocalItemId, PlanFault, Reason, WaitReason};
 
 use super::running_steps::StepClass;
 
@@ -72,17 +72,29 @@ pub fn decide_is_shown_blocked(answer: Option<&ItemAnswer>, has_refusal_for_good
 }
 
 /// Whether a wait for the user with `reason` is shown as blocked: not the mass removal's
-/// (held, a state of its own), not a wait for space, and not a reason of the group
-/// `waiting`. Pure.
+/// (held, a state of its own), not the reason of an item the check at start left
+/// (`Reason::NotReadOnDisk`) nor of one the plan is at fault about
+/// (`Reason::BeingChecked`) — the owner's decision, which comes before the groups —, not
+/// a wait for space, and not a reason of the group `waiting`. Pure.
 fn decide_is_reason_shown_blocked(reason: &Reason) -> bool {
-    if *reason == Reason::MassDelete || reason.waits_for_space() {
+    match reason {
+        // Held, a state of its own.
+        Reason::MassDelete => return false,
+        // The owner's decision, before the rule of the groups: an item the check at start left reads "could not be read on disk" and one the plan is at fault about "being checked", and neither is ever shown blocked, whatever group its reason is of.
+        Reason::NotReadOnDisk | Reason::BeingChecked => return false,
+        _ => {}
+    }
+    if reason.waits_for_space() {
         return false;
     }
-    // TODO: `Reason::NotReadOnDisk` is of the group `PerFile` (`konedrive-reason`), so a plan that answered `WaitReason::User(Reason::NotReadOnDisk)` would be shown blocked, against the owner's decision; today the plan answers such an item `WaitReason::StartUpCheck`, which is not. Check that the plan never answers that reason as a wait for the user, and fix if needed.
-    // TODO: contract — the group's type (`konedrive_reason::Group`) cannot be named in this crate: `crates/konedrive-tree/src/lib.rs` names `Reason` and `WaitsFor` of `konedrive-reason` and not `Group`, and `crates/konedrived/Cargo.toml` has no `konedrive-reason`. So "of the group `waiting`" is asked here as "of the group a file open for writing is of", and the other groups are not written as cases.
-    let waiting_group = Reason::OpenForWriting.group();
-    // A reason in no table has no group, and is not of the group `waiting`: nothing says it goes up by itself.
-    reason.group() != waiting_group
+    match reason.group() {
+        Some(Group::Waiting) => false,
+        Some(Group::OneAction) => true,
+        Some(Group::PerFile) => true,
+        Some(Group::Never) => true,
+        // A reason in no table needs the user: nothing says it goes up by itself.
+        None => true,
+    }
 }
 
 /// The plan's answers of one folder.

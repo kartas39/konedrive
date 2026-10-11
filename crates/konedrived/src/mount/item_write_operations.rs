@@ -169,6 +169,15 @@ pub(super) struct ItemWriteOperations {
     /// Where the user is told what an errno cannot say
     /// (`remove::tell_directory_not_removable`): the activity log, which announces it.
     report: Report,
+    /// The folder's path, which is the mount: the activity log holds full paths.
+    folder: PathBuf,
+    /// The directories a refused `rmdir` was told of already
+    /// (`remove::tell_directory_not_removable`): each is told once in a run of the mount.
+    /// Changed by that function alone, on the write-operation thread. Nothing takes a
+    /// directory out of it while the mount is up; the mount's stop ends it — no write
+    /// operation runs after it, and the next run of the mount is built with write
+    /// operations of its own, whose set is empty.
+    directories_told_not_removable: std::sync::Mutex<std::collections::BTreeSet<LocalItemId>>,
     /// What a test has run at the points of an operation between its record and its row.
     #[cfg(test)]
     operation_point_hook: tests::OperationPointHook,
@@ -190,6 +199,7 @@ impl ItemWriteOperations {
         sync_plan_wake: Arc<SyncPlanWake>,
         mount_take_down: Arc<MountTakeDown>,
         report: Report,
+        folder: PathBuf,
     ) -> Self {
         Self {
             place_changes,
@@ -204,6 +214,8 @@ impl ItemWriteOperations {
             sync_plan_wake,
             mount_take_down,
             report,
+            folder,
+            directories_told_not_removable: std::sync::Mutex::default(),
             #[cfg(test)]
             operation_point_hook: tests::OperationPointHook::default(),
         }

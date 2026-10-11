@@ -143,10 +143,11 @@ fn build_over(backing_directory: Arc<BackingDirectory>, setup: ItemMountSetup, r
         Arc::clone(&download_states),
         Arc::clone(&upload_rules),
         Arc::clone(&access_mode_switch),
-        running_steps,
+        Arc::clone(&running_steps),
         Arc::clone(&sync_plan_wake),
         Arc::clone(&mount_take_down),
         report.clone(),
+        folder.clone(),
     ));
     let folder_step_parts = FolderStepParts {
         place_changes: Arc::clone(&place_changes),
@@ -171,6 +172,7 @@ fn build_over(backing_directory: Arc<BackingDirectory>, setup: ItemMountSetup, r
         Arc::clone(&write_operation_thread),
         sync_plan_wake,
         Arc::clone(&inotify_bridge),
+        running_steps,
     ));
 
     let kernel_requests = ItemKernelRequests::new(

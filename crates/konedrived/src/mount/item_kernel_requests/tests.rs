@@ -76,6 +76,7 @@ impl Requests {
             Arc::clone(&fixture.sync_plan_wake),
             Arc::clone(&fixture.mount_take_down),
             crate::status::report::Report::nowhere(),
+            fixture.folder(),
         ));
         let landing = Arc::new(ItemDownloadLanding::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.running_steps), Arc::clone(&fixture.mount_take_down)));
         let downloader = Arc::new(ItemDownloader::new(
