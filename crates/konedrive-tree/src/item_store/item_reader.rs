@@ -122,6 +122,9 @@ pub struct ItemCounts {
     /// The items OneDrive has that the folder cannot show: each with all OneDrive has
     /// below it.
     pub cannot_be_shown: u64,
+    /// The pins there are (`count_pins`): `Folder.PinnedCount`, published with the three
+    /// above so that a listing that took a pinned item is said.
+    pub pinned: u64,
 }
 
 /// What is unsent, as one count and one sum: `PendingCount` and `PendingBytes` before what
@@ -368,6 +371,7 @@ impl ItemReader<'_> {
             in_onedrive: count("SELECT COUNT(*) FROM items INDEXED BY items_onedrive_place WHERE onedrive_parent_id IS NOT NULL")?,
             shown: item_row::count_shown_items(self.conn())?,
             cannot_be_shown: count(&cannot_be_shown)?,
+            pinned: self.count_pins()?,
         })
     }
 

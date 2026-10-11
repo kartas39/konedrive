@@ -320,7 +320,7 @@ pub fn change_local_step_tries(tries: &mut LocalStepTries, ended: &[(SyncStep, S
 /// write the store refuses — an item whose row went — is said in the journal and is that
 /// item's alone: the other writes and every event are written all the same.
 /// Called by `SyncPlanTask::settle_steps`.
-pub fn write_step_settlements(store: &mut TreeStore, settlements: &[StepSettlement], folder: &std::path::Path, logged_since_listing_ended: usize, now: i64) -> Result<usize, TreeError> {
+pub fn write_step_settlements(store: &mut TreeStore, settlements: &[StepSettlement], folder: &std::path::Path, logged_since_listing_ended: usize, now: i64) -> Result<SettlementsWritten, TreeError> {
     let mut events = Vec::new();
     let mut logged_count = 0;
     for settlement in settlements {
@@ -342,7 +342,18 @@ pub fn write_step_settlements(store: &mut TreeStore, settlements: &[StepSettleme
     if !events.is_empty() {
         store.add_activity(&events)?;
     }
-    Ok(logged_count)
+    Ok(SettlementsWritten { logged_count, rows: events })
+}
+
+/// What one job of [`write_step_settlements`] wrote into the activity log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettlementsWritten {
+    /// How many events of what OneDrive changed were logged: what the cap per listing
+    /// counts.
+    pub logged_count: usize,
+    /// Every row written, in the order written: what the task announces
+    /// (`SyncPlanTask::announce_settled_steps`).
+    pub rows: Vec<ActivityRow>,
 }
 
 /// Writes one `write` of `settlement` into the step memory, and answers the event a

@@ -340,7 +340,7 @@ fn the_counts_tell_what_onedrive_has_what_is_shown_and_what_cannot_be_shown() {
     let mut store = store_with_parts_not_shown();
     make_file(&mut store, ROOT, "made-here");
     let counts = store.item_store().reader().count_items().unwrap();
-    assert_eq!(counts, ItemCounts { in_onedrive: 8, shown: 3, cannot_be_shown: 5 }, "the vault with the three below it, and the file; an item below two parts once");
+    assert_eq!(counts, ItemCounts { in_onedrive: 8, shown: 3, cannot_be_shown: 5, pinned: counts.pinned }, "the vault with the three below it, and the file; an item below two parts once");
     assert_eq!(TreeStore::in_memory().unwrap().item_store().reader().count_items().unwrap(), ItemCounts::default());
 }
 

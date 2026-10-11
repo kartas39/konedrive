@@ -235,7 +235,7 @@ async fn a_store_with_no_delta_link_begins_a_full_listing() {
     assert_eq!((under_way, delta_link), (None, Some(folder.fake_delta_link())));
     assert_eq!(counts.in_onedrive, 4);
     let published = state.get().cycle;
-    assert_eq!((published.listing, published.items_listed, published.sync_trouble), (false, 4, None));
+    assert_eq!((published.listing, published.sync_trouble), (false, None));
     assert!(last_checked.is_some_and(|at| at > 0) && published.last_checked > 0);
 }
 
@@ -777,29 +777,6 @@ async fn an_item_read_again_is_given_back_under_the_id_that_was_asked() {
     assert_eq!(folder.item("A.TXT"), None);
     assert_eq!(folder.listed_name("a.txt").as_deref(), Some("theirs.txt"));
     assert_eq!(folder.fixture.list_items().len(), row_count);
-}
-
-#[tokio::test]
-async fn the_end_of_a_listing_is_told_though_the_counts_cannot_be_read() {
-    let folder = ListedFolder::start_listed().await;
-    let after_listing = Arc::new(tokio::sync::Notify::new());
-    let cycle = ListingCycle::new(ListingCycleSetup { drive: folder.graph.client(), store: folder.fixture.store.clone(), sync_plan_wake: Arc::clone(&folder.fixture.sync_plan_wake), state: folder.state.clone(), drive_record: None, neighbours: None, report: Report::nowhere(), after_listing: Some(Arc::clone(&after_listing)) });
-    folder.graph.with(|cloud| cloud.rename("a.txt", "R", "a2.txt"));
-    // The counts are read by an index nothing of a page's writing asks for: with it gone
-    // the page is written and the read of the counts fails.
-    folder.fixture.write_rows(|store| store.bench_sql("DROP INDEX items_not_placed"));
-
-    let failed = cycle.run(&CancellationToken::new()).await;
-
-    assert!(matches!(failed, Err(CycleError::Store(_))), "{failed:?}");
-    // The listing ended in the store, and so it is told.
-    assert_eq!((folder.listing_under_way(), folder.delta_link()), (None, Some(folder.fake_delta_link())));
-    let causes = tokio::time::timeout(Duration::from_secs(5), folder.fixture.sync_plan_wake.wait()).await.expect("the plan is woken");
-    assert_eq!(causes.into_iter().collect::<Vec<_>>(), [WakeCause::ListingPageWritten, WakeCause::ListingEnded]);
-    assert!(folder.state.get().cycle.last_checked > 0);
-    assert!(folder.fixture.write_rows(|store| store.last_checked()).is_some_and(|at| at > 0));
-    tokio::time::timeout(Duration::from_secs(5), after_listing.notified()).await.expect("the thumbnail filler is nudged");
-    assert!(!folder.state.get().cycle.listing);
 }
 
 /// A configuration of its own in a temporary directory, with the accounts `Mine` and

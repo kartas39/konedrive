@@ -209,6 +209,9 @@ pub struct PlannedRound {
     pub is_all_read: bool,
     /// The folder's counts for the bus, of the same reading as the plan.
     pub item_counts: ItemCounts,
+    /// How many changes are unsent (`ItemReader::count_unsent`), of the same reading: what
+    /// the task reports after the plan (`SyncPlanTaskParts::unsent_count_report`).
+    pub unsent_count: u64,
 }
 
 /// The round's plan: reads `items_read_at_once` of each kind of item that differs
@@ -230,6 +233,7 @@ pub fn plan_next_steps(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Pl
     let local_step_tries = void_local_step_tries(items, &facts.local_step_tries)?;
     let folder_input = describe_folder(items, facts)?;
     let item_counts = items.count_items()?;
+    let unsent_count = items.count_unsent()?.count;
     let mut read_at_once = facts.settings.items_read_at_once.max(1);
     loop {
         let (rows, is_all_read) = read_differing_items(items, read_at_once)?;
@@ -266,7 +270,7 @@ pub fn plan_next_steps(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Pl
         };
         // TODO: an item beyond the window is planned only when the plan of the window has no step at all (the review's S9): with a window full of unsent items that cannot be sent, newer ones wait while any step (a download, a change of OneDrive's) is planned; check and fix if needed.
         if !plan.steps.is_empty() || is_all_read {
-            return Ok(PlannedRound { input, plan, memories: given.memories, local_step_tries, is_all_read, item_counts });
+            return Ok(PlannedRound { input, plan, memories: given.memories, local_step_tries, is_all_read, item_counts, unsent_count });
         }
         read_at_once = read_at_once.saturating_mul(2);
     }

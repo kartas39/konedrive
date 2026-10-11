@@ -31,8 +31,8 @@
 //!    begin a full listing in the same cycle; a delta link refused otherwise fails the
 //!    cycle and is kept;
 //! 5. the page with the delta link ends the listing: the plan woken with `ListingEnded`,
-//!    the thumbnail filler nudged, `last_checked` written — and only then the counts
-//!    read, so that a read that fails keeps nothing of the listing's end from being told.
+//!    the thumbnail filler nudged, `last_checked` written. The folder's counts on the bus
+//!    are not the cycle's: the plan's task, woken after every page, is their one writer.
 //!
 //! A page the store refuses because its listing is not the one under way any more is
 //! dropped, and the cycle ends there with no fault ([`is_listing_given_up`]). A full
@@ -68,7 +68,6 @@
 // test: a_second_410_in_one_cycle_fails_the_cycle_and_the_next_begins_a_full_listing_anew
 // test: items_that_stay_outdated_are_read_again_so_many_rounds_and_then_the_cycle_fails
 // test: an_item_read_again_is_given_back_under_the_id_that_was_asked
-// test: the_end_of_a_listing_is_told_though_the_counts_cannot_be_read
 // test: a_drive_another_account_has_recorded_is_not_listed_into_this_folder
 // test: a_drive_is_the_same_however_its_id_is_spelled
 // test: the_first_cycle_records_the_accounts_drive_in_config_toml
@@ -76,7 +75,7 @@
 use std::sync::Arc;
 
 use konedrive_graph::drive::{DeltaFrom, DeltaNext, DriveClient, DriveError};
-use konedrive_tree::{Change, ItemCounts, ListedChangeOutcome, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay, OneDriveItemId, Store, TreeError};
+use konedrive_tree::{Change, ListedChangeOutcome, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay, OneDriveItemId, Store, TreeError};
 use tokio_util::sync::CancellationToken;
 
 use crate::listing::classify::classify;
@@ -286,21 +285,14 @@ impl ListingCycle {
             }
             report.pages += 1;
             report.changes += change_count;
-            let is_count_changed = listing.kind == ListingKind::Full || change_count > 0;
             match link {
                 ListingLink::NextLink(next) => {
-                    if is_count_changed {
-                        self.publish_counts().await?;
-                    }
                     (from, origin) = (DeltaFrom::Link(next), PageLinkOrigin::GivenInThisCycle);
                 }
                 // The listing ended in the store with this page: that is told before
                 // anything that may fail is read.
                 ListingLink::DeltaLink(_) => {
                     self.end_cycle(&report).await?;
-                    if is_count_changed {
-                        self.publish_counts().await?;
-                    }
                     return Ok(report);
                 }
             }
@@ -464,27 +456,11 @@ impl ListingCycle {
         Ok((changes, read_began_at_count))
     }
 
-    /// The folder's counts on the bus after a page: what OneDrive has, what the folder
-    /// shows, what it cannot show (`ItemReader::count_items`). "Shown" grows as the plan's
-    /// `ShowItem` steps commit, not as pages come: the plan's task publishes it too.
-    /// Whether a full listing is under way is not said here: the cycle's loop and its end
-    /// say it. MISSING-2.d.
-    // TODO: these three counts have a second writer here: the plan's task publishes them with every plan (`SyncPlanTask::publish_round`), and it is woken after every page, so it is to be the one writer and this function to go. Left as it is: the cycle's tests read the counts after a cycle with no task running; check and fix if needed.
-    async fn publish_counts(&self) -> Result<ItemCounts, CycleError> {
-        let counts = self.store.read_items(|reader| reader.count_items()).await?;
-        self.state.update_if_changed(|state| {
-            state.cycle.items_listed = counts.in_onedrive;
-            state.cycle.items_placed = counts.shown;
-            state.cycle.skipped_count = counts.cannot_be_shown;
-        });
-        Ok(counts)
-    }
-
     /// The listing ended: the plan woken with `WakeCause::ListingEnded`, the thumbnail
     /// filler nudged (`after_listing`), `last_checked` written
     /// (`TreeStore::set_last_checked`), the conflicts on record looked over (through
     /// `report`). As today's `after_cycle` (`listing.rs:340`) without what told the
-    /// outbox. Called as soon as the store ended the listing, before the counts are read.
+    /// outbox. Called as soon as the store ended the listing.
     /// The wake and the nudge come first, and nothing that can fail stands before them:
     /// the listing ended in the store whatever becomes of the rest.
     async fn end_cycle(&self, report: &ListingCycleReport) -> Result<(), CycleError> {
