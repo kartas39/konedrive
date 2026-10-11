@@ -44,7 +44,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 
 use konedrive_tree::{
-    make_conflict_copy_name, make_sync_plan, make_temporary_name, ContentVersion, FoldedName, FolderVisibility, Item, ItemKind, ItemMemory, ItemPlace, ItemReader, ItemVersions, LocalItemId, NextTry, OneDriveItemReference, Reason,
+    is_same_content_but_for_time, make_conflict_copy_name, make_sync_plan, make_temporary_name, ContentVersion, FoldedName, FolderVisibility, Item, ItemKind, ItemMemory, ItemPlace, ItemReader, ItemVersions, LocalItemId, NextTry, OneDriveItemReference, Reason,
     SyncPlan, SyncPlanInput, TreeError, TriedStep, WaitReason,
 };
 
@@ -122,17 +122,6 @@ fn is_differing(item: &Item) -> bool {
     let onedrive_place = item.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref());
     let onedrive_content = item.onedrive.as_ref().and_then(|onedrive| onedrive.content.as_ref());
     item.unsent_since.is_some() || onedrive_place != item.synced_place.as_ref() || !is_same_content_but_for_time(onedrive_content, item.synced_content.as_ref())
-}
-
-/// Whether two contents are one content version but for the time: as the store's index
-/// of what OneDrive changed has it.
-fn is_same_content_but_for_time(one: Option<&ContentVersion>, other: Option<&ContentVersion>) -> bool {
-    match (one, other) {
-        (None, None) => true,
-        (Some(ContentVersion::Hashed { size, hash, ctag, .. }), Some(ContentVersion::Hashed { size: other_size, hash: other_hash, ctag: other_ctag, .. })) => (size, hash, ctag) == (other_size, other_hash, other_ctag),
-        (Some(ContentVersion::ChangedHere { size, change_count, .. }), Some(ContentVersion::ChangedHere { size: other_size, change_count: other_count, .. })) => (size, change_count) == (other_size, other_count),
-        _ => false,
-    }
 }
 
 impl GivenItems {

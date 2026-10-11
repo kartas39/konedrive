@@ -75,6 +75,7 @@ mod tried_step;
 pub use conflict_copy_name::make_conflict_copy_name;
 pub use name_exchange::make_temporary_name;
 pub(crate) use removed_directory::{decide_directory_removal, DirectoryRemovalOutcome, ItemBelowRemovedDirectory};
+pub use side_change::is_same_content_but_for_time;
 pub(crate) use side_change::{compare_local_content, ContentChange};
 pub use sync_step::{FolderStep, FolderStepKind, ItemVersions, OneDriveStep, RowStep, RowStepKind, SyncStep};
 pub use tried_step::TriedStep;

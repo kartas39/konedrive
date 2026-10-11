@@ -108,7 +108,7 @@ pub(crate) fn compare_local_content(local: Option<&ContentVersion>, other: Optio
 /// hash and cTag, each there or not on both, and for a content changed here the same count
 /// of changes. A time by itself tells no content from another: it is set here on a clean
 /// copy without a byte changing, and changed in OneDrive likewise.
-pub(crate) fn is_same_content_but_for_time(one: Option<&ContentVersion>, other: Option<&ContentVersion>) -> bool {
+pub fn is_same_content_but_for_time(one: Option<&ContentVersion>, other: Option<&ContentVersion>) -> bool {
     match (one, other) {
         (None, None) => true,
         (None, Some(_)) | (Some(_), None) => false,

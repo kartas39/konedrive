@@ -156,6 +156,10 @@ const LEFTOVERS_ASKED_AT_ONCE: usize = 16;
 /// again, in seconds: once a day.
 const OLD_OPENINGS_FORGOTTEN_EVERY: i64 = 24 * 60 * 60;
 
+/// How long the task waits before it tries again what it could not read: the store for
+/// a plan, the quota that was due. Seconds.
+const RETRY_AFTER: i64 = 60;
+
 /// The plan's task of one folder. It holds its parts and runs the loop; what each part
 /// does is the part's.
 pub struct SyncPlanTask {
@@ -244,8 +248,8 @@ impl SyncPlanTask {
                         Ok(round) => {
                             let now = (parts.clock)();
                             self.publish_round(&round, parts.sending_holds.find(now).as_ref()).await;
-                            // A read of the quota that is due and was not made is tried with the next plan, not by the timer.
-                            let next_quota_read = parts.onedrive_space.find_next_read().filter(|at| *at > now);
+                            // A read of the quota that was due and failed is tried again after a wait, not at once.
+                            let next_quota_read = parts.onedrive_space.find_next_read().map(|at| if at > now { at } else { now.saturating_add(RETRY_AFTER) });
                             next_wake = decide_next_wake(&round.plan, parts.sending_holds.find_end(now), next_quota_read, now);
                             steps_left_to_start = self.start_steps(round.plan.steps, now);
                             memories = round.memories;
@@ -253,7 +257,8 @@ impl SyncPlanTask {
                         Err(error) => {
                             tracing::warn!("cannot make the sync plan of {}: {error}", parts.folder.display());
                             steps_left_to_start.clear();
-                            next_wake = None;
+                            // The store could not be read: the plan is tried again by itself.
+                            next_wake = Some((parts.clock)().saturating_add(RETRY_AFTER));
                         }
                     }
                 }
@@ -346,7 +351,8 @@ impl SyncPlanTask {
     /// destinations of the running steps, the rows the check at start left, a copy of
     /// the task's tries of the steps towards the folder and of the rows,
     /// and whether this plan asks the reader that scans (a
-    /// listing's page or the user's answer is among `causes`). What is open for
+    /// listing's page or the user's answer is among `causes`, or there is no cause: a
+    /// time reached, which the first plan of a run is too). What is open for
     /// writing is NOT gathered here: it is read from the rows of the plan's own moment.
     fn gather_daemon_facts(&self, causes: &BTreeSet<WakeCause>) -> DaemonFacts {
         let parts = &self.parts;
@@ -356,7 +362,8 @@ impl SyncPlanTask {
             is_onedrive_full: parts.onedrive_space.is_full(),
             now: (parts.clock)(),
             left_by_start_up_check: parts.start_check.held_items.clone(),
-            reads_pinned_files: causes.contains(&WakeCause::ListingPageWritten) || causes.contains(&WakeCause::UserAnswered),
+            // No cause is a time reached, the first plan of a run among them: a pinned file's download waits for such a time.
+            reads_pinned_files: causes.is_empty() || causes.contains(&WakeCause::ListingPageWritten) || causes.contains(&WakeCause::UserAnswered),
             local_step_tries: crate::panic::lock(&self.local_step_tries).clone(),
             settings: parts.settings.clone(),
         }
