@@ -1186,11 +1186,17 @@ fn a_read_of_a_content_onedrive_answered_with_another_once_asks_anew_and_succeed
     // Through the same handle: the read asks OneDrive anew, which states the asked
     // content now.
     let all_a = |read: Result<Vec<u8>, Errno>| read.map(|bytes| bytes.len() == 16 && bytes.iter().all(|byte| *byte == b'a'));
+    let ranges = mount.list_fetched_ranges().len();
     assert_eq!(all_a(mount.read(fh, 0, 16)), Ok(true));
     assert_eq!(source.count_fetches(), 2, "one asking");
     assert!(!mount.fixture.download_states.is_another_content(&key), "nothing is remembered of an answer OneDrive took back");
+    // What that read cost beside the download: its own range, asked once the content landed.
+    assert_eq!(mount.list_fetched_ranges().len(), ranges + 2, "the whole fetch of the download, and the read's range");
+    assert_eq!(mount.list_fetched_ranges().last(), Some(&(0, Some(16))));
     assert_eq!(all_a(mount.read(fh, 1 << 20, 16)), Ok(true));
     assert_eq!(all_a(mount.read(fh, (SIZE - 16) as u64, 16)), Ok(true));
+    assert!(matches!(mount.fixture.item_handles.find_file(fh), Some(OpenItemFile::ReadingBackingFile { .. })), "the handle goes on from the backing file");
+    assert_eq!(mount.list_fetched_ranges().len(), ranges + 2, "and asks OneDrive nothing more");
     // And through a new open.
     let new_fh = mount.open_to_read(file).unwrap().fh;
     for offset in [0, 1 << 20, (SIZE - 16) as u64] {
