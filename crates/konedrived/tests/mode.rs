@@ -375,9 +375,9 @@ impl PendingUploads for Waiting {
         }
     }
 
-    async fn hold_unsent_changes(&self) -> u64 {
+    async fn hold_unsent_changes(&self) -> konedrived::account::HeldUnsentChanges {
         self.dropped.store(true, Ordering::SeqCst);
-        0
+        konedrived::account::HeldUnsentChanges { unsent: 0, is_request_in_flight: false }
     }
 }
 

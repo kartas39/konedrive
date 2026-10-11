@@ -158,6 +158,17 @@ const DRIVE_MISMATCH: &str = "this account's sign-in reaches the OneDrive drive"
 /// ([`ModeNote::WiderGrant`]).
 const WIDER_GRANT: &str = "Microsoft answered a request for read-only access with a token that can";
 
+/// What a folder answers that was told to hold what is unsent
+/// ([`PendingUploads::hold_unsent_changes`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldUnsentChanges {
+    /// How many changes stay here unsent.
+    pub unsent: u64,
+    /// Whether a request that changes OneDrive was still in flight when the folder
+    /// answered: the account keeps its token that can write until none is.
+    pub is_request_in_flight: bool,
+}
+
 /// What the switch between the modes asks of the account's folder: how many changes are
 /// unsent, and holding them here when a switch to read-only is forced. Nothing is ever
 /// dropped. The account's `SyncService` answers (`crate::account_folder::mode`).
@@ -168,17 +179,19 @@ pub trait PendingUploads: Send + Sync {
     async fn pending_uploads(&self) -> u64;
     /// The account switches to read-only now: from this call on the folder sends nothing
     /// (`SendingHolds::set_folder_read_only(true)`, the hold `SendingHold::FolderReadOnly`)
-    /// and takes no change (the mount's switch). Returns only when both hold and no
-    /// request that changes OneDrive is in flight. Called at EVERY switch to read-only,
+    /// and takes no change (the mount's switch). Returns when both hold, and says whether
+    /// a request that changes OneDrive is still in flight then (the folder's wait for it
+    /// is bounded). Called at EVERY switch to read-only,
     /// forced or not (nothing is unsent then), in the one order of a switch
     /// (`AccountService::set_mode`): `config.toml` written and the mode worked out again
     /// first — so that the account's snapshot says read-only before the folder is told,
-    /// and the folder's watcher cannot turn it back —, then this call, awaited, and only
-    /// then the token that can write given up. So no request leaves under a token that
-    /// cannot write and none is refused for it. What is unsent stays here, not sent and
-    /// not lost, and is sent when the folder is read-write again. Answers how many
-    /// changes stay unsent.
-    async fn hold_unsent_changes(&self) -> u64;
+    /// and the folder's watcher cannot turn it back —, then this call, awaited — and
+    /// asked again, after a short wait, for as long as it answers that a request is in
+    /// flight —, and only then the token that can write given up. So no request leaves
+    /// under a token that cannot write and none is refused for it. What is unsent stays
+    /// here, not sent and not lost, and is sent when the folder is read-write again.
+    /// Asked again of a folder that holds already, it changes nothing and answers anew.
+    async fn hold_unsent_changes(&self) -> HeldUnsentChanges;
     /// The account's quota was just read (`RefreshInfo`): a full OneDrive, or a file
     /// too big for what was left, is decided again by it.
     fn quota_read(&self, _quota: &konedrive_graph::drive::DriveQuota) {}

@@ -16,11 +16,12 @@ use tokio::sync::watch;
 use super::folder::{Standing, Sync, Why};
 use super::SyncService;
 use crate::account::state::{AccountSnapshot, SignInState};
-use crate::account::PendingUploads;
+use crate::account::{HeldUnsentChanges, PendingUploads};
 use crate::config::{Mode, WriteStanding};
 use crate::sync_parts::sending_holds::SendingHold;
 use crate::sync_parts::sync_plan_wake::WakeCause;
-use crate::sync_tasks::access_mode_change;
+use crate::sync_parts::running_steps::StepClass;
+use crate::sync_tasks::access_mode_change::{self, StepsTowardsOneDrive};
 
 impl SyncService {
     /// The mode the folder follows now, as last published.
@@ -53,7 +54,9 @@ impl SyncService {
         let Some(started) = held.folder().running() else { return };
         let sending_holds = started.tasks.sending_holds();
         let switched = match mode {
-            Mode::ReadOnly => access_mode_change::switch_to_read_only(&started.mount, sending_holds, &started.running_steps).await,
+            // An account that turned read-only for a cause of its own holds no token that can write any more:
+            // whether a step towards OneDrive still runs changes nothing here.
+            Mode::ReadOnly => access_mode_change::switch_to_read_only(&started.mount, sending_holds, &started.running_steps).await.map(drop),
             Mode::ReadWrite => access_mode_change::switch_to_read_write(&started.mount, sending_holds).await,
         };
         match switched {
@@ -204,30 +207,42 @@ impl PendingUploads for SyncService {
     /// folder's state. The account gives its token up after this returned. Nothing is
     /// dropped: what is unsent stays in the rows and is sent when the folder is
     /// read-write again. Answers how many changes stay unsent
-    /// (`ItemReader::count_unsent`, read after the switch). For a folder whose sync does
-    /// not run there is nothing to hold: only `wanted` changes, and the next start
-    /// applies it before its first plan.
-    async fn hold_unsent_changes(&self) -> u64 {
-        let store = {
+    /// (`ItemReader::count_unsent`, read after the switch), and whether a step towards
+    /// OneDrive still ran when the switch's bounded wait for them ended
+    /// (`StepsTowardsOneDrive::StillRunning`): the account then keeps its token and asks
+    /// again — the switch made once more changes nothing and waits anew. For a folder
+    /// whose sync does not run there is nothing to hold and no request in flight: only
+    /// `wanted` changes, and the next start applies it before its first plan.
+    async fn hold_unsent_changes(&self) -> HeldUnsentChanges {
+        let (store, is_request_in_flight) = {
             let mut held = self.hold_folder().await;
             held.set_wanted(Mode::ReadOnly);
             // For a folder whose sync does not run there is nothing to hold: its next start applies the mode.
-            if let Some(started) = held.folder().running() {
-                if let Err(why) = access_mode_change::switch_to_read_only(&started.mount, started.tasks.sending_holds(), &started.running_steps).await {
-                    tracing::warn!("the folder of the account {:?} holds what is unsent, but its mount could not be switched to read-only: {why}", self.id());
-                }
-            }
-            held.folder().store()
+            let is_request_in_flight = match held.folder().running() {
+                Some(started) => match access_mode_change::switch_to_read_only(&started.mount, started.tasks.sending_holds(), &started.running_steps).await {
+                    Ok(steps) => steps == StepsTowardsOneDrive::StillRunning,
+                    Err(why) => {
+                        tracing::warn!("the folder of the account {:?} holds what is unsent, but its mount could not be switched to read-only: {why}", self.id());
+                        // The answer does not say whether a step still runs: the running steps are asked.
+                        started.running_steps.list_steps().iter().any(|step| matches!(step.class, StepClass::Content | StepClass::Metadata))
+                    }
+                },
+                None => false,
+            };
+            (held.folder().store(), is_request_in_flight)
         };
         // Counted after the switch: what stays here unsent.
-        let Some(store) = store else { return 0 };
-        match store.read_items(|reader| reader.count_unsent()).await {
-            Ok(unsent) => unsent.count,
-            Err(error) => {
-                tracing::warn!("what stays unsent could not be counted: {error}");
-                0
-            }
-        }
+        let unsent = match store {
+            Some(store) => match store.read_items(|reader| reader.count_unsent()).await {
+                Ok(unsent) => unsent.count,
+                Err(error) => {
+                    tracing::warn!("what stays unsent could not be counted: {error}");
+                    0
+                }
+            },
+            None => 0,
+        };
+        HeldUnsentChanges { unsent, is_request_in_flight }
     }
 }
 

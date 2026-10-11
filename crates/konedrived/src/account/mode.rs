@@ -323,13 +323,60 @@ impl AccountService {
         // what is unsent and takes no change, awaited; and only then the token goes.
         self.recompute_mode();
         if let Some(uploads) = &uploads {
-            uploads.hold_unsent_changes().await;
+            let held = uploads.hold_unsent_changes().await;
+            if held.is_request_in_flight {
+                // A request that changes OneDrive is still in flight: sent again under a token that cannot write it
+                // would be refused, and the refusal kept on the file. The token stays until the folder says none is.
+                self.state.update(|s| s.set_mode_note(Some(ModeNote::SwitchingToReadOnly { unsent: held.unsent })));
+                if let Some(service) = self.me.upgrade() {
+                    // In a task of its own: the call that asked for the switch does not wait for a request that hangs.
+                    // The folder by a weak reference: the wait keeps no folder alive.
+                    let folder = Arc::downgrade(uploads);
+                    tokio::spawn(async move { service.give_write_token_up_when_sent(folder).await });
+                }
+                return Ok(());
+            }
         }
-        // The token that could write goes now; the next one comes from a refresh that asks
-        // for Files.Read (§2.2).
-        self.tokens.invalidate().await;
-        tracing::info!("the account {:?} is read-only now", self.id);
+        self.give_write_token_up().await;
         Ok(())
+    }
+
+    /// The token that could write goes; the next one comes from a refresh that asks for
+    /// `Files.Read` (§2.2). The last step of a switch to read-only.
+    async fn give_write_token_up(&self) {
+        self.tokens.invalidate().await;
+        // The note of a switch that waited goes with it.
+        self.recompute_mode();
+        tracing::info!("the account {:?} is read-only now", self.id);
+    }
+
+    /// The end of a switch to read-only whose folder answered that a request that changes
+    /// OneDrive was still in flight: the folder is asked again, after a short wait
+    /// ([`REQUEST_IN_FLIGHT_ASKED_AGAIN_AFTER`]), until it answers that none is, and only
+    /// then the token goes ([`give_write_token_up`](Self::give_write_token_up)). The
+    /// account shows `ModeNote::SwitchingToReadOnly` meanwhile. Ends without giving the
+    /// token up when `config.toml` says read-write again (the user switched back), when
+    /// the account is retired, and when the folder is gone — then nothing sends.
+    async fn give_write_token_up_when_sent(&self, folder: Weak<dyn PendingUploads>) {
+        loop {
+            tokio::time::sleep(REQUEST_IN_FLIGHT_ASKED_AGAIN_AFTER).await;
+            if self.is_retired() || self.configured_mode() != Mode::ReadOnly {
+                self.recompute_mode();
+                return;
+            }
+            let held = match folder.upgrade() {
+                Some(folder) => folder.hold_unsent_changes().await,
+                None => break,
+            };
+            if !held.is_request_in_flight {
+                break;
+            }
+            self.state.update(|s| s.set_mode_note(Some(ModeNote::SwitchingToReadOnly { unsent: held.unsent })));
+        }
+        // Asked once more: the user may have switched back while the folder was asked.
+        if self.configured_mode() == Mode::ReadOnly && !self.is_retired() {
+            self.give_write_token_up().await;
+        }
     }
 
     /// The account's recorded drive when `write_test_drive_ids` lists it, both from one
@@ -402,6 +449,11 @@ fn read_write_refusal(config: &Config, id: &AccountId, drive: &DriveId, who: &st
     }
     None
 }
+
+/// How long the account waits before it asks its folder again whether a request that
+/// changes OneDrive is still in flight (the folder's own wait for it is bounded, and comes
+/// on top). A guess.
+const REQUEST_IN_FLIGHT_ASKED_AGAIN_AFTER: Duration = Duration::from_secs(5);
 
 /// What a switch to read-only does, by what is unsent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
