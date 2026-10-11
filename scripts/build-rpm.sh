@@ -28,6 +28,7 @@ top="$root/target/rpm"
 sources_only=no
 version=
 dev_tools=no
+local_build=no
 while [ $# -gt 0 ]; do
     case $1 in
         --sources-only) sources_only=yes ;;
@@ -60,6 +61,7 @@ if [ -n "$version" ]; then
     konedrive_check_release_version "$root" "$version" || exit 2
 else
     version=$(konedrive_local_version "$root")
+    local_build=yes
 fi
 # RPM's form (`~` for a local build) and Cargo's (`-`), which is also the one
 # the window, the daemon and konedrivectl show.
@@ -145,8 +147,13 @@ fi
 
 with=
 [ "$dev_tools" = yes ] && with="--with dev_tools"
+# A release's build compiles everything anew, in its build directory. A local build keeps
+# Cargo's output beside target/rpm (which every build removes), so that only what changed is
+# compiled again.
+cargo_target=target
+[ "$local_build" = yes ] && cargo_target="$root/target/rpm-cargo"
 # shellcheck disable=SC2086 # $with is empty or two words
-rpmbuild -ba --define "_topdir $top" $with "$top/SPECS/konedrive.spec"
+rpmbuild -ba --define "_topdir $top" --define "cargo_target $cargo_target" $with "$top/SPECS/konedrive.spec"
 
 echo
 echo "Built ($version$([ "$dev_tools" = yes ] && echo ", with dev-tools")):"

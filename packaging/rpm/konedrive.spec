@@ -102,6 +102,10 @@ device, or has a change waiting to be uploaded, and "Always Keep on This
 Device", "Free Up Space" and "Open in OneDrive" in its context menu. Neither
 plugin opens a file in the folder.
 
+# Where Cargo writes: the build directory, unless the build names another directory
+# (scripts/build-rpm.sh does for a local build, to keep the compiled crates between builds).
+%{!?cargo_target: %global cargo_target target}
+
 %prep
 %autosetup -a 1
 
@@ -112,7 +116,7 @@ plugin opens a file in the folder.
 # alone and never packaged; dev-tools (the token export)
 # only with `--with dev_tools`, a local development package.
 export CARGO_HOME="$PWD/.cargo-home"
-export CARGO_TARGET_DIR="$PWD/target"
+export CARGO_TARGET_DIR="%{cargo_target}"
 # The version and the commit the binaries show; the tree has no .git to ask.
 export KONEDRIVE_BUILD_VERSION="%{build_version}"
 export KONEDRIVE_COMMIT="%{commit}"
@@ -122,7 +126,7 @@ cargo build --release --offline --locked \
 # A released daemon hands out no access token: only a development build
 # (dev-tools) serves org.konedrive.TokenExport.
 %if %{without dev_tools}
-if grep -aq org.konedrive.TokenExport target/release/konedrived; then
+if grep -aq org.konedrive.TokenExport %{cargo_target}/release/konedrived; then
     echo "konedrived was built with the dev-tools feature" >&2
     exit 1
 fi
@@ -141,8 +145,8 @@ pushd dolphin
 popd
 
 %install
-install -Dpm 0755 target/release/konedrived %{buildroot}%{_bindir}/konedrived
-install -Dpm 0755 target/release/konedrivectl %{buildroot}%{_bindir}/konedrivectl
+install -Dpm 0755 %{cargo_target}/release/konedrived %{buildroot}%{_bindir}/konedrived
+install -Dpm 0755 %{cargo_target}/release/konedrivectl %{buildroot}%{_bindir}/konedrivectl
 
 pushd app
 %cmake_install
