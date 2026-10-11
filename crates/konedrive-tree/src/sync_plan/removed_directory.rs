@@ -91,6 +91,7 @@ impl ItemBelowRemovedDirectory {
         } else if row.synced_place.is_some() || row.synced_content.is_some() {
             ItemBelowRemovedDirectory::RemovedHere(ItemVersions::of(row))
         } else {
+            // TODO: contract — an item an upload of this folder left below the directory (`SyncPlanInput::items_left_by_uploads`) reads as never shown here, and makes the removal one of the folder alone: the directory then comes back. This function is asked by the store too (`ItemStore::can_directory_removal_be_sent`, item_store), which is not told what an upload left.
             ItemBelowRemovedDirectory::NeverShownHere(row.local_item_id)
         }
     }

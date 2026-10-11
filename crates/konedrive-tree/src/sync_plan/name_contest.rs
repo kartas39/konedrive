@@ -24,6 +24,10 @@ pub(crate) enum NameHolder<'a> {
     /// It is held back, a step running for it or the check at start not having decided it:
     /// which item. Whether it leaves the name or stays under it is known once that ended.
     IsHeldBack(LocalItemId),
+    /// An upload of this folder left it there with other content than was sent, and it
+    /// waits to be removed in OneDrive: the file whose upload left it, none when that
+    /// file's row went.
+    IsLeftByUpload { file: Option<LocalItemId> },
 }
 
 /// An item whose place here is to be its place in OneDrive, and what stands against it.
@@ -55,6 +59,9 @@ pub(crate) enum NameContestOutcome {
     WaitsFor(LocalItemId),
     /// A listing is being written, and may yet say the holder is elsewhere.
     WaitsForListing,
+    /// It waits for the holder to be removed in OneDrive by the daemon by itself: an item
+    /// an upload left, of a file whose row went.
+    WaitsForRemovalOfHolder,
     /// It and the holder, a new item of OneDrive, are one item.
     MergesWith(LocalItemId),
     /// Whether it and the holder are one file is known once its content is hashed.
@@ -67,6 +74,9 @@ pub(crate) enum NameContestOutcome {
 ///
 /// - another item of the folder is to have the name too, and was unsent earlier: the
 ///   claimant steps aside;
+/// - the holder is what an upload of the claimant itself left: it is no holder, and what
+///   follows is asked as with none. The step that sends the claimant again removes it
+///   first;
 /// - OneDrive has the claimant and the holder in that directory already, each under a name
 ///   of this fold: OneDrive has judged, and keeps the two apart. The name is free, once no
 ///   listing is under way that may yet say one of the two is elsewhere; should OneDrive
@@ -79,6 +89,10 @@ pub(crate) enum NameContestOutcome {
 ///   never sent, waits for nothing;
 /// - the holder is held back: the claimant waits for it, and the plan made once that ended
 ///   decides;
+/// - the holder is what an upload of another file left: the claimant is neither one with
+///   it nor steps aside for it. It waits for that file, whose sending removes the holder
+///   first; where that file's row went, for the removal the daemon sends by itself; and
+///   for nothing where the claimant is left here;
 /// - the holder stays, and a listing is under way: the claimant waits for the listing;
 /// - the holder stays, and both are new, each on its side, and of one kind: two
 ///   directories are one item, and so are two files of one content; where only hashing the
@@ -91,16 +105,21 @@ pub(crate) fn decide_name_contest(claim: &NameClaim<'_>) -> NameContestOutcome {
     if claim.has_earlier_rival {
         return NameContestOutcome::StepsAside;
     }
-    if claim.has_the_name_in_onedrive && claim.holder.is_some() && !claim.is_answered_taken {
+    // TODO: check whether an answer of OneDrive that the name is taken can be of the item the claimant's own upload left (kept from before the upload), and fix if needed: the claimant then steps aside for it below.
+    let holder = claim.holder.filter(|holder| *holder != NameHolder::IsLeftByUpload { file: Some(claimant.local_item_id) });
+    if claim.has_the_name_in_onedrive && holder.is_some() && !claim.is_answered_taken {
         return if claim.is_listing_under_way { NameContestOutcome::WaitsForListing } else { NameContestOutcome::NameIsFree };
     }
-    let holder = match claim.holder {
+    let holder = match holder {
         None if claim.is_answered_taken && !claim.is_left_here => return if claim.is_listing_under_way { NameContestOutcome::WaitsForListing } else { NameContestOutcome::StepsAside },
         None => return NameContestOutcome::NameIsFree,
         Some(NameHolder::Leaves(_)) if claim.is_left_here => return NameContestOutcome::NameIsFree,
         Some(NameHolder::Leaves(holder)) => return NameContestOutcome::WaitsFor(holder),
         Some(NameHolder::IsHeldBack(_)) if claim.is_left_here => return NameContestOutcome::NameIsFree,
         Some(NameHolder::IsHeldBack(holder)) => return NameContestOutcome::WaitsFor(holder),
+        Some(NameHolder::IsLeftByUpload { .. }) if claim.is_left_here => return NameContestOutcome::NameIsFree,
+        Some(NameHolder::IsLeftByUpload { file: Some(file) }) => return NameContestOutcome::WaitsFor(file),
+        Some(NameHolder::IsLeftByUpload { file: None }) => return NameContestOutcome::WaitsForRemovalOfHolder,
         Some(NameHolder::Stays(_)) if claim.is_listing_under_way => return NameContestOutcome::WaitsForListing,
         Some(NameHolder::Stays(holder)) => holder,
     };
@@ -162,8 +181,9 @@ pub(crate) struct NameContests {
 /// its name, the same byte for byte — it is never sent, so a name of OneDrive that only
 /// folds to its own takes nothing from it, and the folder shows both. An item that is held back — a step is running for it, a program holds it open
 /// for writing — is not decided, and as a holder it is waited for.
-/// `places_taken_in_onedrive` is what OneDrive answered is taken
-/// ([`SyncPlanInput`](super::SyncPlanInput)). `moves_taken_back` are the items whose move here does not stand
+/// `places_taken_in_onedrive` is what OneDrive answered is taken, and
+/// `items_left_by_uploads` the items an upload of this folder left in OneDrive, each with
+/// the file it was left by ([`SyncPlanInput`](super::SyncPlanInput)). `moves_taken_back` are the items whose move here does not stand
 /// ([`move_cycle`](super::move_cycle)): such a holder stays at its name in OneDrive.
 pub(crate) fn settle_name_contests(
     cases: &[ItemCase<'_>],
@@ -171,6 +191,7 @@ pub(crate) fn settle_name_contests(
     answers: &ItemAnswers,
     computer_name: &str,
     places_taken_in_onedrive: &BTreeMap<LocalItemId, ItemPlace>,
+    items_left_by_uploads: &BTreeMap<LocalItemId, Option<LocalItemId>>,
     moves_taken_back: &BTreeSet<LocalItemId>,
 ) -> NameContests {
     let mut answers = OverruledAnswers::of(answers);
@@ -196,6 +217,8 @@ pub(crate) fn settle_name_contests(
         let holder = holder.map(|holder| {
             if answers.is_held(holder.local_item_id) {
                 NameHolder::IsHeldBack(holder.local_item_id)
+            } else if let Some(file) = items_left_by_uploads.get(&holder.local_item_id) {
+                NameHolder::IsLeftByUpload { file: *file }
             } else if !moves_taken_back.contains(&holder.local_item_id) && leaves_its_name(holder, answers.find(holder.local_item_id), directory, &name) {
                 NameHolder::Leaves(holder.local_item_id)
             } else {
@@ -222,12 +245,14 @@ pub(crate) fn settle_name_contests(
             _ => None,
         };
         match (decide_name_contest(&claim), sending) {
-            (NameContestOutcome::NameIsFree, _) | (NameContestOutcome::WaitsFor(_) | NameContestOutcome::WaitsForListing, None) => {}
+            (NameContestOutcome::NameIsFree, _) | (NameContestOutcome::WaitsFor(_) | NameContestOutcome::WaitsForListing | NameContestOutcome::WaitsForRemovalOfHolder, None) => {}
             (NameContestOutcome::WaitsFor(holder), Some(sending)) => {
                 sendings_that_wait.insert(id, sending);
                 answers.overrule(id, ItemDecision::Wait(WaitReason::AnotherItem(holder)));
             }
             (NameContestOutcome::WaitsForListing, Some(_)) => answers.overrule(id, ItemDecision::Wait(WaitReason::Listing)),
+            // TODO: contract — `WaitReason` (sync_plan.rs, read by the daemon) has no case for a wait for a request the daemon sends by itself, of another item: `RunningStep` says "a step of the item is running". A wait for the holder itself would end at an item a rule leaves out, which the plan answers as a fault.
+            (NameContestOutcome::WaitsForRemovalOfHolder, Some(_)) => answers.overrule(id, ItemDecision::Wait(WaitReason::RunningStep)),
             (NameContestOutcome::MergesWith(holder), _) => {
                 let Some(onedrive) = items.find(holder) else { continue };
                 answers.overrule(id, ItemDecision::Step(SyncStep::Row(RowStep::MergeItems { local: ItemVersions::of(item), onedrive: ItemVersions::of(onedrive) })));

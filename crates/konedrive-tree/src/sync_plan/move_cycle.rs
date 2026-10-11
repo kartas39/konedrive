@@ -67,12 +67,13 @@ fn find_directory_out_of_place(items: &PlanItems<'_>, directory: LocalItemId, di
 }
 
 /// A move made here is taken back where the folder can take OneDrive's place again; where
-/// it cannot yet, the item waits for what is in the way. `None` when no step takes it back.
+/// it cannot yet, the item waits for what is in the way. `None` when no step takes it back:
+/// nor does one to the temporary name the item goes through in OneDrive.
 fn take_move_back(case: &ItemCase<'_>) -> Option<ItemDecision> {
     match case.local_place_availability {
         LocalPlaceAvailability::Free => Some(ItemDecision::Step(SyncStep::Folder(FolderStep::TakeMoveBack { item: ItemVersions::of(case.item) }))),
         LocalPlaceAvailability::DirectoryNotShown(another) | LocalPlaceAvailability::DirectoryRemovedHere(another) | LocalPlaceAvailability::NameTaken(another) => Some(ItemDecision::Wait(WaitReason::AnotherItem(another))),
-        LocalPlaceAvailability::NameUnusable | LocalPlaceAvailability::NoOneDrivePlace => None,
+        LocalPlaceAvailability::NameUnusable | LocalPlaceAvailability::NoOneDrivePlace | LocalPlaceAvailability::IsTemporaryName => None,
     }
 }
 

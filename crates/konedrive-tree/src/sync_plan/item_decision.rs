@@ -189,6 +189,11 @@ pub(crate) enum LocalPlaceAvailability {
     NameUnusable,
     /// OneDrive has no place for the item.
     NoOneDrivePlace,
+    /// The place is the temporary name the item goes through in OneDrive
+    /// ([`TemporaryName`](crate::TemporaryName)), and the folder shows the item: OneDrive
+    /// has it there by this folder's own request, in the middle of an exchange of names.
+    /// The folder never takes that place; the item's place here is sent.
+    IsTemporaryName,
 }
 
 /// One item as the plan decides on it: its row, and what the plan was given or found among
@@ -211,6 +216,9 @@ pub(crate) struct ItemCase<'a> {
     pub(crate) is_pinned: bool,
     pub(crate) local_directory: LocalDirectoryBinding,
     pub(crate) local_place_availability: LocalPlaceAvailability,
+    /// An upload of this folder left the item in OneDrive with other content than was
+    /// sent, and it waits to be removed there.
+    pub(crate) is_left_by_upload: bool,
     /// One of the items the folder shows in the item, a directory.
     pub(crate) first_shown_in_it: Option<LocalItemId>,
     /// The item is no directory whose answer is made from what is in it, or the plan was
@@ -381,6 +389,9 @@ pub(crate) fn decide_existence(case: &ItemCase<'_>, here: SideChange, in_onedriv
         (Removed, IsThere { content, .. }) => decide_removed_here(case, content),
         (Removed, Removed) if case.is_listing_under_way => ItemDecision::Wait(WaitReason::Listing),
         (Removed, Removed) => row_step(RowStep::AgreeOnRemoval { item: case.versions() }),
+        // What an upload of this folder left there is no item another made: it is not
+        // shown, whatever a listing under way may yet say of it.
+        (NeverWas, IsThere { .. }) if case.is_left_by_upload => ItemDecision::Exclusion(ExclusionReason::LeftByUpload),
         (NeverWas, IsThere { .. }) => show_onedrive_item(case),
         (NeverWas, NeverWas) => ItemDecision::NothingToDo,
         // Both sides are read against one synced version: where one side removed the item
@@ -529,7 +540,9 @@ fn show_onedrive_item(case: &ItemCase<'_>) -> ItemDecision {
             LocalPlaceAvailability::DirectoryNotShown(directory) | LocalPlaceAvailability::DirectoryRemovedHere(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
             LocalPlaceAvailability::NameTaken(holder) => ItemDecision::Wait(WaitReason::AnotherItem(holder)),
             LocalPlaceAvailability::NameUnusable => ItemDecision::Exclusion(ExclusionReason::CannotBeShown),
-            LocalPlaceAvailability::NoOneDrivePlace => row_fault(case),
+            // A temporary name is the place of an item the folder shows, and this one it
+            // does not.
+            LocalPlaceAvailability::NoOneDrivePlace | LocalPlaceAvailability::IsTemporaryName => row_fault(case),
         },
     }
 }
@@ -541,7 +554,9 @@ fn show_onedrive_item(case: &ItemCase<'_>) -> ItemDecision {
 /// ran. Nobody moved anything: the place here is no move to send, and OneDrive's place is
 /// none to move the entry to. Two new items that were merged are not this: the commit of
 /// their merge writes what they were merged for as agreed on
-/// ([`ItemStore::commit_merge_items`](crate::ItemStore::commit_merge_items)).
+/// ([`ItemStore::commit_merge_items`](crate::ItemStore::commit_merge_items)). Nor is an item
+/// OneDrive has under its temporary name ([`LocalPlaceAvailability::IsTemporaryName`]):
+/// this folder's own request put it there, which the caller of this function asks.
 ///
 /// The rows cannot tell a guess from a binding that was none: an entry renamed or moved
 /// while no store was there — the store was rebuilt, and the check at start bound the
@@ -558,7 +573,8 @@ fn is_bound_by_guess(item: &Item) -> bool {
 /// its binding, once no listing is under way ([`is_bound_by_guess`]): the entry here is a
 /// new item of the folder, and OneDrive's item is shown at its own place by the plans
 /// that follow; but a directory in which the folder shows what was agreed to be in it,
-/// whose binding is then no guess. Otherwise: its place, then for a file its content, and last the download
+/// whose binding is then no guess, and an item OneDrive has under its temporary name,
+/// which this folder's own request put there. Otherwise: its place, then for a file its content, and last the download
 /// of a pinned file whose content is not on disk. What the row says the upload rules say of
 /// its name ([`Item::is_name_ignored`]) is not asked: an item OneDrive has is never left
 /// here, and no removal is sent because a name is ignored.
@@ -569,7 +585,7 @@ fn decide_item_on_both_sides(case: &ItemCase<'_>, here: (PlaceChange, ContentCha
     if matches!(case.folder_visibility, FolderVisibility::NotInOneDrive) {
         return row_fault(case);
     }
-    if is_bound_by_guess(case.item) && !case.holds_what_was_agreed_on_in_it {
+    if is_bound_by_guess(case.item) && !case.holds_what_was_agreed_on_in_it && case.local_place_availability != LocalPlaceAvailability::IsTemporaryName {
         return if case.is_listing_under_way { ItemDecision::Wait(WaitReason::Listing) } else { row_step(RowStep::GiveUpBinding { item: case.versions() }) };
     }
     let place = decide_place(case, here.0, in_onedrive.0, (here.1, in_onedrive.1));
@@ -607,12 +623,15 @@ fn decide_item_that_cannot_be_shown(case: &ItemCase<'_>, here_content: ContentCh
 /// - Same here, moved in OneDrive: it is moved here; moved to where the folder cannot show
 ///   it, [`decide_item_that_cannot_be_shown`]; moved into a directory that was removed
 ///   here, its place here stands and is sent, so that it is not removed with that
-///   directory.
+///   directory; under its temporary name by this folder's own request
+///   ([`LocalPlaceAvailability::IsTemporaryName`]), the folder is not moved there, and its
+///   place here is sent.
 /// - Moved here, same in OneDrive: the move is sent.
 /// - Moved on both sides to one place: agree. To different places: OneDrive's stands and
 ///   the folder follows, where it can; where it cannot (the name is taken here, the name
 ///   cannot be held, the folder cannot show the item there, OneDrive's directory was
-///   removed here), the local place stands and is sent.
+///   removed here), or OneDrive's is the item's temporary name, the local place stands
+///   and is sent.
 /// - A directory the folder cannot show, moved here: nothing of its place is sent. It is in
 ///   the folder only because the folder shows the user's own in it, and goes once it shows
 ///   nothing in it, as one that was not moved.
@@ -627,7 +646,7 @@ pub(crate) fn decide_place(case: &ItemCase<'_>, here: PlaceChange, in_onedrive: 
         (PlaceChange::Same, PlaceChange::Moved) => match case.local_place_availability {
             LocalPlaceAvailability::Free => folder_step(FolderStep::MoveItem { item: case.versions() }),
             LocalPlaceAvailability::DirectoryNotShown(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
-            LocalPlaceAvailability::DirectoryRemovedHere(_) => send_move(case),
+            LocalPlaceAvailability::DirectoryRemovedHere(_) | LocalPlaceAvailability::IsTemporaryName => send_move(case),
             LocalPlaceAvailability::NameTaken(holder) => ItemDecision::Wait(WaitReason::AnotherItem(holder)),
             LocalPlaceAvailability::NameUnusable => decide_item_that_cannot_be_shown(case, here_content, onedrive_content),
             LocalPlaceAvailability::NoOneDrivePlace => row_fault(case),
@@ -643,7 +662,7 @@ pub(crate) fn decide_place(case: &ItemCase<'_>, here: PlaceChange, in_onedrive: 
                 _ if !can_be_shown => send_move(case),
                 LocalPlaceAvailability::Free => folder_step(FolderStep::MoveItem { item: case.versions() }),
                 LocalPlaceAvailability::DirectoryNotShown(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
-                LocalPlaceAvailability::NameTaken(_) | LocalPlaceAvailability::NameUnusable | LocalPlaceAvailability::DirectoryRemovedHere(_) => send_move(case),
+                LocalPlaceAvailability::NameTaken(_) | LocalPlaceAvailability::NameUnusable | LocalPlaceAvailability::DirectoryRemovedHere(_) | LocalPlaceAvailability::IsTemporaryName => send_move(case),
                 LocalPlaceAvailability::NoOneDrivePlace => row_fault(case),
             }
         }

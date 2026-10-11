@@ -243,7 +243,6 @@ pub struct SyncPlanInput {
     /// to the file it was left by. It waits to be removed in OneDrive, which is not the
     /// plan's: the step that sends the file again removes it first, and what is left when
     /// the file's row went is removed by the daemon by itself.
-    // TODO: `make_sync_plan` does not read this yet: an item named here is still planned as any item a listing brought. Fill with the plan (the review's Q2), with a test per sentence above.
     pub items_left_by_uploads: BTreeMap<LocalItemId, Option<LocalItemId>>,
     /// What the steps remember of a temporary name an item goes through in OneDrive
     /// ([`ItemMemory::temporary_name`](crate::ItemMemory)), for every item given that
@@ -252,7 +251,6 @@ pub struct SyncPlanInput {
     /// folder's own request: the folder is not moved to that name (`MoveItem`), and the
     /// item is sent on to its local place (`SendMove`) — also for a new item whose row
     /// was merged with the one a listing made of it under the temporary name.
-    // TODO: `make_sync_plan` does not read this yet: such a row is still planned as `MoveItem` to the temporary name. Fill with the plan (the notes of the step memory's rework, §5), with a test.
     pub temporary_names: BTreeMap<LocalItemId, TemporaryName>,
     /// How many items the removals took from OneDrive that this client sent a short time
     /// ago: what the store counted, as of `now`
@@ -351,6 +349,10 @@ pub enum ExclusionReason {
     NameIgnored,
     /// The folder cannot show the item as OneDrive has it.
     CannotBeShown,
+    /// An upload of this folder left the item in OneDrive with other content than was
+    /// sent ([`SyncPlanInput::items_left_by_uploads`]): the folder does not show it, and
+    /// its removal in OneDrive is not the plan's.
+    LeftByUpload,
 }
 
 /// An item the plan leaves out by a rule: no step is planned for it, and it waits for
@@ -471,9 +473,16 @@ fn find_onedrive_directory_not_given(items: &PlanItems<'_>, item: &Item) -> Opti
     None
 }
 
-/// Whether the folder can take the place OneDrive has `item` at.
-fn find_local_place_availability(items: &PlanItems<'_>, item: &Item) -> LocalPlaceAvailability {
+/// Whether the folder can take the place OneDrive has `item` at. The place is no place for
+/// the folder to take where it is the temporary name `input` says the item goes through
+/// ([`TemporaryName::is_at`]) and the folder shows the item: asked first, whatever the
+/// directory and the name are here.
+fn find_local_place_availability(input: &SyncPlanInput, items: &PlanItems<'_>, item: &Item) -> LocalPlaceAvailability {
     let Some(place) = item.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()) else { return LocalPlaceAvailability::NoOneDrivePlace };
+    // TODO: check what becomes of an item the folder does not show that OneDrive has under its temporary name (removed here, its content changed in OneDrive: it comes back), and fix if needed: it has no local place to be sent on to, and is shown under the temporary name as the place of any item.
+    if item.local.is_some() && input.temporary_names.get(&item.local_item_id).is_some_and(|temporary_name| temporary_name.is_at(place)) {
+        return LocalPlaceAvailability::IsTemporaryName;
+    }
     if !is_directory_entry_name(&place.name) {
         return LocalPlaceAvailability::NameUnusable;
     }
@@ -549,7 +558,8 @@ fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Ite
         is_open_for_writing: input.items_open_for_writing.contains(&id),
         is_pinned: input.pinned_items.contains(&id),
         local_directory: find_local_directory_binding(input, items, item),
-        local_place_availability: find_local_place_availability(items, item),
+        local_place_availability: find_local_place_availability(input, items, item),
+        is_left_by_upload: input.items_left_by_uploads.contains_key(&id),
         is_left_by_start_up_check: is_left_by_start_up_check(input, items, item),
         is_sent_into_by_running_step: input.destinations_of_running_steps.contains(&id),
         first_shown_in_it: items.find_first_shown_in(id),
@@ -637,7 +647,7 @@ pub fn make_sync_plan(input: &SyncPlanInput) -> SyncPlan {
     answers.overrule(tried_step::hold_steps_until_next_try(&input.next_tries, input.now, &answers));
     let move_cycles = move_cycle::take_back_moves_into_own_content(&cases, &items, &answers);
     answers.overrule(move_cycles.overrulings);
-    let name_contests = name_contest::settle_name_contests(&cases, &items, &answers, &input.computer_name, &input.places_taken_in_onedrive, &move_cycles.moves_taken_back);
+    let name_contests = name_contest::settle_name_contests(&cases, &items, &answers, &input.computer_name, &input.places_taken_in_onedrive, &input.items_left_by_uploads, &move_cycles.moves_taken_back);
     answers.overrule(name_contests.overrulings);
     answers.overrule(onedrive_name_holders::bring_one_holder_of_each_name_here(&cases, &items, &answers));
     answers.overrule(removed_directory::wait_for_removals_of_directories(&cases, &items));
