@@ -5,30 +5,9 @@
 //!
 //! `items` has one row per item the folder shows or OneDrive has, keyed by a local item id
 //! that is never given twice: the item's binding to OneDrive, what the folder shows of it,
-//! what OneDrive has of it, and what the two sides last agreed on ([`ItemStore`]). Nothing
-//! reads it for the folder yet, and no cycle writes a listing into it yet. What makes the two
+//! what OneDrive has of it, and what the two sides last agreed on ([`ItemStore`]). What makes the two
 //! sides of the rows agree again is the sync plan ([`make_sync_plan`]), a function of rows
-//! given as values, which nothing calls yet either.
-//!
-//! `onedrive_items` is the tree the folder was last made to match; [`Table::Staging`]
-//! is the tree a cycle is building. The folder is reconciled against the new
-//! tree, and only then does it replace `onedrive_items`, in one transaction, so a
-//! crash in between leaves `onedrive_items` and the delta link as they were and the
-//! next cycle asks for the same changes again.
-//!
-//! A delta's new tree is `onedrive_items` with the delta laid over it:
-//! the table `staging` holds only the rows the delta writes, each a whole
-//! row, and `staging_gone` the ids it removes. Reading the new tree reads
-//! `staging` first and `onedrive_items` for the rest; the swap writes those rows and
-//! removes those ids, nothing else. A full listing, which may leave out
-//! anything, is staged whole instead: `staging` is then the new tree by
-//! itself (`meta` `staging_whole`), and the swap replaces every row.
-//!
-//! A folder's first listing is the one exception: each page goes
-//! into `onedrive_items` as soon as it is placed, with the link to the next page
-//! (`listing_next`) in the same transaction, so that a listing stopped
-//! part-way resumes where it stopped. `commit_staging` ends it as it ends
-//! every listing.
+//! given as values.
 
 use std::path::PathBuf;
 
@@ -40,18 +19,12 @@ mod folded_name;
 mod item_store;
 mod meta;
 mod model;
-pub mod outbox;
+mod path_column;
 mod pins;
-mod placing;
-mod query;
 mod read;
-pub mod reconcile;
 mod schema;
 mod shared;
-mod source;
-mod staging;
 mod sync_plan;
-mod thumbs;
 
 pub use activity::{ActivityKind, ActivityRow, ACTIVITY_KEPT};
 pub use conflicts::{ConflictKind, ConflictRow};
@@ -66,14 +39,13 @@ pub use item_store::{OwnUploadContent, PinChange};
 pub use item_store::{MadeEntryOwner, PlaceChangeRecord, PlaceChangeRecordId, PlaceChangeRowWrite};
 pub use item_store::{FullListingCause, ItemCounts, ItemNotShown, ItemReader, ThumbnailCandidate, UnsentTotal};
 pub use model::{
-    usable_id, Change, ContentPresence, ContentVersion, Counts, DriveId, FileSyncState, FolderVisibility, Item, ItemKind, ItemPlace, ItemVersion, Kind, LocalItemId,
-    LocalVersionChange, Located, NewTree, OneDriveItemId, OneDriveItemReference, Placement, Row, SkipReason, Table,
+    usable_id, Change, ContentPresence, ContentVersion, DriveId, FileSyncState, FolderVisibility, Item, ItemKind, ItemPlace, ItemVersion, Kind, LocalItemId,
+    LocalVersionChange, OneDriveItemId, OneDriveItemReference, Placement, Row, SkipReason,
 };
 pub use konedrive_reason::WaitsFor;
 /// The reasons a change waits or is refused for: `konedrive-reason`'s, named here so that
-/// the daemon needs neither that crate nor the outbox's module, which goes.
+/// the daemon does not need that crate.
 pub use konedrive_reason::Reason;
-pub use query::Skipped;
 pub use read::ReadStore;
 pub use schema::SCHEMA_VERSION;
 pub use schema::{decide_old_store, list_old_store_upload_sessions, OldStoreDecision, RebuildLoss, StoreOrigin, StoredVersion};
@@ -82,7 +54,6 @@ pub use sync_plan::{
     is_same_content_but_for_time, make_conflict_copy_name, make_sync_plan, make_temporary_name, ExclusionReason, FolderStep, FolderStepKind, ItemExclusion, ItemVersions, ItemWait, NextTry, OneDriveStep, PlanFault, RowStep, RowStepKind, SendingState, SyncPlan, SyncPlanInput, SyncStep, TriedStep,
     WaitReason,
 };
-pub use thumbs::{Thumbnail, ThumbnailBatch, THUMB_PAGE, THUMB_SCAN};
 
 /// A chain of parents longer than this is a cycle or corruption, not a drive.
 const MAX_CHAIN: usize = konedrive_fs::MAX_DEPTH + 2;
@@ -152,10 +123,6 @@ pub struct TreeStore {
     conn: Connection,
     /// Where it is on disk; `None` in memory.
     path: Option<PathBuf>,
-    /// `staging` holds a whole new tree ([`NewTree::Whole`]), not a delta.
-    whole: bool,
-    /// What changed in the outbox since it was last asked.
-    changes: std::sync::Arc<outbox::OutboxChanges>,
 }
 
 impl TreeStore {

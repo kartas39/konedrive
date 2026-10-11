@@ -13,6 +13,8 @@
 //! changes; only a passing trouble — no answer, `401`, `408`, `429`, 5xx — is
 //! tried again at the next drain. A `406` at `c512x512` is asked
 //! once more at Graph's named size `large` before it counts as a refusal.
+// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
+#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -26,7 +28,7 @@ use tokio_util::sync::CancellationToken;
 use crate::folder::root::SyncRoot;
 use crate::conditions::running::Running;
 use konedrive_graph::drive::{DriveClient, Thumbnail};
-use konedrive_tree::{Store, Thumbnail as Wanted, ThumbnailBatch};
+use konedrive_tree::{Store, ThumbnailCandidate as Wanted};
 
 /// The cache directories KIO consults, and the longest edge of each
 /// (`docs/kio-behavior.md` §A). `xx-large` is deliberately absent: it would be a second
@@ -107,47 +109,9 @@ impl ThumbnailFiller {
     /// with the id the next batch goes on from, `None` once every candidate
     /// has been looked at.
     async fn run_from(&self, cancel: &CancellationToken, limit: usize, after: String) -> (RunOutcome, Option<String>) {
-        let ThumbnailBatch { wanted: candidates, next } = match self.store.call(move |s| s.thumbnail_candidates(&after, limit)).await {
-            Ok(found) => found,
-            Err(e) => {
-                tracing::warn!("cannot list the thumbnails to make: {e}");
-                return (RunOutcome::default(), None);
-            }
-        };
-        let taken = candidates.len();
-        let mut running = tokio::task::JoinSet::new();
-        let mut written = 0;
-        for wanted in candidates {
-            // Turned off or paused meanwhile: no more requests; what was not asked waits
-            // for the next drain.
-            if !self.running.thumbnails_go() {
-                break;
-            }
-            // The wait for a slot, and the request — which can wait out Graph's
-            // `Retry-After`, up to 300 s, four times — give way to a stop: a
-            // Forget, or a switch to interception, holds `SyncService`'s
-            // `folder` lock for writing while it waits for this task.
-            let slot = loop {
-                tokio::select! {
-                    () = cancel.cancelled() => break None,
-                    slot = self.drive.pool().acquire(konedrive_graph::pool::Class::Download) => break Some(slot),
-                    Some(done) = running.join_next(), if !running.is_empty() => written += usize::from(done.unwrap_or(false)),
-                }
-            };
-            let Some(slot) = slot else { break };
-            let one = One { drive: self.drive.clone(), store: self.store.clone(), cache: self.cache.clone(), folder: self.root.path.clone() };
-            let cancel = cancel.clone();
-            running.spawn(async move {
-                tokio::select! {
-                    () = cancel.cancelled() => false,
-                    written = one.make(wanted, slot) => written,
-                }
-            });
-        }
-        while let Some(done) = running.join_next().await {
-            written += usize::from(done.unwrap_or(false));
-        }
-        (RunOutcome { taken, written }, next)
+        // TODO: `ItemStore::list_thumbnail_candidates` (after a local item id, not a OneDrive id) for the
+        // candidates; each is made by `One::make` in a slot of the pool, as before.
+        todo!()
     }
 
     /// Batches of up to `limit`, each going on where the last stopped,
@@ -203,63 +167,9 @@ struct One {
 impl One {
     /// Asks Graph for the thumbnail of `row` and caches it; whether one was written.
     async fn make(self, wanted: Wanted, mut slot: konedrive_graph::pool::Slot) -> bool {
-        let (row, rel) = (&wanted.row, &wanted.rel);
-        let mut fetched = self.drive.thumbnail(&row.id, GRAPH_SIZE).await;
-        if matches!(fetched, Ok(Thumbnail::Refused(konedrive_graph::drive::Status::NOT_ACCEPTABLE))) {
-            fetched = self.drive.thumbnail(&row.id, FALLBACK_SIZE).await;
-        }
-        if fetched.is_ok() {
-            slot.succeeded();
-        }
-        drop(slot);
-        let mut written = false;
-        // Whether to record `key` for this item: true for anything that
-        // settles the question of whether it has a usable thumbnail
-        // (a real write, a 404, a refusal, an oversized body, bytes that
-        // will not decode) and for a local I/O problem, which would fail
-        // the same way at once; false for a passing trouble
-        // (`DriveClient::thumbnail`'s `Err`), tried again at the next drain.
-        let settle = match fetched {
-            Ok(Thumbnail::Image(bytes)) => {
-                let (cache, file, mtime) = (self.cache.clone(), self.folder.join(rel), row.mtime);
-                match tokio::task::spawn_blocking(move || write_thumbnail(&cache, &file, mtime, &bytes)).await {
-                    Ok(Ok(())) => {
-                        written = true;
-                        true
-                    }
-                    Ok(Err(FillError::Undecodable(reason))) => {
-                        tracing::warn!("no usable thumbnail for {}: {reason}", rel.display());
-                        true
-                    }
-                    Ok(Err(FillError::Io(reason))) => {
-                        tracing::warn!("cannot cache the thumbnail of {}: {reason}", rel.display());
-                        true
-                    }
-                    Err(e) => {
-                        tracing::warn!("the thumbnail task for {} failed: {e}", rel.display());
-                        false
-                    }
-                }
-            }
-            Ok(Thumbnail::None) => true,
-            Ok(Thumbnail::Refused(status)) => {
-                // Once per version of the item: recorded, so not asked again
-                // until it changes.
-                tracing::info!("OneDrive refuses a thumbnail of {}: {status}", rel.display());
-                true
-            }
-            Err(e) => {
-                tracing::info!("no thumbnail for {} this time: {e}", rel.display());
-                false
-            }
-        };
-        if settle {
-            let made = wanted.clone();
-            if let Err(e) = self.store.call(move |s| s.thumbnail_made(&made)).await {
-                tracing::warn!("cannot record the thumbnail of {}: {e}", wanted.rel.display());
-            }
-        }
-        written
+        // TODO: `DriveClient::thumbnail` by `ThumbnailCandidate`'s binding, `write_thumbnail`, then
+        // `ItemStore::set_thumbnail_made` for what settles the question.
+        todo!()
     }
 }
 

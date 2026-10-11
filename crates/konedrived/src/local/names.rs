@@ -9,7 +9,7 @@
 
 use std::ffi::OsStr;
 
-use konedrive_tree::outbox::Reason;
+use konedrive_tree::Reason;
 
 /// The largest file OneDrive takes (Microsoft: 250 GB). Taken as GiB: a file
 /// between 250 GB and 250 GiB, if refused, is blocked by the service's answer.

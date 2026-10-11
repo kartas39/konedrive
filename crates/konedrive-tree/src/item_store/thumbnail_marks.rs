@@ -21,7 +21,7 @@ use rusqlite::{params, params_from_iter};
 
 use super::item_row::{content_values, find_item, item_from, CONTENT_COLUMNS, ITEM_COLUMNS};
 use super::{find_path, ItemReader, ItemStore};
-use crate::outbox::{path_from, path_value};
+use crate::path_column::{path_from, path_value};
 use crate::model::{ContentVersion, Item, LocalItemId};
 use crate::TreeError;
 

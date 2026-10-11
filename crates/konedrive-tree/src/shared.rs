@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use super::{outbox, ReadStore, TreeError, TreeStore};
+use super::{ReadStore, TreeError, TreeStore};
 
 /// A job for a store's owner thread: a closure over the store, which sends
 /// its own answer.
@@ -30,9 +30,8 @@ struct Owner {
 
 impl Owner {
     /// Starts the thread. It ends, dropping the connection, once every
-    /// sender is gone and the jobs already queued have run. After each job
-    /// that changed the outbox, `changes` tells those waiting for a change.
-    fn spawn(mut store: TreeStore, name: &str, changes: Option<std::sync::Arc<outbox::OutboxChanges>>) -> Self {
+    /// sender is gone and the jobs already queued have run.
+    fn spawn(mut store: TreeStore, name: &str) -> Self {
         let id = NEXT_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (jobs, mut queue) = tokio::sync::mpsc::channel::<Job>(QUEUE);
         let (closing, closed) = tokio::sync::watch::channel(false);
@@ -41,16 +40,10 @@ impl Owner {
             .spawn(move || {
                 OWNING.with(|owning| owning.set(id));
                 while let Some(job) = queue.blocking_recv() {
-                    let before = changes.as_ref().map(|c| c.generation());
                     // A job that panics answers nobody (its caller gets an error);
                     // its transaction, if any, is rolled back as it is dropped.
                     if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&mut store))).is_err() {
                         tracing::error!("a job of the tree store panicked; the store goes on");
-                    }
-                    if let (Some(changes), Some(before)) = (&changes, before) {
-                        if changes.generation() != before {
-                            changes.committed();
-                        }
                     }
                 }
                 // The connection is closed before anyone is told so.
@@ -113,7 +106,6 @@ fn failed() -> TreeError {
 #[derive(Clone)]
 pub struct Store {
     owner: std::sync::Arc<Owner>,
-    changes: std::sync::Arc<outbox::OutboxChanges>,
     /// The read-only connection's owner ([`Store::read`]), started when
     /// first used; `None` inside when it cannot be opened.
     reader: std::sync::Arc<std::sync::OnceLock<Option<Owner>>>,
@@ -122,12 +114,10 @@ pub struct Store {
 
 impl Store {
     pub fn new(store: TreeStore) -> Self {
-        let changes = std::sync::Arc::clone(&store.changes);
         let path = store.path.clone();
-        let owner = Owner::spawn(store, "konedrive-store", Some(std::sync::Arc::clone(&changes)));
+        let owner = Owner::spawn(store, "konedrive-store");
         Self {
             owner: std::sync::Arc::new(owner),
-            changes,
             reader: Default::default(),
             path,
         }
@@ -150,18 +140,6 @@ impl Store {
                 let _ = closed.wait_for(|closed| *closed).await;
             }
         }
-    }
-
-    /// The pause a version before this one kept here (`meta.paused_until`): until then
-    /// (unix seconds, 0 for until resumed), or `None`. The daemon keeps the pause with the
-    /// account's settings now; this is read once, to move it there.
-    pub async fn old_pause(&self) -> Result<Option<i64>, TreeError> {
-        self.call(|s| s.paused_until()).await
-    }
-
-    /// Writes [`old_pause`](Self::old_pause); `None` takes it off, once it has been moved.
-    pub async fn set_old_pause(&self, until: Option<i64>) -> Result<(), TreeError> {
-        self.call(move |s| s.set_paused_until(until)).await
     }
 
     /// Runs `f` on the store's thread and waits for its answer: for async
@@ -191,7 +169,7 @@ impl Store {
         let path = self.path.as_ref()?;
         self.reader
             .get_or_init(|| match TreeStore::open_read_only(path) {
-                Ok(opened) => Some(Owner::spawn(opened, "konedrive-store-read", None)),
+                Ok(opened) => Some(Owner::spawn(opened, "konedrive-store-read")),
                 Err(e) => {
                     tracing::warn!("the tree store cannot be opened for reading alone ({e}); it is read through its own thread");
                     None
@@ -240,8 +218,4 @@ impl Store {
         std::sync::Arc::strong_count(&self.owner)
     }
 
-    /// What changed in the outbox, shared with the store.
-    pub fn changes(&self) -> &std::sync::Arc<outbox::OutboxChanges> {
-        &self.changes
-    }
 }

@@ -20,7 +20,7 @@ use rusqlite::Connection;
 use super::item_row::set_local_place;
 use super::ItemStore;
 use crate::model::{ItemPlace, LocalItemId};
-use crate::outbox::path_from;
+use crate::path_column::path_from;
 use crate::TreeError;
 
 /// How many rows one read of the go-over takes.

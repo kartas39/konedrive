@@ -33,7 +33,7 @@ use rusqlite::{params_from_iter, Connection};
 use super::item_row::{check_name, content_from, content_values, find_item, name_value, set_content_presence};
 use super::{apply_change, refuse, refuse_for, ItemStore, StepCommitOutcome};
 use crate::model::{ContentPresence, ContentVersion, ItemKind, ItemPlace, LocalItemId, LocalVersionChange};
-use crate::outbox::path_from;
+use crate::path_column::path_from;
 use crate::{RowRefusalReason, TreeError};
 
 /// Which record of `place_change_records`: the number the table gave it, never given twice.

@@ -6,10 +6,12 @@
 //! that is gone until the user reloads. `FilesAdded` is the signal every KIO program takes as
 //! "something is new in this directory: list it again"; one that does not show the directory
 //! ignores it.
+// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
+#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::path::PathBuf;
 
-use konedrive_tree::{Kind, Store, Table};
+use konedrive_tree::Store;
 
 /// The most directories of one folder that are told: which of them a program shows is not
 /// known here.
@@ -33,22 +35,7 @@ pub async fn read_again(directories: Vec<PathBuf>) {
 /// [`read_again`] for the folder at `folder` and every directory `store` names in it: after
 /// its mount came, or the modes its mount shows changed.
 pub async fn read_folder_again(store: Store, folder: PathBuf) {
-    let listed = store
-        .call(move |s| {
-            let Some(root) = s.root_item_id()? else { return Ok(vec![folder]) };
-            let (mut directories, mut next) = (vec![folder.clone()], vec![(root, folder)]);
-            while let Some((id, path)) = next.pop() {
-                for row in s.children(Table::OneDriveItems, &id)? {
-                    if row.kind == Kind::Folder && directories.len() < MOST {
-                        let below = path.join(&row.name);
-                        directories.push(below.clone());
-                        next.push((row.id, below));
-                    }
-                }
-            }
-            Ok(directories)
-        })
-        .await
-        .unwrap_or_default();
-    read_again(listed).await;
+    // TODO: the directories the folder shows, from the root down (`ItemReader::list_children` in a read
+    // of the store, `Store::read_items`), then `read_again`.
+    todo!()
 }

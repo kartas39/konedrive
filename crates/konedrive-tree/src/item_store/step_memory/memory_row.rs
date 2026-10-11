@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 use super::item_memory::{FailedTries, ItemMemory, MismatchedItem, Refusal, RefusedVersion, RemovalConfirmation, SpaceRefusal, TakenName, TemporaryName, UploadSession, UploadSessionAddress, UploadTag};
 use crate::model::{ContentVersion, DriveId, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference};
-use crate::outbox::{path_from, path_value};
+use crate::path_column::{path_from, path_value};
 use crate::{FoldedName, TreeError};
 
 /// The columns of a content, after the word that says whose it is, as `items` has them.

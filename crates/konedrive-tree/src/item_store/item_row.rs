@@ -15,7 +15,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::item_pins::forget_pins_of_rows;
 use super::refuse;
 use crate::model::{ContentPresence, ContentVersion, DriveId, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference, Placement, PLACED};
-use crate::outbox::{path_from, path_value};
+use crate::path_column::{path_from, path_value};
 use crate::FoldedName;
 use crate::TreeError;
 

@@ -4,12 +4,12 @@
 
 use std::path::Path;
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 
 use crate::conflicts::ConflictKind;
 use crate::item_store::{own_upload_contents_schema, place_change_records_schema, step_memory_schema, thumbnail_marks_schema, unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, IMAGE_OR_VIDEO, LEFT_HERE, NOT_PLACED, SHOWN_AGAINST_PLACEMENT};
 use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK, PLACED};
-use crate::{meta, outbox, TreeError, TreeStore};
+use crate::{meta, TreeError, TreeStore};
 
 /// What becomes of a store an older version of the daemon left.
 mod old_store;
@@ -29,6 +29,13 @@ pub const SCHEMA_VERSION: &str = "22";
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with.
 ///
+
+// TODO: check which tables of what went the switch drops (`onedrive_items`, `staging`,
+// `staging_gone`, `deferred`, `outbox`, `outbox_gone`, `local_skipped` and their indexes are
+// still made, and nothing reads them), with the schema's version, and fix if needed.
+/// The rows the partial index `outbox_frees` holds.
+const OUTBOX_FREES: &str = "base_parent IS NOT NULL AND base_name IS NOT NULL AND (base_parent IS NOT target_parent OR base_name IS NOT target_name)";
+
 /// - `items`: one row per item, keyed by its local item id ([`crate::item_store`]).
 ///   `AUTOINCREMENT`: an id is never handed out twice, so the kernel's node id of an item
 ///   that is gone never names another. The root of the folder is row 1, made here. The
@@ -122,7 +129,7 @@ pub const SCHEMA_VERSION: &str = "22";
 /// - `deferred`, `outbox_gone`: what a read-write cycle keeps between
 ///   cycles ([`crate::reconcile`]). `deferred.waits`: what keeps an item
 ///   that is to leave the folder, as the last cycle found it.
-/// - `outbox`, `local_skipped`: the write phase ([`crate::outbox`]).
+/// - `outbox`, `local_skipped`: the write phase (the outbox, which went).
 ///   `AUTOINCREMENT`: a `seq` is never handed out twice, so a row removed
 ///   at commit can never be mistaken for a new one by a worker still
 ///   holding it. `handle` is the file handle of the local object a row is
@@ -143,7 +150,7 @@ pub const SCHEMA_VERSION: &str = "22";
 ///   left. One per row (`at` its first time, `last` the latest attempt
 ///   whose outcome is not known); the URL replaces it. `upload_openings_left`: a record
 ///   whose row left, or moved to another place, kept until a
-///   `409` there resolves it, or for [`outbox::OPENING_LEFT_KEEP`].
+///   `409` there resolves it, or for a week.
 /// - `onedrive_items_skipped` asks whether a row is placed as every query and the
 ///   decoder do ([`skipped`]), so that a query uses it.
 /// - The indexes keep a cycle and the outbox's lookups from reading a whole
@@ -327,7 +334,7 @@ fn schema() -> String {
         onedrive_items = tree("onedrive_items"),
         staging = tree("staging"),
         rescued = ConflictKind::Rescued.as_str(),
-        frees = outbox::FREES,
+        frees = OUTBOX_FREES,
         skipped = skipped("placement"),
     )
 }
@@ -382,7 +389,7 @@ impl TreeStore {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.set_prepared_statement_cache_capacity(64);
-        Ok(Self { conn, path: None, whole: false, changes: Default::default() })
+        Ok(Self { conn, path: None })
     }
 
     /// A number that changes whenever another connection commits to the store: what a
@@ -409,12 +416,9 @@ impl TreeStore {
         if version.as_deref() != Some(SCHEMA_VERSION) {
             return Err(TreeError::Schema(version));
         }
-        let whole = conn.query_row("SELECT 1 FROM meta WHERE key = ?1", [meta::STAGING_WHOLE], |_| Ok(())).optional()?.is_some();
-        // The outbox's point queries run thousands of times.
+        // The point queries run thousands of times.
         conn.set_prepared_statement_cache_capacity(64);
-        let changes = std::sync::Arc::new(outbox::OutboxChanges::default());
-        outbox::watch(&conn, &changes)?;
-        Ok(Self { conn, path: None, whole, changes })
+        Ok(Self { conn, path: None })
     }
 }
 

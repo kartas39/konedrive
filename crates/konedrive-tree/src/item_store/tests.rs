@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use super::item_row::write_item;
 use super::*;
-use crate::model::{Change, ContentPresence, ContentVersion, DriveId, FileSyncState, ItemKind, ItemPlace, ItemVersion, Kind, OneDriveItemId, Placement, Row};
+use crate::model::{ContentPresence, ContentVersion, DriveId, FileSyncState, ItemKind, ItemPlace, ItemVersion, OneDriveItemId};
 
 const ROOT: LocalItemId = LocalItemId::ROOT;
 
@@ -1008,109 +1008,6 @@ fn the_schema_refuses_a_parent_that_has_no_row_or_is_a_file() {
         .unwrap();
 }
 
-fn onedrive_root(id: &str) -> Change {
-    Change::Root(Row {
-        id: id.into(),
-        parent_id: None,
-        name: String::new(),
-        kind: Kind::Folder,
-        size: 0,
-        mtime: 0,
-        etag: None,
-        ctag: None,
-        quickxor: None,
-        mime: None,
-        placement: Placement::Placed,
-    })
-}
-
-/// The root gets its binding where the store learns the drive's root: once it knows the
-/// drive and the root's item id, whichever comes first, and from a page of a first listing
-/// as from a staged tree.
-#[test]
-fn the_root_is_bound_once_the_drive_and_its_root_are_known() {
-    let root_of = |drive: &str, id: &str| OneDriveItemReference { drive_id: DriveId::new(drive).unwrap(), item_id: OneDriveItemId::new(id) };
-
-    let mut store = TreeStore::in_memory().unwrap();
-    store.set_drive_id("DRIVE").unwrap();
-    assert_eq!(item(&mut store, ROOT).onedrive_item, None, "the drive alone names no item");
-    store.begin_staging(crate::NewTree::Whole).unwrap();
-    store.stage(&[onedrive_root("R")]).unwrap();
-    assert_eq!(item(&mut store, ROOT).onedrive_item, Some(root_of("drive", "R")), "the drive's id as a drive id is made");
-    assert_eq!(store.item_store().find_bound_item(&root_of("Drive", "R")).unwrap().map(|i| i.local_item_id), Some(ROOT));
-
-    let mut store = TreeStore::in_memory().unwrap();
-    store.commit_page(&[onedrive_root("R")], "next").unwrap();
-    assert_eq!(item(&mut store, ROOT).onedrive_item, None, "the root's id alone names no drive");
-    store.set_drive_id("d9").unwrap();
-    assert_eq!(item(&mut store, ROOT).onedrive_item, Some(root_of("d9", "R")));
-}
-
-/// The root's OneDrive item reference is the root's, whatever row was made first: a page
-/// that names children before the root makes a row for their parent, and when the store
-/// learns that this parent is the drive's root, that row goes and what was agreed to be in
-/// it is in row 1.
-#[test]
-fn the_roots_reference_is_row_1s_also_when_another_row_had_it_first() {
-    let mut store = TreeStore::in_memory().unwrap();
-    store.set_drive_id("d1").unwrap();
-    let mentioned = store.item_store().make_onedrive_item(&reference("R"), ItemKind::Directory).unwrap();
-    let child = make_file(&mut store, ROOT, "child");
-    let mut child_row = synced(&mut store, child, "C");
-    child_row.synced_place = Some(place(mentioned, "child"));
-    write_item(&store.conn, &child_row).unwrap();
-
-    store.begin_staging(crate::NewTree::Whole).unwrap();
-    store.stage(&[onedrive_root("R")]).unwrap();
-    assert_eq!(item(&mut store, ROOT).onedrive_item, Some(reference("R")));
-    assert_eq!(store.item_store().find_item(mentioned).unwrap(), None);
-    assert_eq!(item(&mut store, child).synced_place, Some(place(ROOT, "child")));
-    store.set_drive_id("D1").unwrap();
-    assert_eq!(item(&mut store, ROOT).onedrive_item, Some(reference("R")), "learnt again, nothing changes");
-}
-
-/// A change of a local version and the outbox's rows of the same operation are written in
-/// one transaction: both are there once it is committed, and neither when it is not.
-#[test]
-fn a_change_and_its_outbox_rows_are_written_in_one_transaction() {
-    use crate::outbox::{apply_outbox_ops, Detection, OutboxKind, OutboxOp, OutboxState};
-    let mut store = TreeStore::in_memory().unwrap();
-    let record = |local_item_id| {
-        OutboxOp::Record(Detection {
-            kind: OutboxKind::Create,
-            item_id: None,
-            object: None,
-            rel: "new".into(),
-            base: None,
-            target_parent: None,
-            target_name: Some("new".into()),
-            same_content: false,
-            state: OutboxState::Ready,
-            reason: None,
-            next_try: None,
-            size: Some(0),
-            local_item_id: Some(local_item_id),
-        })
-    };
-    for committed in [false, true] {
-        let tx = store.conn.transaction().unwrap();
-        let new = apply_change(&tx, &made(place(ROOT, "new"), ItemKind::File)).unwrap();
-        let applied = apply_outbox_ops(&tx, &[record(new)], 0).unwrap();
-        assert_eq!(applied.queued.len(), 1);
-        if committed {
-            tx.commit().unwrap();
-        } else {
-            drop(tx);
-        }
-        let rows = store.outbox_rows().unwrap();
-        assert_eq!((names(&mut store, ROOT).len(), rows.len()), if committed { (1, 1) } else { (0, 0) });
-        if committed {
-            assert_eq!(rows[0].local_item_id, Some(new), "the row names its local item");
-            assert_eq!(item(&mut store, new).local_item_id, new);
-        }
-    }
-}
-
 /// The row count of `items`, as a transaction that is not committed sees it.
 fn count_rows(conn: &rusqlite::Connection) -> i64 {
     conn.query_row("SELECT count(*) FROM items", [], |row| row.get(0)).unwrap()
@@ -1157,34 +1054,6 @@ fn an_error_after_a_write_in_a_callers_transaction_is_undone_by_dropping_it() {
     drop(tx);
     assert_eq!([first, second].map(|id| item(&mut store, id)), before);
     assert_eq!(names(&mut store, ROOT), ["first", "second"]);
-}
-
-/// The store's call that learns the drive's root refuses when a row that is not the root
-/// has that reference and is a file or an item the folder shows; its transaction is
-/// dropped, so the store has learnt nothing and no row changed.
-#[test]
-fn the_root_is_not_bound_to_a_reference_that_a_shown_item_or_a_file_has() {
-    for shown in [true, false] {
-        let mut store = TreeStore::in_memory().unwrap();
-        let holder = make_file(&mut store, ROOT, "holder");
-        // The drive's id is put where `set_drive_id` would, without binding the root.
-        store.set_meta(crate::meta::DRIVE_ID, Some("d1")).unwrap();
-        synced(&mut store, holder, "R");
-        if !shown {
-            store.item_store().apply(&LocalVersionChange::Removed { item: holder }).unwrap();
-        }
-        let before = item(&mut store, holder);
-
-        store.begin_staging(crate::NewTree::Whole).unwrap();
-        assert!(is_refused(store.stage(&[onedrive_root("R")])), "shown: {shown}");
-        assert!(is_refused(store.commit_page(&[onedrive_root("R")], "next")), "shown: {shown}");
-        assert_eq!(store.root_item_id().unwrap(), None, "what the call wrote before it was refused is not kept");
-        assert_eq!((item(&mut store, ROOT).onedrive_item, item(&mut store, holder)), (None, before));
-
-        store.set_meta(crate::meta::ROOT_ITEM_ID, Some("R")).unwrap();
-        assert!(is_refused(store.set_drive_id("d1")), "shown: {shown}");
-        assert_eq!(item(&mut store, ROOT).onedrive_item, None);
-    }
 }
 
 fn unsent_since(store: &mut TreeStore, id: LocalItemId) -> Option<u64> {

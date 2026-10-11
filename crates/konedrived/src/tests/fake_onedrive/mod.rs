@@ -24,8 +24,6 @@ use konedrive_graph::drive::item::format_graph_time;
 use konedrive_graph::drive::{DriveClient, RetryPolicy};
 use konedrive_graph::quickxor::QuickXor;
 use konedrive_graph::token::StaticToken;
-#[cfg(test)]
-use konedrive_tree::{Kind, Store};
 
 pub use sockets::{Early, FakeSockets, PING_INTERVAL};
 
@@ -816,30 +814,6 @@ impl FakeGraph {
         // Behind anything a test mounts itself: an answer given by hand wins.
         Mock::given(any()).respond_with(Responder(Arc::clone(&cloud), Arc::clone(&sockets))).with_priority(u8::MAX).mount(&server).await;
         Self { server, cloud, sockets }
-    }
-
-    /// A drive holding what the base holds, with the same tags and hashes.
-    #[cfg(test)]
-    pub async fn from_store(store: &Store) -> Self {
-        let graph = Self::start().await;
-        let rows = store.call(move |s| s.all_items()).await.unwrap();
-        graph.with(|cloud| {
-            for row in rows {
-                cloud.add(FakeItem {
-                    parent: row.parent_id.clone(),
-                    name: row.name.clone(),
-                    folder: row.kind == Kind::Folder,
-                    content: Vec::new(),
-                    hash: row.quickxor.clone(),
-                    size: row.size,
-                    etag: row.etag.clone().unwrap_or_else(|| format!("e-{}", row.id)),
-                    ctag: row.ctag.clone().unwrap_or_else(|| format!("c-{}", row.id)),
-                    mtime: row.mtime,
-                    id: row.id,
-                });
-            }
-        });
-        graph
     }
 
     /// Runs `f` on the drive; a change it makes sends a notification.
