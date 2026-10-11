@@ -66,14 +66,18 @@ impl SyncService {
         let view = self.view();
         let Some(parts) = view.parts else { return Err(self.sync_not_running()) };
         let sources = match (&view.sending_holds, &view.onedrive_space) {
-            (Some(sending_holds), Some(onedrive_space)) => QueueSources {
-                answers: parts.published_plan.list_answers(),
-                held_removal_counts: parts.published_plan.list_held_removal_counts(),
-                running: parts.running_steps.list_steps(),
-                conditions: upload_queue::read_queue_conditions(sending_holds, onedrive_space, self.clock.now()),
-                parts,
-                folder,
-            },
+            (Some(sending_holds), Some(onedrive_space)) => {
+                // Both of one plan: taken under one read.
+                let (answers, held_removal_counts) = parts.published_plan.list_answers_and_held_removal_counts();
+                QueueSources {
+                    answers,
+                    held_removal_counts,
+                    running: parts.running_steps.list_steps(),
+                    conditions: upload_queue::read_queue_conditions(sending_holds, onedrive_space, self.clock.now()),
+                    parts,
+                    folder,
+                }
+            }
             _ => QueueSources {
                 answers: BTreeMap::new(),
                 held_removal_counts: BTreeMap::new(),

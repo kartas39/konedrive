@@ -75,7 +75,7 @@ impl SyncService {
 
 /// Switches the mount a stopped sync keeps to `mode`: the mount's own switch alone — there is
 /// no sending to hold, and the next start sets the hold with the mode. A mount that asked for
-/// its take-down made itself read-only for a fault, and is never made to take changes again.
+/// its take-down made itself read-only for a fault, and refuses to take changes again.
 async fn switch_kept_mount(mount: &crate::mount::ItemMount, mode: Mode) {
     match mode {
         Mode::ReadOnly => {
@@ -83,9 +83,11 @@ async fn switch_kept_mount(mount: &crate::mount::ItemMount, mode: Mode) {
                 tracing::warn!("the folder's mount could not be switched to read-only on its own thread: {error}");
             }
         }
-        Mode::ReadWrite if mount.is_take_down_asked() => {}
+        // `Err` for a mount whose take-down was asked: it stays read-only, as it made itself.
         Mode::ReadWrite => {
-            mount.switch_to_read_write();
+            if let Err(error) = mount.switch_to_read_write() {
+                tracing::warn!("the folder's mount is not switched to read-write: {error}");
+            }
         }
     }
 }

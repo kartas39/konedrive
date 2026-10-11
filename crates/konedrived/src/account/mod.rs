@@ -373,7 +373,6 @@ impl AccountService {
             session: Mutex::new(Session { generation: 0, cancel: None }),
             siblings: std::sync::Mutex::new(None),
             retired: std::sync::atomic::AtomicBool::new(false),
-            own: Weak::clone(own),
         });
         service.install_oauth(&client_id);
         // Every refresh says what its token is valid for (`docs/design/writes.md` §2). Weak: the token

@@ -99,36 +99,38 @@ fn decide_is_reason_shown_blocked(reason: &Reason) -> bool {
     }
 }
 
-/// The plan's answers of one folder.
-pub struct PublishedPlan {
-    answers: std::sync::RwLock<BTreeMap<LocalItemId, ItemAnswer>>,
-    /// For each directory whose removal the last plan holds for the user
+/// What one plan published: its answers, and its counts of the removals it holds. One
+/// value, written and read under one lock, so that no reader has the answers of one plan
+/// with the counts of another.
+#[derive(Default)]
+struct PublishedAnswers {
+    answers: BTreeMap<LocalItemId, ItemAnswer>,
+    /// For each directory whose removal the plan holds for the user
     /// (`WaitReason::User(Reason::MassDelete)`): how many items OneDrive has in it and
     /// below it, as the plan was given it (`SyncPlanInput::onedrive_item_count_below`).
-    held_removal_counts: std::sync::RwLock<BTreeMap<LocalItemId, u64>>,
+    held_removal_counts: BTreeMap<LocalItemId, u64>,
+}
+
+/// The plan's answers of one folder.
+pub struct PublishedPlan {
+    published: std::sync::RwLock<PublishedAnswers>,
 }
 
 impl PublishedPlan {
     /// Nothing published: before the first plan. Made by the folder's start and given to
     /// the mount's setup and to the plan's task.
     pub fn new() -> Self {
-        PublishedPlan { answers: std::sync::RwLock::default(), held_removal_counts: std::sync::RwLock::default() }
+        PublishedPlan { published: std::sync::RwLock::default() }
     }
 
-    /// The answers of the plan made now replace those of the one before. Called by the
-    /// plan's task after each plan.
-    pub fn publish(&self, answers: BTreeMap<LocalItemId, ItemAnswer>) {
-        *crate::panic::write(&self.answers) = answers;
-    }
-
-    /// The counts of the plan made now replace those of the one before: for each
-    /// directory whose removal that plan holds for the user, how many items the removal
-    /// takes from OneDrive below it — the plan's own count
-    /// (`PlannedRound::input.onedrive_item_count_below`, of the plan's reading). Called by
-    /// the plan's task right after [`publish`](Self::publish), with every plan, also with
-    /// none held.
-    pub fn publish_held_removal_counts(&self, counts: BTreeMap<LocalItemId, u64>) {
-        *crate::panic::write(&self.held_removal_counts) = counts;
+    /// The answers of the plan made now replace those of the one before, and with them,
+    /// in the same write, its counts of held removals: for each directory whose removal
+    /// that plan holds for the user, how many items the removal takes from OneDrive below
+    /// it — the plan's own count (`PlannedRound::input.onedrive_item_count_below`, of the
+    /// plan's reading); empty with none held. Called by the plan's task after each plan:
+    /// the ONE publish, so that a reader between two plans has both of one plan.
+    pub fn publish(&self, answers: BTreeMap<LocalItemId, ItemAnswer>, held_removal_counts: BTreeMap<LocalItemId, u64>) {
+        *crate::panic::write(&self.published) = PublishedAnswers { answers, held_removal_counts };
     }
 
     /// How many items the held removal of the directory `item` takes from OneDrive below
@@ -136,24 +138,32 @@ impl PublishedPlan {
     /// Called by the queue's answers: a held mass removal of a directory is ONE entry,
     /// the directory, with this number (`upload_queue::UnsentEntry::held_items_below`).
     pub fn find_held_removal_count(&self, item: LocalItemId) -> Option<u64> {
-        crate::panic::read(&self.held_removal_counts).get(&item).copied()
+        crate::panic::read(&self.published).held_removal_counts.get(&item).copied()
     }
 
     /// Every count of [`find_held_removal_count`](Self::find_held_removal_count), by
-    /// directory: taken once, with the answers, before a read of the store.
+    /// directory.
     pub fn list_held_removal_counts(&self) -> BTreeMap<LocalItemId, u64> {
-        crate::panic::read(&self.held_removal_counts).clone()
+        crate::panic::read(&self.published).held_removal_counts.clone()
     }
 
     /// The answer for `item`, when the last plan was given it. Called by the queue's
     /// answers per entry and by the mount for the sync mark.
     pub fn find_answer(&self, item: LocalItemId) -> Option<ItemAnswer> {
-        crate::panic::read(&self.answers).get(&item).cloned()
+        crate::panic::read(&self.published).answers.get(&item).cloned()
     }
 
-    /// Every answer, by item. Called by the queue's counts and summaries.
+    /// Every answer, by item.
     pub fn list_answers(&self) -> BTreeMap<LocalItemId, ItemAnswer> {
-        crate::panic::read(&self.answers).clone()
+        crate::panic::read(&self.published).answers.clone()
+    }
+
+    /// Every answer and every count of a held removal, of ONE plan: both under one read.
+    /// What a reader of the bus takes once, before its read of the store
+    /// (`account_folder::outbox`), and the plan's task for the queue's status.
+    pub fn list_answers_and_held_removal_counts(&self) -> (BTreeMap<LocalItemId, ItemAnswer>, BTreeMap<LocalItemId, u64>) {
+        let published = crate::panic::read(&self.published);
+        (published.answers.clone(), published.held_removal_counts.clone())
     }
 }
 

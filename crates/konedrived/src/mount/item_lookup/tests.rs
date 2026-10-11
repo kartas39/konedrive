@@ -592,12 +592,12 @@ fn the_sync_mark_is_read_from_the_row_the_running_steps_and_the_plans_answer() {
     fixture.running_steps.end(node);
     fixture.change_file_here(node, b"changed here");
     assert_eq!(find_xattr(&fixture, &lookup, node, XATTR_SYNC).unwrap(), "pending", "unsent, and the plan has not been asked yet");
-    fixture.published_plan.publish([(node, ItemAnswer::Planned(StepClass::Content))].into());
+    fixture.published_plan.publish([(node, ItemAnswer::Planned(StepClass::Content))].into(), std::collections::BTreeMap::new());
     assert_eq!(find_xattr(&fixture, &lookup, node, XATTR_SYNC).unwrap(), "pending");
     assert!(fixture.running_steps.begin(step(StepClass::Content)));
     assert_eq!(find_xattr(&fixture, &lookup, node, XATTR_SYNC).unwrap(), "uploading");
     fixture.running_steps.end(node);
-    fixture.published_plan.publish([(node, ItemAnswer::Waiting(WaitReason::User(Reason::NameCharacters)))].into());
+    fixture.published_plan.publish([(node, ItemAnswer::Waiting(WaitReason::User(Reason::NameCharacters)))].into(), std::collections::BTreeMap::new());
     assert_eq!(find_xattr(&fixture, &lookup, node, XATTR_SYNC).unwrap(), "blocked");
     // What is left here has none, also below an ignored directory, where neither the row
     // nor the plan says so.

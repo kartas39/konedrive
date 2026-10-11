@@ -531,8 +531,7 @@ impl SyncPlanTask {
     async fn publish_queue_status(&self, is_counts_read: bool) {
         let parts = &self.parts;
         let conditions = crate::upload_queue::read_queue_conditions(&parts.sending_holds, &parts.onedrive_space, (parts.clock)());
-        let answers = parts.published_plan.list_answers();
-        let held_removal_counts = parts.published_plan.list_held_removal_counts();
+        let (answers, held_removal_counts) = parts.published_plan.list_answers_and_held_removal_counts();
         let running = parts.running_steps.list_steps();
         let read = {
             let running = running.clone();
@@ -870,8 +869,7 @@ impl SyncPlanTask {
             .filter(|wait| wait.reason == WaitReason::User(konedrive_tree::Reason::MassDelete))
             .filter_map(|wait| round.input.onedrive_item_count_below.get(&wait.item).map(|count| (wait.item, *count)))
             .collect();
-        parts.published_plan.publish(answers);
-        parts.published_plan.publish_held_removal_counts(held_removal_counts);
+        parts.published_plan.publish(answers, held_removal_counts);
         if !marks_changed.is_empty() {
             (parts.marks_announcer)(marks_changed);
         }
