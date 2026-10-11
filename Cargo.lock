@@ -1212,7 +1212,6 @@ dependencies = [
  "konedrive-dbus",
  "konedrive-fs",
  "konedrive-graph",
- "konedrive-text",
  "konedrive-tree",
  "konedrived",
  "libc",

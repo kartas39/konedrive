@@ -13,17 +13,21 @@
 //! holder of a `Stopped`, and stopped by [`SyncService::change`], which takes it out of
 //! the state. So there is no sync without a folder that is up, and no
 //! tree store open for a folder that is forgotten.
+// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
+#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::sync::Arc;
 
 use konedrive_tree::Store;
 use tokio::sync::RwLockWriteGuard;
+use tokio_util::sync::CancellationToken;
 
-use super::running_sync::{Handles, RunningSync, Sync, Why};
+use super::sync_tasks::start_order::StartedFolder;
+
 use super::SyncService;
 use crate::config::Mode;
 use crate::folder::root::SyncRoot;
-use crate::fuse::Mount;
+use crate::fuse::ItemMount;
 use crate::hydration::source::ContentSource;
 
 /// An account's folder: whether the account takes one, the mode it is to follow, and what
@@ -90,7 +94,7 @@ pub(super) struct Kept {
     pub tree_lock: Arc<tokio::sync::Mutex<()>>,
     /// The folder's mount, from its first sync on: it stays while the folder is recorded,
     /// so that the folder shows its names also while no sync runs.
-    pub mount: Option<Arc<Mount>>,
+    pub mount: Option<Arc<ItemMount>>,
 }
 
 impl std::fmt::Debug for Kept {
@@ -146,6 +150,26 @@ impl Down {
     }
 }
 
+/// Whether the sync of a OneDrive folder that is up runs.
+// TODO: check that `StartedFolder` (`sync_tasks::start_order`) is what a running sync keeps
+// here, and `KeptFolderParts` what `Kept` keeps of a stopped one, and fix if needed.
+pub(super) enum Sync {
+    Stopped(Why),
+    Running(Box<StartedFolder>),
+}
+
+/// Why a OneDrive folder's sync does not run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Why {
+    /// Nothing has started it yet: the folder came up a moment ago.
+    NotStarted,
+    /// A change of the folder stopped it and has not started it again: the change is
+    /// under way, or was cut before its end. The next change starts it.
+    Interrupted,
+    /// It could not start. The sentence; `Refresh()` tries again.
+    CannotStart(String),
+}
+
 /// A folder that is up.
 pub(super) struct Up {
     pub record: Record,
@@ -192,7 +216,7 @@ impl Folder {
     }
 
     /// The folder's sync, when one runs.
-    pub fn running(&self) -> Option<&RunningSync> {
+    pub fn running(&self) -> Option<&StartedFolder> {
         match self.up().map(|up| &up.sync) {
             Some(Sync::Running(sync)) => Some(sync),
             _ => None,
@@ -214,15 +238,15 @@ impl Folder {
     }
 
     /// The folder's mount, once it has been mounted.
-    pub fn mount(&self) -> Option<&Arc<Mount>> {
+    pub fn mount(&self) -> Option<&Arc<ItemMount>> {
         self.record().and_then(|record| record.kept.mount.as_ref())
     }
 }
 
 /// What the readers that only look, and the synchronous callers, read of the folder: a
 /// copy made by [`publish`](super::publish) each time a [`Stopped`] says so or is dropped.
-/// It cannot change the folder: of a running sync it holds only what can wake its parts
-/// or tell them to stop ([`Handles`]), never what waits for them.
+/// It cannot change the folder: of a running sync it holds only the token that tells its
+/// tasks to stop (`SyncTasks::stop_handle`), never what waits for them.
 #[derive(Clone, Default)]
 pub(super) struct View {
     /// The folder this account's calls act on, up or not, without what is kept with it
@@ -240,7 +264,7 @@ pub(super) struct View {
     /// The tree store of the recorded folder ([`Folder::store`]).
     pub store: Option<Store>,
     /// The folder's mount ([`Folder::mount`]).
-    pub mount: Option<Arc<Mount>>,
+    pub mount: Option<Arc<ItemMount>>,
     pub sync: SyncView,
 }
 
@@ -252,15 +276,15 @@ pub(super) enum SyncView {
     None,
     /// The folder is up and its sync does not run: why, when it could not start.
     Stopped(Option<String>),
-    Running(Handles),
+    Running(CancellationToken),
 }
 
 impl View {
     /// The sync running now, as far as a reader may reach it. One that has been told to
     /// stop is not running, whatever this view was made from.
-    pub fn running(&self) -> Option<&Handles> {
+    pub fn running(&self) -> Option<&CancellationToken> {
         match &self.sync {
-            SyncView::Running(running) if !running.told_to_stop() => Some(running),
+            SyncView::Running(running) if !running.is_cancelled() => Some(running),
             _ => None,
         }
     }
@@ -350,54 +374,10 @@ impl SyncService {
     /// that has begun (a file call, a commit) has run to its end before the change goes
     /// on, also when the change that stopped the part was dropped while it waited.
     pub(super) async fn change(&self) -> Stopped<'_> {
-        // Told to stop, and gone from the view in the same breath: from here on no reader
-        // takes the sync for running, also when this change is cut before it has the lock.
-        // The next change, or `Refresh()`, then finds a sync that is told and not waited
-        // for, takes it out and starts another.
-        let told = self.view.send_if_modified(|view| match &view.sync {
-            SyncView::Running(handles) => {
-                handles.cancel();
-                view.sync = SyncView::Stopped(None);
-                true
-            }
-            _ => false,
-        });
-        if told {
-            self.state.update_if_changed(|s| s.folder.writable = false);
-        }
-        let folder = self.folder.write().await;
-        // Dropped from here on, the change publishes what it leaves.
-        let mut stopped = Stopped { service: self, folder, ran: false, was_writable: false, told: false };
-        if let Some(sync) = stopped.folder.sync_mut() {
-            match std::mem::replace(sync, Sync::Stopped(Why::Interrupted)) {
-                // Dropped here: told again, and its parts handed over to be waited for.
-                Sync::Running(_) => stopped.ran = true,
-                Sync::Stopped(Why::Interrupted) => stopped.ran = true,
-                Sync::Stopped(why) => *sync = Sync::Stopped(why),
-            }
-        }
-        // No sync, no uploads: the mount takes no change until a read-write sync runs again.
-        // The switch is made on the mount's write-operation thread and waited for: when it
-        // returns, every change a program asked for before it is recorded, and none is
-        // recorded after it, so that what a forced switch drops from the outbox next
-        // (`drop_outbox`) leaves no row behind. That thread runs under the tree lock, which a
-        // cycle holds while it waits for the folder's state, held here: so the switch comes
-        // only now, with the sync taken out and told to stop, which a cycle gives up on.
-        if let Some(mount) = stopped.folder.mount() {
-            stopped.was_writable = mount.switch_to_read_only().await;
-        }
-        // What the folder is now, before the parts are waited for: another change may have
-        // started a sync, and published it, since this one took it out of the view.
-        stopped.publish();
-        self.ended.join().await;
-        if stopped.ran {
-            // The worker's counts go with it (the outbox on the bus); the next one says its
-            // own. Also for a sync an earlier change, cut before its end, stopped.
-            self.clear_outbox_counts();
-            // Under the lock, where no other change can have started a sync meanwhile.
-            self.let_go_of_activity().await;
-        }
-        stopped
+        // TODO: the owner's change of a folder at the switch: cancel `SyncTasks::stop_handle`, take the
+        // folder's write lock, then `sync_tasks::stop_order::stop_folder_sync` in a task of its own
+        // (`sync_tasks`' module doc, "What the owner's change must do").
+        todo!()
     }
 
     /// What the folder is, as last published.
@@ -414,8 +394,8 @@ impl SyncService {
         self.record().ok_or(super::SyncError::NoRoot)
     }
 
-    /// The sync running now, as far as a reader may reach it: what wakes its parts.
-    pub(super) fn running(&self) -> Option<Handles> {
+    /// The sync running now, as far as a reader may reach it: the token that stops it.
+    pub(super) fn running(&self) -> Option<CancellationToken> {
         self.view.borrow().running().cloned()
     }
 

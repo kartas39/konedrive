@@ -1,7 +1,7 @@
 //! The folders of every account of one daemon, and what they share (`docs/design/accounts.md` §3.1–§3.4).
 //!
 //! [`Registry`] is the list of the daemon's accounts as their folders see each other:
-//! whether a folder would overlap another account's, the per-inode locks, and what the
+//! whether a folder would overlap another account's, and what the
 //! machine's sources and the hold's settings say.
 //!
 //! The list has one writer: `daemon::manager`, which adds an account in the lines that add
@@ -15,7 +15,6 @@ use std::sync::{Arc, Mutex, Weak};
 use super::SyncService;
 use crate::conditions::running::{Conditions, HoldSettings};
 use crate::config::AccountId;
-use crate::folder::locks::InodeLocks;
 
 /// What every account is told alike: what the machine's sources say (`conditions`), and
 /// the hold's settings, one pair for every account.
@@ -49,8 +48,6 @@ impl Drop for Telling {
 
 /// The daemon's accounts, as their folders see each other.
 pub struct Registry {
-    /// One inode belongs to one account only, so one table serves them all.
-    locks: InodeLocks,
     /// Every account, in account order: the order they are resumed in. Weak, because a
     /// service holds the registry; an entry is taken out by whoever put it in.
     accounts: Mutex<Vec<(AccountId, Weak<SyncService>)>>,
@@ -65,12 +62,7 @@ pub struct Registry {
 impl Registry {
     /// No account yet.
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { locks: InodeLocks::new(), accounts: Mutex::new(Vec::new()), registering: tokio::sync::Mutex::new(()), told: Mutex::new(Told::default()) })
-    }
-
-    /// The lock table the uploads of every account share.
-    pub fn locks(&self) -> InodeLocks {
-        self.locks.clone()
+        Arc::new(Self { accounts: Mutex::new(Vec::new()), registering: tokio::sync::Mutex::new(()), told: Mutex::new(Told::default()) })
     }
 
     /// Makes `account` one of the daemon's, after every other: it is told the

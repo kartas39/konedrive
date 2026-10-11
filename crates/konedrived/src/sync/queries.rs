@@ -1,3 +1,5 @@
+// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
+#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 use std::path::Path;
 use std::sync::Arc;
 
@@ -15,30 +17,8 @@ impl SyncService {
     /// so it is held as long as the clone is, even when this call is dropped
     /// part-way.
     pub async fn skipped(&self) -> Result<Vec<(String, String, String, String)>, SyncError> {
-        let lifecycle = Arc::clone(&self.folder).read_owned().await;
-        let Some(reg) = lifecycle.acted_on().map(|record| record.bare()) else { return Ok(Vec::new()) };
-        let Some(store) = lifecycle.store() else { return Ok(Vec::new()) };
-        let skipped = tokio::task::spawn_blocking(move || {
-            let _lifecycle = lifecycle;
-            // One query, on the read-only connection: the cycle's
-            // work is not held up behind it.
-            store.read_blocking(|s| s.skipped())
-        })
-        .await
-        .map_err(|e| SyncError::Io(format!("the store task failed: {e}")))?
-        .map_err(|e| SyncError::Store(e.to_string()))?;
-        Ok(skipped
-            .into_iter()
-            .map(|line| {
-                // What still keeps it on this computer, its path a full one;
-                // empty for an item that is not here.
-                let waits = line.waits.map(|waits| waits.under(&reg.root.path.display().to_string()).to_string()).unwrap_or_default();
-                // Where it is on this computer while it still is: the place
-                // the base has, which may be a name it stepped aside to.
-                let here = line.here.map(|here| reg.root.path.join(here).display().to_string()).unwrap_or_default();
-                (reg.root.path.join(line.rel).display().to_string(), line.reason.as_str().to_owned(), waits, here)
-            })
-            .collect())
+        // TODO: `upload_queue::read_items_not_shown`, in a read of the folder's store (`Store::read_items`), over `PublishedPlan::list_answers`.
+        todo!()
     }
 
     /// `ItemsListed`, `ItemsPlaced`, `SkippedCount`, for the VM suite's listing of a real
@@ -93,14 +73,8 @@ impl SyncService {
     /// `NotSignedIn` with no drive or no token, `Unreachable` when OneDrive
     /// does not answer.
     pub async fn web_url(&self, path: &Path) -> Result<String, SyncError> {
-        // Never opened: an open through the mount would download the file.
-        let id = match self.require_mount()?.files_interface().find_path_status(path) {
-            Ok(status) => status.onedrive_id,
-            Err(crate::fuse::FilesRefusal::NotInOneDrive) => return Err(SyncError::NotInOneDrive(path.display().to_string())),
-            Err(refused) => return Err(refused.into()),
-        };
-        let drive = self.drive().ok_or(SyncError::NotSignedIn)?;
-        page_of(drive.item(&id).await, &path.display().to_string())
+        // TODO: `ItemFilesInterface::find_path_status` (the mount's `item_files_interface`): `ItemPathStatus::onedrive_item` is what OneDrive is asked by.
+        todo!()
     }
 
     /// `Files.WebUrl` of the account's folder itself: the address of the page

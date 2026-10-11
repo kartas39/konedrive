@@ -1,5 +1,7 @@
 //! Taking a folder down: a Forget, `Accounts.Remove`'s first step, and a folder that was
 //! moved or deleted under its sync.
+// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
+#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -72,53 +74,11 @@ impl SyncService {
     /// again once the sync has stopped.
     /// The folder that was forgotten.
     async fn forget(&self, retire: bool) -> Result<Option<PathBuf>, SyncError> {
-        // Before the change: a reconcile, or a switch waiting for it, must not keep
-        // the Forget from stopping the sync first.
-        refuse_waiting(self.changes_waiting(self.tree_store()).await?)?;
-        let mut stopped = self.change().await;
-        if let Err(refused) = self.changes_waiting(stopped.folder().store()).await.and_then(refuse_waiting) {
-            self.start_again(&mut stopped).await;
-            return Err(refused);
-        }
-        self.restore_in(&mut stopped).await;
-        let Some(mut record) = stopped.folder().record().cloned() else {
-            if retire {
-                retire_in(&mut stopped);
-                return Ok(None);
-            }
-            return Err(SyncError::NoRoot);
-        };
-        // The folder is gone from the state, and with it everything kept with it: its
-        // source and its tree store. The copy of the record this call holds gives its
-        // store up too, and no reader holds one: what the view hands out carries none
-        // (`Record::bare`).
-        stopped.folder_mut().is = Is::Absent;
-        // Whether the store's connections are closed is waited for below, once the view
-        // and the activity log have let go of theirs too.
-        let mut kept = std::mem::take(&mut record.kept);
-        // The folder is unmounted: on disk it then shows its downloaded files alone.
-        if let Some(mount) = kept.mount.take() {
-            self.report.space.measure_at(None);
-            let _ = tokio::task::spawn_blocking(move || mount.stop_and_restore_write_bits()).await;
-        }
-        let closing = kept.store.map(konedrive_tree::Store::close);
-        if retire {
-            retire_in(&mut stopped);
-        }
-        self.forgotten(&stopped).await;
-        if let Some(closing) = closing {
-            if tokio::time::timeout(STORE_CLOSES_WITHIN, closing).await.is_err() {
-                tracing::warn!("the tree store of {} is still open somewhere; its files are removed all the same", record.root.path.display());
-            }
-        }
-        self.remove_tree_store().await;
-        // Only when *this daemon* is the one that excluded the folder from Baloo —
-        // never a folder that arrived already excluded, and this survives a restart
-        // in between (the record carries it forward from `config.toml`).
-        if record.baloo {
-            self.wiring.baloo.include_again(&record.root.path).await;
-        }
-        Ok(Some(record.root.path))
+        // TODO: `sync_tasks::stop_order::decide_forget` (over `ItemReader::count_unsent`, or
+        // `count_unsent_of_closed_store`), then `stop_folder_sync` and `forget_folder`, or
+        // `forget_folder_without_mount` for a folder that keeps no parts; `forgotten` and
+        // `remove_tree_store` afterwards.
+        todo!()
     }
 
     /// The folder is forgotten: `config.toml` records none, and everything published about

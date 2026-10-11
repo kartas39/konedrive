@@ -12,7 +12,7 @@
 //! It holds the readers and nothing else: the ranges are fetched by
 //! [`RangeFetcher`](super::range_fetcher::RangeFetcher), which tells it of each read. It
 //! knows nothing of the source of the content, nor of what is downloaded whole
-//! ([`DownloadStates`](super::download_states::DownloadStates) counts what was read).
+//! ([`DownloadStates`](super::item_download_states::DownloadStates) counts what was read).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

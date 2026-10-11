@@ -62,7 +62,7 @@ use super::place_changes::RowPathStat;
 use crate::folder::disk::is_hidden_name;
 use super::item_download_states::ItemDownloadStates;
 use super::item_handles::ItemHandles;
-use super::open_handles::Fh;
+use super::item_handles::Fh;
 use super::place_changes::PlaceChanges;
 use super::read_connections::ReadConnections;
 use super::upload_rules::UploadRules;

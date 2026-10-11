@@ -85,7 +85,7 @@ use super::super::errno::to_errno;
 use super::super::item_downloader::ItemToDownload;
 use super::super::item_handles::ClosingWriter;
 use super::super::mount_take_down::TakeDownCause;
-use super::super::open_handles::{CloseOutcome, Fh, WriterRank};
+use super::super::item_handles::{CloseOutcome, Fh, WriterRank};
 use super::super::place_changes::DirectoryMarks;
 use super::{read_size_and_time, to_system_time, ItemWriteOperations};
 

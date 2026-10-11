@@ -79,11 +79,10 @@ use konedrive_graph::drive::{DeltaFrom, DeltaNext, DriveClient, DriveError};
 use konedrive_tree::{Change, ItemCounts, ListedChangeOutcome, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay, OneDriveItemId, Store, TreeError};
 use tokio_util::sync::CancellationToken;
 
-use super::listing::{CycleError, DriveRecord, Neighbours};
 use crate::folder::classify::classify;
 use crate::folder::sync_plan_wake::{SyncPlanWake, WakeCause};
 use crate::status::report::Report;
-use crate::status::snapshot::{SyncStateHandle, SyncTrouble};
+use crate::status::snapshot::{SyncStateHandle, SyncTrouble, TroubleKind};
 
 /// How a cycle begins, and what a refused page leads to.
 mod listing_start;
@@ -509,3 +508,85 @@ impl ListingCycle {
 
 #[cfg(test)]
 pub(super) mod tests;
+
+/// The account's drive, as `config.toml` keeps it (`docs/design/accounts.md` §6.1): the
+/// same-account check then survives a tree store rebuilt empty, whose `meta`
+/// has forgotten it.
+#[derive(Clone)]
+pub struct DriveRecord {
+    pub store: Arc<crate::config::ConfigStore>,
+    /// The account's id.
+    pub account: crate::config::AccountId,
+    /// What `config.toml` recorded when the sync started; `None` when
+    /// nothing was, and the first cycle writes it.
+    pub recorded: Option<String>,
+}
+
+/// What a cycle asks of, or tells, the rest of the daemon.
+#[derive(Clone)]
+pub struct Neighbours {
+    /// The drive the account's token reaches, when a cycle finds it is not
+    /// the folder's: the account records it and works its
+    /// mode out again, so that a read-write account turns read-only.
+    pub drive_seen: DriveSeen,
+}
+
+/// Told the drive an account's token reaches.
+pub type DriveSeen = Arc<dyn Fn(&str) + Send + Sync>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum CycleError {
+    #[error("signed out: sign in again to keep this folder in step with OneDrive")]
+    SignedOut,
+    #[error(
+        "this folder was listed from another OneDrive account (drive {0}); forget it and register \
+         a folder for the account signed in now"
+    )]
+    OtherAccount(String),
+    /// The account is signed in to a drive another account of this daemon has
+    /// (`docs/design/accounts.md` §6.1); that account's label. Two folders of one drive would
+    /// download everything twice.
+    #[error(
+        "this account is signed in to the Microsoft account already connected as '{0}'; sign it \
+         out, or remove one of the two"
+    )]
+    DriveTaken(String),
+    #[error("cannot reach OneDrive ({0}); trying again")]
+    Offline(String),
+    /// A failure of the tree store, in its own words ("the tree store: …"), that ends
+    /// the cycle and stops the folder (quality finding `RE6`). Not every store failure ends a cycle: those the
+    /// read-write reconcile only logs and passes over after its commit do not come here.
+    #[error("{0}")]
+    Store(String),
+    #[error("the folder could not be brought up to date: {0}")]
+    Apply(String),
+    #[error("cancelled")]
+    Cancelled,
+}
+
+impl CycleError {
+    /// Trouble that stops the folder until someone acts.
+    pub fn blocking(&self) -> bool {
+        matches!(
+            self,
+            CycleError::SignedOut | CycleError::OtherAccount(_) | CycleError::DriveTaken(_) | CycleError::Store(_)
+        )
+    }
+}
+
+impl CycleError {
+    /// The kind of trouble this is for the account's overall state: only
+    /// [`Offline`](CycleError::Offline) is OneDrive out of reach, whatever its sentence says.
+    pub fn kind(&self) -> TroubleKind {
+        match self {
+            CycleError::Offline(_) => TroubleKind::Unreachable,
+            _ => TroubleKind::Other,
+        }
+    }
+}
+
+impl From<TreeError> for CycleError {
+    fn from(e: TreeError) -> Self {
+        CycleError::Store(e.to_string())
+    }
+}

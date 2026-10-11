@@ -8,9 +8,8 @@
 
 use std::path::Path;
 
-use super::folder::{Down, Folder, Is, Record, Standing, Stopped, Up};
+use super::folder::{Down, Folder, Is, Record, Standing, Stopped, Sync, Up, Why};
 use super::persisted::{no_root_id, Persisted};
-use super::running_sync::{Sync, Why};
 use super::{SyncError, SyncService};
 use crate::account::state::SignInState;
 use crate::folder::root::{self, SyncRoot};

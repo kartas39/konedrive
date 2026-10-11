@@ -59,7 +59,7 @@ use konedrive_tree::{ActivityKind, ActivityRow, FactStanding, FailedTryStanding,
 use super::local_step_tries::{LocalStep, LocalStepTries};
 use crate::folder::step_outcome::{RowsChangedFollowUp, StepEvent, StepFailure, StepObstacle, StepOutcome, StepRefusal};
 use crate::upload::sending_holds::SendingHold;
-use crate::upload::{BACKOFF_FIRST, BACKOFF_MAX};
+use crate::upload::sending_holds::{BACKOFF_FIRST, BACKOFF_MAX};
 
 /// One write of the step memory, as its operations are named. A fact of a local change
 /// that is not sent — a failed try, a refusal, a refusal for lack of space, a taken name —

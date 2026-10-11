@@ -11,6 +11,8 @@
 //! A menu is waited for, so the answer waits for nothing that can take long: the mount
 //! answers from its own reading connection to the tree store, which never waits for the
 //! store's writer.
+// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
+#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::path::{Path, PathBuf};
 
@@ -129,35 +131,10 @@ impl SyncService {
     /// asked of the folder's mount, which answers from the tree store and from the names in
     /// the folder under it.
     pub async fn menu_part(&self, paths: &[PathBuf]) -> Part {
-        let mut part = Part { taken: Vec::with_capacity(paths.len()), ..Part::default() };
-        let Some(mount) = self.mount() else { return Part { taken: vec![None; paths.len()], ..Part::default() } };
-        let mut changed = false;
-        for path in paths {
-            let Ok(status) = mount.files_interface().find_path_status(path) else {
-                part.taken.push(None);
-                continue;
-            };
-            if part.kept_by.is_none() {
-                part.kept_by.clone_from(&status.pinned_above);
-            }
-            changed |= status.is_modified_here();
-            part.taken.push(Some(Taken {
-                is_dir: status.is_directory(),
-                own: status.own_pin,
-                pinned: status.own_pin || status.pinned_above.is_some(),
-                hydrated: status.state_attribute() == Some(State::Hydrated),
-                in_onedrive: true,
-            }));
-        }
-        // `FreeUp`'s checks, in its order.
-        part.free_up_refused = if part.kept_by.is_some() {
-            Some(FreeUpWhy::PinnedAbove)
-        } else if changed {
-            Some(FreeUpWhy::NotUploaded)
-        } else {
-            None
-        };
-        part
+        // TODO: `ItemFilesInterface::find_path_status` (the mount's `item_files_interface`) for each path.
+        // `ItemPathStatus` says `is_pinned` only: no layer says whether the pin is the path's own or which directory above pins it.
+        // Nor does `ItemPathStatus` say the state attribute shown of a file (`hydrated`): `sync_state` and `is_downloading` are what it has.
+        todo!()
     }
 }
 

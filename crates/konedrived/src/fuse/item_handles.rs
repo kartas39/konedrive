@@ -34,7 +34,6 @@ use std::sync::{Arc, Mutex};
 
 use konedrive_tree::{ContentVersion, Item, LocalItemId};
 
-use super::open_handles::{CloseOutcome, Fh, WriterRank};
 
 /// A file a program holds open.
 #[derive(Clone)]
@@ -238,6 +237,37 @@ impl ItemHandles {
             handles.by_fh.remove(&fh);
         }
     }
+}
+
+/// The number the kernel is given for a file or directory a program opened, and names it by
+/// in every later request: the kernel's `fh`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct Fh(pub(super) u64);
+
+impl Fh {
+    /// The `fh` of a file that was made without being opened: no open file or directory
+    /// ever has it.
+    pub(super) const NOT_OPENED: Fh = Fh(0);
+}
+
+/// Where a writer stands among the handles that write its node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WriterRank {
+    /// No other handle writes the node: the writer the outbox is told of.
+    First,
+    /// Another handle writes the node already.
+    Later,
+}
+
+/// What closing a file that was open for writing left of its content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CloseOutcome {
+    /// Other handles still write the file.
+    StillOpenElsewhere,
+    /// The last writer closed it, and its content was changed.
+    ContentChanged,
+    /// The last writer closed it, and nothing was written.
+    ContentUntouched,
 }
 
 #[cfg(test)]

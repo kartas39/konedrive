@@ -31,7 +31,6 @@ use std::time::Duration;
 
 use konedrive_graph::drive::MAX_RETRY_AFTER;
 
-use super::{BACKOFF_MAX, THROTTLE_FIRST};
 use crate::folder::running_steps::StepClass;
 use crate::folder::sync_plan_wake::{SyncPlanWake, WakeCause};
 
@@ -235,6 +234,13 @@ impl SendingHolds {
         self.change(|holds| holds.is_stopping = true);
     }
 }
+
+/// Retries of a step that failed for a reason expected to pass: 1 s,
+/// doubling, at most an hour (provisional). Never dropped.
+pub const BACKOFF_FIRST: Duration = Duration::from_secs(1);
+pub const BACKOFF_MAX: Duration = Duration::from_secs(3600);
+/// Throttled without `Retry-After`: 10 s, doubling, at most an hour (provisional).
+pub const THROTTLE_FIRST: Duration = Duration::from_secs(10);
 
 #[cfg(test)]
 mod tests;

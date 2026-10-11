@@ -1,7 +1,7 @@
 //! Changes from OneDrive at once: one task per account, started and stopped with
 //! its poller, keeps Graph's notification socket open ([`konedrive_graph::drive::socket`]) and asks the
 //! poller for a cycle when an event says the drive changed. The poll stays as the safety net:
-//! every [`Schedule::live_interval`](super::listing::Schedule::live_interval) while the socket
+//! every [`Schedule::live_interval`](super::listing_poller::Schedule::live_interval) while the socket
 //! is up, every `interval` otherwise (`docs/design/sync.md`, "Changes as they happen").
 //!
 //! - While the account is stopped (the user's pause or the automatic hold, `running`) no

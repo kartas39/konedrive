@@ -1,9 +1,11 @@
 //! "Always keep on this device": pins put on and taken off. A pin is a row of the folder's
 //! tree store, kept by its mount, which downloads what a pin keeps.
+// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
+#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::path::{Path, PathBuf};
 
-use crate::fuse::Mount;
+use crate::fuse::ItemMount;
 use crate::sync::{SyncError, SyncService};
 
 /// Why a free-up or unpin of `path`, which `by` pins, is refused: the path refused and what
@@ -33,21 +35,17 @@ impl SyncService {
     /// (`NotAllowed`). `Files` asks every account whose folder a call's paths are in first,
     /// so that a call that spans accounts is refused as a whole or not at all.
     pub async fn check_unpinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
-        let mount = self.require_mount()?;
-        for path in paths {
-            if let Some(by) = mount.files_interface().find_path_status(path)?.pinned_above {
-                return Err(SyncError::NotAllowed(refusal(path, &by)));
-            }
-        }
-        Ok(())
+        // TODO: `ItemFilesInterface::find_path_status` (the mount's `item_files_interface`) for each path.
+        // `ItemPathStatus` says `is_pinned` only: no layer says whether the pin is the path's own or which directory above pins it.
+        todo!()
     }
 
     /// What `Pin` checks of every path before it pins any, on its own: each path is an item
     /// of the folder. `Files` asks every account first, as for
     /// [`check_unpinnable`](Self::check_unpinnable).
     pub async fn check_pinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
-        let mount = self.require_mount()?;
-        paths.iter().try_for_each(|path| mount.files_interface().find_path_status(path).map(drop)).map_err(Into::into)
+        // TODO: `ItemFilesInterface::find_path_status` (the mount's `item_files_interface`) for each path.
+        todo!()
     }
 
     /// `Unpin(paths)`, unchecking "Always keep on this device": each path's own pin comes
@@ -62,23 +60,14 @@ impl SyncService {
     /// Puts each path's own pin on, or takes it off; how many changed. A path a folder
     /// above it pins is left as it is.
     async fn set_pins(&self, paths: &[PathBuf], pinned: bool) -> Result<u32, SyncError> {
-        let mount = self.require_mount()?;
-        let mut changed = 0;
-        for path in paths {
-            let status = mount.files_interface().find_path_status(path)?;
-            if status.pinned_above.is_none() && status.own_pin != pinned {
-                let set = mount.files_interface().set_pin(path, pinned).await;
-                self.show_pins(&mount);
-                set?;
-                changed += 1;
-            }
-        }
-        Ok(changed)
+        // TODO: `ItemFilesInterface::find_path_status` (the mount's `item_files_interface`) and `set_pin`, then `show_pins`.
+        // `ItemPathStatus` says `is_pinned` only: no layer says whether the pin is the path's own or which directory above pins it.
+        todo!()
     }
 
     /// `PinnedCount`, as the mount has it.
-    pub(super) fn show_pins(&self, mount: &Mount) {
-        let count = mount.files_interface().count_pins() as u32;
-        self.state.update(|s| s.local.pinned_count = count);
+    pub(super) fn show_pins(&self, mount: &ItemMount) {
+        // TODO: `ItemFilesInterface::count_pins` (the mount's `item_files_interface`), which is async now.
+        todo!()
     }
 }

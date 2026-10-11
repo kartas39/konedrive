@@ -39,7 +39,6 @@ use std::sync::Arc;
 
 use konedrive_tree::{ContentPresence, ContentVersion, FileSyncState, Item, ItemKind, ItemPlace, LocalItemId, StepCommitOutcome, Store, TreeError};
 
-use super::free_up_decision::FreeUpDecision;
 use super::item_announcements::ItemAnnouncement;
 use super::item_download_states::ItemDownloadStates;
 use super::item_handles::ItemHandles;
@@ -223,6 +222,24 @@ impl ItemFreeUp {
             }
         }
     }
+}
+
+/// What a free-up does with a file or directory of OneDrive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreeUpDecision {
+    /// Its downloaded copy is removed: the file stays in the folder as a name.
+    Free,
+    /// A pin keeps it on this device: its own, or a directory's above it.
+    LeavePinned,
+    /// Its content was changed here and is not sent yet: its copy is the only one there is.
+    LeaveModifiedHere,
+    /// A program holds it open for writing.
+    LeaveOpenForWriting,
+    /// It is being downloaded whole.
+    LeaveDownloading,
+    /// Nothing of it is downloaded, and nothing is to free: a file that is not downloaded,
+    /// and a directory, which has no copy of its own.
+    NothingToFree,
 }
 
 #[cfg(test)]

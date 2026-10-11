@@ -58,9 +58,10 @@ use std::fs::File;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use tokio::sync::oneshot;
+
 use konedrive_tree::{ContentVersion, ItemVersions, LocalItemId};
 
-use super::download_states::{reaches_download_threshold, RunningDownloadFile, Waiter};
 
 /// How many downloads that failed keep their unfinished file, to be gone on from: the
 /// latest ones.
@@ -610,6 +611,24 @@ impl ItemDownloadStates {
             _ => 0,
         }
     }
+}
+
+/// A caller in the daemon that waits for a download to end: told that it ended well, or the
+/// errno it failed with.
+pub(super) type Waiter = oneshot::Sender<Result<(), i32>>;
+
+/// The file a running download writes into, and how far it is written in order.
+#[derive(Debug, Clone)]
+pub(super) struct RunningDownloadFile {
+    pub(super) file: Arc<File>,
+    pub(super) written_up_to: u64,
+}
+
+/// Whether `bytes_read` bytes of a file `file_size` long, read as ranges, are enough for the
+/// whole file to be downloaded. A file smaller than `download_after` is downloaded once all
+/// of it was read: it would be fetched again at every read otherwise.
+pub(super) fn reaches_download_threshold(bytes_read: u64, download_after: u64, file_size: u64) -> bool {
+    bytes_read >= download_after.min(file_size)
 }
 
 #[cfg(test)]

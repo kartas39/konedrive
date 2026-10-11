@@ -23,12 +23,13 @@
 // test: no_cycle_runs_while_the_accounts_work_is_stopped
 // test: a_handle_with_no_poller_counts_the_cycles_it_is_asked_for
 
+use std::time::Duration;
 use std::sync::Arc;
 
 use tokio::sync::{watch, Notify};
 use tokio_util::sync::CancellationToken;
 
-use super::listing::{CycleError, Schedule};
+use super::listing_cycle::CycleError;
 use super::listing_cycle::ListingCycle;
 use super::live::{Live, LiveContext};
 use crate::conditions::running::Running;
@@ -207,6 +208,39 @@ async fn run_cycles(cycle: Arc<ListingCycle>, schedule: Schedule, running: Arc<R
                 changed = up.changed(), if is_up_open => is_up_open = changed.is_ok(),
             }
         }
+    }
+}
+
+/// How often the poller runs a cycle, and how soon after a failure.
+#[derive(Debug, Clone)]
+pub struct Schedule {
+    pub interval: Duration,
+    /// The waits after the first, second, … failure in a row; after the last,
+    /// the ordinary interval.
+    pub retry: Vec<Duration>,
+    /// The interval while the notification socket is up (`live`): the poll is only the safety
+    /// net for an event OneDrive never sent.
+    pub live_interval: Duration,
+    /// The live task's waits; `None` runs none, and the poll alone brings changes (the tests
+    /// that do not ask for it).
+    pub live: Option<super::live::Timing>,
+}
+
+impl Default for Schedule {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(60),
+            retry: vec![Duration::from_secs(5), Duration::from_secs(15), Duration::from_secs(30)],
+            live_interval: Duration::from_secs(300),
+            live: Some(super::live::Timing::default()),
+        }
+    }
+}
+
+impl Schedule {
+    /// The poll alone, every `interval`, with these retries: no live task.
+    pub fn polled(interval: Duration, retry: Vec<Duration>) -> Self {
+        Self { interval, retry, live: None, ..Self::default() }
     }
 }
 

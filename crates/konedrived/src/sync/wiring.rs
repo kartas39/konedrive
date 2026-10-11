@@ -16,7 +16,7 @@ use crate::config::ConfigStore;
 use crate::desktop::baloo::Baloo;
 use crate::hydration::graph_source::GraphSource;
 use crate::hydration::source::ContentSource;
-use crate::remote::listing::Schedule;
+use crate::remote::listing_poller::Schedule;
 
 /// Where a OneDrive folder's own files live.
 #[derive(Debug, Clone)]

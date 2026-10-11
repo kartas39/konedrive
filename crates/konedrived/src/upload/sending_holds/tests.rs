@@ -4,7 +4,7 @@ use futures_util::FutureExt;
 
 use super::*;
 use crate::folder::sync_plan_wake::WakeCause;
-use crate::upload::BACKOFF_MAX;
+use crate::upload::sending_holds::BACKOFF_MAX;
 
 const NOW: i64 = 1_700_000_000;
 

@@ -17,7 +17,7 @@
 use std::time::Duration;
 
 use crate::conditions::running::Stop;
-use crate::remote::listing::Schedule;
+use crate::remote::listing_poller::Schedule;
 
 /// How the last cycle ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

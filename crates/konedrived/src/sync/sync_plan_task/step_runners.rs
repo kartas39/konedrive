@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 use super::row_steps::RowSteps;
 use crate::folder::step_outcome::{StepObstacle, StepOutcome};
 use crate::fuse::FolderSteps;
-use crate::remote::listing::Lease;
+use crate::folder::lease::Lease;
 use crate::upload::onedrive_steps::OneDriveSteps;
 
 /// A step being run.

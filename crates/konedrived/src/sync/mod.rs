@@ -2,6 +2,8 @@
 //! half of the work (`dbus/folder.rs` is the thin zbus wrapper around it, the same split
 //! `crate::account`/`crate::dbus` uses for `Account`). There is one `SyncService` per
 //! account; the list of them is the daemon's, in `registry.rs`.
+// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
+#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 pub mod bring_up;
 mod folder;
@@ -16,7 +18,6 @@ pub mod pins;
 mod publish;
 pub mod queries;
 pub mod registry;
-mod running_sync;
 pub mod settings;
 pub mod start_stop;
 pub mod take_down;
@@ -36,13 +37,12 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 use crate::status::report::Report;
-use crate::folder::locks::InodeLocks;
 use crate::folder::root::{RegisterError, SyncRoot};
 use crate::status::snapshot::{published_error, published_state, SyncSnapshot, SyncStateHandle};
 use crate::conditions::running;
 use crate::hydration::source;
 use crate::local;
-use crate::remote::listing;
+use crate::remote::listing_cycle;
 
 use folder::{Folder, View};
 pub use wiring::{OneDrive, Persist, SyncPaths, Transfers, Wiring};
@@ -181,12 +181,6 @@ pub struct SyncService {
     /// The folder as last published ([`publish`]), for the readers that only look and the
     /// synchronous callers. Written by nothing but `publish`.
     view: watch::Sender<View>,
-    /// The lock table of the folder's files: an upload reads a file under its inode's
-    /// lock.
-    locks: InodeLocks,
-    /// The parts of syncs that were told to stop and are not waited for yet
-    /// ([`running_sync`]): [`change`](Self::change) waits for them.
-    ended: running_sync::Ended,
     /// The activity log, the conflicts, the downloads under way and the
     /// folder's space, shared with the folder's mount and its sync. Its store is a clone of the running sync's, attached as
     /// the sync starts and detached by [`change`](Self::change), after which no write
@@ -217,7 +211,6 @@ impl SyncService {
     /// from now on. It is not one of the daemon's accounts until whoever made it adds it
     /// to the registry ([`registry::Registry::add`]).
     pub fn new(mut wiring: Wiring) -> Arc<Self> {
-        let registry = Arc::clone(&wiring.registry);
         let state = SyncStateHandle::new(SyncSnapshot::default());
         let pool = konedrive_graph::pool::TransferPool::new(konedrive_graph::pool::DEFAULT_CEILING);
         let shown = state.clone();
@@ -250,8 +243,6 @@ impl SyncService {
             state,
             folder: Arc::new(tokio::sync::RwLock::new(Folder::new())),
             view: watch::Sender::new(View::default()),
-            locks: registry.locks(),
-            ended: running_sync::Ended::default(),
             wiring,
         })
     }
@@ -278,6 +269,14 @@ impl SyncService {
         self.wiring.account.quota()
     }
 
+    /// What this folder's cycles ask of, or tell, the rest of the daemon: a drive that is
+    /// not the folder's is told to the account, which records it and works its mode out
+    /// again.
+    fn neighbours(&self) -> listing_cycle::Neighbours {
+        let account = Arc::clone(&self.wiring.account);
+        listing_cycle::Neighbours { drive_seen: Arc::new(move |drive| account.drive_seen(drive)) }
+    }
+
     /// The drive a folder shows; without one, none can be registered.
     fn drive(&self) -> Option<&konedrive_graph::drive::DriveClient> {
         self.wiring.onedrive.as_ref().map(|onedrive| &onedrive.drive)
@@ -291,14 +290,6 @@ impl SyncService {
     /// The account's transfer pool.
     pub fn pool(&self) -> &Arc<konedrive_graph::pool::TransferPool> {
         &self.pool
-    }
-
-    /// What this folder's cycles ask of, or tell, the rest of the daemon: a drive that is
-    /// not the folder's is told to the account, which records it and works its mode out
-    /// again.
-    fn neighbours(&self) -> listing::Neighbours {
-        let account = Arc::clone(&self.wiring.account);
-        listing::Neighbours { drive_seen: Arc::new(move |drive| account.drive_seen(drive)) }
     }
 
     pub fn state(&self) -> &SyncStateHandle {
@@ -339,17 +330,16 @@ impl SyncService {
     }
 
     /// The folder's mount, as last published: there from the folder's first sync on.
-    pub(crate) fn mount(&self) -> Option<Arc<crate::fuse::Mount>> {
+    pub(crate) fn mount(&self) -> Option<Arc<crate::fuse::ItemMount>> {
         self.view.borrow().mount.clone()
     }
 
     /// The daemon is stopping: the folder loses its mount and is locked, so
     /// that it shows its downloaded files and takes nothing until the daemon is back. Its path.
     pub async fn unmount(&self) -> Option<std::path::PathBuf> {
-        let mount = self.mount()?;
-        let path = self.record().map(|record| record.root.path.clone());
-        let _ = tokio::task::spawn_blocking(move || mount.stop()).await;
-        path
+        // TODO: the daemon's end: `sync_tasks::stop_order::stop_folder_sync`, then `ItemMount::stop` off the
+        // runtime's threads (`sync_tasks`' module doc).
+        todo!()
     }
 
     /// `Writable`: whether the folder takes changes now, and what is changed in it is

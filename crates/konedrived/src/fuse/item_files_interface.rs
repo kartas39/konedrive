@@ -25,8 +25,7 @@ use std::sync::Arc;
 use konedrive_tree::{ContentPresence, FileSyncState, Item, ItemKind, LocalItemId, OneDriveItemReference, PinChange, Store, TreeError};
 use tokio::sync::oneshot;
 
-use super::files_interface::{DownloadedSpace, FilesRefusal, FreedSpace};
-use super::free_up_decision::FreeUpDecision;
+use super::item_free_up::FreeUpDecision;
 use super::item_download_states::{DownloadAsker, ItemDownloadStates};
 use super::item_downloader::{ItemDownloader, ItemToDownload};
 use super::item_free_up::{FreedCopy, ItemFreeUp};
@@ -256,6 +255,36 @@ impl ItemFilesInterface {
             counted = files.iter().fold(counted, count);
         }
     }
+}
+
+/// What a free-up did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FreedSpace {
+    pub files: u64,
+    pub bytes: u64,
+    /// Downloaded files left as they are: pinned, being downloaded, or changed here and not
+    /// uploaded yet.
+    pub kept: u64,
+}
+
+/// The space the downloaded copies at and below a path take: how many files, and their
+/// bytes on disk.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DownloadedSpace {
+    pub files: u64,
+    pub bytes: u64,
+}
+
+/// Why the mount refuses what the `Files` interface asked.
+#[derive(Debug, thiserror::Error)]
+pub enum FilesRefusal {
+    #[error("not inside this folder")]
+    OutsideFolder,
+    /// A file or directory that is not in OneDrive yet, or a name the folder does not have.
+    #[error("not in OneDrive")]
+    NotInOneDrive,
+    #[error("{0}")]
+    Io(String),
 }
 
 #[cfg(test)]

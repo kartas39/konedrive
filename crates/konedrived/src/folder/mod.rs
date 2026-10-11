@@ -1,8 +1,8 @@
 pub mod classify;
 pub mod disk;
-pub mod locks;
 pub mod root;
 pub mod walk;
+pub mod lease;
 // The two below have no caller until the mount reads the rows.
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub mod step_outcome;

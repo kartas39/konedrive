@@ -9,6 +9,8 @@
 //! What the mode starts and stops with the folder's sync is beside this file: the outbox
 //! worker with its rows (`outbox`), which [`PendingUploads`] counts before a switch to
 //! read-only and drops when that switch is forced.
+// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
+#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::sync::{Arc, Weak};
 
@@ -20,7 +22,6 @@ use crate::account::state::AccountSnapshot;
 use crate::account::PendingUploads;
 use crate::config::{Mode, WriteStanding};
 use crate::status::snapshot::OutboxNote;
-use crate::upload::OutboxHandle;
 
 impl SyncService {
     /// The mode the folder follows now, as last published.
@@ -37,58 +38,11 @@ impl SyncService {
     /// The accounts manager calls this once before the folder is restored, with the mode
     /// the account starts in: nothing is up then, so the folder only takes the mode.
     pub async fn follow_mode(&self, mode: Mode) {
-        if self.mode() == mode {
-            return;
-        }
-        let mut stopped = self.change().await;
-        // Looked at again inside the change: a forced drop may have turned the folder
-        // already.
-        if stopped.folder().wanted != mode {
-            // Nothing is dropped: a sign-out, the gate, `config.toml`, a narrower grant keep
-            // the changes waiting to upload — the folder is locked, and its sync holds its
-            // cycles while they wait, so no read-only reconcile puts back what they describe
-            // (`listing`'s poller). Only a forced switch drops them, and turns the folder
-            // itself (`PendingUploads::drop_pending_uploads`).
-            self.turn(&mut stopped, mode, false).await;
-        }
-        self.start_again(&mut stopped).await;
+        // TODO: `sync_tasks::access_mode_change::switch_to_read_only` or `switch_to_read_write`, while the
+        // tasks run; a folder that is not up only takes the mode.
+        todo!()
     }
 
-    /// The switch itself, to `mode`, inside a change; the caller starts the sync again.
-    /// `dropping`: the changes waiting to upload are dropped as the folder turns read-only,
-    /// a forced switch's.
-    async fn turn(&self, stopped: &mut Stopped<'_>, mode: Mode, dropping: bool) {
-        stopped.folder_mut().wanted = mode;
-        // What reads the mode from now on (the write gate) reads the new one.
-        stopped.publish();
-        if dropping {
-            self.drop_outbox(stopped).await;
-        }
-        // Why the outbox waited in the other mode goes with it; the sync starting next says
-        // it again if it still holds.
-        self.state.update(|s| s.outbox.note = None);
-        if let Some(up) = stopped.folder().up() {
-            tracing::info!("{} is {} now", up.record.root.path.display(), mode.as_str());
-        }
-    }
-
-    /// What a read-write folder's cycle shares with its outbox worker
-    /// (`docs/design/writes.md` §9): the tree lock, and the worker, told that a cycle went
-    /// through. The worker is the part of the same sync, reached directly.
-    pub(super) fn cycle_writes(&self, tree_lock: &Arc<tokio::sync::Mutex<()>>, outbox: OutboxHandle) -> crate::remote::listing::Writes {
-        let (cycled, reopened, counted) = (outbox.clone(), outbox.clone(), outbox);
-        crate::remote::listing::Writes {
-            tree_lock: Arc::clone(tree_lock),
-            machine_name: self.machine_name(),
-            ignore: Arc::clone(&self.ignore),
-            // The worker, which waits for the folder's first delta cycle, may go.
-            cycled: Arc::new(move || cycled.cycle_done()),
-            reopened: Arc::new(move || reopened.wake()),
-            // `HeldCount`/`PendingCount` count the drop at once, not at the
-            // worker's own next wake (the outbox on the bus).
-            dropped_removed: Arc::new(move |_| counted.wake()),
-        }
-    }
 }
 
 /// The write gate of a folder: whether its account may change OneDrive now — asked by
@@ -103,6 +57,8 @@ impl SyncService {
 /// read-only and says why in the account's `LastError`.
 ///
 /// It holds what it reads, and no way back to the service.
+// TODO: check whether the gate stays as what `SendingHolds::set_writes_refusal` and
+// `StandingSendingHolds::writes_refusal` are given, and fix if needed: nothing asks it now.
 pub(super) struct Gate {
     view: watch::Receiver<View>,
     account: Arc<dyn crate::account::FolderAccount>,
@@ -183,7 +139,8 @@ impl PendingUploads for SyncService {
     /// `RefreshInfo` read the quota: the outbox decides by it whether OneDrive is
     /// still full.
     fn quota_read(&self, quota: &konedrive_graph::drive::DriveQuota) {
-        self.quota_seen(quota);
+        // TODO: `OneDriveSpace::apply_quota` (`sync_parts::onedrive_space`) of the running sync.
+        todo!()
     }
 
     /// How many changes wait to be uploaded — the outbox's live rows
@@ -191,11 +148,8 @@ impl PendingUploads for SyncService {
     /// this is not 0 and the switch is not forced. A change saved a moment ago counts: the
     /// folder's mount records each one before it answers the program that made it.
     async fn pending_uploads(&self) -> u64 {
-        // Read with the folder's state held for reading: the store is the running sync's,
-        // and no Forget removes it under the read.
-        let folder = self.folder.read().await;
-        let Some(store) = folder.store() else { return 0 };
-        store.call(|s| s.outbox_len()).await.map_or(0, |n| n as u64)
+        // TODO: `ItemReader::count_unsent`, read through the folder's store (`Store::read_items`).
+        todo!()
     }
 
     /// A forced switch to read-only drops the outbox's rows (`docs/design/writes.md`
@@ -217,13 +171,9 @@ impl PendingUploads for SyncService {
     /// its sync again without them, as a read-only start does: what a read-write cycle
     /// deferred is the base's, and the first cycle is a Full reconcile.
     async fn drop_pending_uploads(&self) {
-        let mut stopped = self.change().await;
-        if stopped.folder().wanted == Mode::ReadWrite {
-            self.turn(&mut stopped, Mode::ReadOnly, true).await;
-        } else {
-            self.drop_outbox(&mut stopped).await;
-        }
-        self.start_again(&mut stopped).await;
+        // TODO: `sync_tasks::access_mode_change::switch_to_read_only`: a forced switch drops nothing
+        // (`access_mode_change`'s module doc) — check whether this member of `PendingUploads` stays, and fix if needed.
+        todo!()
     }
 }
 

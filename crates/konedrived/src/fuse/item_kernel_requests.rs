@@ -152,7 +152,7 @@ use super::item_lookup::{to_node_row, ItemLookup, ShownEntry};
 use super::item_range_fetcher::{ItemRangeFetcher, RangeRefusal};
 use super::item_read_origin::{decide_not_on_disk_read_origin, decide_open_to_read, NotOnDiskReadOrigin, OpenToRead, RangeSource};
 use super::item_write_operations::{FileToFill, ItemWriteOperations, MadeKind, RenameMode};
-use super::open_handles::Fh;
+use super::item_handles::Fh;
 use super::place_changes::{decide_open_errno, OpenAtRowError, OpenMode, PlaceChanges};
 use super::read_connections::ReadConnections;
 use super::write_operation_thread::WriteOperationThread;

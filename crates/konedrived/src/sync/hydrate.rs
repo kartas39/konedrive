@@ -1,9 +1,11 @@
 //! `Hydrate`: a file downloaded now, by the folder's mount.
+// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
+#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::fuse::{FilesRefusal, Mount};
+use crate::fuse::{FilesRefusal, ItemMount};
 use crate::sync::{SyncError, SyncService};
 
 impl From<FilesRefusal> for SyncError {
@@ -19,7 +21,7 @@ impl From<FilesRefusal> for SyncError {
 impl SyncService {
     /// The folder's mount, for a call that needs it; refused for an account with no folder,
     /// and with why for a folder that is not mounted: it is not up, or its sync never started.
-    pub(super) fn require_mount(&self) -> Result<Arc<Mount>, SyncError> {
+    pub(super) fn require_mount(&self) -> Result<Arc<ItemMount>, SyncError> {
         self.require_record()?;
         self.mount().ok_or_else(|| self.sync_not_running())
     }
@@ -28,6 +30,7 @@ impl SyncService {
     /// through the mount would start, asked for by name. A file that is downloaded already is
     /// left as it is.
     pub async fn hydrate_now(&self, path: &Path) -> Result<(), SyncError> {
-        Ok(self.require_mount()?.files_interface().download(path).await?)
+        // TODO: `ItemFilesInterface::download` (the mount's `item_files_interface`).
+        todo!()
     }
 }

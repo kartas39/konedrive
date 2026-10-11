@@ -121,7 +121,7 @@ use konedrive_tree::{ContentVersion, ItemVersions, LocalItemId, OneDriveItemRefe
 use tokio::sync::oneshot;
 
 use super::backing_directory::BackingDirectory;
-use super::download_states::Waiter;
+use super::item_download_states::Waiter;
 use super::item_announcements::ItemAnnouncement;
 use super::item_content_files::{to_content_time, write_whole_copy_marks};
 use super::item_download_landing::{ItemDownloadLanding, ItemLandingOutcome, LandingCondition};

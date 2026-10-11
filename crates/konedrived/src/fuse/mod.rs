@@ -92,43 +92,21 @@
 //!   [`tidy_step`] leaves each folder a plain directory without its write bits.
 
 mod access_mode_switch;
-mod attributes;
+// Parts of it have no caller until the bodies of the mount over the rows are written.
+#[allow(dead_code, unused_imports)]
 mod backing_directory;
 // No caller until the mount reads the rows: its tests are what runs it.
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod backing_directory_check;
-mod conflict_copies;
-mod cycle_step;
-mod detections;
-mod directory_contents;
-mod directory_reference;
-mod download_states;
-mod entry_place;
 mod errno;
-mod file_downloader;
-mod files_interface;
-mod free_up_decision;
-mod fuse_connection;
-mod inotify_bridge;
-mod kernel_requests;
-mod local_only_entry;
-mod mount;
-mod node_resolver;
-mod node_table;
-mod open_handles;
-mod outbox_recorder;
-mod pinned_file_downloader;
-mod pins;
-mod range_fetcher;
 mod range_readers;
 mod stale_mount;
-mod state_attribute;
+// TODO: check whether the tidy step after the daemon's end (`konedrived --tidy`) stays as it is
+// with the mount over the rows, and fix if needed: `main` is its one caller.
 mod tidy_step;
-mod unrecorded_entry_scan;
-mod unsent_changes;
+#[allow(dead_code, unused_imports)]
 mod upload_rules;
 mod write_operation_thread;
-mod write_operations;
 // The mount over the rows of `items`, and the runner of the plan's steps towards the
 // folder: no caller until the mount reads the rows.
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
@@ -179,22 +157,14 @@ pub(crate) mod item_fixture;
 
 pub use access_mode_switch::AccessModeSwitch;
 pub use backing_directory::{restore_write_bits, BackingDirectory};
-pub use conflict_copies::{ConflictCopy, CycleConflicts};
-pub use cycle_step::{CycleOutcome, CycleStep, OneDriveChange};
-#[cfg(any(test, feature = "fault-injection"))]
-pub use file_downloader::UnfinishedDownload;
 pub use folder_steps::FolderSteps;
 pub use item_announcements::ItemAnnouncement;
 pub use item_content_files::{ItemContentFiles, LocalContentFile};
-pub use item_files_interface::{ItemFilesInterface, ItemPathStatus};
+pub use item_files_interface::{DownloadedSpace, FilesRefusal, FreedSpace, ItemFilesInterface, ItemPathStatus};
+pub use item_free_up::FreeUpDecision;
 pub use item_handles::ItemHandles;
 pub use item_mount::{ItemMount, ItemMountError, ItemMountSetup};
 pub use mount_take_down::{MountTakeDown, TakeDownCause, TakeDownReport};
-pub use start_check::StartCheckFindings;
-pub use files_interface::{DownloadedSpace, FilesInterface, FilesRefusal, FreedSpace, PathStatus};
-pub use free_up_decision::FreeUpDecision;
-pub use mount::{Mount, MountSetup, WriteSetup};
-#[cfg(test)]
-pub(crate) use mount::tests::{build_mount, BuiltMount};
 pub use stale_mount::unmount_stale_mount;
+pub use start_check::StartCheckFindings;
 pub use tidy_step::{list_directories, tidy_folder, tidy_served_folders};

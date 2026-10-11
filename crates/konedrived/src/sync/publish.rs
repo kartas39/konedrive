@@ -8,8 +8,7 @@
 
 use std::sync::Arc;
 
-use super::folder::{Folder, Is, Record, Standing, SyncView, View};
-use super::running_sync::{Sync, Why};
+use super::folder::{Folder, Is, Record, Standing, Sync, SyncView, View, Why};
 use super::SyncService;
 use crate::status::snapshot::{RootState, SyncSnapshot, SyncTrouble, TroubleKind};
 
@@ -49,8 +48,10 @@ pub(super) fn publish(folder: &Folder) -> Published {
         None => SyncView::None,
         // One that was told to stop is not running: a change that told it may have been
         // cut before it took it out of the state.
-        Some(Sync::Running(sync)) if sync.handles().told_to_stop() => SyncView::Stopped(None),
-        Some(Sync::Running(sync)) => SyncView::Running(sync.handles().clone()),
+        // TODO: check that the stop's token (`SyncTasks::stop_handle`) is all a reader needs of
+        // a running sync, and fix if needed.
+        Some(Sync::Running(started)) if started.tasks.stop_handle().is_cancelled() => SyncView::Stopped(None),
+        Some(Sync::Running(started)) => SyncView::Running(started.tasks.stop_handle()),
         Some(Sync::Stopped(Why::CannotStart(why))) => SyncView::Stopped(Some(why.clone())),
         Some(Sync::Stopped(_)) => SyncView::Stopped(None),
     };

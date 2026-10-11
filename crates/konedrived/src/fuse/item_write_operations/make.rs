@@ -42,7 +42,7 @@ use konedrive_tree::{ContentVersion, Item, ItemKind, ItemPlace, LocalItemId, Loc
 
 use super::super::backing_directory::EntryKind;
 use super::super::errno::to_errno;
-use super::super::open_handles::Fh;
+use super::super::item_handles::Fh;
 use super::super::place_changes::DirectoryMarks;
 use super::{read_size_and_time, ItemWriteOperations};
 use crate::folder::disk::is_hidden_name;

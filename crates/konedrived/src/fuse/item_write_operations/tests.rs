@@ -214,14 +214,14 @@ impl OperationsFixture {
     }
 
     /// The writer `fh` writes `bytes` into its file from the start, as the request does.
-    pub(super) fn write_through(&self, fh: crate::fuse::open_handles::Fh, bytes: &[u8]) {
+    pub(super) fn write_through(&self, fh: crate::fuse::item_handles::Fh, bytes: &[u8]) {
         use std::os::unix::fs::FileExt;
         let (item, backing_file) = self.fixture.item_handles.find_file_to_write(fh).expect("a writer");
         self.fixture.item_handles.mark_written(item);
         backing_file.write_all_at(bytes, 0).unwrap();
     }
 
-    pub(super) fn close(&self, fh: crate::fuse::open_handles::Fh) {
+    pub(super) fn close(&self, fh: crate::fuse::item_handles::Fh) {
         self.run(move |operations| operations.close_writer(fh));
     }
 
