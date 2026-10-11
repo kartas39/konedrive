@@ -187,7 +187,10 @@ pub struct ItemTakenName {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EmptyFileSession {
     /// The session an item's step goes on with: the item's memory answers it.
-    Continued { item: LocalItemId, address: UploadSessionAddress },
+    /// `expires_at` is when OneDrive ends the session by itself, Unix seconds, `None` when
+    /// it did not say: what the step of another item that waits for the name waits until,
+    /// also when this item has no step that would learn that the session ended.
+    Continued { item: LocalItemId, address: UploadSessionAddress, expires_at: Option<i64> },
     /// A session nothing goes on with, to be cancelled: its cancel is left to send, or its
     /// item's row does not say it any more and the next write for that item, or the next
     /// opening at the place, leaves the cancel.
@@ -555,7 +558,7 @@ pub(crate) fn list_empty_file_sessions(conn: &Connection, place: &ItemPlace) -> 
     for (item, memory) in list_memories_with_empty_file_at(conn, place)? {
         let Some(session) = memory.upload_session.clone() else { continue };
         let is_said = find_item(conn, item)?.is_some_and(|row| memory.split_by_standing(&row).said.upload_session.is_some());
-        sessions.push(if is_said { EmptyFileSession::Continued { item, address: session.address } } else { EmptyFileSession::Abandoned { address: session.address } });
+        sessions.push(if is_said { EmptyFileSession::Continued { item, address: session.address, expires_at: session.expires_at } } else { EmptyFileSession::Abandoned { address: session.address } });
     }
     sessions.extend(list_cancellations_at(conn, place)?.into_iter().map(|address| EmptyFileSession::Abandoned { address }));
     Ok(sessions)

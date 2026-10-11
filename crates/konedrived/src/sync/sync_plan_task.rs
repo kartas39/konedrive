@@ -2,9 +2,11 @@
 //! runs its steps and settles what came of each. One per folder, in either access mode,
 //! in place of the outbox worker and of the reconcile.
 //!
-//! **State owned:** the loop, with the steps of the last plan that are not started yet
-//! and the count of events logged since the last listing ended; nothing a restart must
-//! find again. Everything else has an owner of its own: the steps running
+//! **State owned:** the loop, with the steps of the last plan that are not started yet,
+//! the count of events logged since the last listing ended, and the failed tries of the
+//! steps towards the folder and of the rows ([`LocalStepTries`], which says why they are
+//! kept here and not in the store); nothing a restart must find again: after one, such a
+//! step is tried again at once. Everything else has an owner of its own: the steps running
 //! (`RunningSteps`), what holds all sending (`SendingHolds`), whether OneDrive is full
 //! (`OneDriveSpace`), the last plan's answers (`PublishedPlan`) — and the rows and the
 //! step memory, read at each plan.
@@ -93,6 +95,8 @@ use crate::upload::onedrive_space::OneDriveSpace;
 use crate::upload::onedrive_steps::session_cancellations::SessionCancellations;
 use crate::upload::sending_holds::{SendingHold, SendingHolds};
 
+/// The failed tries of the steps towards the folder and of the rows, kept for the run.
+pub mod local_step_tries;
 /// What a plan is made from: read from the store, closed, described.
 pub mod plan_input;
 /// The steps of the rows alone.
@@ -104,6 +108,7 @@ pub mod step_runners;
 /// What is written and asked for after a step, by what came of it.
 pub mod step_settlement;
 
+use local_step_tries::LocalStepTries;
 use plan_input::{DaemonFacts, PlanSettings, PlannedRound};
 use step_runners::StepRunners;
 use step_choice::StepLimits;
@@ -142,6 +147,12 @@ pub struct SyncPlanTask {
     /// what `step_settlement::decide_events_to_log` caps by. Set to 0 at
     /// `WakeCause::ListingEnded`.
     logged_since_listing_ended: AtomicUsize,
+    /// The failed tries of the steps towards the folder and of the rows, for this run.
+    /// Changed by the loop alone: when a plan is made, to what the rows of that plan's
+    /// reading still say (`PlannedRound::local_step_tries`); at a settlement
+    /// (`step_settlement::change_local_step_tries`); and at the user's refresh
+    /// (`LocalStepTries::clear_next_tries`).
+    local_step_tries: std::sync::Mutex<LocalStepTries>,
 }
 
 /// What a round does.
@@ -175,7 +186,7 @@ pub fn decide_next_wake(plan: &SyncPlan, hold_end: Option<i64>, next_quota_read:
 impl SyncPlanTask {
     /// Made by the folder's start (`sync_tasks::start_order::start_sync_tasks`).
     pub fn new(parts: SyncPlanTaskParts) -> Arc<Self> {
-        Arc::new(SyncPlanTask { parts, logged_since_listing_ended: AtomicUsize::new(0) })
+        Arc::new(SyncPlanTask { parts, logged_since_listing_ended: AtomicUsize::new(0), local_step_tries: std::sync::Mutex::new(LocalStepTries::default()) })
     }
 
     /// Runs the loop until `stop`, then ends its steps as the module's doc says, and
@@ -194,7 +205,8 @@ impl SyncPlanTask {
 
     /// Applies what a wake's causes ask before the plan is made: a quota read
     /// (`OneDriveSpace::apply_quota`, then `StepMemory::forget_fitting_space_refusals`);
-    /// the user's refresh (`StepMemory::clear_next_tries`); a listing ended
+    /// the user's refresh (`StepMemory::clear_next_tries`, and
+    /// `LocalStepTries::clear_next_tries` of the task's own); a listing ended
     /// (`SendingHolds::set_listing_ended`, the count of logged events to 0). And, when
     /// sending is not held and their lists are not empty: `SessionCancellations::
     /// cancel_sessions` and `remove_mismatched_items`.
@@ -204,7 +216,8 @@ impl SyncPlanTask {
 
     /// What the daemon knows beside the rows, as values, read now: the items with a
     /// running step (`RunningSteps::list_items`), whether OneDrive is full, the time, the
-    /// destinations of the running steps, the rows the check at start left,
+    /// destinations of the running steps, the rows the check at start left, a copy of
+    /// the task's tries of the steps towards the folder and of the rows,
     /// and whether this plan asks the reader that scans (a
     /// listing's page or the user's answer is among `causes`). What is open for
     /// writing is NOT gathered here: it is read from the rows of the plan's own moment.
@@ -213,7 +226,9 @@ impl SyncPlanTask {
     }
 
     /// Makes the plan: `Store::read_items(plan_input::plan_next_steps)` with the facts
-    /// gathered, on the store's reading connection.
+    /// gathered, on the store's reading connection. The task's tries are from then on
+    /// those the round answers (`PlannedRound::local_step_tries`): the ones the rows of
+    /// that reading still say.
     async fn make_plan(&self, facts: DaemonFacts) -> Result<PlannedRound, konedrive_tree::TreeError> {
         todo!()
     }
@@ -243,7 +258,10 @@ impl SyncPlanTask {
     }
 
     /// Settles the steps that ended, all that are ready together: for each
-    /// `step_settlement::decide_step_settlement`; all written in ONE job of the store
+    /// `step_settlement::decide_step_settlement`, with the count of tries from the round's
+    /// memories for a step towards OneDrive and from the task's own tries for any other;
+    /// the task's own tries changed (`step_settlement::change_local_step_tries`); all
+    /// that is the store's written in ONE job of the store
     /// (`step_settlement::write_step_settlements`: the step memory and the activity log);
     /// then what they say of all sending applied (`SendingHolds`), the listing asked for
     /// a cycle once when any says so, each step ended (`RunningSteps::end`). The loop

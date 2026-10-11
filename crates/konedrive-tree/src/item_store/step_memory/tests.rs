@@ -379,7 +379,7 @@ fn an_upload_session_advances_is_replaced_and_is_abandoned() {
     assert_eq!(remember_session(&mut store, file, &first), Continued);
     assert_eq!(store.step_memory().advance_upload_session(file, &first.address, 4096, Some(950)).unwrap(), Continued);
     assert_eq!(said(&mut store, file).upload_session, Some(UploadSession { next_offset: 4096, expires_at: Some(950), ..first.clone() }));
-    assert_eq!(store.step_memory().list_empty_file_sessions(&place(ROOT, "REPORT")).unwrap(), [EmptyFileSession::Continued { item: file, address: address("1") }]);
+    assert_eq!(store.step_memory().list_empty_file_sessions(&place(ROOT, "REPORT")).unwrap(), [EmptyFileSession::Continued { item: file, address: address("1"), expires_at: Some(950) }]);
 
     let second = new_file_session(&mut store, file, "2");
     assert_eq!(remember_session(&mut store, file, &second), Continued);
@@ -684,7 +684,7 @@ fn an_opening_abandons_the_session_another_items_row_does_not_say_at_the_place()
     assert_eq!((kept(&store, former).upload_session, abandoned(&mut store)), (None, vec![address("former")]));
     store.step_memory().remember_upload_session_opening(made, &place(ROOT, "other"), 60).unwrap();
     assert_eq!((said(&mut store, live).upload_session, abandoned(&mut store)), (Some(of_live), vec![address("former")]), "a session its row still says stays, though the file was renamed");
-    assert_eq!(store.step_memory().list_empty_file_sessions(&place(ROOT, "OTHER")).unwrap(), [EmptyFileSession::Continued { item: live, address: address("live") }]);
+    assert_eq!(store.step_memory().list_empty_file_sessions(&place(ROOT, "OTHER")).unwrap(), [EmptyFileSession::Continued { item: live, address: address("live"), expires_at: Some(900) }]);
 }
 
 /// A session answered as abandoned at a place before any write queued its cancel is done

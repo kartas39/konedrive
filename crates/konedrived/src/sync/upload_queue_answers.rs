@@ -258,7 +258,8 @@ pub fn read_kept_back_entries(items: &ItemReader<'_>, published_plan: &Published
 /// `ConfirmDeletes()`: the user confirms the removals a mass removal holds. Reads every
 /// unsent removal (`ItemReader::list_unsent_removals`), builds `UnsentRemoval::of` each —
 /// the rows as the user was asked — and writes their confirmation
-/// (`StepMemory::remember_removals_confirmed`), and empties the store's window of sent
+/// (`StepMemory::remember_removals_confirmed`, which answers those it did not write: rows
+/// that are another removal by now, or none, left to be asked about again), and empties the store's window of sent
 /// removals (`ItemStore::begin_sent_removal_window`: the plan's `sent_removal_count`
 /// is counted from nothing; the window ends by itself otherwise, and nothing else begins
 /// one), in one job of the store's writer; how many. The caller wakes the plan

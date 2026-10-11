@@ -79,7 +79,7 @@ pub use schema::SCHEMA_VERSION;
 pub use schema::{decide_old_store, OldStoreDecision, RebuildLoss, StoreOrigin, StoredVersion};
 pub use shared::{Store, QUEUE};
 pub use sync_plan::{
-    make_conflict_copy_name, make_sync_plan, make_temporary_name, ExclusionReason, FolderStep, ItemExclusion, ItemVersions, ItemWait, NextTry, OneDriveStep, PlanFault, RowStep, SendingState, SyncPlan, SyncPlanInput, SyncStep,
+    make_conflict_copy_name, make_sync_plan, make_temporary_name, ExclusionReason, FolderStep, FolderStepKind, ItemExclusion, ItemVersions, ItemWait, NextTry, OneDriveStep, PlanFault, RowStep, RowStepKind, SendingState, SyncPlan, SyncPlanInput, SyncStep, TriedStep,
     WaitReason,
 };
 pub use thumbs::{Thumbnail, ThumbnailBatch, THUMB_PAGE, THUMB_SCAN};

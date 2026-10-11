@@ -901,7 +901,7 @@ fn a_new_item_is_not_merged_with_an_item_a_step_is_running_for() {
 fn an_item_whose_next_try_is_later_waits_until_then() {
     let mut given = input(vec![made_directory(2, ROOT, "d"), made_file(3, id(2), "a.txt"), removed_here(synced_file(4, ROOT, "b.txt")), with_content_in_onedrive(synced_file(5, ROOT, "c.txt"), hashed("theirs"))]);
     let later = |reason: Reason| NextTry { not_before: given.now + 60, reason };
-    given.next_tries = [(id(2), later(Reason::Network)), (id(4), later(Reason::WaitingForSpace)), (id(5), later(Reason::Network))].into();
+    given.next_tries = [(id(2), later(Reason::Network)), (id(4), later(Reason::WaitingForSpace)), (id(5), later(Reason::Network))].map(|(item, next_try)| ((item, TriedStep::TowardsOneDrive), next_try)).into();
     assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::Time { until: given.now + 60, reason: Reason::Network }));
     assert_eq!(answer(&given, 3), waits_for(2), "what is behind it waits for it");
     assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::Time { until: given.now + 60, reason: Reason::WaitingForSpace }));
@@ -976,4 +976,51 @@ fn the_removal_of_a_directory_waits_for_a_running_step_that_sends_an_item_into_i
     assert_eq!(answer(&given, 3), waits_for(2));
     given.destinations_of_running_steps.clear();
     assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendDirectoryRemoval { item: versions(&given, 2), below: vec![versions(&given, 3)] }));
+}
+
+/// New, with the tries of the steps towards the folder kept by the caller: such a step
+/// whose own next try is later waits until then, with the reason of its last failure, and
+/// what is behind it waits for it; once that time has come it is planned again. A try of
+/// another step of the item holds nothing: the try of a move does not hold the taking of
+/// OneDrive's content, and a try of what was sent holds no step towards the folder.
+#[test]
+fn a_step_towards_the_folder_whose_own_next_try_is_later_waits_until_then() {
+    let mut directory = listed(2, ItemKind::Directory, ROOT, "d");
+    directory.synced_place = None;
+    let mut given = input(vec![directory, listed(3, ItemKind::File, id(2), "a.txt"), with_content_in_onedrive(synced_file(5, ROOT, "c.txt"), hashed("theirs")), removed_in_onedrive(synced_file(6, ROOT, "gone.txt"))]);
+    assert_eq!(answer(&given, 2), folder_step(FolderStep::ShowItem { item: versions(&given, 2) }));
+    assert_eq!(answer(&given, 6), folder_step(FolderStep::RemoveItem { item: versions(&given, 6) }));
+    let later = |reason: Reason| NextTry { not_before: given.now + 60, reason };
+    given.next_tries = [
+        ((id(2), TriedStep::TowardsFolder(FolderStepKind::ShowItem)), later(Reason::Failed)),
+        ((id(5), TriedStep::TowardsFolder(FolderStepKind::MoveItem)), later(Reason::Failed)),
+        ((id(5), TriedStep::TowardsOneDrive), later(Reason::Network)),
+        ((id(6), TriedStep::TowardsFolder(FolderStepKind::RemoveItem)), later(Reason::Changed)),
+    ]
+    .into();
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::Time { until: given.now + 60, reason: Reason::Failed }));
+    assert_eq!(answer(&given, 3), waits_for(2), "what is behind it waits for it");
+    assert_eq!(answer(&given, 5), folder_step(FolderStep::TakeOneDriveContent { item: versions(&given, 5) }), "the tries of other steps of the item");
+    assert_eq!(answer(&given, 6), Answer::Wait(WaitReason::Time { until: given.now + 60, reason: Reason::Changed }), "the step for an item OneDrive removed waits too");
+    given.now += 60;
+    assert_eq!(answer(&given, 2), folder_step(FolderStep::ShowItem { item: versions(&given, 2) }));
+    assert_eq!(answer(&given, 6), folder_step(FolderStep::RemoveItem { item: versions(&given, 6) }));
+}
+
+/// As above, for a step of the rows alone and for a step a decision between items makes:
+/// the hashing of a local content, and the renaming to a conflict copy, each waits for its
+/// own next try.
+#[test]
+fn a_step_of_the_rows_and_a_step_made_between_items_wait_for_their_own_next_try() {
+    let mut given = input(vec![made_file(2, ROOT, "a.txt"), listed(3, ItemKind::File, ROOT, "a.txt"), on_disk(made_file(4, ROOT, "b.txt")), listed(5, ItemKind::Directory, ROOT, "b.txt")]);
+    let (hash, aside) = (answer(&given, 2), answer(&given, 4));
+    assert_eq!(hash, row_step(RowStep::HashLocalContent { item: versions(&given, 2) }));
+    assert!(matches!(aside, Answer::Step(SyncStep::Folder(FolderStep::RenameToConflictCopy { .. }))), "{aside:?}");
+    let later = NextTry { not_before: given.now + 60, reason: Reason::Failed };
+    given.next_tries = [((id(2), TriedStep::OfRows(RowStepKind::HashLocalContent)), later.clone()), ((id(4), TriedStep::TowardsFolder(FolderStepKind::RenameToConflictCopy)), later)].into();
+    for item in [2, 4] {
+        assert_eq!(answer(&given, item), Answer::Wait(WaitReason::Time { until: given.now + 60, reason: Reason::Failed }));
+    }
+    given.now += 60;
+    assert_eq!((answer(&given, 2), answer(&given, 4)), (hash, aside));
 }

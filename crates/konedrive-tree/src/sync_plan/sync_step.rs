@@ -91,6 +91,32 @@ impl SyncStep {
     }
 }
 
+/// Which step towards the folder a step is, without the versions, the name and the place
+/// it carries: what tells one step of an item from another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FolderStepKind {
+    ShowItem,
+    MoveItem,
+    TakeOneDriveContent,
+    RemoveItem,
+    DownloadContent,
+    RenameToConflictCopy,
+    TakeMoveBack,
+    MoveToTemporaryName,
+}
+
+/// Which step of the rows alone a step is, without the versions it carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RowStepKind {
+    GiveUpBinding,
+    MergeItems,
+    AgreeOnRemoval,
+    ForgetSyncedVersion,
+    HashLocalContent,
+    AgreeOnPlace,
+    AgreeOnContent,
+}
+
 /// A request to OneDrive. What is sent of the item itself is in its local version
 /// (`item.local`); the request is guarded with `item.onedrive_etag` where a case says so.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +201,19 @@ pub enum FolderStep {
 }
 
 impl FolderStep {
+    pub fn kind(&self) -> FolderStepKind {
+        match self {
+            FolderStep::ShowItem { .. } => FolderStepKind::ShowItem,
+            FolderStep::MoveItem { .. } => FolderStepKind::MoveItem,
+            FolderStep::TakeOneDriveContent { .. } => FolderStepKind::TakeOneDriveContent,
+            FolderStep::RemoveItem { .. } => FolderStepKind::RemoveItem,
+            FolderStep::DownloadContent { .. } => FolderStepKind::DownloadContent,
+            FolderStep::RenameToConflictCopy { .. } => FolderStepKind::RenameToConflictCopy,
+            FolderStep::TakeMoveBack { .. } => FolderStepKind::TakeMoveBack,
+            FolderStep::MoveToTemporaryName { .. } => FolderStepKind::MoveToTemporaryName,
+        }
+    }
+
     /// The versions of the item the folder changes.
     pub fn item(&self) -> &ItemVersions {
         match self {
@@ -225,6 +264,18 @@ pub enum RowStep {
 }
 
 impl RowStep {
+    pub fn kind(&self) -> RowStepKind {
+        match self {
+            RowStep::GiveUpBinding { .. } => RowStepKind::GiveUpBinding,
+            RowStep::MergeItems { .. } => RowStepKind::MergeItems,
+            RowStep::AgreeOnRemoval { .. } => RowStepKind::AgreeOnRemoval,
+            RowStep::ForgetSyncedVersion { .. } => RowStepKind::ForgetSyncedVersion,
+            RowStep::HashLocalContent { .. } => RowStepKind::HashLocalContent,
+            RowStep::AgreeOnPlace { .. } => RowStepKind::AgreeOnPlace,
+            RowStep::AgreeOnContent { .. } => RowStepKind::AgreeOnContent,
+        }
+    }
+
     /// The versions of the item whose row changes; of two items that are merged, the one
     /// the folder shows.
     pub fn item(&self) -> &ItemVersions {

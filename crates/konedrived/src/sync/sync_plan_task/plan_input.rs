@@ -11,7 +11,8 @@
 //!
 //! **Answers for:** the map's MISSING-2.h (the closing of the set) and the gathering of
 //! `SyncPlanInput` (P5): design §6, "what it is given" — among it what the steps remember
-//! (`next_tries`, `sending_refusals`) and what the check at start left
+//! (`next_tries`, `sending_refusals`), what the task itself remembers of the steps towards
+//! the folder and of the rows that failed (`next_tries` too) and what the check at start left
 //! (`items_left_by_start_up_check`), which the plan is TOLD and answers as its own waits.
 //!
 //! **Tested without the rest**, over a store in memory:
@@ -28,6 +29,8 @@
 // test: the_items_open_for_writing_are_those_whose_row_keeps_a_content_before_the_write
 // test: the_confirmed_removals_and_the_taken_names_come_from_the_step_memory
 // test: an_item_whose_next_try_is_kept_is_given_with_it_and_its_reason
+// test: the_tasks_tries_whose_rows_changed_or_went_are_void_before_the_plan_is_told
+// test: a_step_towards_the_folder_that_failed_waits_until_its_next_try_and_a_sending_of_the_item_does_not
 // test: an_item_refused_for_good_or_too_big_for_the_space_is_given_as_refused_with_the_reason
 // test: the_items_the_check_left_are_given_as_left_by_it
 // test: the_rows_of_the_directories_running_steps_send_into_are_given_as_destinations
@@ -40,7 +43,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 
-use konedrive_tree::{ContentVersion, Item, ItemMemory, ItemReader, LocalItemId, NextTry, OneDriveItemReference, Reason, SyncPlan, SyncPlanInput, TreeError};
+use konedrive_tree::{ContentVersion, Item, ItemMemory, ItemReader, LocalItemId, NextTry, OneDriveItemReference, Reason, SyncPlan, SyncPlanInput, TreeError, TriedStep};
+
+use super::local_step_tries::LocalStepTries;
 
 /// What a plan is given that does not change while the sync runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +83,10 @@ pub struct DaemonFacts {
     /// Asked after a listing's page and the user's answer, which alone change what it
     /// answers.
     pub reads_pinned_files: bool,
+    /// The tries the task keeps of the steps towards the folder and of the rows that
+    /// failed, as they are when the round begins: a copy. The plan's reading voids those
+    /// whose rows changed or went, and tells the plan the rest.
+    pub local_step_tries: LocalStepTries,
     pub settings: PlanSettings,
 }
 
@@ -98,8 +107,13 @@ pub struct PlannedRound {
     pub input: SyncPlanInput,
     pub plan: SyncPlan,
     /// What the steps remember of each item given, as its row still says it: for the
-    /// settlement's count of tries.
+    /// settlement's count of tries of a step towards OneDrive.
     pub memories: BTreeMap<LocalItemId, ItemMemory>,
+    /// The task's tries of `facts.local_step_tries` that the rows of this reading still
+    /// say (`LocalStepTries::void_by_rows`): what the task keeps from now on, in place of
+    /// what it gave. Nothing else changes them between the two: the loop that makes the
+    /// plan is the loop that settles the steps.
+    pub local_step_tries: LocalStepTries,
     /// Whether every item that differs was read: when not, more is there than the plan
     /// was given.
     pub is_all_read: bool,
@@ -107,6 +121,7 @@ pub struct PlannedRound {
 
 /// The round's plan: reads `items_read_at_once` of each kind of item that differs
 /// ([`read_differing_items`]), gives each with its relatives ([`close_given_items`]),
+/// voids the task's tries whose rows changed or went ([`void_local_step_tries`]),
 /// describes them ([`describe_given_items`]), makes the plan (`make_sync_plan`); then, for
 /// what the plan answers it was not given, gives it and makes the plan again: for
 /// `WaitReason::ItemNotGiven(item)` the row; for `ItemsInDirectoryNotGiven(directory)`
@@ -154,6 +169,16 @@ pub fn give_items_in_directory(items: &ItemReader<'_>, given: &mut GivenItems, d
     todo!()
 }
 
+/// The task's tries that the rows still say: reads the row of every item a kept try was
+/// planned from (`LocalStepTries::list_items`, `ItemReader::find_item`, `ItemVersions::of`
+/// — an item that was not given to the plan too: a try is void by its rows, not by what
+/// the plan reads this round) and leaves out every try one of whose rows went or is
+/// another piece of work (`LocalStepTries::void_by_rows`). As many reads by id as there
+/// are rows of steps that failed.
+pub fn void_local_step_tries(items: &ItemReader<'_>, local_step_tries: &LocalStepTries) -> Result<LocalStepTries, TreeError> {
+    todo!()
+}
+
 /// What the plan is given for `given`: with what the store says of each row (whether the
 /// folder can show it, whether it is left here, whether a pin holds for it, whether a
 /// listing is under way, the count of shown items, the count of unsent removals, the
@@ -162,20 +187,24 @@ pub fn give_items_in_directory(items: &ItemReader<'_>, given: &mut GivenItems, d
 /// themselves say is open for writing (`content_before_write` set); what the step memory
 /// says — the confirmed removals (`list_items_with_confirmed_removal`), the names
 /// OneDrive answered are taken (`list_taken_names` of each directory given), the next
-/// tries ([`describe_next_tries`]) and the refusals ([`describe_sending_refusals`]); and
+/// tries ([`describe_next_tries`], with `local_step_tries`: the task's own, voided by this
+/// reading) and the refusals ([`describe_sending_refusals`]); and
 /// what `facts` say: running, the destinations of the running steps (each reference
 /// turned into its row by `find_bound_item`), OneDrive full, the time, the rows left by
 /// the check, the quiet times ([`decide_quiet_until`]), the names OneDrive cannot hold
 /// ([`find_name_refusal`]). Also answers the memory of each item given.
-pub fn describe_given_items(items: &ItemReader<'_>, facts: &DaemonFacts, given: &GivenItems) -> Result<(SyncPlanInput, BTreeMap<LocalItemId, ItemMemory>), TreeError> {
+pub fn describe_given_items(items: &ItemReader<'_>, facts: &DaemonFacts, local_step_tries: &LocalStepTries, given: &GivenItems) -> Result<(SyncPlanInput, BTreeMap<LocalItemId, ItemMemory>), TreeError> {
     todo!()
 }
 
-/// The plan's `next_tries`: for each item whose memory keeps failed tries with a time,
-/// that time and the reason of the last failure. Every entry is given, due or not: the
-/// plan compares with its `now`. An entry is of what the row still says: the step memory
-/// answers no other. Pure.
-pub fn describe_next_tries(memories: &BTreeMap<LocalItemId, ItemMemory>) -> BTreeMap<LocalItemId, NextTry> {
+/// The plan's `next_tries`, from the two that keep tries. For each item whose memory keeps
+/// failed tries with a time: that time and the reason of the last failure, under
+/// `TriedStep::TowardsOneDrive` — the store keeps the tries of what is sent, and answers
+/// them only for the unsent change they are of. And `LocalStepTries::list_next_tries` of
+/// `local_step_tries`: the task's own, each under the kind of the step towards the folder
+/// or of the rows it is of. Every entry is given, due or not: the plan compares with its
+/// `now`. Pure.
+pub fn describe_next_tries(memories: &BTreeMap<LocalItemId, ItemMemory>, local_step_tries: &LocalStepTries) -> BTreeMap<(LocalItemId, TriedStep), NextTry> {
     todo!()
 }
 

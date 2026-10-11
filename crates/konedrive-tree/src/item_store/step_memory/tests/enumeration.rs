@@ -1089,7 +1089,7 @@ fn find_fate(scene: &mut Scene, fact: Fact) -> (Fate, Vec<String>) {
     if fact == Fact::UploadSession && !is_answered {
         if let Some(at) = &at {
             let sessions_at_place = store.step_memory().list_empty_file_sessions(at).unwrap();
-            if sessions_at_place.contains(&EmptyFileSession::Continued { item: id, address: address(SESSION) }) {
+            if sessions_at_place.contains(&EmptyFileSession::Continued { item: id, address: address(SESSION), expires_at: None }) {
                 wrong.push("the reader of the sessions at a place answers it as the item's, which the item's memory does not".to_owned());
             }
         }

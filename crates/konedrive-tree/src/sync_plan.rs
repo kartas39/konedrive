@@ -69,12 +69,15 @@ mod sending_obstacle;
 mod side_change;
 /// One thing the plan does, with the versions it was planned from.
 mod sync_step;
+/// Which steps of an item a next try holds, and the steps that wait for theirs.
+mod tried_step;
 
 pub use conflict_copy_name::make_conflict_copy_name;
 pub use name_exchange::make_temporary_name;
 pub(crate) use removed_directory::{decide_directory_removal, DirectoryRemovalOutcome, ItemBelowRemovedDirectory};
 pub(crate) use side_change::{compare_local_content, ContentChange};
-pub use sync_step::{FolderStep, ItemVersions, OneDriveStep, RowStep, SyncStep};
+pub use sync_step::{FolderStep, FolderStepKind, ItemVersions, OneDriveStep, RowStep, RowStepKind, SyncStep};
+pub use tried_step::TriedStep;
 
 use plan_items::PlanItems;
 use item_decision::{decide_content_while_place_waits, ItemAnswers, ItemCase, ItemDecision, LocalDirectoryBinding, LocalPlaceAvailability, Overruling};
@@ -240,11 +243,16 @@ pub struct SyncPlanInput {
     pub sent_removal_count: u64,
     /// The time now, in Unix seconds: what a time the caller gives is compared with.
     pub now: i64,
-    /// What the steps remember of a try that failed: for each such item its next try. While
-    /// that is not before a time still to come, the item waits until then
-    /// ([`WaitReason::Time`], with the reason of the failure) in place of any step towards
-    /// OneDrive, and what is behind it waits for it. Steps towards the folder go on.
-    pub next_tries: BTreeMap<LocalItemId, NextTry>,
+    /// What is remembered of a try that failed: for each such item, and for the steps the
+    /// try was of ([`TriedStep`]), the next try. While that is not before a time still to
+    /// come, the item waits until then ([`WaitReason::Time`], with the reason of the
+    /// failure) in place of such a step, and what is behind it waits for it. A try of
+    /// what was sent holds every step towards OneDrive and no other: a step towards the
+    /// folder is no try of a sending. A try of a step towards the folder or of the rows
+    /// holds that one step, by its kind, and no other step of the item. The caller gives
+    /// the first from what the store keeps of an unsent change, and the second from what
+    /// it keeps itself of the steps it ran.
+    pub next_tries: BTreeMap<(LocalItemId, TriedStep), NextTry>,
     /// What the steps remember of what OneDrive refused: the items it refuses for good as
     /// they are, and those too big for the space it has, each with the reason. Such an item
     /// waits for the user ([`WaitReason::User`]) in place of any step towards OneDrive; the
@@ -267,11 +275,12 @@ pub struct SyncPlanInput {
     pub shown_item_count_in: BTreeMap<LocalItemId, u64>,
 }
 
-/// The next try of what is sent of an item, after a try that failed: what the steps
-/// remember of it ([`ItemStore::find_item_memory`](crate::ItemStore::find_item_memory)).
+/// The next try of a step of an item, after a try that failed: of what is sent of it, as
+/// the steps remember it ([`ItemStore::find_item_memory`](crate::ItemStore::find_item_memory)),
+/// or of a step towards the folder or of the rows, as the caller remembers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NextTry {
-    /// The time, in Unix seconds, before which nothing of the item is sent again.
+    /// The time, in Unix seconds, before which the step is not tried again.
     pub not_before: i64,
     /// Why the last try failed: what is said of the item while it waits.
     pub reason: Reason,
@@ -535,7 +544,7 @@ fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Ite
             sending_state: input.sending_state,
             unsent_since: item.unsent_since,
             refusal: input.sending_refusals.get(&id).cloned(),
-            next_try: input.next_tries.get(&id).cloned(),
+            next_try: input.next_tries.get(&(id, TriedStep::TowardsOneDrive)).cloned(),
             now: input.now,
         },
     }
@@ -580,6 +589,11 @@ impl SyncPlan {
 /// 7. where each wait for another item ends (`wait_chain`); and, for a file whose wait
 ///    ends at the user, what the content table says meanwhile.
 ///
+/// A step towards the folder or of the rows whose own next try is later waits until then
+/// (`tried_step`): asked of what each item is answered by itself, before the items are
+/// decided for each other, so that those decisions read a wait; and once more of the steps
+/// those decisions made, before the waits are followed to their ends.
+///
 /// Each of them is given the answers so far to read and answers what it overrules; the
 /// answers are changed here and nowhere else, and never for an item that is held back
 /// (`ItemAnswers::overrule`).
@@ -595,6 +609,7 @@ pub fn make_sync_plan(input: &SyncPlanInput) -> SyncPlan {
     let items = PlanItems::of(&input.items);
     let cases = describe_items(input, &items);
     let mut answers = ItemAnswers::of(&cases);
+    answers.overrule(tried_step::hold_steps_until_next_try(&input.next_tries, input.now, &answers));
     let move_cycles = move_cycle::take_back_moves_into_own_content(&cases, &items, &answers);
     answers.overrule(move_cycles.overrulings);
     let name_contests = name_contest::settle_name_contests(&cases, &items, &answers, &input.computer_name, &input.places_taken_in_onedrive, &move_cycles.moves_taken_back);
@@ -605,6 +620,7 @@ pub fn make_sync_plan(input: &SyncPlanInput) -> SyncPlan {
     answers.overrule(directory_binding::wait_for_directories_that_give_up_their_binding(&cases, &answers));
     answers.overrule(name_exchange::break_circles_of_names(&cases, &items, &name_contests.sendings_that_wait, &answers));
     answers.overrule(mass_removal::hold_mass_removal(input.unsent_removal_count + input.sent_removal_count, input.shown_item_count, &input.items_with_confirmed_removal, &answers));
+    answers.overrule(tried_step::hold_steps_until_next_try(&input.next_tries, input.now, &answers));
     answers.overrule(wait_chain::end_waits_for_other_items(input.is_listing_under_way, &items, &answers));
     let waiting_for_the_user: BTreeSet<LocalItemId> = wait_chain::list_items_that_wait_for_the_user(&answers).into_iter().collect();
     let content_meanwhile = cases.iter().filter(|case| waiting_for_the_user.contains(&case.item.local_item_id)).filter_map(|case| Some(Overruling::of(case.item.local_item_id, ItemDecision::Step(decide_content_while_place_waits(case)?))));

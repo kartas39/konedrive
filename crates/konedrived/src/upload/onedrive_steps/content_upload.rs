@@ -11,10 +11,13 @@
 //! `settle_answered_opening(item, opening_try)`; with the address
 //! `remember_upload_session` BEFORE the first byte — `Abandoned` means the row went or
 //! the bytes changed, the cancel is queued already, and nothing is sent; after each
-//! fragment `advance_upload_session` — `Abandoned` stops; a session given up (the content
+//! fragment `advance_upload_session` — `Abandoned` stops, and so does `OfAnotherItem`
+//! (the address is another item's session: nothing was queued, the step named the wrong
+//! item, which is a fault said in the journal); a session given up (the content
 //! changed between fragments): `abandon_upload_session`; a session found gone:
-//! `forget_ended_upload_session(item, &address)`. A completed upload calls nothing: the
-//! step's commit forgets the session.
+//! `forget_ended_upload_session(item, &address)`, which forgets the session the item's
+//! memory keeps and no other. A completed upload calls nothing: the step's commit forgets
+//! the session.
 //!
 //! **Tested without the rest**, against the fixture's fake OneDrive (reference:
 //! `upload/tests/sessions.rs`, `interrupted_sessions.rs`, `candidates.rs:65-156`):
@@ -169,7 +172,9 @@ impl ContentUpload {
     /// `upload/content.rs:465`). When it does not, nothing is committed and the step
     /// answers `StepRefusal::ContentMismatch`, after: for a new file the made item
     /// remembered (`StepMemory::remember_mismatched_item`) BEFORE its removal is asked
-    /// (`delete_item`, `G/write.rs:140`); for an existing item the fact kept
+    /// (`delete_item`, `G/write.rs:140`) — and its removal is asked only when the store
+    /// answers `MismatchedItemStanding::LeftToRemove`: `OfFolder` says the folder has
+    /// that item by now, and nothing is removed; for an existing item the fact kept
     /// (`ItemStore::remember_own_upload_content`: OneDrive's content of the answer, the
     /// local content sent). What follows for an existing item is
     /// [`decide_own_upload_follow_up`]'s.

@@ -179,7 +179,7 @@ impl ItemFact {
             ItemFact::StepRunning => drop(given.items_with_running_step.insert(item)),
             ItemFact::LeftByStartUpCheck => drop(given.items_left_by_start_up_check.insert(item)),
             ItemFact::SentIntoByRunningStep => drop(given.destinations_of_running_steps.insert(item)),
-            ItemFact::TriedAgainLater => drop(given.next_tries.insert(item, NextTry { not_before: given.now + 60, reason: Reason::Network })),
+            ItemFact::TriedAgainLater => drop(given.next_tries.insert((item, TriedStep::TowardsOneDrive), NextTry { not_before: given.now + 60, reason: Reason::Network })),
             ItemFact::SendingRefused => drop(given.sending_refusals.insert(item, Reason::NotAllowed(None))),
             ItemFact::OpenForWriting => drop(given.items_open_for_writing.insert(item)),
             ItemFact::InQuietTime => drop(given.quiet_until.insert(item, 1000)),
@@ -613,8 +613,11 @@ fn find_step_the_callers_facts_refuse(given: &SyncPlanInput, plan: &SyncPlan) ->
         if given.items_left_by_start_up_check.contains(&number) {
             return Some(format!("item {number} has a step though the check at start left it"));
         }
-        if matches!(step, SyncStep::OneDrive(_)) && (given.next_tries.contains_key(&number) || given.sending_refusals.contains_key(&number)) {
-            return Some(format!("item {number} is sent though its next try is later or OneDrive refused it"));
+        if given.next_tries.contains_key(&(number, TriedStep::of(step))) {
+            return Some(format!("item {number} has a step whose own next try is later"));
+        }
+        if matches!(step, SyncStep::OneDrive(_)) && given.sending_refusals.contains_key(&number) {
+            return Some(format!("item {number} is sent though OneDrive refused it"));
         }
         let SyncStep::OneDrive(sending) = step else {
             if let SyncStep::Row(RowStep::MergeItems { onedrive, .. }) = step {

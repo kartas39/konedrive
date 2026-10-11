@@ -58,7 +58,12 @@ pub enum NameHolder {
     /// The empty file of this item's own session (`EmptyFileSession::Continued` of this
     /// item): the upload goes on in it.
     OwnSession,
-    /// The empty file of another item's live session: the step waits for it.
+    /// The empty file of another item's live session: the step waits for it, until the
+    /// time OneDrive said that session ends at (`EmptyFileSession::Continued`, its
+    /// `expires_at`). Past that time the session ended by itself, whether its item has a
+    /// step or not (it may be left here, or wait for the user): this step says so
+    /// (`StepMemory::forget_ended_upload_session` of that item and address) and asks the
+    /// name again.
     AnotherItemsSession,
     /// The empty file of a session nothing goes on with: cancelled, then the request sent
     /// again.
