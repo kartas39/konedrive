@@ -6,7 +6,9 @@
 //!
 //! **Every step:** says its commit begins (`RunningSteps::begin_commit`: a stop aborts a
 //! hash in flight, never a commit; told that the step runs no more, it writes nothing),
-//! takes the folder's tree lock for its commit and lets it go; what it
+//! takes the folder's tree lock for its commit and lets it go (the wait for it is not
+//! raced against the stop: the lock is held for one job at a time — a write operation of
+//! the mount, a commit of another step — by nobody who waits for the stop); what it
 //! reads or writes on disk — a file hashed, marks written or taken off — it does with NO
 //! lock: a hash of a file of any size holds up no write operation, and the marks go
 //! through `ItemContentFiles`, whose opens cannot be crossed by a rename. `RowsChanged`

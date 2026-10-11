@@ -399,7 +399,7 @@ impl SyncPlanTask {
         }
         parts.sending_holds.set_stopping();
         parts.running_steps.abort_requests();
-        // TODO: a step towards the folder waits for the folder's lease and a step of the rows for the tree lock, and a stop aborts neither (the review's Q3): if whoever awaits this holds the lease for writing, or the tree lock, this loop does not end. Check `SyncTasks::stop` and its callers once they are filled, and fix if needed.
+        // Neither wait of a step holds this loop: a step towards the folder that waits for the folder's lease, which whoever stops the sync holds for writing, hears the stop and is not run (`StepRunners::of_runners`); a step that waits for the tree lock for its commit waits for one job of whoever holds it — a write operation of the mount, another step's commit —, none of which waits for the stop or for this loop.
         loop {
             self.settle_steps(self.take_ended_steps()).await;
             if parts.running_steps.count_steps_to_settle() == 0 {
