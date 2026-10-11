@@ -136,10 +136,10 @@ pub struct FoundItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FailedRead {
     /// Nothing certain was answered — the network, a 408, a throttle, a 5xx, a sign-out,
-    /// the store —: asked again later, the read may say what became of the request.
+    /// a token Graph rejects (a 401), the store —: asked again later, the read may say what became of the request.
     NothingCertain(StepOutcome),
     /// OneDrive answered for certain, and not with the item nor with "nothing is there":
-    /// any other 4xx (a 403, a 400, a token Graph rejects), an item that cannot be read as
+    /// any other 4xx (a 403, a 400), an item that cannot be read as
     /// one, a request that names nothing to read. Asked again it answers the same: what
     /// became of the request is not learnt by reading, and a listing is what is left.
     RefusedForCertain(StepOutcome),
@@ -155,9 +155,11 @@ impl FailedRead {
 }
 
 /// What a read that failed with `error` leaves: certain when OneDrive answered with a 4xx
-/// other than a 408 or a 429 (`DriveError::status`). Pure.
+/// other than a 401, a 408 or a 429 (`DriveError::status`). A 401 is trouble of the
+/// sign-in — a token Graph rejects again after a renewal —, which passes, and says nothing
+/// of the item. Pure.
 fn decide_failed_read(error: DriveError) -> FailedRead {
-    let is_certain = error.status().is_some_and(|status| status.is_client_error() && !matches!(status.code(), 408 | 429));
+    let is_certain = error.status().is_some_and(|status| status.is_client_error() && !matches!(status.code(), 401 | 408 | 429));
     let outcome = StepOutcome::Refused(decide_read_refusal(error));
     match is_certain {
         true => FailedRead::RefusedForCertain(outcome),
