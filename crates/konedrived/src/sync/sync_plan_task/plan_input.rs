@@ -260,6 +260,7 @@ pub fn read_differing_items(items: &ItemReader<'_>, read_at_once: usize) -> Resu
     let unsent = items.list_unsent(None, read_at_once)?;
     let changed = items.list_changed_in_onedrive(None, read_at_once)?;
     let cannot_be_shown = items.list_shown_items_that_cannot_be_shown(None, read_at_once)?;
+    // TODO: this reader scans all below the pinned directories with every plan, and every finished download makes a plan: N pinned downloads ending one by one are N scans (the review's S-c). A flag "no pinned file is missing its content", kept by the task and cleared by a pin, a listing's page and a content taken off the disk, would bound it; check the cost on a large pinned tree and fix if needed.
     let pinned = items.list_pinned_files_to_download(None, read_at_once)?;
     let is_all_read = [unsent.len(), changed.len(), cannot_be_shown.len(), pinned.len()].iter().all(|read| *read < read_at_once);
     Ok((unsent.into_iter().chain(changed).chain(cannot_be_shown).chain(pinned).collect(), is_all_read))

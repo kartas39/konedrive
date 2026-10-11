@@ -349,8 +349,16 @@ fn write_memory(store: &mut TreeStore, settlement: &StepSettlement, write: &Memo
             let standing = store.step_memory().remember_refusal(item, unsent_since, refusal)?;
             if standing == FactStanding::StillSaid && !is_kept_already {
                 // An item removed here has no local place: its path is the one agreed on.
-                let path = store.read_items(|items| Ok(items.find_path(item)?.or(items.find_synced_path(item)?)))?.unwrap_or_default();
-                return Ok(Some(ActivityRow { at: now, kind: ActivityKind::UploadFailed, path: folder.join(path).to_string_lossy().into_owned(), detail: refusal.reason.to_string() }));
+                // The refusal is kept by now: its event is logged also when the path cannot be read, with the folder's path and the item's id.
+                let (path, detail) = match store.read_items(|items| Ok(items.find_path(item)?.or(items.find_synced_path(item)?))) {
+                    Ok(Some(path)) => (folder.join(path), refusal.reason.to_string()),
+                    Ok(None) => (folder.to_path_buf(), format!("{} (item {item})", refusal.reason)),
+                    Err(error) => {
+                        tracing::warn!("cannot read the path of item {item}, which OneDrive refuses: {error}");
+                        (folder.to_path_buf(), format!("{} (item {item})", refusal.reason))
+                    }
+                };
+                return Ok(Some(ActivityRow { at: now, kind: ActivityKind::UploadFailed, path: path.to_string_lossy().into_owned(), detail }));
             }
         }
         MemoryWrite::SpaceRefusal(space_refusal) => {

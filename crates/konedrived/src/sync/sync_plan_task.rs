@@ -80,7 +80,7 @@
 // test: rows_changed_at_random_on_both_sides_converge_through_the_task
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -151,10 +151,6 @@ pub struct SyncPlanTaskParts {
     pub quota_reader: Arc<dyn Fn() -> RunningFuture<Option<DriveQuota>> + Send + Sync>,
 }
 
-/// How many upload sessions are cancelled, and how many items uploads left with other
-/// content are removed, by one call of `SessionCancellations`.
-const SESSION_CANCELLATIONS_AT_ONCE: usize = 16;
-
 /// How long after the old openings of upload sessions were forgotten they are forgotten
 /// again, in seconds: once a day.
 const OLD_OPENINGS_FORGOTTEN_EVERY: i64 = 24 * 60 * 60;
@@ -179,47 +175,73 @@ pub struct SyncPlanTask {
     local_step_tries: std::sync::Mutex<LocalStepTries>,
     /// The steps that ended and are not settled yet, each with what came of it: put by
     /// the task of a step, taken by the loop.
-    ended_steps: std::sync::Mutex<Vec<(SyncStep, StepOutcome)>>,
+    ended_steps: std::sync::Mutex<Vec<EndedStep>>,
+    /// How many plans the loop made in this run: what a step is started with, to tell
+    /// whether a plan was made while it ran.
+    plan_count: AtomicU64,
     /// The faults of the last plan: what a fault is said once by.
     told_faults: std::sync::Mutex<Vec<PlanFault>>,
     /// The items a full listing was asked for (`PlanFault::FullListingNeeded`) that no
     /// listing ended for since: none is asked for these again. Emptied when a listing
     /// ended and the store's request has begun.
     full_listings_asked: std::sync::Mutex<BTreeSet<LocalItemId>>,
-    /// When the read of the quota that was due failed last, Unix seconds: it is not asked
-    /// again before `READ_RETRY_WAIT` passed. None once a read answered.
+    /// When the read of the quota that was due failed last, or answered nothing of the
+    /// space, Unix seconds: it is not asked again before `READ_RETRY_WAIT` passed. None
+    /// once a read said something of the space.
     quota_read_failed_at: std::sync::Mutex<Option<i64>>,
-    /// Whether the task that cancels upload sessions and removes the items uploads left
-    /// runs: one at a time.
-    are_session_cancellations_running: Arc<AtomicBool>,
+    /// The task that cancels upload sessions and removes the items uploads left, when one
+    /// was started: one at a time, and awaited by the loop before it returns at a stop.
+    session_cancellations_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+/// A step that ended, as its task hands it to the loop.
+struct EndedStep {
+    step: SyncStep,
+    outcome: StepOutcome,
+    /// How many plans were made when the step was started (`SyncPlanTask::plan_count`).
+    plan_count_at_start: u64,
+}
+
+/// What a round's settlement says of the steps it settled: what `decide_round` asks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SettledSteps {
+    /// One of them changed something a plan is made from
+    /// (`step_settlement::has_changed_anything`).
+    pub has_change: bool,
+    /// A plan was made since one of them began: that plan answered its item as one a step
+    /// runs for, and gave it no step.
+    pub is_plan_made_since_start: bool,
 }
 
 /// What a round does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoundDecision {
-    /// A plan is made: a cause other than a finished step came, a time was reached, or a
-    /// step that was settled in this round changed something.
+    /// A plan is made: a cause other than a finished step came, a time was reached, a
+    /// step that was settled in this round changed something, or a plan was made while
+    /// one of them ran.
     MakePlan,
     /// The last plan is gone on with: steps of it are left to start, only steps finished
-    /// since, and none of them changed anything.
+    /// since, none of them changed anything, and no plan was made while one ran.
     GoOnWithLastPlan,
     /// Nothing to do until the next cause or time.
     Sleep,
 }
 
-/// What the round does, from the causes that woke it (none: a time was reached), whether
-/// a step settled in this round changed anything a plan is made from
-/// (`step_settlement::has_changed_anything`), and how many steps of the last plan are not
-/// started. A round of finished steps alone makes a plan when one of them changed
-/// something — also while steps of the last plan are left, which the new plan's replace:
-/// what waited for the step is planned at once, whatever holds the steps left. When none
-/// changed anything no plan is made by that round — the plan would be the one before, and
-/// a step that cannot run (the mount's take-down asked for, the write-operation thread
+/// What the round does, from the causes that woke it (none: a time was reached), what
+/// the settlement of this round says of the steps it settled, and how many steps of the
+/// last plan are not started. A round of finished steps alone makes a plan when one of
+/// them changed something — also while steps of the last plan are left, which the new
+/// plan's replace: what waited for the step is planned at once, whatever holds the steps
+/// left. And when a plan was made since one of them began: that plan gave its item no
+/// step, as one ran, so a step that then ended with nothing changed (a download stopped
+/// by a pause that is over by now) would leave the item with no step and no wake. When
+/// neither holds no plan is made by that round — the plan would be the one before, and a
+/// step that cannot run (the mount's take-down asked for, the write-operation thread
 /// gone) would be planned and ended without a wait between: the steps left that can start
 /// are started, else the task sleeps until a cause or a time. Pure.
-pub fn decide_round(causes: &BTreeSet<WakeCause>, has_settled_change: bool, steps_left_to_start: usize) -> RoundDecision {
+pub fn decide_round(causes: &BTreeSet<WakeCause>, settled: SettledSteps, steps_left_to_start: usize) -> RoundDecision {
     let is_only_finished_steps = !causes.is_empty() && causes.iter().all(|cause| *cause == WakeCause::StepFinished);
-    match (is_only_finished_steps, has_settled_change, steps_left_to_start) {
+    match (is_only_finished_steps, settled.has_change || settled.is_plan_made_since_start, steps_left_to_start) {
         (false, _, _) | (true, true, _) => RoundDecision::MakePlan,
         (true, false, 0) => RoundDecision::Sleep,
         (true, false, _) => RoundDecision::GoOnWithLastPlan,
@@ -248,7 +270,7 @@ pub fn decide_next_wake(plan: &SyncPlan, hold_end: Option<i64>, next_quota_read:
 impl SyncPlanTask {
     /// Made by the folder's start (`sync_tasks::start_order::start_sync_tasks`).
     pub fn new(parts: SyncPlanTaskParts) -> Arc<Self> {
-        Arc::new(SyncPlanTask { parts, logged_since_listing_ended: AtomicUsize::new(0), local_step_tries: std::sync::Mutex::new(LocalStepTries::default()), ended_steps: std::sync::Mutex::default(), told_faults: std::sync::Mutex::default(), full_listings_asked: std::sync::Mutex::default(), quota_read_failed_at: std::sync::Mutex::new(None), are_session_cancellations_running: Arc::new(AtomicBool::new(false)) })
+        Arc::new(SyncPlanTask { parts, logged_since_listing_ended: AtomicUsize::new(0), local_step_tries: std::sync::Mutex::new(LocalStepTries::default()), ended_steps: std::sync::Mutex::default(), told_faults: std::sync::Mutex::default(), full_listings_asked: std::sync::Mutex::default(), plan_count: AtomicU64::new(0), quota_read_failed_at: std::sync::Mutex::new(None), session_cancellations_task: std::sync::Mutex::new(None) })
     }
 
     /// Runs the loop until `stop`, then ends its steps as the module's doc says, and
@@ -265,17 +287,18 @@ impl SyncPlanTask {
         // The first round is one of a time reached: a plan is made.
         let mut causes = BTreeSet::new();
         loop {
-            let has_settled_change = self.settle_steps(self.take_ended_steps(), &memories).await;
-            match decide_round(&causes, has_settled_change, steps_left_to_start.len()) {
+            let settled = self.settle_steps(self.take_ended_steps(), &memories).await;
+            match decide_round(&causes, settled, steps_left_to_start.len()) {
                 RoundDecision::MakePlan => {
                     let now = (parts.clock)();
                     if now.saturating_sub(old_openings_forgotten_at) >= OLD_OPENINGS_FORGOTTEN_EVERY {
                         parts.session_cancellations.forget_old_openings().await;
                         old_openings_forgotten_at = now;
                     }
-                    self.apply_wake_causes(&causes).await;
+                    self.apply_wake_causes(&causes, &stop).await;
                     match self.make_plan(self.gather_daemon_facts()).await {
                         Ok(round) => {
+                            self.plan_count.fetch_add(1, Ordering::SeqCst);
                             let now = (parts.clock)();
                             self.publish_round(&round, parts.sending_holds.find(now).as_ref()).await;
                             // A read of the quota that was due and failed is tried again after a wait, not at once.
@@ -311,6 +334,14 @@ impl SyncPlanTask {
             }
             parts.sync_plan_wake.wait().await;
         }
+        // The task that cancels upload sessions heard the stop: it ends after the request it is at.
+        let session_cancellations_task = crate::panic::lock(&self.session_cancellations_task).take();
+        if let Some(Err(error)) = match session_cancellations_task {
+            Some(task) => Some(task.await),
+            None => None,
+        } {
+            tracing::warn!("the task that cancels upload sessions ended: {error}");
+        }
     }
 
     /// Waits for the next round: a cause given, `until` reached, or `stop`. `None` for
@@ -332,24 +363,26 @@ impl SyncPlanTask {
 
     /// Applies what a wake's causes ask before the plan is made: a read of the quota that
     /// is due (`quota_reader`, `OneDriveSpace::apply_quota`, then
-    /// `StepMemory::forget_fitting_space_refusals`; one that failed is not asked again
-    /// before `READ_RETRY_WAIT` passed); a refresh (`WakeCause::RefreshAsked`:
+    /// `StepMemory::forget_fitting_space_refusals`; one that failed, or said nothing of
+    /// the space, is not asked again before `READ_RETRY_WAIT` passed); a refresh (`WakeCause::RefreshAsked`:
     /// `StepMemory::clear_next_tries`, and `LocalStepTries::clear_next_tries` of the
     /// task's own); a listing ended (`SendingHolds::set_listing_ended`, the count of
     /// logged events to 0, and the full listings asked for forgotten once the store's
     /// request has begun). And, when sending is not held: the upload sessions left to
     /// cancel and the items uploads left are asked for, off the loop
     /// ([`start_session_cancellations`](Self::start_session_cancellations)).
-    async fn apply_wake_causes(self: &Arc<Self>, causes: &BTreeSet<WakeCause>) {
+    async fn apply_wake_causes(self: &Arc<Self>, causes: &BTreeSet<WakeCause>, stop: &CancellationToken) {
         let parts = &self.parts;
         let now = (parts.clock)();
         // TODO: on `WakeCause::QuotaRead` the quota another just read is to be applied (`OneDriveSpace::apply_quota`), with no second request; nothing gives the task that read (`OneDriveSpace` keeps the account's quota to itself). Check who wakes `QuotaRead` and how the figures come here, and fix if needed.
         let is_quota_read_due = parts.onedrive_space.find_next_read().is_some_and(|at| at <= now);
         let is_retry_due = crate::panic::lock(&self.quota_read_failed_at).is_none_or(|failed_at| now.saturating_sub(failed_at) >= READ_RETRY_WAIT);
         if is_quota_read_due && is_retry_due {
-            let quota = (parts.quota_reader)().await;
-            *crate::panic::lock(&self.quota_read_failed_at) = quota.is_none().then_some(now);
-            if let Some(SpaceChange::HasSpace { free_space, .. }) = quota.map(|quota| parts.onedrive_space.apply_quota(&quota, now)) {
+            let change = (parts.quota_reader)().await.map(|quota| parts.onedrive_space.apply_quota(&quota, now));
+            // A read that says nothing of the space leaves the read due, as one that failed: neither is asked again at once.
+            let is_space_known = change.is_some_and(|change| change != SpaceChange::NotKnown);
+            *crate::panic::lock(&self.quota_read_failed_at) = (!is_space_known).then_some(now);
+            if let Some(SpaceChange::HasSpace { free_space, .. }) = change {
                 if let Err(error) = parts.store.call(move |store| store.step_memory().forget_fitting_space_refusals(free_space)).await {
                     tracing::warn!("cannot forget the refusals for lack of space that fit now: {error}");
                 }
@@ -371,52 +404,43 @@ impl SyncPlanTask {
                 Err(error) => tracing::warn!("cannot read whether a full listing is asked for: {error}"),
             }
         }
-        self.start_session_cancellations();
+        self.start_session_cancellations(stop);
     }
 
     /// Cancels the upload sessions left to cancel and removes the items uploads left with
     /// other content (`SessionCancellations::cancel_sessions`, `remove_mismatched_items`),
     /// as a task of its own, one at a time: the loop waits for none of these requests.
-    /// It goes on, `SESSION_CANCELLATIONS_AT_ONCE` of each at a time, until both lists
-    /// are empty, sending is held (a stop holds it), or a call got none of its own through:
-    /// what is left then is asked for with the next plan.
-    fn start_session_cancellations(self: &Arc<Self>) {
+    /// It asks one of each at a time, and goes on until both lists are empty, `stop` came,
+    /// sending is held, or a round got nothing through: what is left then is asked for
+    /// with the next plan. It hears `stop` between two requests, and `run` awaits its end
+    /// before it returns: nothing of it is sent or written after the folder's sync
+    /// stopped.
+    fn start_session_cancellations(self: &Arc<Self>, stop: &CancellationToken) {
         let is_held = |task: &Self| task.parts.sending_holds.is_held(StepClass::Metadata, (task.parts.clock)());
-        if is_held(self) || self.are_session_cancellations_running.swap(true, Ordering::SeqCst) {
+        let mut kept_task = crate::panic::lock(&self.session_cancellations_task);
+        if stop.is_cancelled() || is_held(self) || kept_task.as_ref().is_some_and(|task| !task.is_finished()) {
             return;
         }
-        let task = Arc::clone(self);
-        let cancellations = tokio::spawn(async move {
-            while !is_held(&task) {
-                let read = |items: &konedrive_tree::ItemReader<'_>| Ok((items.list_upload_session_cancellations(SESSION_CANCELLATIONS_AT_ONCE)?.len(), items.list_mismatched_item_removals(SESSION_CANCELLATIONS_AT_ONCE)?.len()));
-                let (cancellation_count, removal_count) = match task.parts.store.read_items(read).await {
-                    Ok(counts) => counts,
+        let (task, stop) = (Arc::clone(self), stop.clone());
+        *kept_task = Some(tokio::spawn(async move {
+            let cancellations = &task.parts.session_cancellations;
+            while !stop.is_cancelled() && !is_held(&task) {
+                let read = |items: &konedrive_tree::ItemReader<'_>| Ok((!items.list_upload_session_cancellations(1)?.is_empty(), !items.list_mismatched_item_removals(1)?.is_empty()));
+                let (has_cancellation, has_removal) = match task.parts.store.read_items(read).await {
+                    Ok(left) => left,
                     Err(error) => {
                         tracing::warn!("cannot read what uploads left to cancel and to remove: {error}");
                         break;
                     }
                 };
-                let mut left_count = 0;
-                if cancellation_count > 0 {
-                    left_count += task.parts.session_cancellations.cancel_sessions(SESSION_CANCELLATIONS_AT_ONCE).await;
-                }
-                if removal_count > 0 {
-                    left_count += task.parts.session_cancellations.remove_mismatched_items(SESSION_CANCELLATIONS_AT_ONCE).await;
-                }
-                // TODO: nothing here waits between tries that fail (the review's Q5): a call that gets none through ends this task, and the next plan starts it again, so a session that cannot be cancelled is asked once per plan. Check whether `SessionCancellations` is to keep a next try, and fix if needed.
-                if left_count >= cancellation_count + removal_count {
+                // TODO: one of each is asked at a time, the one left first first, so that the stop is heard between two requests: a session that cannot be cancelled keeps those behind it from being asked. And nothing waits between tries that fail (the review's Q5): a round that gets nothing through ends this task, and the next plan starts it again. Check whether `SessionCancellations` is to keep a next try and to pass over what failed, and fix if needed.
+                let is_cancelled = has_cancellation && cancellations.cancel_sessions(1).await == 0;
+                let is_removed = has_removal && !stop.is_cancelled() && cancellations.remove_mismatched_items(1).await == 0;
+                if !is_cancelled && !is_removed {
                     break;
                 }
             }
-        });
-        // The flag is let go whatever ended the task, a panic too.
-        let is_running = Arc::clone(&self.are_session_cancellations_running);
-        tokio::spawn(async move {
-            if let Err(error) = cancellations.await {
-                tracing::warn!("the task that cancels upload sessions ended: {error}");
-            }
-            is_running.store(false, Ordering::SeqCst);
-        });
+        }));
     }
 
     /// What the daemon knows beside the rows, as values, read now: the items with a
@@ -457,18 +481,19 @@ impl SyncPlanTask {
     }
 
     /// The steps that ended since the loop last took them.
-    fn take_ended_steps(&self) -> Vec<(SyncStep, StepOutcome)> {
+    fn take_ended_steps(&self) -> Vec<EndedStep> {
         std::mem::take(&mut *crate::panic::lock(&self.ended_steps))
     }
 
     /// Hands the steps that ended to the loop, and wakes it (`WakeCause::StepFinished`).
     /// Called when the task of a step ended: with what its runner answered, or with a
-    /// failure when it answered nothing (`decide_outcome_of_ended_task`).
-    fn hand_over_ended_steps(&self, ended: Vec<(SyncStep, StepOutcome)>) {
+    /// failure when it answered nothing (`decide_outcome_of_ended_task`), and with the
+    /// count of plans it was started at.
+    fn hand_over_ended_steps(&self, ended: Vec<(SyncStep, StepOutcome)>, plan_count_at_start: u64) {
         if ended.is_empty() {
             return;
         }
-        crate::panic::lock(&self.ended_steps).extend(ended);
+        crate::panic::lock(&self.ended_steps).extend(ended.into_iter().map(|(step, outcome)| EndedStep { step, outcome, plan_count_at_start }));
         self.parts.sync_plan_wake.wake(WakeCause::StepFinished);
     }
 
@@ -507,13 +532,13 @@ impl SyncPlanTask {
         let running = tokio::spawn((self.parts.step_runners.run_step)(step.clone()));
         self.parts.running_steps.keep_abort_handle(item, running.abort_handle());
         // Whatever ended the step's task, its outcome is handed over: a panic too.
-        let task = Arc::clone(self);
+        let (task, plan_count_at_start) = (Arc::clone(self), self.plan_count.load(Ordering::SeqCst));
         tokio::spawn(async move {
             let outcome = match running.await {
                 Ok(outcome) => Some(outcome),
                 Err(error) => decide_outcome_of_ended_task(error.is_cancelled(), format!("the step's task ended: {error}")),
             };
-            task.hand_over_ended_steps(outcome.map(|outcome| (step, outcome)).into_iter().collect());
+            task.hand_over_ended_steps(outcome.map(|outcome| (step, outcome)).into_iter().collect(), plan_count_at_start);
         });
     }
 
@@ -540,7 +565,7 @@ impl SyncPlanTask {
             self.parts.running_steps.keep_abort_handle(item, running.abort_handle());
         }
         // Whatever ended the task, an outcome of every step is handed over: a panic too.
-        let task = Arc::clone(self);
+        let (task, plan_count_at_start) = (Arc::clone(self), self.plan_count.load(Ordering::SeqCst));
         tokio::spawn(async move {
             let ended = match running.await {
                 // An outcome the runner did not answer is that of a step that did not run.
@@ -553,7 +578,7 @@ impl SyncPlanTask {
                     None => Vec::new(),
                 },
             };
-            task.hand_over_ended_steps(ended);
+            task.hand_over_ended_steps(ended, plan_count_at_start);
         });
     }
 
@@ -566,13 +591,17 @@ impl SyncPlanTask {
     /// then what they say of all sending applied (`SendingHolds`), the listing asked for
     /// a cycle once when any says so, each step ended (`RunningSteps::end`). The loop
     /// goes on with a round of `WakeCause::StepFinished`. `memories` are those of the
-    /// last plan's round (`PlannedRound::memories`). Answers whether any of the steps
-    /// changed something a plan is made from (`step_settlement::has_changed_anything`):
-    /// what `decide_round` asks. Nothing, and `false`, for no step.
-    async fn settle_steps(&self, ended: Vec<(SyncStep, StepOutcome)>, memories: &BTreeMap<LocalItemId, ItemMemory>) -> bool {
+    /// last plan's round (`PlannedRound::memories`). Answers what `decide_round` asks of
+    /// the steps settled: whether any changed something a plan is made from
+    /// (`step_settlement::has_changed_anything`), and whether a plan was made since any
+    /// of them began. Nothing, and neither, for no step.
+    async fn settle_steps(&self, ended: Vec<EndedStep>, memories: &BTreeMap<LocalItemId, ItemMemory>) -> SettledSteps {
         if ended.is_empty() {
-            return false;
+            return SettledSteps::default();
         }
+        let plan_count = self.plan_count.load(Ordering::SeqCst);
+        let is_plan_made_since_start = ended.iter().any(|ended| ended.plan_count_at_start < plan_count);
+        let ended: Vec<(SyncStep, StepOutcome)> = ended.into_iter().map(|ended| (ended.step, ended.outcome)).collect();
         let parts = &self.parts;
         let now = (parts.clock)();
         let settled: Vec<(SyncStep, StepSettlement)> = {
@@ -626,7 +655,8 @@ impl SyncPlanTask {
         for (step, _) in &settled {
             parts.running_steps.end(step.local_item_id());
         }
-        ended.iter().zip(&settled).any(|((_, outcome), (_, settlement))| step_settlement::has_changed_anything(outcome, settlement))
+        let has_change = ended.iter().zip(&settled).any(|((_, outcome), (_, settlement))| step_settlement::has_changed_anything(outcome, settlement));
+        SettledSteps { has_change, is_plan_made_since_start }
     }
 
     /// Publishes what a plan answered: the answers per item (`PublishedPlan::publish`),
