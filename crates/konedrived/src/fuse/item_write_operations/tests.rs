@@ -4,6 +4,7 @@
 
 use std::ffi::OsStr;
 use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -45,6 +46,21 @@ impl ItemWriteOperations {
         if let Some(hook) = hook {
             hook(point);
         }
+    }
+}
+
+impl ItemWriteOperations {
+    /// `hook` runs where an operation changed the disk and has not written its row, on
+    /// the write-operation thread: for the tests of what answers the kernel, which change
+    /// a row there as nothing under the tree lock can, so that the store refuses the
+    /// operation's row.
+    pub(in crate::fuse) fn run_before_row(&self, hook: impl Fn() + Send + Sync + 'static) {
+        let hook: Hook = Arc::new(move |reached| {
+            if reached == OperationPoint::DiskChanged {
+                hook();
+            }
+        });
+        *crate::panic::lock(&self.operation_point_hook.0) = Some(hook);
     }
 }
 
@@ -505,7 +521,122 @@ const DEATH_CASES: &[DeathCase] = &[
         is_done: |operations| is_on_disk(operations, "remote.txt"),
         done_at: &[OperationPoint::DiskChanged],
     },
+    // The review's S6: the cases it ran by hand.
+    // Nothing of the moved file is on disk: the displaced entry is set aside by itself.
+    DeathCase {
+        name: "rename of a file not on disk over a file on disk",
+        prepare: |operations| {
+            operations.fixture.show_onedrive_file("remote.txt", b"in OneDrive");
+            operations.fixture.make_own_file("doc.txt", b"here");
+        },
+        run: |operations| operations.rename("remote.txt", "doc.txt").unwrap_or(()),
+        is_done: |operations| !shows(operations, "remote.txt") && !operations.fixture.disk_path("doc.txt").exists() && operations.fixture.find_item_at("doc.txt").is_some_and(|row| row.content_presence == ContentPresence::NotOnDisk),
+        done_at: &[OperationPoint::RowWritten],
+    },
+    // The directory stays on disk with its mark taken off; cut before the row, the check
+    // puts the mark back. What no row said in it is a new item after any start.
+    DeathCase {
+        name: "rmdir of a marked directory that holds what no row says",
+        prepare: |operations| {
+            let docs = operations.fixture.show_onedrive_directory("docs").local_item_id;
+            operations.fixture.make_directory_on_disk(docs);
+            operations.fixture.write_disk_file("docs/leftover.txt", b"what no row says");
+        },
+        run: |operations| operations.remove("docs", ItemKind::Directory).unwrap_or(()),
+        is_done: |operations| {
+            let is_removed = operations.fixture.list_items().iter().any(|row| row.onedrive_item == Some(ItemFixture::onedrive_reference_of("docs")) && row.local.is_none());
+            if !is_removed {
+                assert_eq!(operations.fixture.read_disk_marks("docs").onedrive_item_id, mark_of("docs"), "while its row shows it, the directory carries its mark");
+            }
+            is_removed
+        },
+        done_at: &[OperationPoint::RowWritten],
+    },
+    DeathCase {
+        name: "mkdir in a directory that is not on disk",
+        prepare: |operations| drop(operations.fixture.show_onedrive_directory("docs")),
+        run: |operations| drop(operations.make("docs/d", MadeKind::Directory)),
+        is_done: |operations| shows(operations, "docs/d") && operations.fixture.disk_path("docs/d").is_dir(),
+        done_at: &[OperationPoint::DiskChanged, OperationPoint::RowWritten],
+    },
+    DeathCase {
+        name: "create in a directory that is not on disk",
+        prepare: |operations| drop(operations.fixture.show_onedrive_directory("docs")),
+        run: |operations| drop(operations.make("docs/f.txt", MadeKind::FileOpenedForWriting)),
+        is_done: |operations| is_on_disk(operations, "docs/f.txt"),
+        done_at: &[OperationPoint::DiskChanged, OperationPoint::RowWritten],
+    },
+    DeathCase {
+        name: "rename into a directory that is not on disk",
+        prepare: |operations| {
+            operations.fixture.show_onedrive_directory("docs");
+            operations.fixture.make_own_file("a.txt", b"a");
+        },
+        run: |operations| operations.rename("a.txt", "docs/a.txt").unwrap_or(()),
+        is_done: |operations| is_on_disk(operations, "docs/a.txt") && !shows(operations, "a.txt") && !operations.fixture.disk_path("a.txt").exists(),
+        done_at: &[OperationPoint::RowWritten],
+    },
+    DeathCase {
+        name: "rename of a directory with a file in it",
+        prepare: |operations| {
+            operations.fixture.make_own_directory("d");
+            operations.fixture.make_own_file("d/f.txt", b"f");
+        },
+        run: |operations| operations.rename("d", "e").unwrap_or(()),
+        is_done: |operations| is_on_disk(operations, "e/f.txt") && !shows(operations, "d") && !operations.fixture.disk_path("d").exists(),
+        done_at: &[OperationPoint::RowWritten],
+    },
+    DeathCase {
+        name: "rename of a directory over an empty directory",
+        prepare: |operations| {
+            operations.fixture.make_own_directory("d");
+            operations.fixture.make_own_file("d/f.txt", b"f");
+            operations.fixture.make_own_directory("e");
+        },
+        run: |operations| operations.rename("d", "e").unwrap_or(()),
+        is_done: |operations| is_on_disk(operations, "e/f.txt") && !shows(operations, "d") && !operations.fixture.disk_path("d").exists(),
+        done_at: &[OperationPoint::RowWritten],
+    },
+    DeathCase {
+        name: "unlink of a clean copy",
+        prepare: |operations| {
+            let copy = operations.fixture.show_onedrive_file("doc.txt", b"as it was").local_item_id;
+            operations.fixture.land_copy(copy, b"as it was");
+        },
+        run: |operations| operations.remove("doc.txt", ItemKind::File).unwrap_or(()),
+        is_done: |operations| !shows(operations, "doc.txt") && !operations.fixture.disk_path("doc.txt").exists(),
+        done_at: &[OperationPoint::RowWritten],
+    },
+    // The directory a removal left on disk is there before the make: with its record or
+    // without, the check finds a directory no row has and makes its item.
+    DeathCase {
+        name: "mkdir where a directory was left on disk",
+        prepare: |operations| {
+            let docs = operations.fixture.make_own_directory("docs").local_item_id;
+            operations.fixture.write_disk_file("docs/leftover.txt", b"what no row says");
+            operations.remove("docs", ItemKind::Directory).unwrap();
+            assert!(operations.fixture.find_item(docs).is_none() && operations.fixture.disk_path("docs").is_dir());
+        },
+        run: |operations| drop(operations.make("docs", MadeKind::Directory)),
+        is_done: |operations| shows(operations, "docs") && operations.fixture.disk_path("docs").is_dir(),
+        done_at: &POINTS,
+    },
+    DeathCase {
+        name: "mknod of a name that is not UTF-8",
+        prepare: |_| {},
+        run: |operations| {
+            let _ = operations.run(|operations| operations.make(LocalItemId::ROOT, OsStr::from_bytes(NOT_UTF8_NAME), MadeKind::File).map(|made| made.fh));
+        },
+        is_done: |operations| {
+            let row = operations.fixture.read_rows(|reader| reader.find_item_at(LocalItemId::ROOT, OsStr::from_bytes(NOT_UTF8_NAME)));
+            row.is_some_and(|row| row.content_presence == ContentPresence::OnDisk) && operations.fixture.folder().join(OsStr::from_bytes(NOT_UTF8_NAME)).is_file()
+        },
+        done_at: &[OperationPoint::DiskChanged, OperationPoint::RowWritten],
+    },
 ];
+
+/// A name a program may give that is no text.
+const NOT_UTF8_NAME: &[u8] = b"caf\xe9.txt";
 
 #[test]
 fn a_death_at_each_point_of_each_operation_is_settled_by_the_check_at_start() {

@@ -392,7 +392,9 @@ impl ItemWriteOperations {
     /// writes the time. A node whose row is gone, asked with an `fh`: the handle's file
     /// alone. A row that refuses the time: the backing file gets the time it had. A
     /// directory's row keeps no time: the time goes to its directory in the backing
-    /// directory, when it is there. The attributes after it are the caller's to read.
+    /// directory, when it is there; for a directory that is not on disk nothing changes
+    /// and the answer is `Ok` all the same (its time is the mount's start, as getattr
+    /// says). The attributes after it are the caller's to read.
     pub(in crate::fuse) fn set_modified_time(&self, node: LocalItemId, fh: Option<Fh>, mtime: i64, mtime_nsec: u32) -> Result<(), Errno> {
         self.access_mode_switch.check_read_write()?;
         let time = to_system_time(mtime, mtime_nsec);

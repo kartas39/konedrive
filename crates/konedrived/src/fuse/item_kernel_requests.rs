@@ -88,6 +88,7 @@
 // test: the_bridges_own_requests_are_answered_from_the_rows_and_make_nothing
 // test: after_the_take_down_was_asked_every_change_is_refused_and_reading_goes_on
 // test: each_refusal_of_a_write_operation_reaches_the_reply_with_its_errno
+// test: a_row_the_store_refuses_reaches_the_reply_with_the_errno_of_its_rule
 // test: a_request_by_a_handle_that_is_not_open_is_ebadf
 // test: a_file_opened_to_be_overwritten_is_cut_and_nothing_is_downloaded
 // test: the_time_set_on_a_file_is_what_its_reply_and_the_next_getattr_say

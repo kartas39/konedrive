@@ -27,6 +27,7 @@ const NO_ITEM_ID: i64 = 999;
 /// The requests over the fixture's leaves.
 struct Requests {
     requests: Arc<ItemKernelRequests>,
+    write_operations: Arc<ItemWriteOperations>,
     fixture: ItemFixture,
 }
 
@@ -88,7 +89,7 @@ impl Requests {
             Arc::clone(&fixture.read_connections),
             Arc::clone(&fixture.place_changes),
             Arc::clone(&fixture.item_handles),
-            write_operations,
+            Arc::clone(&write_operations),
             Arc::clone(&fixture.write_operation_thread),
             inotify_bridge,
             downloader,
@@ -100,7 +101,7 @@ impl Requests {
             START_TIME,
             fixture.runtime(),
         ));
-        Requests { requests, fixture }
+        Requests { requests, write_operations, fixture }
     }
 
     /// Asks on the mount-like thread what is answered where it is asked.
@@ -878,4 +879,49 @@ fn the_bridges_own_requests_are_answered_from_the_rows_and_make_nothing() {
     // The same requests of a program are refused: the folder is read-only.
     assert_eq!(mount.make("none", MadeKind::Directory).err(), Some(Errno::EROFS));
     bridge.stop();
+}
+
+/// What `mkdir -p`, `rm -r`, `mv` and a save by rename go on by: a row the store refuses
+/// because the rows changed between the operation's read and its row reaches the program
+/// as the errno of the rule, and the disk is as it was.
+#[test]
+fn a_row_the_store_refuses_reaches_the_reply_with_the_errno_of_its_rule() {
+    use konedrive_tree::LocalVersionChange;
+    let apply = |mount: &Requests, change: LocalVersionChange| {
+        let store = mount.fixture.store.clone();
+        mount.write_operations.run_before_row(move || {
+            let change = change.clone();
+            store.call_blocking(move |store| store.item_store().apply(&change).map(drop)).unwrap();
+        });
+    };
+    let made_at = |directory: LocalItemId, name: &str| LocalVersionChange::Made { kind: ItemKind::Directory, place: ItemPlace { parent_local_item_id: directory, name: name.into() }, content: None, is_name_ignored: false, replaced: None };
+
+    // mkdir of a name another program made meanwhile.
+    let mount = Requests::new();
+    apply(&mount, made_at(ROOT, "made"));
+    assert_eq!(mount.make("made", MadeKind::Directory).err(), Some(Errno::EEXIST));
+    assert!(!mount.fixture.disk_path("made").exists(), "what was made on disk is removed again");
+
+    // rmdir of a directory something was made in meanwhile.
+    let mount = Requests::new();
+    let held = mount.fixture.make_own_directory("held").local_item_id;
+    apply(&mount, made_at(held, "inside"));
+    assert_eq!(mount.remove("held", ItemKind::Directory).err(), Some(Errno::ENOTEMPTY));
+    assert!(mount.fixture.disk_path("held").is_dir(), "the directory is put back");
+
+    // rename of a file that was removed meanwhile.
+    let mount = Requests::new();
+    let gone = mount.fixture.make_own_file("gone.txt", b"gone").local_item_id;
+    apply(&mount, LocalVersionChange::Removed { item: gone });
+    assert_eq!(mount.rename("gone.txt", "renamed.txt").err(), Some(Errno::ESTALE));
+    assert!(!mount.fixture.disk_path("renamed.txt").exists(), "the entry is moved back");
+
+    // mkdir in a directory that was removed meanwhile.
+    let mount = Requests::new();
+    let removed = mount.fixture.make_own_directory("removed").local_item_id;
+    apply(&mount, LocalVersionChange::Removed { item: removed });
+    assert_eq!(mount.make("removed/new", MadeKind::Directory).err(), Some(Errno::ENOENT));
+    assert!(!mount.fixture.disk_path("removed/new").exists());
+
+    assert_eq!(mount.fixture.write_rows(|store| store.item_store().list_place_change_records()), [], "the record went with the undo");
 }
