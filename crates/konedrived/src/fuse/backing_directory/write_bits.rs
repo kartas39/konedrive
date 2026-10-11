@@ -36,8 +36,10 @@ pub(in crate::fuse) fn remove_write_bits(folder: &Path) {
 }
 
 /// Gives the owner's write bits back to everything in the folder on disk, the folder first.
-/// `folder` must be the folder itself, not a mount over it.
-pub(in crate::fuse) fn restore_write_bits(folder: &Path) {
+/// `folder` must be the folder itself, not a mount over it. Blocking: it walks the folder.
+/// Outside `fuse` it is called for a folder that is forgotten while no mount lies over it
+/// (`sync::sync_tasks::stop_order::forget_folder_without_mount`).
+pub fn restore_write_bits(folder: &Path) {
     set_modes(folder, WriteBits::Present);
 }
 

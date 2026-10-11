@@ -40,7 +40,8 @@ pub(super) use download_landing::LandingOutcome;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(super) use downloaded_copies::DiskMarks;
 pub(super) use file_handles::{DiskEntry, DiskMetadata, EntryKind};
-pub(super) use write_bits::{to_mode_bits, remove_write_bits, restore_write_bits, WriteBits};
+pub use write_bits::restore_write_bits;
+pub(super) use write_bits::{to_mode_bits, remove_write_bits, WriteBits};
 
 /// Where an earlier build built its downloads, inside the backing directory: removed when the
 /// directory is opened. A download is built in a file without a name now.

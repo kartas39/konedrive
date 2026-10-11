@@ -14,7 +14,7 @@ use crate::{meta, outbox, TreeError, TreeStore};
 /// What becomes of a store an older version of the daemon left.
 mod old_store;
 
-pub use old_store::{decide_old_store, OldStoreDecision, RebuildLoss, StoreOrigin, StoredVersion};
+pub use old_store::{decide_old_store, list_old_store_upload_sessions, OldStoreDecision, RebuildLoss, StoreOrigin, StoredVersion};
 
 /// The schema this daemon reads and writes, kept in `meta` as
 /// `schema_version`. A store of any other version — an earlier one, or a newer

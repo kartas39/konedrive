@@ -178,7 +178,7 @@ mod start_check;
 pub(crate) mod item_fixture;
 
 pub use access_mode_switch::AccessModeSwitch;
-pub use backing_directory::BackingDirectory;
+pub use backing_directory::{restore_write_bits, BackingDirectory};
 pub use conflict_copies::{ConflictCopy, CycleConflicts};
 pub use cycle_step::{CycleOutcome, CycleStep, OneDriveChange};
 #[cfg(any(test, feature = "fault-injection"))]

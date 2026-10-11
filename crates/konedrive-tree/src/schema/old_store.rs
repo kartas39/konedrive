@@ -175,6 +175,24 @@ pub(super) fn count_rebuild_loss(conn: &Connection) -> Option<RebuildLoss> {
     count_all().ok()
 }
 
+/// The addresses of the upload sessions that the store at `path` holds, when it is a
+/// store of another version than today's: the `url` of each row of its `upload_sessions`
+/// table and the `session_address` of each row of its `step_memory`, whichever of the
+/// two tables it has. Read through a connection opened read-only for the question and
+/// closed before the answer: the file is not changed, and no journal is left beside it.
+/// Empty for no file, for a store of today's version (its sessions are gone on with, not
+/// cancelled), for a file that is no database and for tables of a shape that cannot be
+/// read: what cannot be read cannot be cancelled, and expires in OneDrive.
+///
+/// Blocking. Called by the folder's start
+/// (`sync::sync_tasks::start_order::cancel_upload_sessions_of_old_store`) BEFORE
+/// [`TreeStore::open_with_origin`](crate::TreeStore::open_with_origin) removes such a
+/// store, which only counts them (design §13 (6)).
+pub fn list_old_store_upload_sessions(path: &Path) -> Result<Vec<String>, TreeError> {
+    let _ = path;
+    todo!()
+}
+
 impl crate::TreeStore {
     /// Opens the store at `path` and says how it came to be: used as it is, made where
     /// there was none, or rebuilt empty where the one there cannot be used

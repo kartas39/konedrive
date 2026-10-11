@@ -10,6 +10,7 @@
 //! **Tested without the rest:**
 // test: each_case_of_a_step_goes_to_its_runner
 // test: a_step_towards_the_folder_runs_under_the_folders_lease_and_a_download_does_not
+// test: a_step_that_waits_for_the_lease_when_the_stop_comes_is_not_run
 // test: the_show_steps_go_to_the_folder_steps_as_one_call
 #![allow(dead_code, unused_variables)]
 
@@ -18,9 +19,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use konedrive_tree::{FolderStep, ItemVersions, SyncStep};
+use tokio_util::sync::CancellationToken;
 
 use super::row_steps::RowSteps;
-use crate::folder::step_outcome::StepOutcome;
+use crate::folder::step_outcome::{StepObstacle, StepOutcome};
 use crate::fuse::FolderSteps;
 use crate::remote::listing::Lease;
 use crate::upload::onedrive_steps::OneDriveSteps;
@@ -43,30 +45,43 @@ impl StepRunners {
     /// to `OneDriveSteps::run`; `DownloadContent` to `FolderSteps::run_download_content`,
     /// with no lease; every other step towards the folder to `FolderSteps::run`, and the
     /// show steps to `FolderSteps::run_show_items`, each under the folder's lease, so that
-    /// a Forget waits for it as it waits for a reconcile today. No slot of the pool is
+    /// a Forget waits for it as it waits for a reconcile today. The wait for the lease
+    /// races `stop`, the token of the sync's stop (`SyncTasks::stop_handle`): a step that
+    /// still waits for the lease when the stop comes ends as `NotRun(SendingStopped)` and
+    /// touches nothing — whoever stops the sync holds the folder's write lock, which the
+    /// lease is a read of. A step that holds the lease already runs to its end. No slot
+    /// of the pool is
     /// taken here: an upload's by `OneDriveSteps`' content upload, a download's by the
     /// downloader. Made by the folder's start (`sync_tasks::start_order`).
-    pub fn of_runners(folder_steps: Arc<FolderSteps>, onedrive_steps: Arc<OneDriveSteps>, row_steps: Arc<RowSteps>, lease: Lease) -> Self {
-        let for_show_steps = (Arc::clone(&folder_steps), lease.clone());
+    pub fn of_runners(folder_steps: Arc<FolderSteps>, onedrive_steps: Arc<OneDriveSteps>, row_steps: Arc<RowSteps>, lease: Lease, stop: CancellationToken) -> Self {
+        let for_show_steps = (Arc::clone(&folder_steps), lease.clone(), stop.clone());
         StepRunners {
             run_step: Arc::new(move |step| {
-                let (folder_steps, onedrive_steps, row_steps, lease) = (Arc::clone(&folder_steps), Arc::clone(&onedrive_steps), Arc::clone(&row_steps), lease.clone());
+                let (folder_steps, onedrive_steps, row_steps, lease, stop) = (Arc::clone(&folder_steps), Arc::clone(&onedrive_steps), Arc::clone(&row_steps), lease.clone(), stop.clone());
                 Box::pin(async move {
                     match step {
                         SyncStep::Row(step) => row_steps.run(step).await,
                         SyncStep::OneDrive(step) => onedrive_steps.run(step).await,
                         SyncStep::Folder(FolderStep::DownloadContent { item }) => folder_steps.run_download_content(item).await,
                         SyncStep::Folder(step) => {
-                            let _held = lease.hold().await;
+                            let _held = tokio::select! {
+                                biased;
+                                () = stop.cancelled() => return StepOutcome::NotRun(StepObstacle::SendingStopped),
+                                held = lease.hold() => held,
+                            };
                             folder_steps.run(step).await
                         }
                     }
                 })
             }),
             run_show_steps: Arc::new(move |items| {
-                let (folder_steps, lease) = (Arc::clone(&for_show_steps.0), for_show_steps.1.clone());
+                let (folder_steps, lease, stop) = (Arc::clone(&for_show_steps.0), for_show_steps.1.clone(), for_show_steps.2.clone());
                 Box::pin(async move {
-                    let _held = lease.hold().await;
+                    let _held = tokio::select! {
+                        biased;
+                        () = stop.cancelled() => return vec![StepOutcome::NotRun(StepObstacle::SendingStopped); items.len()],
+                        held = lease.hold() => held,
+                    };
                     folder_steps.run_show_items(items).await
                 })
             }),
