@@ -159,8 +159,9 @@ struct RowsAfter {
 ///    place than the temporary name, or does not have it — for a new item, which had no
 ///    binding, while its row says no place in OneDrive, or the temporary name's; the item
 ///    an upload left is void once a row the folder has is bound to it, or a listing said
-///    it has another content or is gone, and is queued for removal when its file's row
-///    goes; an opening is of its place, and with the row that has the directory's binding.
+///    it has another content or is gone, and is queued for removal when its file cannot
+///    remove it any more: its row goes, it gets a binding, or it comes to be left here;
+///    an opening is of its place, and with the row that has the directory's binding.
 fn decide_fate_by_rule(fact: Fact, kind: ItemKind, learnt: &Item, after: &RowsAfter, happening: &Happening) -> Fate {
     let now = after.row.as_ref();
     match fact {
@@ -169,6 +170,9 @@ fn decide_fate_by_rule(fact: Fact, kind: ItemKind, learnt: &Item, after: &RowsAf
             return match (after.is_mismatched_item_of_the_folder || happening.is_mismatched_item_listed_changed_or_gone, now) {
                 (true, _) => Fate::Gone,
                 (false, None) => Fate::Queued,
+                // The file cannot remove it any more: it got a binding, or came to be left here.
+                (false, Some(now)) if (happening.is_item_binding_changed && learnt.onedrive_item.is_none()) || (now.onedrive_item.is_some() && now.onedrive_item != learnt.onedrive_item) => Fate::Queued,
+                (false, Some(now)) if now.onedrive_item.is_none() && now.is_name_ignored && !(learnt.onedrive_item.is_none() && learnt.is_name_ignored) => Fate::Queued,
                 (false, Some(_)) => Fate::Answered,
             }
         }

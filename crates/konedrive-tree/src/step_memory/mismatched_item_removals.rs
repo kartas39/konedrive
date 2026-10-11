@@ -6,7 +6,9 @@
 //! binding (it was merged with or bound to an item of OneDrive: it is no new file any
 //! more, and the step that removes a leftover is a new file's). The trigger
 //! `step_memory_item_gone` holds the first and `mismatched_item_file_unable` the other
-//! two, whoever writes the row. As
+//! two, whoever writes the row — at the write that makes it so and at no other: the row
+//! gets a binding it did not have, or another one; or it is left here and was not before.
+//! A file that is renamed, moved or changed here keeps its leftover. As
 //! the address of an abandoned upload session, it is what is left to do in OneDrive once
 //! the item's memory is gone: without it the item with the wrong content stays, and the
 //! next listing shows it in the folder as a file nobody made.
@@ -60,11 +62,14 @@ pub(super) fn schema() -> String {
              WHEN {is_of_folder} BEGIN{take_out}
          END;
          CREATE TRIGGER mismatched_item_file_unable AFTER UPDATE OF onedrive_drive_id, onedrive_item_id, is_name_ignored, is_below_ignored_directory ON items
-             WHEN NEW.onedrive_item_id IS NOT NULL OR NEW.is_name_ignored != 0 OR NEW.is_below_ignored_directory != 0 BEGIN{leave}
+             WHEN (NEW.onedrive_item_id IS NOT NULL AND (OLD.onedrive_item_id IS NULL OR OLD.onedrive_item_id != NEW.onedrive_item_id OR OLD.onedrive_drive_id != NEW.onedrive_drive_id))
+               OR ({new_left_here} AND NOT {old_left_here}) BEGIN{leave}
              UPDATE step_memory SET mismatched_drive_id = NULL, mismatched_item_id = NULL, mismatched_ctag = NULL, mismatched_etag = NULL
               WHERE local_item_id = NEW.local_item_id AND mismatched_item_id IS NOT NULL;
          END;",
         leave = leave_statement("NEW"),
+        new_left_here = is_left_here("NEW"),
+        old_left_here = is_left_here("OLD"),
     )
 }
 
@@ -73,6 +78,13 @@ pub(super) fn schema() -> String {
 /// is kept to be removed, unless the folder has it.
 pub(super) fn item_gone_statements() -> String {
     leave_statement("OLD")
+}
+
+/// SQL of a trigger on `items` for "the item of the row `row` (`OLD` or `NEW`) is left here":
+/// it has no binding, and its name or that of a directory above it is ignored
+/// (`item_store`'s `LEFT_HERE`, of a trigger's row).
+fn is_left_here(row: &str) -> String {
+    format!("({row}.onedrive_item_id IS NULL AND ({row}.is_name_ignored != 0 OR {row}.is_below_ignored_directory != 0))")
 }
 
 /// SQL of a trigger on `items`: the item an upload of the file of the row `row` (`OLD` or

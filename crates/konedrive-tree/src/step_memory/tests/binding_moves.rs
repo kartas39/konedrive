@@ -14,7 +14,8 @@ fn sorted(mut addresses: Vec<UploadSessionAddress>) -> Vec<String> {
 /// and goes with its row: the file that was made in its place and is removed later is
 /// another removal, which nobody confirmed. Every fact of an unsent change of the replacing
 /// file is dropped, the taken name among them, its session to the cancellations with the
-/// one the replaced row had; the item an upload left stays with it. The temporary name the
+/// one the replaced row had; the item an upload left is left to the daemon to remove: the
+/// file has a binding now, and no step of a new file runs for it. The temporary name the
 /// replaced file was under in OneDrive is the replacing file's: it has the binding.
 #[test]
 fn a_binding_taken_over_drops_the_confirmation_and_what_was_asked_of_onedrive() {
@@ -33,7 +34,8 @@ fn a_binding_taken_over_drops_the_confirmation_and_what_was_asked_of_onedrive() 
     let before = remember_everything_of_a_shown_file(&mut store, replacing);
 
     store.item_store().write(|tx| take_over_binding(tx, replacing, replaced)).unwrap();
-    assert_eq!(kept(&store, replacing), ItemMemory { mismatched_item: before.mismatched_item, temporary_name: Some(under), ..ItemMemory::default() });
+    assert_eq!(kept(&store, replacing), ItemMemory { temporary_name: Some(under), ..ItemMemory::default() });
+    assert_eq!(store.step_memory().list_mismatched_item_removals(10).unwrap(), before.mismatched_item.into_iter().collect::<Vec<_>>());
     assert_eq!((count(&store, "step_memory"), sorted(abandoned(&mut store))), (1, vec!["https://up/1".to_owned(), "https://up/replaced".to_owned()]));
     remove(&mut store, replacing);
     assert_eq!(said(&mut store, replacing).removal_confirmation, None, "removed again: a removal nobody confirmed");
@@ -101,7 +103,8 @@ fn a_directory_that_gives_its_binding_up_leaves_what_was_asked_of_it_with_the_bi
 
 /// `merge_items`: the local item takes the binding, and every fact of an unsent change of it
 /// as a new item is dropped, the taken name among them, its session to the cancellations;
-/// the item an upload left stays.
+/// the item an upload left is left to the daemon to remove, as wherever its file gets a
+/// binding.
 /// The openings in a directory of OneDrive that is merged are in the local directory.
 #[test]
 fn items_that_are_merged_drop_the_new_items_session_and_keep_the_openings_of_the_directory() {
@@ -110,7 +113,8 @@ fn items_that_are_merged_drop_the_new_items_session_and_keep_the_openings_of_the
     let before = remember_everything_of_a_shown_file(&mut store, local);
     let onedrive = store.item_store().make_onedrive_item(&reference("A"), ItemKind::File).unwrap();
     store.item_store().merge_items(local, onedrive).unwrap();
-    assert_eq!(kept(&store, local), ItemMemory { mismatched_item: before.mismatched_item, ..ItemMemory::default() });
+    assert_eq!(kept(&store, local), ItemMemory::default());
+    assert_eq!(store.step_memory().list_mismatched_item_removals(10).unwrap(), before.mismatched_item.into_iter().collect::<Vec<_>>());
     assert_eq!(abandoned(&mut store), [address("1")]);
 
     let local_directory = make_directory(&mut store, ROOT, "docs");
