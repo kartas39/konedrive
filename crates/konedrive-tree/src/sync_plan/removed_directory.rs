@@ -1,14 +1,18 @@
 //! A directory one side removed, and what the other side has in it.
 //!
 //! Removed here: its removal is sent on a positive condition — all the rows say OneDrive
-//! has below it, at any depth, was shown here and removed here by the user
-//! ([`decide_directory_removal`]). It is then one removal in OneDrive for all of that, and
-//! stands whatever OneDrive changed of those items since. Where OneDrive has anything
-//! below it that the folder never showed — it cannot be shown, it was not shown yet,
-//! another client put it there — the removal is of the folder alone: what was agreed on of
-//! the directory is forgotten, it is an item OneDrive has that the folder does not show,
-//! and each item the user did remove below it is decided by itself. The same function is
-//! asked by the plan, by the step before its request leaves and by the step's commit
+//! has below it, at any depth, was shown here and removed here by the user, and none of it
+//! is a file whose content OneDrive changed since ([`decide_directory_removal`]). It is
+//! then one removal in OneDrive for all of that, and stands where OneDrive renamed or
+//! moved those items since. Where OneDrive has anything below it that the folder never
+//! showed — it cannot be shown, it was not shown yet, another client put it there — or a
+//! content the folder never showed — that of a file that was removed here and that
+//! OneDrive changed, which by itself comes back —, the removal is of the folder alone:
+//! what was agreed on of the directory is forgotten, it is an item OneDrive has that the
+//! folder does not show, and each item the user did remove below it is decided by itself.
+//! A removal thus takes with a directory only what its own removal would take. The same
+//! function is asked by the plan, by the step before its request leaves and by the step's
+//! commit
 //! ([`ItemStore::can_directory_removal_be_sent`](crate::ItemStore::can_directory_removal_be_sent)).
 //!
 //! While the removal of a directory is still to be sent, nothing OneDrive has below it,
@@ -22,6 +26,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::item_decision::{find_hold, ItemAnswers, ItemCase, ItemDecision, LocalPlaceAvailability, Overruling};
+use super::side_change::{ContentChange, SideChange};
 use super::plan_items::PlanItems;
 use super::sync_step::{FolderStep, ItemVersions, RowStep, SyncStep};
 use super::WaitReason;
@@ -48,7 +53,8 @@ pub(crate) fn is_in_directory_removed_here(items: &PlanItems<'_>, item: &Item) -
 
 /// One item the rows say OneDrive has below a directory that was removed here, at any
 /// depth: what the removal of that directory would take from OneDrive with it. The first
-/// that holds.
+/// that holds, in the order of [`of`](Self::of): shown, held back, a content changed in
+/// OneDrive, removed here, never shown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ItemBelowRemovedDirectory {
     /// The folder shows it: it was moved out of the directory here, or OneDrive moved it
@@ -57,8 +63,14 @@ pub(crate) enum ItemBelowRemovedDirectory {
     /// It is held back: a request of this client about it, or one that sends an item into
     /// it, is not settled, or the check at start could not decide it.
     IsHeldBack(LocalItemId),
+    /// A file the folder showed, which the user removed here, and whose content OneDrive
+    /// changed since: by itself it comes back
+    /// ([`decide_existence`](super::item_decision::decide_existence)), and the content
+    /// OneDrive alone has is not removed with a directory either.
+    ContentChangedInOneDrive(LocalItemId),
     /// The folder showed it, and the user removed it here: its versions. Something is
-    /// agreed on of it still.
+    /// agreed on of it still, and its own removal would be sent — OneDrive did nothing to
+    /// it since, or moved it, into the directory too.
     RemovedHere(ItemVersions),
     /// The folder never showed it, as the rows say: nothing is agreed on of it. OneDrive
     /// made it there or moved it there since, the folder cannot show it, or the plan took
@@ -74,6 +86,8 @@ impl ItemBelowRemovedDirectory {
             ItemBelowRemovedDirectory::ShownHere(row.local_item_id)
         } else if is_held_back {
             ItemBelowRemovedDirectory::IsHeldBack(row.local_item_id)
+        } else if row.kind == ItemKind::File && matches!((SideChange::of_local(row), SideChange::of_onedrive(row)), (SideChange::Removed, SideChange::IsThere { content: ContentChange::Changed | ContentChange::NotKnownWithoutHash, .. })) {
+            ItemBelowRemovedDirectory::ContentChangedInOneDrive(row.local_item_id)
         } else if row.synced_place.is_some() || row.synced_content.is_some() {
             ItemBelowRemovedDirectory::RemovedHere(ItemVersions::of(row))
         } else {
@@ -89,7 +103,8 @@ pub(crate) enum DirectoryRemovalOutcome {
     /// here with it.
     IsSent { removed_with_it: Vec<ItemVersions> },
     /// It is of the folder alone, and nothing is sent: OneDrive has below the directory
-    /// what the folder never showed.
+    /// what the folder never showed — an item, or the content of a file that was removed
+    /// here.
     IsOfFolderAlone,
     /// It waits for this item, which it would take with it.
     WaitsFor(LocalItemId),
@@ -104,11 +119,13 @@ pub(crate) enum DirectoryRemovalOutcome {
 ///   elsewhere, or is another one;
 /// - the folder shows an item of `below`, or one is held back: the removal waits for the
 ///   first such item — its place here is sent first, or what holds it ends first;
-/// - the folder never showed an item of `below`: the removal is of the folder alone. An
+/// - the folder never showed an item of `below`, or OneDrive changed the content of a
+///   file of `below` that was removed here: the removal is of the folder alone. An
 ///   unguarded removal takes all that is in the directory, and what the user never saw
-///   here is not theirs to have removed;
-/// - otherwise all of `below` was shown here and removed here: the removal is sent, and
-///   stands whatever OneDrive changed of those items since.
+///   here — an item, or the content a file has now — is not theirs to have removed;
+/// - otherwise all of `below` was shown here and removed here, as OneDrive still has it
+///   but for its place: the removal is sent, and stands where OneDrive renamed or moved
+///   those items since.
 pub(crate) fn decide_directory_removal(is_listing_under_way: bool, below: &[ItemBelowRemovedDirectory]) -> DirectoryRemovalOutcome {
     if is_listing_under_way {
         return DirectoryRemovalOutcome::WaitsForListing;
@@ -119,7 +136,7 @@ pub(crate) fn decide_directory_removal(is_listing_under_way: bool, below: &[Item
         match item {
             ItemBelowRemovedDirectory::ShownHere(kept) | ItemBelowRemovedDirectory::IsHeldBack(kept) => return DirectoryRemovalOutcome::WaitsFor(*kept),
             ItemBelowRemovedDirectory::RemovedHere(versions) => removed_with_it.push(versions.clone()),
-            ItemBelowRemovedDirectory::NeverShownHere(_) => is_anything_never_shown = true,
+            ItemBelowRemovedDirectory::ContentChangedInOneDrive(_) | ItemBelowRemovedDirectory::NeverShownHere(_) => is_anything_never_shown = true,
         }
     }
     if is_anything_never_shown {
@@ -168,8 +185,8 @@ fn count_directories_above_in_onedrive(items: &PlanItems<'_>, item: &Item) -> us
 ///   it from being sent now, or the plan was not given all that is in it — everything
 ///   OneDrive has below it that the folder does not show waits for the directory: what was
 ///   removed here with it, the directories among that too, and a file removed here whose
-///   content OneDrive changed, which does not come back. So none of them has a removal of
-///   its own while a directory above it is still to be removed.
+///   content OneDrive changed, which comes back once the directory is decided. So none of
+///   them has a step of its own while a directory above it is still to be removed.
 pub(crate) fn wait_for_removals_of_directories(cases: &[ItemCase<'_>], items: &PlanItems<'_>) -> Vec<Overruling> {
     let mut removed: Vec<&ItemCase<'_>> = cases.iter().filter(|case| is_directory_removed_here(case.item)).collect();
     removed.sort_by_key(|case| (count_directories_above_in_onedrive(items, case.item), case.item.local_item_id));
@@ -183,7 +200,7 @@ pub(crate) fn wait_for_removals_of_directories(cases: &[ItemCase<'_>], items: &P
         for item in &case.below_in_onedrive {
             let goes_with_it = match item {
                 ItemBelowRemovedDirectory::ShownHere(_) => continue,
-                ItemBelowRemovedDirectory::IsHeldBack(item) | ItemBelowRemovedDirectory::NeverShownHere(item) => *item,
+                ItemBelowRemovedDirectory::IsHeldBack(item) | ItemBelowRemovedDirectory::NeverShownHere(item) | ItemBelowRemovedDirectory::ContentChangedInOneDrive(item) => *item,
                 ItemBelowRemovedDirectory::RemovedHere(item) => item.local_item_id,
             };
             if waiting.insert(goes_with_it) {

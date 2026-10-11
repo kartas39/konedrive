@@ -287,3 +287,35 @@ fn a_time_set_on_a_clean_copy_is_not_taken_back_by_the_plan() {
     assert_eq!((time(after.local.as_ref().and_then(|local| local.content.as_ref())), time(after.synced_content.as_ref())), (Some((5000, 7)), Some((5000, 7))));
     assert_eq!((&after.onedrive, after.unsent_since, after.content_presence), (&before.onedrive, None, ContentPresence::OnDisk));
 }
+
+/// The third review's S3, its sequence: `g` is removed here by itself; a listing says
+/// OneDrive moved it into `d` and changed its content; `d/f` and `d` are removed here. The
+/// content OneDrive alone has is not removed with `d`: the removal of `d` is of the folder
+/// alone.
+///
+/// End: OneDrive has `d` and `d/g` with the new content, and the folder shows both, `g`
+/// not on disk; `d/f`, which the user removed, is gone from both sides.
+#[test]
+fn a_file_removed_here_whose_content_onedrive_changed_and_moved_into_a_removed_directory_comes_back() {
+    let mut world = World::new(1);
+    let (d, g) = (find(&mut world, ROOT, "d"), find(&mut world, ROOT, "g"));
+    let f = find(&mut world, d, "f");
+    remove(&mut world, g);
+    write_listing_of_changes(&mut world.store, &[listed_file("F5", "D3", "g", (99, "h99"), "e-F5-2")]);
+    remove(&mut world, f);
+    remove(&mut world, d);
+
+    let ran = run_and_tell_steps(&mut world);
+    assert!(!ran.iter().any(|step| step.ends_with("SendDirectoryRemoval")), "{ran:?}");
+    assert_eq!(sorted(ran), sorted(vec![format!("{f}:SendFileRemoval"), format!("{d}:ForgetSyncedVersion"), format!("{d}:ShowItem"), format!("{g}:ShowItem")]));
+    let (d_row, g_row, f_row) = (row(&mut world, d), row(&mut world, g), row(&mut world, f));
+    assert_eq!((local_place(&g_row), onedrive_place(&g_row), g_row.synced_place.clone(), g_row.content_presence), (Some(place(d, "g")), Some(place(d, "g")), Some(place(d, "g")), ContentPresence::NotOnDisk));
+    assert_eq!((content_of(&g_row.local), content_of(&g_row.onedrive), g_row.unsent_since), (Some("h99".to_owned()), Some("h99".to_owned()), None), "the content OneDrive alone had is shown here");
+    assert_eq!((local_place(&d_row), onedrive_place(&d_row), d_row.synced_place.clone()), (Some(place(ROOT, "d")), Some(place(ROOT, "d")), Some(place(ROOT, "d"))));
+    assert_eq!((&f_row.local, &f_row.onedrive, &f_row.synced_place), (&None, &None, &None), "what the user removed in it is removed");
+}
+
+fn sorted(mut steps: Vec<String>) -> Vec<String> {
+    steps.sort();
+    steps
+}

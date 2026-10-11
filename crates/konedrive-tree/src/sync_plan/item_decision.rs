@@ -485,10 +485,10 @@ fn decide_new_here(case: &ItemCase<'_>) -> ItemDecision {
 /// - The removal of any other file is sent, guarded by the eTag, also when OneDrive moved
 ///   it.
 /// - A directory's removal is unguarded and takes all OneDrive has in the directory: it is
-///   sent only when all of that was shown here and removed here by the user, waits while
-///   something of it is shown or held back or a listing is under way, and is otherwise of
-///   the folder alone — what was agreed on of the directory is forgotten
-///   ([`decide_directory_removal`]).
+///   sent only when all of that was shown here and removed here by the user and none of
+///   it is a file whose content OneDrive changed since, waits while something of it is
+///   shown or held back or a listing is under way, and is otherwise of the folder alone —
+///   what was agreed on of the directory is forgotten ([`decide_directory_removal`]).
 ///
 /// No removal is planned for an item given without the directories above it in OneDrive:
 /// one of them may be removed here too, and then the removal is that one's.

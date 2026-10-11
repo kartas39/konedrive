@@ -41,8 +41,9 @@
 //! ([`ItemStore::can_directory_removal_be_sent`]) and the commit asks once more, in its
 //! transaction, each time by the one function
 //! (`sync_plan::removed_directory::decide_directory_removal`): all the rows say OneDrive
-//! has below the directory was shown here and removed here. Every row it takes the
-//! OneDrive version from is stamped with it.
+//! has below the directory was shown here and removed here, and OneDrive changed the
+//! content of none of it since. Every row it takes the OneDrive version from is stamped
+//! with it.
 //!
 //! **What a commit of a step towards OneDrive writes of OneDrive** goes through the one
 //! confirmation ([`confirm_onedrive_version`]): the version, the eTag and the stamp of the
@@ -195,7 +196,7 @@ impl ItemStore<'_> {
     /// directory and of each of `below` are still their rows'; and all the rows say
     /// OneDrive has in the directory and below it was shown here and removed here — it is
     /// `below`, no row more and none less, none shown by the folder, none the folder never
-    /// showed.
+    /// showed, and none a file whose content OneDrive changed since it was removed here.
     ///
     /// What the rows do not say, the caller gives, as it gives it to the plan
     /// ([`SyncPlanInput`](crate::SyncPlanInput)): `items_with_running_step`, the items a

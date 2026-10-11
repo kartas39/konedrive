@@ -82,6 +82,29 @@ fn the_removal_of_a_directory_is_not_sent_while_the_folder_shows_what_onedrive_h
     assert!(row(&mut store, kept).onedrive.is_some());
 }
 
+/// The third review's S3, at the step and at the commit: a listing says OneDrive changed
+/// the content of the file that was removed here with the directory. That file comes
+/// back, so the removal is not sent, whatever versions it is asked with — those it was
+/// planned from, or the rows' own — and a commit that comes all the same writes nothing.
+#[test]
+fn the_removal_of_a_directory_is_not_sent_once_onedrive_changed_the_content_of_a_file_removed_here_below_it() {
+    let (mut store, [directory, inside, _]) = store_of_removed_directory();
+    let (planned_from, below) = (versions(&mut store, directory), [versions(&mut store, inside)]);
+    write_listing_of_changes(&mut store, &[listed_file("F", "D", "f", (5, "h-F2"), "e-F2")]);
+    let below_now = [versions(&mut store, inside)];
+    for below in [&below, &below_now] {
+        assert!(!can_be_sent(&mut store, &planned_from, below));
+        assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, below, 0)));
+    }
+    assert!(bound(&mut store, "F").onedrive.is_some());
+    // OneDrive renamed it and no more: the removal stands, and is sent with it.
+    let (mut store, [directory, inside, _]) = store_of_removed_directory();
+    write_listing_of_changes(&mut store, &[listed_file("F", "D", "f-renamed", (3, "h-F"), "e-F2")]);
+    let (planned_from, below) = (versions(&mut store, directory), [versions(&mut store, inside)]);
+    assert!(can_be_sent(&mut store, &planned_from, &below));
+    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below, 0).unwrap(), StepCommitOutcome::Written);
+}
+
 /// The second review's M1 and M3, at the step: a listing brought a file OneDrive made in the
 /// directory, which the folder never showed. The removal is not sent, and a commit that
 /// comes all the same writes nothing: the rows do not say all of it was removed here.

@@ -90,18 +90,48 @@ fn a_directory_removed_with_all_in_it_inside_one_that_is_of_the_folder_alone_is_
 }
 
 /// The design's "a directory removed here, something changed below it in OneDrive: the
-/// removal is sent and stands" (stage B's B4c), beside the new rule: what was shown here
-/// and removed here stays removed, whatever OneDrive did to it since — changed its
-/// content, renamed it, moved it within the directory.
+/// removal is sent and stands" (stage B's B4c), beside the rule: what was shown here and
+/// removed here stays removed where OneDrive renamed it or moved it within the directory
+/// since. A file's own removal is sent then too.
 #[test]
-fn the_removal_of_a_directory_stands_for_what_was_shown_and_removed_here_whatever_onedrive_changed_of_it() {
+fn the_removal_of_a_directory_stands_for_what_was_shown_and_removed_here_and_onedrive_moved() {
     let given = input(vec![
         removed_here(synced_directory(2, ROOT, "d")),
-        removed_here(with_content_in_onedrive(synced_file(3, id(2), "a.txt"), hashed("theirs"))),
+        removed_here(synced_file(3, id(2), "a.txt")),
         moved_in_onedrive(removed_here(synced_file(4, id(2), "b.txt")), id(2), "b2.txt"),
+        moved_in_onedrive(removed_here(synced_file(5, ROOT, "g")), id(2), "g"),
     ]);
-    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendDirectoryRemoval { item: versions(&given, 2), below: vec![versions(&given, 3), versions(&given, 4)] }));
-    assert_eq!((answer(&given, 3), answer(&given, 4)), (waits_for(2), waits_for(2)), "neither comes back, neither has a removal of its own");
+    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendDirectoryRemoval { item: versions(&given, 2), below: vec![versions(&given, 3), versions(&given, 4), versions(&given, 5)] }));
+    assert_eq!((answer(&given, 3), answer(&given, 4), answer(&given, 5)), (waits_for(2), waits_for(2), waits_for(2)), "none comes back, none has a removal of its own");
+}
+
+/// The third review's S3: a content OneDrive changed is never removed with a directory. A
+/// file that was removed here and whose content OneDrive changed since comes back by the
+/// file's own cell; below a directory that was removed here — it was in it, or OneDrive
+/// moved it there — it makes that removal one of the folder alone, as what the folder
+/// never showed does. The directory forgets and is shown again by the plan after, the
+/// file with OneDrive's content in it; what else the user removed in it is a removal of
+/// its own.
+#[test]
+fn the_removal_of_a_directory_is_of_the_folder_alone_when_onedrive_changed_the_content_of_a_file_removed_here_below_it() {
+    let changed_in_it = || removed_here(with_content_in_onedrive(synced_file(3, id(2), "a.txt"), hashed("theirs")));
+    let moved_into_it = || moved_in_onedrive(removed_here(with_content_in_onedrive(synced_file(3, ROOT, "g"), hashed("theirs"))), id(2), "g");
+    for changed in [changed_in_it, moved_into_it] {
+        let given = input(vec![removed_here(synced_directory(2, ROOT, "d")), changed(), removed_here(synced_file(4, id(2), "b.txt"))]);
+        assert_eq!(answer(&given, 2), forgets(&given, 2));
+        assert_eq!(answer(&given, 3), waits_for(2), "it comes back once the directory is shown again");
+        assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 4) }));
+
+        // The plans after it: the directory is an item of OneDrive the folder never showed,
+        // and then one it shows.
+        let given = input(vec![listed(2, ItemKind::Directory, ROOT, "d"), changed()]);
+        assert_eq!((answer(&given, 2), answer(&given, 3)), (folder_step(FolderStep::ShowItem { item: versions(&given, 2) }), waits_for(2)));
+        let given = input(vec![synced_directory(2, ROOT, "d"), changed()]);
+        assert_eq!(answer(&given, 3), folder_step(FolderStep::ShowItem { item: versions(&given, 3) }));
+    }
+    // Inside a directory removed in the one that was removed: both are of the folder alone.
+    let given = input(vec![removed_here(synced_directory(2, ROOT, "d")), removed_here(synced_directory(5, id(2), "e")), removed_here(with_content_in_onedrive(synced_file(3, id(5), "a.txt"), hashed("theirs")))]);
+    assert_eq!((answer(&given, 2), answer(&given, 5), answer(&given, 3)), (forgets(&given, 2), forgets(&given, 5), waits_for(5)));
 }
 
 /// While a listing is under way a row may yet be told to be elsewhere: nothing is decided
