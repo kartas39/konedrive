@@ -86,8 +86,11 @@ impl SyncService {
     pub async fn refresh(&self) -> Result<(), SyncError> {
         // TODO: `SyncTasks::refresh` (`sync_tasks::stop_order`: `WakeCause::RefreshAsked` and a cycle) while a
         // sync runs, with `refresh_quota`; a folder that is down or whose sync does not run — it could not
-        // start, or a fault took its mount down (`Why::TakenDown`: tried at once, whatever its next try, the
-        // count kept) — is started through `refresh_in`, inside a change.
+        // start, or a fault took its mount down (`Why::TakenDown`: tried at once, whatever its next try) — is
+        // started through `refresh_in`, inside a change. The user's try of a taken-down folder is a try like the
+        // owner's own but for the count: `Up::take_down_try` is written with the attempt as it was (not counted
+        // up) and the time of this start, so that the count is not lost when this start is taken down again;
+        // refused, the folder stays `Why::TakenDown` with the cause, the count and its next try as they were.
         todo!()
     }
 

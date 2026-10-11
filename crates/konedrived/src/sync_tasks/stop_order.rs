@@ -20,7 +20,7 @@
 // test: a_sign_in_forgets_what_was_not_allowed_and_wakes_the_plan
 // test: a_refresh_wakes_the_plan_and_asks_for_a_cycle
 // test: the_network_back_wakes_the_live_socket_and_the_plan
-// test: a_forget_with_something_unsent_is_refused_unless_forced
+// test: a_forget_with_something_unsent_is_not_refused
 // test: a_folder_taken_down_has_no_mount_a_closed_store_and_its_trouble_said
 // test: a_folder_forgotten_has_its_write_bits_and_a_closed_store
 // test: a_folder_forgotten_with_no_parts_kept_has_its_write_bits
@@ -168,7 +168,7 @@ pub async fn end_kept_folder_at_daemon_stop(kept: KeptFolderParts) {
 }
 
 /// Ends the parts of a folder that is forgotten. Called by the owner of the folder's
-/// state, inside a change of the folder, after [`decide_forget`] allowed it and the sync
+/// state, inside a change of the folder, after the sync
 /// was stopped ([`stop_folder_sync`], whose answer is `kept`); with the same things done
 /// before the call as before [`take_folder_down`].
 ///
@@ -191,35 +191,18 @@ pub async fn forget_folder(kept: KeptFolderParts) -> TakeDownOutcome {
 /// (`mount::unmount_stale_mount`), then the write bits are given back to everything in the
 /// folder on disk (`mount::restore_write_bits`, which must be given the folder itself and
 /// not a mount over it). No store is open then, so there is none to close. Called by the
-/// owner of the folder's state, inside a change of the folder, after [`decide_forget`]
-/// allowed it ([`count_unsent_of_closed_store`]).
+/// owner of the folder's state, inside a change of the folder.
 pub async fn forget_folder_without_mount(root: &SyncRoot) {
     todo!()
 }
 
-/// What a Forget does with a folder that holds unsent changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ForgetDecision {
-    Forget,
-    /// Refused, with how many changes wait.
-    RefusedForUnsent { count: u64 },
-}
-
-/// Whether the folder is forgotten: refused while something is unsent, unless forced;
-/// counted by `ItemReader::count_unsent` — also from a store that is closed. Forced, a
-/// folder is forgotten whatever is unsent, a change OneDrive refused for good among it:
-/// the files stay where they are, and what the store knew of them goes with it.
-/// `is_forced` is the caller's (`SyncService::unregister_root(is_forced)`). Pure.
-pub fn decide_forget(unsent: UnsentTotal, is_forced: bool) -> ForgetDecision {
-    todo!()
-}
-
 /// How many changes of the folder whose store is at `tree_db` are unsent, read through a
-/// reader opened for the question: for a Forget of a folder that keeps no open store.
-/// Blocking. Where there is no file, and where the file cannot be opened as a store of
-/// this version (an older version, no database), nothing is unsent: a sync would rebuild
-/// that store empty, so it holds nothing a sync could send. Any other failure — a
-/// permission, the disk — is the error, and the Forget is refused for it.
+/// reader opened for the question: for the warning before a Forget of a folder that keeps
+/// no open store (`SyncService::count_unsent`). Blocking. Where there is no file, and
+/// where the file cannot be opened as a store of this version (an older version, no
+/// database), nothing is unsent: a sync would rebuild that store empty, so it holds
+/// nothing a sync could send. Any other failure — a permission, the disk — is the error.
+/// It refuses nothing: a Forget is never refused for what is unsent.
 pub fn count_unsent_of_closed_store(tree_db: &std::path::Path) -> Result<UnsentTotal, konedrive_tree::TreeError> {
     todo!()
 }

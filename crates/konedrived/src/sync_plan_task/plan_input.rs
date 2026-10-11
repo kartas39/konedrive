@@ -63,10 +63,12 @@ pub struct PlanSettings {
 }
 
 /// How long after its last change a file's content is not sent, in seconds: a program
-/// that saves in several writes is not sent half-way. A guess.
+/// that saves in several writes is not sent half-way. Today's value (`local::QUIET` of the
+/// watcher that went: 2 s).
 pub const QUIET_TIME: i64 = 2;
 
 /// How many unsent items, and how many OneDrive changed, a plan reads at first.
+// TODO: a guess: the old engine had no window to take the number from (its worker took one row at a time). Measure on a large folder and fix if needed.
 pub const ITEMS_READ_AT_ONCE: usize = 1000;
 
 impl PlanSettings {

@@ -191,8 +191,10 @@ pub(super) enum Why {
 pub(super) struct Up {
     pub record: Record,
     pub sync: Sync,
-    /// For a sync that was started after a fault took the folder's mount down: which
-    /// try this start was, and when it was made. `None` for every other start, and
+    /// For a sync that was started after a fault took the folder's mount down — by the
+    /// owner's own timer, or by the user's `Refresh()` of a folder that was
+    /// `Why::TakenDown`, which is written with the attempt as it was, not counted up —:
+    /// which try this start was, and when it was made. `None` for every other start, and
     /// forgotten once the start stayed up (`take_down::decide_take_down_attempt`). Kept
     /// here, beside the sync, because a running sync (`StartedFolder`) knows nothing of
     /// why it was started: what `take_folder_down_for_fault` reads when the mount is

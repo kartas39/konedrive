@@ -169,6 +169,12 @@ pub enum Reason {
     AnotherItem,
     /// What a blocked row with no reason is listed under.
     Blocked,
+    /// The check of the folder on disk at the daemon's start could not read the item, and
+    /// left it as it found it: nothing of it is sent until a start's check decides it.
+    NotReadOnDisk,
+    /// The sync plan cannot judge the item from what the store says of it: the daemon
+    /// asks OneDrive for a full listing by itself, and the item waits for it.
+    BeingChecked,
     /// OneDrive could not be reached. In backoff; the error's
     /// own text is in the journal only.
     Network,
@@ -196,7 +202,7 @@ const TOO_BIG_KEY: &str = "too-big";
 
 impl Reason {
     /// Every variant but [`Reason::Other`], those with a detail without it.
-    pub const ALL: [Reason; 48] = [
+    pub const ALL: [Reason; 50] = [
         Self::OpenForWriting,
         Self::MassDelete,
         Self::NameCharacters,
@@ -239,6 +245,8 @@ impl Reason {
         Self::BadHandle,
         Self::AnotherItem,
         Self::Blocked,
+        Self::NotReadOnDisk,
+        Self::BeingChecked,
         Self::Network,
         Self::LocalIo,
         Self::Store,
@@ -294,6 +302,8 @@ impl Reason {
             Self::BadHandle => "bad-handle",
             Self::AnotherItem => "another-item",
             Self::Blocked => "blocked",
+            Self::NotReadOnDisk => "not-read-on-disk",
+            Self::BeingChecked => "being-checked",
             Self::Network => "network",
             Self::LocalIo => "local-error",
             Self::Store => "index-error",
@@ -381,8 +391,10 @@ impl Reason {
             | Self::BadHandle
             | Self::AnotherItem
             | Self::BadState(_)
+            | Self::NotReadOnDisk
             | Self::Blocked => Group::PerFile,
             Self::OpenForWriting
+            | Self::BeingChecked
             | Self::Locked
             | Self::NotFound
             | Self::NotLocal

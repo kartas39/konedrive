@@ -34,9 +34,9 @@ pub(super) async fn folder_command(
             fail_if_not_recovered(proxy, &absolute).await?;
             println!("{tag}{}", said::registered_text(&absolute));
         }
-        FolderCmd::Forget { force } => {
-            let forgotten = if force { proxy.folder.unregister_forced().await } else { proxy.folder.unregister().await };
-            explained(chosen, proxy, SyncAction::Forget, forgotten).await?;
+        FolderCmd::Forget => {
+            // TODO: before the call, the warning of what is unsent: "N changes were not sent to OneDrive and will stay only on this computer" (the bus's count of unsent changes; `SyncService::count_unsent` says which). Not written yet.
+            explained(chosen, proxy, SyncAction::Forget, proxy.folder.unregister().await).await?;
             println!("{tag}{}", said::FORGOTTEN);
             fail_if_folder_unhealthy(proxy).await?;
         }

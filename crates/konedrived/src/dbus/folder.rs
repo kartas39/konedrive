@@ -19,13 +19,7 @@ impl Folder {
     }
 
     async fn unregister(&self) -> Result<()> {
-        Ok(self.service.unregister_root(false).await?)
-    }
-
-    /// `UnregisterForced`: the Forget whatever is unsent (`konedrivectl sync forget --force`).
-    // TODO: the window has no way to it yet (`app/synccontroller.cpp` calls `Unregister`): where it offers the forced Forget, after a refusal `PendingUploads`, is the owner's to say.
-    async fn unregister_forced(&self) -> Result<()> {
-        Ok(self.service.unregister_root(true).await?)
+        Ok(self.service.unregister_root().await?)
     }
 
     /// Refused: kept for the clients that still know the call.

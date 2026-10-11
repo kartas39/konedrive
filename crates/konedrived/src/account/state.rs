@@ -157,7 +157,7 @@ impl ModeNote {
                 "{WIDER_GRANT} also change files ({granted}); konedrive uses it to read only. The consent \
                  stays with Microsoft until it is revoked at https://account.live.com/consent/Manage"
             ),
-            // TODO: check the sentence against the catalogue of texts (`konedrive-text`) and the window, and fix if needed.
+            // TODO: wording
             Self::SwitchingToReadOnly { unsent } => format!("switching to read-only: {unsent} changes still to send"),
             Self::ConfigUnreadable => CONFIG_UNREADABLE.to_owned(),
             Self::NoDriveRecorded => NO_DRIVE_RECORDED.to_owned(),

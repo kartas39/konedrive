@@ -215,7 +215,7 @@ impl AccountService {
     /// plan). The account's mode does not change. The ONE keeper of the wish is the
     /// account: it holds the token the switch gives up. Called by
     /// [`switch_to_read_only`](Self::switch_to_read_only) under `session`.
-    // TODO: `read_only_wanted` is not in `config::Account` yet: a field of `config.toml` is added with its reading of older files (`config/model.rs`, `config/migrate.rs`); check and fix if needed.
+    // TODO: `read_only_wanted = true` under the account in `config.toml` (the name is decided) is not in `config::Account` yet: the field is added with its reading of older files (`config/model.rs`, `config/migrate.rs`) when this is filled.
     #[allow(dead_code, unused_variables)]
     async fn keep_read_only_wish(&self, unsent: u64) -> Result<(), ModeError> {
         todo!()

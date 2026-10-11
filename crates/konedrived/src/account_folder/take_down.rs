@@ -15,18 +15,6 @@ use super::{SyncError, SyncService};
 /// the store's files.
 const STORE_CLOSES_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// A Forget's refusal while `waiting` changes wait to be uploaded.
-fn refuse_waiting(waiting: u64) -> Result<(), SyncError> {
-    match waiting {
-        0 => Ok(()),
-        n => Err(SyncError::PendingUploads(format!(
-            "{n} change(s) made here have not been uploaded yet, and what the daemon knows of them \
-             would be lost with the folder's record; wait until they are uploaded, or forget the \
-             folder with force (the files stay here as they are)"
-        ))),
-    }
-}
-
 impl SyncService {
     /// Takes a retirement back, for an `Accounts.Remove` whose
     /// later steps failed: the account stays, so it registers a folder again.
@@ -55,10 +43,26 @@ impl SyncService {
     /// bring-up failed, or recorded by an account that is held back — is forgotten the same
     /// way.
     ///
-    /// `is_forced`: the folder is forgotten whatever is unsent — also a change OneDrive
-    /// refused for good, which nothing else would ever take out of the way.
-    pub async fn unregister_root(&self, is_forced: bool) -> Result<(), SyncError> {
-        self.forget(false, is_forced).await.map(drop)
+    /// Never refused because something is unsent, and there is no forced variant: who
+    /// asks for it accepts that the unsent files stay only here, as plain local files —
+    /// also a change OneDrive refused for good. The warning is the caller's, BEFORE it
+    /// calls: the window and `konedrivectl` read how many changes are unsent
+    /// ([`count_unsent`](Self::count_unsent)) and show "N changes were not sent to
+    /// OneDrive and will stay only on this computer".
+    pub async fn unregister_root(&self) -> Result<(), SyncError> {
+        self.forget(false).await.map(drop)
+    }
+
+    /// How many changes made here are unsent, for the warning before a Forget and a
+    /// removal of the account: `ItemReader::count_unsent` through the folder's open store
+    /// (`View::parts`), whether or not its sync runs; for a folder that keeps no open
+    /// store (not up, taken down) `sync_tasks::stop_order::count_unsent_of_closed_store`
+    /// of its store's file, off the runtime; 0 with no folder. While a sync runs the bus
+    /// has the same number already, as `UploadQueue.PendingCount + BlockedCount +
+    /// HeldCount` with the rows below held directories, so a client may use those.
+    // TODO: for a folder whose sync does not run the properties of the bus are empty: the bus needs one member that answers this function (a property `UploadQueue.UnsentCount`), for the window and `konedrivectl` to warn by; it is not in the XML yet. Check and fix if needed.
+    pub async fn count_unsent(&self) -> Result<u64, SyncError> {
+        todo!()
     }
 
     /// `Accounts.Remove`'s first step: the folder forgotten exactly as
@@ -68,22 +72,20 @@ impl SyncService {
     /// switch is made for it from then on. An account with no folder is
     /// retired all the same. The answer is the folder that was forgotten: `None` for an
     /// account with no folder.
-    pub async fn retire(&self, is_forced: bool) -> Result<Option<PathBuf>, SyncError> {
-        self.forget(true, is_forced).await
+    pub async fn retire(&self) -> Result<Option<PathBuf>, SyncError> {
+        self.forget(true).await
     }
 
     /// [`unregister_root`](Self::unregister_root) and [`retire`](Self::retire).
     ///
-    /// Refused `PendingUploads` while changes wait to be uploaded: the tree
-    /// store that holds them goes with the folder. Asked before anything changes, and
-    /// again once the sync has stopped.
+    /// Not refused for what is unsent: the tree store that holds it goes with the folder,
+    /// and the files stay.
     /// The folder that was forgotten.
-    async fn forget(&self, retire: bool, is_forced: bool) -> Result<Option<PathBuf>, SyncError> {
-        // TODO: `sync_tasks::stop_order::decide_forget(unsent, is_forced)` (over `ItemReader::count_unsent`, or
-        // `count_unsent_of_closed_store`), then, inside the change — which stopped the sync and left its parts
-        // in `Kept::parts` — `forget_folder` over those parts, or
-        // `forget_folder_without_mount` for a folder that keeps no parts; `forgotten` and
-        // `remove_tree_store` afterwards. A retry after a take-down that waits is given up with it.
+    async fn forget(&self, retire: bool) -> Result<Option<PathBuf>, SyncError> {
+        // TODO: inside the change — which stopped the sync and left its parts in `Kept::parts` —
+        // `sync_tasks::stop_order::forget_folder` over those parts, or `forget_folder_without_mount` for a
+        // folder that keeps no parts; `forgotten` and `remove_tree_store` afterwards. Nothing is asked of what
+        // is unsent. A retry after a take-down that waits is given up with it.
         todo!()
     }
 

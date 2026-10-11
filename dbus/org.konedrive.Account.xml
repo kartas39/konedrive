@@ -33,15 +33,17 @@
          account's own drive, does Mode become "read-write". A refused or
          failed sign-in changes nothing but LastError, a cancelled one
          (CancelSignIn) nothing at all; State stays "signed-in" throughout.
-         To read-only: refused PendingUploads while changes wait to be
-         uploaded, unless force, which drops them (the files stay; a rename
-         half-done in OneDrive under a temporary name stays until the
-         account is read-write again). No sign-in: the next token refresh
-         asks for Files.Read. Any other way to read-only (a sign-out, the
-         write gate, config.toml) keeps the changes: the folder is locked
-         and not kept in step with OneDrive while they wait, and its
-         LastError says so; they go once the account is read-write again,
-         and force drops them then too, read-only already or not. -->
+         To read-only while changes wait to be uploaded: not refused, and
+         not to be asked twice. The wish is kept, the account stays
+         read-write and goes on uploading, and switches by itself when
+         nothing is left; LastError says "switching to read-only: N changes
+         still to send" meanwhile. With force it switches at once: what is
+         not uploaded stays here, not sent and not lost, and is sent when
+         the account is read-write again. Nothing is dropped. To read-write
+         while the wish is kept takes the wish back. No sign-in: the next
+         token refresh asks for Files.Read. (Until the wish is kept in
+         config.toml the daemon still refuses the unforced switch with
+         PendingUploads.) -->
     <method name="SetMode">
       <arg name="mode" type="s" direction="in"/>
       <arg name="force" type="b" direction="in"/>

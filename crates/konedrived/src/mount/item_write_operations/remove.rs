@@ -109,7 +109,6 @@ impl ItemWriteOperations {
     /// `upload_queue::read_items_not_shown`), one row each. Called by
     /// [`remove`](Self::remove), on the write-operation thread, after the decision and
     /// before the errno is answered; a failure of it is a warning and changes no answer.
-    // TODO: `ActivityKind::NotRemovedHere` does not exist yet: a kind of the activity log is added with its text in the catalogue (`konedrive-text`) and in the window; check and fix if needed.
     #[allow(unused_variables)]
     fn tell_directory_not_removable(&self, directory: LocalItemId) {
         todo!()

@@ -160,6 +160,8 @@ fn spelled(reason: &Reason) -> (&'static str, bool) {
         Reason::BadHandle => ("bad-handle", true),
         Reason::AnotherItem => ("another-item", true),
         Reason::Blocked => ("blocked", true),
+        Reason::NotReadOnDisk => ("not-read-on-disk", true),
+        Reason::BeingChecked => ("being-checked", true),
         Reason::Network => ("network", true),
         Reason::LocalIo => ("local-error", true),
         Reason::Store => ("index-error", true),

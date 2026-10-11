@@ -182,11 +182,7 @@ pub(crate) enum FolderCmd {
     /// Bind an empty folder to the account
     Register { path: String },
     /// Forget the account's folder (local files are left as they are)
-    Forget {
-        /// Forget it also while changes made here are not uploaded: they are not sent
-        #[arg(long)]
-        force: bool,
-    },
+    Forget,
     /// List what is in OneDrive but not in the folder, and why
     Skipped,
     /// Ask OneDrive for changes now

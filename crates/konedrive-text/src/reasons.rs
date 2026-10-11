@@ -103,6 +103,10 @@ pub const REASONS: &[ReasonText] = &[
     bare("bad-handle", INCOMPLETE),
     bare("another-item", INCOMPLETE),
     bare("blocked", INCOMPLETE),
+    // TODO: wording
+    bare("not-read-on-disk", "KOneDrive could not read this on disk when it started: nothing of it is uploaded until it can be read at a start."),
+    // TODO: wording
+    bare("being-checked", "Being checked: KOneDrive is asking OneDrive for the whole folder again, and goes on by itself."),
     bare("network", "OneDrive could not be reached: tried again later."),
     bare("local-error", "The local file could not be read: tried again later."),
     bare("index-error", "KOneDrive's local index failed: tried again later."),

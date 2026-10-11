@@ -39,17 +39,11 @@
     <!-- Forgets the folder, up or not; its files are left as they are. A folder
          registered with interception is forgotten through the helper or
          not at all: with no helper connected this is refused NoHelper.
-         Refused PendingUploads while changes made here wait to be uploaded
-         (UploadQueue.PendingCount, BlockedCount, HeldCount), before
-         anything changes: the folder's record holding them would go. They
-         go once uploaded, or are dropped by
-         Account.SetMode("read-only", true). -->
+         Never refused because changes made here are not uploaded: whoever
+         asks accepts that those files stay only on this computer, as plain
+         local files. A client warns before it calls, with the count of
+         what is unsent. -->
     <method name="Unregister"/>
-    <!-- Unregister, forced: the folder is forgotten whatever is unsent, a
-         change OneDrive refused for good among it. The files stay where they
-         are; what the daemon knew of the unsent changes goes with the
-         folder's record. Refused as Unregister is, but for PendingUploads. -->
-    <method name="UnregisterForced"/>
     <method name="PopulateFromDirectory">
       <arg name="source_dir" type="s" direction="in"/>
       <arg name="created" type="t" direction="out"/>

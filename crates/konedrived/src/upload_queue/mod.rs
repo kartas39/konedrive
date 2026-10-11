@@ -210,8 +210,9 @@ pub struct UnsentEntry {
 ///   plan answers it with the same `WaitReason::User(NotAllowed(..))` as a read-only
 ///   folder's wait, which the memory alone tells apart; or the answer is
 ///   `WaitReason::User(reason)` with a reason that neither waits for space
-///   (`Reason::waits_for_space`) nor is of the group `waiting` (`Reason::group`); or
-///   `WaitReason::StartUpCheck`; or `ItemAnswer::Fault`;
+///   (`Reason::waits_for_space`) nor is of the group `waiting` (`Reason::group`);
+/// - `waiting`, by the owner's decision never `blocked`: `WaitReason::StartUpCheck` (the
+///   reason says "could not be read on disk") and `ItemAnswer::Fault` ("being checked");
 /// - `waiting`, with the reason that the folder is read-only: `sending.hold` is
 ///   `SendingHold::FolderReadOnly` — what was unsent at a forced switch stays here and
 ///   is neither blocked nor lost; and every entry while `sending.is_sync_running` is
@@ -242,7 +243,8 @@ pub fn decide_queue_state(entry: &UnsentEntry, sending: &QueueConditions) -> Opt
 ///   given;
 /// - `WaitReason::Time { until, reason }`: that reason and `until`;
 /// - `WaitReason::User(reason)`: that reason, 0;
-/// - `WaitReason::StartUpCheck` and `ItemAnswer::Fault`: `Reason::Blocked`, 0;
+/// - `WaitReason::StartUpCheck`: `Reason::NotReadOnDisk`, 0; `ItemAnswer::Fault`:
+///   `Reason::BeingChecked`, 0;
 /// - an item the last plan was not given, of which the memory keeps a refusal for space
 ///   (`ItemMemory::space_refusal`): `Reason::TooBig` with the size of the content refused
 ///   and the free space, 0;
@@ -252,8 +254,8 @@ pub fn decide_queue_state(entry: &UnsentEntry, sending: &QueueConditions) -> Opt
 ///
 /// The owner decided what the window says of two of them, and neither is called blocked:
 /// an item the check at start left reads "could not be read on disk", an item the plan is
-/// at fault about "being checked" (the daemon asks a full listing by itself).
-// TODO: the two reasons do not exist in `konedrive-reason` yet (`Reason::NotReadOnDisk`, `Reason::BeingChecked`, with their keys, groups and texts in the catalogue): until they do both carry `Reason::Blocked`. Add them there and name them here; check and fix if needed.
+/// at fault about "being checked" (the daemon asks a full listing by itself): the two
+/// reasons above, whose state reads `waiting`, not `blocked`.
 pub fn decide_queue_reason(kind: UnsentKind, state: QueueState, entry: &UnsentEntry, sending: &QueueConditions) -> (Option<Reason>, i64) {
     todo!()
 }
@@ -272,9 +274,10 @@ pub fn decide_queue_reason(kind: UnsentKind, state: QueueState, entry: &UnsentEn
 /// A held mass removal of a directory is ONE row, the directory's: `state` is `held`,
 /// `sent` is 0 and `total` is the number of items the removal takes from OneDrive below
 /// it (`entry.held_items_below`) — a count of items there, not of bytes, which the
-/// window says as "N files".
-// TODO: the number is of every item OneDrive has below the directory, its sub-directories among them, and it is shown as files: whether that is to be files alone (a second count by the plan's reading) or the word is to be "items" is the owner's to say. The rows below such a directory are no rows of their own:
-/// the reader leaves them out ([`read_unsent_entries`]).
+/// window says as "N files"; no member of the bus changes for it. The rows below such a
+/// directory are no rows of their own: the reader leaves them out
+/// ([`read_unsent_entries`]).
+// TODO: the number is of every item OneDrive has below the directory, its sub-directories among them, and it is shown as files: whether that is to be files alone (a second count by the plan's reading) or the word is to be "items" is the owner's to say.
 pub fn describe_queue_change(entry: &UnsentEntry, path: &Path, sending: &QueueConditions, folder: &Path) -> Option<Change> {
     todo!()
 }
@@ -338,7 +341,10 @@ pub struct QueueTotals {
 /// `held_items_below` of the held entries, and `pending_bytes` less nothing for them (a
 /// removal has no bytes). The number of
 /// files is on the directory's row ([`describe_queue_change`]).
-// TODO: `ConfirmDeletes()` answers the confirmations written (the directory and all below it), which is not this number; check which of the two the window shows after the answer and fix if needed. Former note: here it is the removals the last plan holds — a directory removed with all below it is one, and a removal beyond the plan's reach is none — where today it is one per file and directory. The number of items the held removals take from OneDrive is `ItemReader::count_unsent_removals`, a walk below every removed directory at each plan. Two numbers the user sees beside it differ too: while a removed directory is held, the items below it are entries of their own that read `waiting` (the plan answers them `AnotherItem(directory)`) and stay in `PendingCount`, where today held rows are in neither; and `ConfirmDeletes()` answers the confirmations written (the directory and all below it), which is not `HeldCount`.
+///
+/// After `ConfirmDeletes()` the window shows what that method answers — the
+/// confirmations written, the directory and all below it — which is another number than
+/// this one, and is meant to be.
 pub fn count_queue(totals: &QueueTotals, sending: &QueueConditions) -> QueueCounts {
     todo!()
 }
