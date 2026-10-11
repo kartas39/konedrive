@@ -131,7 +131,7 @@ pub mod session_cancellations;
 use confirmed_item::{decide_guard, to_confirmed_item, to_graph_name, RequestGuard};
 use content_upload::{hash_content, ContentTarget, ContentUpload, NewFilePlace, SendContentError, SentContent};
 use graph_refusal::{decide_plain_refusal, decide_read_refusal, decide_refusal, RefusedRequest};
-use lost_answers::{LostAnswerFate, LostAnswers, SentRequest};
+use lost_answers::{FailedRead, LostAnswerFate, LostAnswers, SentRequest};
 use made_items::MadeItems;
 use name_holders::{NameHolder, NameHolders};
 
@@ -330,18 +330,25 @@ impl OneDriveSteps {
     async fn follow_explained_refusal(&self, item: &ItemVersions, request: SentRequest<'_>, name: Option<&OsStr>, detail: &str) -> RequestAnswer {
         match self.lost_answers.read_request_outcome(item, request).await {
             Ok(fate) => self.follow_fate(item, fate, name, true, detail).await,
-            Err(outcome) => Err(self.refuse_for_certain(item, outcome).await),
+            Err(failed_read) => Err(self.refuse_for_certain(item, failed_read.into_outcome()).await),
         }
     }
 
     /// After an answer that says nothing certain: one read of what became of the
     /// request, and the fate followed. When the read says nothing certain either, the
     /// step ends `Transient` and the record STANDS: it keeps the item and its
-    /// destination busy until it is settled.
+    /// destination busy until it is settled. A read OneDrive refuses for certain will
+    /// never say what became of the request: the record goes, and the step answers
+    /// `StepRefusal::ItemChanged`, which counts a try and asks for the listing cycle that
+    /// brings what OneDrive has.
     async fn follow_lost_answer(&self, item: &ItemVersions, request: SentRequest<'_>, name: Option<&OsStr>, detail: String) -> RequestAnswer {
         match self.lost_answers.read_request_outcome(item, request).await {
             Ok(fate) => self.follow_fate(item, fate, name, false, &detail).await,
-            Err(_) => Err(StepOutcome::Refused(StepRefusal::Transient { detail })),
+            Err(FailedRead::NothingCertain(_)) => Err(StepOutcome::Refused(StepRefusal::Transient { detail })),
+            Err(FailedRead::RefusedForCertain(outcome)) => {
+                tracing::warn!("what became of the request of item {} cannot be read from OneDrive ({outcome:?}): a listing is what is left", item.local_item_id);
+                Err(self.refuse_for_certain(item, StepOutcome::Refused(StepRefusal::ItemChanged)).await)
+            }
         }
     }
 

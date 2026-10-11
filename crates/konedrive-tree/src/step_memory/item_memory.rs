@@ -137,11 +137,16 @@ pub enum UploadTag {
 /// removed before the file is sent again.
 ///
 /// *Voided by:* the answer to the request that removes it, or that reads it first —
-/// removed, gone, or changed by another (`forget_mismatched_item`); the folder having the
+/// removed or gone (`forget_removed_mismatched_item`, which takes the OneDrive version of
+/// the row a listing made of it in the same transaction), changed by another or adopted
+/// (`forget_mismatched_item`); the folder having the
 /// item (the schema's triggers `mismatched_item_of_folder*`, whoever writes the row); a
 /// listing that names it with another tag than the upload's answer gave, or as gone
 /// (`forget_mismatched_item_listed_changed` and `forget_mismatched_item`, in the page's
-/// transaction).
+/// transaction). It leaves the file's memory, and is left to the daemon to remove
+/// (`mismatched_item_removals`), as soon as the file cannot take care of it any more: its
+/// row goes, it comes to be left here, or it gets a binding (the schema's triggers
+/// `step_memory_item_gone` and `mismatched_item_file_unable`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MismatchedItem {
     /// The item, with its drive: what its removal is asked of.

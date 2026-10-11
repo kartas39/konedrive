@@ -340,7 +340,7 @@ pub(super) fn find_item_at(conn: &Connection, directory: LocalItemId, name: &OsS
     Ok(conn.prepare_cached(&sql)?.query_row(params![directory.as_i64(), name_value(name)], item_from).optional()?)
 }
 
-pub(super) fn find_bound_item(conn: &Connection, onedrive_item: &OneDriveItemReference) -> Result<Option<Item>, TreeError> {
+pub(crate) fn find_bound_item(conn: &Connection, onedrive_item: &OneDriveItemReference) -> Result<Option<Item>, TreeError> {
     let sql = format!("SELECT {ITEM_COLUMNS} FROM items WHERE onedrive_drive_id = ?1 AND onedrive_item_id = ?2");
     Ok(conn.prepare_cached(&sql)?.query_row([onedrive_item.drive_id.as_str(), onedrive_item.item_id.as_str()], item_from).optional()?)
 }

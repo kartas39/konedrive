@@ -119,6 +119,7 @@ mod listed_change;
 mod listing_under_way;
 
 pub use confirmed_onedrive_version::ConfirmedOneDriveVersion;
+pub(crate) use confirmed_onedrive_version::confirm_onedrive_version as confirm_onedrive_version_of_item;
 pub(super) use confirmed_onedrive_version::{confirm_onedrive_version, read_confirmation_count};
 pub use listed_change::{ListedChangeOutcome, ListedChangeRefusal};
 use listed_change::{decide_listed_item, decide_listed_removal, decide_listed_root, is_listed_parent_outdated, ListedItem};

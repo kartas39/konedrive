@@ -80,7 +80,7 @@ use konedrive_tree::{
 
 use super::confirmed_item::{to_confirmed_item, to_graph_name, to_guard_of_answer, RequestGuard};
 use super::graph_refusal::{decide_plain_refusal, decide_read_refusal, decide_refusal, RefusedRequest};
-use super::lost_answers::{LostAnswerFate, LostAnswers, SentRequest};
+use super::lost_answers::{FailedRead, LostAnswerFate, LostAnswers, SentRequest};
 use super::GraphAccess;
 use crate::mount::LocalContentFile;
 use crate::sync_parts::onedrive_space::OneDriveSpace;
@@ -311,7 +311,7 @@ impl ContentUpload {
     /// already, is this step's own earlier upload; anything else is `ItemChanged`.
     async fn follow_changed_item(&self, item: &ItemVersions, target: &ContentTarget, file: &Arc<LocalContentFile>) -> Result<SentContent, StepOutcome> {
         let sent_hash = hash_content(file).await?;
-        match self.lost_answers.read_request_outcome(item, SentRequest::SendContent { sent_hash: &sent_hash }).await? {
+        match self.lost_answers.read_request_outcome(item, SentRequest::SendContent { sent_hash: &sent_hash }).await.map_err(FailedRead::into_outcome)? {
             LostAnswerFate::WentThrough(Some(found)) => Ok(Self::describe_found_content(target, found, sent_hash)),
             LostAnswerFate::WentThrough(None) | LostAnswerFate::DidNotGoThrough | LostAnswerFate::ItemChanged | LostAnswerFate::NameHeld { .. } => Err(StepOutcome::Refused(StepRefusal::ItemChanged)),
         }
@@ -479,7 +479,13 @@ impl ContentUpload {
         let fate = match self.lost_answers.read_request_outcome(item, request).await {
             Ok(fate) => fate,
             // The record stands: its item stays busy until it is settled.
-            Err(_) => return Err(transient().into()),
+            Err(FailedRead::NothingCertain(_)) => return Err(transient().into()),
+            // Reading will never say what became of the request: the record goes, and a listing brings what OneDrive has.
+            Err(FailedRead::RefusedForCertain(outcome)) => {
+                tracing::warn!("what became of the empty file sent for item {id} cannot be read from OneDrive ({outcome:?}): a listing is what is left");
+                self.forget_request_record(item).await?;
+                return Err(StepOutcome::Refused(StepRefusal::ItemChanged).into());
+            }
         };
         match fate {
             LostAnswerFate::WentThrough(Some(found)) => Ok(Self::describe_found_content(target, found, sent_hash.clone())),
@@ -507,8 +513,14 @@ impl ContentUpload {
                 self.send_fragments(item, target, file, session, false).await
             }
             Err(WriteError::SessionGone) => Ok(self.follow_gone_session(item, target, file, &session).await?),
-            // The session stays, to be gone on with.
-            Err(error) => Err(StepOutcome::Refused(decide_plain_refusal(&error)).into()),
+            Err(error) => {
+                let refusal = decide_plain_refusal(&error);
+                // Refused for good: nothing goes on with this session. Any other refusal keeps it.
+                if matches!(refusal, StepRefusal::RefusedForGood { .. }) {
+                    self.abandon_session(item).await?;
+                }
+                Err(StepOutcome::Refused(refusal).into())
+            }
         }
     }
 
@@ -595,8 +607,8 @@ impl ContentUpload {
     ///
     /// What ends it otherwise: a read that says the file changed or is open for writing
     /// (`StepTrouble`) — the session is given up for a changed file, kept for a writer,
-    /// and the trouble is the outcome; a fragment refused 409, 412 or 404 gives the
-    /// session up, and is `Err(NameExists)` for a new file's 409, `ItemChanged` for an
+    /// and the trouble is the outcome; a fragment refused 409, 412, 404 or for good (a
+    /// 400) gives the session up, and is `Err(NameExists)` for a new file's 409, `ItemChanged` for an
     /// existing item's 409, and the refusal's outcome otherwise; a session that expects bytes at or past the file's end is given up and
     /// is `StepFailure::AnswerUnreadable`; an answer that takes nothing (OneDrive still
     /// expects the same offset) is `StepRefusal::Transient`, the session kept; a session
@@ -700,6 +712,11 @@ impl ContentUpload {
                             self.abandon_session(item).await?;
                             Err(Self::decide_not_found(target).into())
                         }
+                        // Refused for good: the session is given up with the fragment, so that its empty file holds no name.
+                        RefusedRequest::Settled(refusal @ StepRefusal::RefusedForGood { .. }) => {
+                            self.abandon_session(item).await?;
+                            Err(StepOutcome::Refused(refusal).into())
+                        }
                         // The session stays, to be gone on with.
                         RefusedRequest::NoSpace => Err(StepOutcome::Refused(self.onedrive_space.refuse_for_space(&self.graph.drive, size, (self.graph.clock)()).await).into()),
                         RefusedRequest::Settled(refusal) => Err(StepOutcome::Refused(refusal).into()),
@@ -726,7 +743,7 @@ impl ContentUpload {
             ContentTarget::NewFile(place) => SentRequest::SendNewFile { parent: &place.parent, name: &place.name, sent_hash: &sent_hash },
             ContentTarget::ExistingItem { .. } => SentRequest::SendContent { sent_hash: &sent_hash },
         };
-        match self.lost_answers.read_request_outcome(item, request).await? {
+        match self.lost_answers.read_request_outcome(item, request).await.map_err(FailedRead::into_outcome)? {
             LostAnswerFate::WentThrough(Some(found)) => Ok(Self::describe_found_content(target, found, sent_hash)),
             LostAnswerFate::WentThrough(None) | LostAnswerFate::DidNotGoThrough | LostAnswerFate::ItemChanged | LostAnswerFate::NameHeld { .. } => {
                 tracing::info!("the upload session of item {id} ended with its content not in OneDrive: the upload starts over");
@@ -745,7 +762,8 @@ impl ContentUpload {
     /// removal is asked only when the store
     /// answers `MismatchedItemStanding::LeftToRemove`: `OfFolder` says the folder has
     /// that item by now, and nothing is removed; removed or found gone, it is forgotten
-    /// (`StepMemory::forget_mismatched_item`); a removal that fails leaves it
+    /// with the OneDrive version of a row a listing made of it
+    /// (`StepMemory::forget_removed_mismatched_item`); a removal that fails leaves it
     /// remembered, and the plan is told of it (`SyncPlanInput::items_left_by_uploads`).
     /// For an existing item the fact is kept
     /// (`ItemStore::remember_own_upload_content`: OneDrive's content of the answer, the
@@ -777,7 +795,7 @@ impl ContentUpload {
                     match self.graph.drive.delete_item(sent.item.item.item_id.as_str(), &sent.item.etag).await {
                         Ok(()) | Err(WriteError::NotFound) => {
                             let removed = sent.item.item.clone();
-                            self.write_memory(move |memory| memory.forget_mismatched_item(&removed)).await?;
+                            self.write_memory(move |memory| memory.forget_removed_mismatched_item(&removed)).await?;
                         }
                         Err(error) => {
                             tracing::warn!("what OneDrive holds for item {id} with other content is not removed ({error}): it is removed before the file is sent again");
@@ -811,23 +829,32 @@ impl ContentUpload {
     /// eTag just read) when it is unchanged since that upload
     /// (`MismatchedItem::is_unchanged_since_upload`); left where it is when another
     /// changed it since, or the removal is answered 412. Forgotten in each of these cases
-    /// and when it is found gone (`StepMemory::forget_mismatched_item`, by the item's
-    /// reference, drive and id); a read or a removal that fails otherwise leaves it
+    /// and when it is found gone — removed or gone by
+    /// `StepMemory::forget_removed_mismatched_item`, which takes the OneDrive version of a
+    /// row a listing made of it; adopted or another's by `forget_mismatched_item`, by the
+    /// item's reference, drive and id —; a read or a removal that fails otherwise leaves it
     /// remembered and is the step's outcome. Today `Job::clear_bad_item`
     /// (`upload/content.rs:165`).
     pub async fn remove_mismatched_item(&self, item: &ItemVersions, memory: &ItemMemory, file: &Arc<LocalContentFile>) -> Result<Option<SentContent>, StepOutcome> {
         let Some(left) = memory.mismatched_item.clone() else { return Ok(None) };
-        let forgotten = left.item.clone();
-        let forget = || self.write_memory(move |memory| memory.forget_mismatched_item(&forgotten));
+        // Removed or gone: the row a listing made of it loses its OneDrive version with it. Another's by now, or adopted: OneDrive has it still.
+        let forget = |is_gone: bool| {
+            let forgotten = left.item.clone();
+            self.write_memory(move |memory| if is_gone { memory.forget_removed_mismatched_item(&forgotten) } else { memory.forget_mismatched_item(&forgotten) })
+        };
         if left.item.drive_id != self.graph.drive_id {
             return Err(StepOutcome::Failed(StepFailure::AnswerUnreadable { detail: format!("what an upload of item {} left is in another drive than the folder's", item.local_item_id) }));
         }
         let left_id = left.item.item_id.as_str();
-        let _slot = self.graph.drive.pool().acquire(Class::Metadata).await;
-        let found = match self.graph.drive.item(left_id).await {
+        // A slot around each request only: the hash between them reads the whole file.
+        let read = {
+            let _slot = self.graph.drive.pool().acquire(Class::Metadata).await;
+            self.graph.drive.item(left_id).await
+        };
+        let found = match read {
             Ok(found) => found,
             Err(DriveError::NotFound) => {
-                forget().await?;
+                forget(true).await?;
                 return Ok(None);
             }
             Err(error) => return Err(StepOutcome::Refused(decide_read_refusal(error))),
@@ -838,19 +865,28 @@ impl ContentUpload {
             let is_bound = self.graph.store.read_items(move |items| Ok(items.find_bound_item(&bound)?.is_some())).await.map_err(fail_store)?;
             if !is_bound {
                 let adopted = to_confirmed_item(&found, &self.graph.drive_id).map_err(StepOutcome::Failed)?;
-                forget().await?;
+                forget(false).await?;
                 let new_file_place = Some(NewFilePlace { parent: adopted.parent.clone(), name: adopted.name.clone() });
                 return Ok(Some(SentContent { item: adopted, sent_hash, ended_session: None, new_file_place }));
             }
         }
         if !left.is_unchanged_since_upload(found.c_tag.as_deref(), found.e_tag.as_deref()) {
             tracing::info!("what OneDrive holds for item {} with other content was changed there since: it is left", item.local_item_id);
-            forget().await?;
+            forget(false).await?;
             return Ok(None);
         }
-        match self.graph.drive.delete_item(left_id, to_guard_of_answer(&found).as_str()).await {
-            Ok(()) | Err(WriteError::NotFound | WriteError::Changed) => {
-                forget().await?;
+        let removed = {
+            let _slot = self.graph.drive.pool().acquire(Class::Metadata).await;
+            self.graph.drive.delete_item(left_id, to_guard_of_answer(&found).as_str()).await
+        };
+        match removed {
+            Ok(()) | Err(WriteError::NotFound) => {
+                forget(true).await?;
+                Ok(None)
+            }
+            // A 412: another changed it between the read and the removal, and it is left.
+            Err(WriteError::Changed) => {
+                forget(false).await?;
                 Ok(None)
             }
             Err(error) => Err(StepOutcome::Refused(decide_plain_refusal(&error))),

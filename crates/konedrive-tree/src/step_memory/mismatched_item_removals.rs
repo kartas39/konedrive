@@ -1,6 +1,12 @@
-//! The items uploads left in OneDrive with other content than was sent whose file's row
-//! went before they were removed: the table `mismatched_item_removals`, one row for each,
-//! kept until the item is removed in OneDrive, found gone, or found changed by another. As
+//! The items uploads left in OneDrive with other content than was sent whose file cannot
+//! remove them any more: the table `mismatched_item_removals`, one row for each,
+//! kept until the item is removed in OneDrive, found gone, or found changed by another. A
+//! file cannot once its row went, once it is left here (its name, or that of a directory
+//! above it, is ignored: it is never sent, so no step of it runs), and once it has a
+//! binding (it was merged with or bound to an item of OneDrive: it is no new file any
+//! more, and the step that removes a leftover is a new file's). The trigger
+//! `step_memory_item_gone` holds the first and `mismatched_item_file_unable` the other
+//! two, whoever writes the row. As
 //! the address of an abandoned upload session, it is what is left to do in OneDrive once
 //! the item's memory is gone: without it the item with the wrong content stays, and the
 //! next listing shows it in the folder as a file nobody made.
@@ -17,10 +23,11 @@
 //! take it out of both tables whoever writes such a row; the reader of the removals asks
 //! the rows again; and nothing is kept of it when it is given.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use super::item_memory::MismatchedItem;
 use super::memory_row::mismatched_item_from;
+use crate::item_store::{confirm_onedrive_version_of_item, find_item_bound_to, ConfirmedOneDriveVersion};
 use crate::model::{LocalItemId, OneDriveItemReference};
 use crate::TreeError;
 
@@ -35,7 +42,8 @@ fn folder_has(drive: &str, item: &str) -> String {
 
 /// The table: an item of OneDrive once, by its drive and its id, in the order the rows
 /// went, with the tag that says whether the item is still what the upload left. And the
-/// two triggers that hold "an item the folder has is never here, nor in a file's memory".
+/// two triggers that hold "an item the folder has is never here, nor in a file's memory",
+/// and the one that takes a leftover from a file that cannot remove it any more.
 pub(super) fn schema() -> String {
     let take_out = "
              DELETE FROM mismatched_item_removals WHERE onedrive_drive_id = NEW.onedrive_drive_id AND onedrive_item_id = NEW.onedrive_item_id;
@@ -50,7 +58,13 @@ pub(super) fn schema() -> String {
          END;
          CREATE TRIGGER mismatched_item_of_folder AFTER UPDATE OF onedrive_drive_id, onedrive_item_id, local_parent_id, synced_parent_id ON items
              WHEN {is_of_folder} BEGIN{take_out}
-         END;"
+         END;
+         CREATE TRIGGER mismatched_item_file_unable AFTER UPDATE OF onedrive_drive_id, onedrive_item_id, is_name_ignored, is_below_ignored_directory ON items
+             WHEN NEW.onedrive_item_id IS NOT NULL OR NEW.is_name_ignored != 0 OR NEW.is_below_ignored_directory != 0 BEGIN{leave}
+             UPDATE step_memory SET mismatched_drive_id = NULL, mismatched_item_id = NULL, mismatched_ctag = NULL, mismatched_etag = NULL
+              WHERE local_item_id = NEW.local_item_id AND mismatched_item_id IS NOT NULL;
+         END;",
+        leave = leave_statement("NEW"),
     )
 }
 
@@ -58,11 +72,17 @@ pub(super) fn schema() -> String {
 /// goes, while the row of `step_memory` is still there: the item an upload of the file left
 /// is kept to be removed, unless the folder has it.
 pub(super) fn item_gone_statements() -> String {
+    leave_statement("OLD")
+}
+
+/// SQL of a trigger on `items`: the item an upload of the file of the row `row` (`OLD` or
+/// `NEW`) left is kept to be removed by the daemon, unless the folder has it.
+fn leave_statement(row: &str) -> String {
     format!(
         "
     INSERT OR IGNORE INTO mismatched_item_removals (onedrive_drive_id, onedrive_item_id, ctag, etag)
         SELECT mismatched_drive_id, mismatched_item_id, mismatched_ctag, mismatched_etag FROM step_memory
-         WHERE local_item_id = OLD.local_item_id AND mismatched_item_id IS NOT NULL AND NOT {};",
+         WHERE local_item_id = {row}.local_item_id AND mismatched_item_id IS NOT NULL AND NOT {};",
         folder_has("mismatched_drive_id", "mismatched_item_id")
     )
 }
@@ -120,4 +140,21 @@ pub(super) fn list_files_of(conn: &Connection, item: &OneDriveItemReference) -> 
     let mut statement = conn.prepare_cached("SELECT local_item_id FROM step_memory WHERE mismatched_item_id = ?1 AND mismatched_drive_id = ?2 ORDER BY local_item_id")?;
     let files = statement.query_map(params![item.item_id.as_str(), item.drive_id.as_str()], |row| Ok(LocalItemId::new(row.get(0)?)))?;
     Ok(files.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// [`StepMemory::forget_removed_mismatched_item`](super::StepMemory::forget_removed_mismatched_item),
+/// inside the caller's transaction: the item is forgotten as
+/// [`forget_mismatched_item`](super::forget_mismatched_item) forgets it, and the row a
+/// listing made of it loses its OneDrive version as the confirmation of a removal a step
+/// sent takes it — stamped, so that a page fetched before the removal does not bring the
+/// item back. So the plan is never given a row that says OneDrive has an item that is
+/// gone. A row the folder has — it shows the item, or the two sides agreed on a place of
+/// it — is no leftover's, and is not written.
+pub(super) fn forget_removed_item(tx: &Transaction<'_>, onedrive_item: &OneDriveItemReference) -> Result<(), TreeError> {
+    super::forget_mismatched_item(tx, onedrive_item)?;
+    let listed = find_item_bound_to(tx, onedrive_item)?.filter(|row| row.local.is_none() && row.synced_place.is_none() && row.onedrive.is_some());
+    if let Some(row) = listed {
+        confirm_onedrive_version_of_item(tx, row.local_item_id, &ConfirmedOneDriveVersion::Removed)?;
+    }
+    Ok(())
 }

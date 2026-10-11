@@ -17,8 +17,7 @@
 //! - the item an upload left in OneDrive with other content than was sent is left to remove
 //!   also when the file's row went first (`mismatched_item_removals`,
 //!   [`mismatched_item_removals`]).
-//! And a request that changes OneDrive is on record from before it leaves until its
-//! answer was committed or what became of it was read ([`request_records`]).
+//! A request that changes OneDrive is on record until it is settled ([`request_records`]).
 //!
 //! **Every fact names what voids it**, and the voider is something that happens for every
 //! way the fact can stop being true. What a fact says of OneDrive is void when OneDrive
@@ -385,12 +384,19 @@ impl StepMemory<'_> {
         self.write(|tx| remember_mismatched_item(tx, item, upload))
     }
 
-    /// The item `onedrive_item` of OneDrive, which an upload left, was removed, found gone,
-    /// or found changed by another: it is forgotten wherever it is kept, in the memory of
-    /// the file whose upload left it and among the removals left when that file's row
-    /// went.
+    /// The item `onedrive_item`, which an upload left, is not this folder's to remove any
+    /// more (changed by another, or adopted): forgotten wherever it is kept. OneDrive has
+    /// it still, and a row a listing made of it stays. For one removed or found gone,
+    /// [`forget_removed_mismatched_item`](Self::forget_removed_mismatched_item).
     pub fn forget_mismatched_item(&mut self, onedrive_item: &OneDriveItemReference) -> Result<(), TreeError> {
         self.write(|tx| forget_mismatched_item(tx, onedrive_item))
+    }
+
+    /// OneDrive answered that the item `onedrive_item`, which an upload left, is removed
+    /// or gone: forgotten, and in the same transaction the row a listing made of it loses
+    /// its OneDrive version ([`mismatched_item_removals::forget_removed_item`]).
+    pub fn forget_removed_mismatched_item(&mut self, onedrive_item: &OneDriveItemReference) -> Result<(), TreeError> {
+        self.write(|tx| mismatched_item_removals::forget_removed_item(tx, onedrive_item))
     }
 
     /// `item` goes through `temporary_name` in OneDrive: kept before the request that takes
@@ -465,19 +471,17 @@ impl StepMemory<'_> {
     /// A step is about to send `record`'s request: written before the request leaves,
     /// over a record its item had ([`request_records`]). Refused for an id with no row.
     pub fn remember_request_record(&mut self, record: &RequestRecord) -> Result<(), TreeError> {
-        self.write(|tx| {
-            if find_item(tx, record.item)?.is_none() {
-                return Err(refuse(format!("item {} has no row: no request of it is on record", record.item)));
-            }
-            request_records::remember_record(tx, record)
-        })
+        self.write(|tx| request_records::remember_record(tx, record))
     }
 
-    /// The request of `item` is settled — its answer was committed, OneDrive refused it
-    /// for certain, or what became of it was read from OneDrive —: its record goes.
-    /// Nothing for an item with none.
+    /// The request of `item` is settled by its own step: its record goes.
     pub fn forget_request_record(&mut self, item: LocalItemId) -> Result<(), TreeError> {
         self.write(|tx| request_records::forget_record(tx, item))
+    }
+
+    /// `record`, read some time ago, is settled: it goes when it is still its item's record.
+    pub fn forget_request_record_as_read(&mut self, record: &RequestRecord) -> Result<bool, TreeError> {
+        self.write(|tx| request_records::forget_record_as_read(tx, record))
     }
 
     /// `fact` of `item` is forgotten: its step is done with it. Nothing for an id with no
@@ -948,8 +952,6 @@ pub(crate) fn drop_facts_of_binding(conn: &Connection, item: LocalItemId) -> Res
     change_kept_memory(conn, item, |memory| memory.temporary_name = temporary_name)
 }
 
-
-
 /// The binding of `from` is `to`'s from now on: what is remembered follows, inside the
 /// transaction of the operation that moves the binding, before the row of `from` goes if it
 /// does.
@@ -969,9 +971,10 @@ pub(crate) fn drop_facts_of_binding(conn: &Connection, item: LocalItemId) -> Res
 /// - What is of the directory of OneDrive is with `to`: the openings and the empty files of
 ///   abandoned sessions in it.
 ///
-/// The item an upload left stays with the file whose upload left it; it goes to the
-/// removals with that file's row, and is void once the folder has it, which the schema
-/// holds ([`mismatched_item_removals`]).
+/// The item an upload left stays with the file whose upload left it only while that file
+/// can still remove it: the schema takes it to the removals when the file's row goes,
+/// comes to be left here or gets a binding, and it is void once the folder has it
+/// ([`mismatched_item_removals`]).
 pub(crate) fn follow_binding(conn: &Connection, from: LocalItemId, to: LocalItemId) -> Result<(), TreeError> {
     let temporary_name = drop_facts_of_item_binding(conn, from)?;
     let onedrive_place = find_item(conn, from)?.and_then(|row| row.onedrive).and_then(|onedrive| onedrive.place);

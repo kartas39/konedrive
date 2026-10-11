@@ -111,6 +111,8 @@ mod thumbnail_marks;
 
 pub(crate) use bindings::bind_root_once_known;
 pub(crate) use item_row::find_item;
+pub(crate) use item_row::find_bound_item as find_item_bound_to;
+pub(crate) use onedrive_versions::confirm_onedrive_version_of_item;
 pub use step_commit::{ConfirmedItem, StepCommitOutcome};
 pub use sent_removal_window::{SentRemovalWindow, SENT_REMOVAL_WINDOW_SECONDS};
 pub use full_listing_request::FullListingCause;

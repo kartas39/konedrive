@@ -528,6 +528,10 @@ impl SyncPlanTask {
                         _ => cancellations.settle_request_records(1).await,
                     };
                     next_tries[kind] = round.next_try_at;
+                    // A record OneDrive refuses to be read for: the listing brings what became of its request.
+                    if round.left_to_listing_count > 0 {
+                        task.parts.poll.refresh();
+                    }
                     round.done_count > 0
                 };
                 let is_cancelled = ask(has_cancellation, 0).await;

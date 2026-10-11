@@ -14,8 +14,9 @@
 //! session the step memory keeps (`upload_session_openings`, the item's memory).
 //!
 //! *Voided by:* the commit of the request's answer and the reading of what became of it
-//! (`StepMemory::forget_request_record`, by the step or by the one that settles the
-//! records left); an answer that says for certain that the request changed nothing; and the
+//! (`StepMemory::forget_request_record` by the step,
+//! `StepMemory::forget_request_record_as_read` by the one that settles the records left,
+//! which forgets the record it read and no later one); an answer that says for certain that the request changed nothing; and the
 //! item's row going (the trigger `step_memory_item_gone`). One record per item: a step
 //! writes its record over one that was left, which the item's one step at a time makes the
 //! same request sent again.
@@ -25,6 +26,7 @@ use std::ffi::OsString;
 use rusqlite::{params, Connection};
 
 use super::memory_row::name_value;
+use crate::item_store::{find_item, refuse};
 use crate::model::{DriveId, LocalItemId, OneDriveItemId, OneDriveItemReference};
 use crate::path_column::path_from;
 use crate::TreeError;
@@ -98,8 +100,11 @@ pub(super) fn schema() -> &'static str {
 pub(super) const ITEM_GONE_STATEMENTS: &str = "
     DELETE FROM request_records WHERE local_item_id = OLD.local_item_id;";
 
-/// `record` is written, over the one its item had.
+/// `record` is written, over the one its item had. Refused for an id with no row.
 pub(super) fn remember_record(conn: &Connection, record: &RequestRecord) -> Result<(), TreeError> {
+    if find_item(conn, record.item)?.is_none() {
+        return Err(refuse(format!("item {} has no row: no request of it is on record", record.item)));
+    }
     let (parent, name, sent_hash) = match &record.request {
         RecordedRequest::MakeDirectory { parent, name } | RecordedRequest::SendMove { parent, name } => (Some(parent), Some(name), None),
         RecordedRequest::SendNewFile { parent, name, sent_hash } => (Some(parent), Some(name), Some(sent_hash.as_str())),
@@ -122,6 +127,16 @@ pub(super) fn remember_record(conn: &Connection, record: &RequestRecord) -> Resu
         record.sent_at,
     ])?;
     Ok(())
+}
+
+/// `record` is settled by one that read it some time ago: it goes when it is still the
+/// record its item has — the same request, written at the same time — and no other does: a
+/// record a step wrote since is that step's. Whether it went.
+pub(super) fn forget_record_as_read(conn: &Connection, record: &RequestRecord) -> Result<bool, TreeError> {
+    let forgotten = conn
+        .prepare_cached("DELETE FROM request_records WHERE local_item_id = ?1 AND sent_at = ?2 AND kind = ?3")?
+        .execute(params![record.item.as_i64(), record.sent_at, record.request.kind()])?;
+    Ok(forgotten > 0)
 }
 
 /// The record of `item` is settled: it goes. Nothing for an item with none.

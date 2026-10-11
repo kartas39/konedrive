@@ -37,7 +37,7 @@ use konedrive_graph::pool::Class;
 use konedrive_tree::{LocalItemId, MismatchedItem, OneDriveItemReference, UploadSessionAddress, UPLOAD_SESSION_OPENING_KEPT};
 
 use super::confirmed_item::to_guard_of_answer;
-use super::lost_answers::LostAnswers;
+use super::lost_answers::{LostAnswers, SettledRecord};
 use super::GraphAccess;
 use crate::sync_parts::running_steps::RunningSteps;
 use crate::sync_parts::step_outcome::StepRefusal;
@@ -85,6 +85,10 @@ pub struct CancellationRound {
     /// When the soonest next try of what failed or waits is due, Unix seconds; none when
     /// nothing does.
     pub next_try_at: Option<i64>,
+    /// How many request records went with nothing learnt, because OneDrive refuses the
+    /// read for certain (counted in `done_count` too): the caller asks the listing for a
+    /// cycle, which brings what OneDrive has.
+    pub left_to_listing_count: usize,
 }
 
 /// What became of one thing asked.
@@ -239,26 +243,33 @@ impl SessionCancellations {
             return CleanedOutcome::Failed { retry_after: None };
         }
         let id = left.item.item_id.as_str();
-        let removed: Result<(), WriteError> = {
+        // Whether OneDrive does not have the item any more; false for one that is another's by now and left where it is.
+        let removed: Result<bool, WriteError> = {
             let _slot = self.graph.drive.pool().acquire(Class::Metadata).await;
             match self.graph.drive.item(id).await {
-                Err(DriveError::NotFound) => Ok(()),
+                Err(DriveError::NotFound) => Ok(true),
                 Err(error) => Err(WriteError::from(error)),
-                // Another changed it since the upload: theirs now, left where it is.
-                Ok(found) if !left.is_unchanged_since_upload(found.c_tag.as_deref(), found.e_tag.as_deref()) => Ok(()),
+                // Another changed it since the upload: theirs now.
+                Ok(found) if !left.is_unchanged_since_upload(found.c_tag.as_deref(), found.e_tag.as_deref()) => Ok(false),
                 Ok(found) => match self.graph.drive.delete_item(id, to_guard_of_answer(&found).as_str()).await {
-                    // A 412: changed between the read and the removal, and left.
-                    Ok(()) | Err(WriteError::NotFound | WriteError::Changed) => Ok(()),
+                    Ok(()) | Err(WriteError::NotFound) => Ok(true),
+                    // A 412: changed between the read and the removal.
+                    Err(WriteError::Changed) => Ok(false),
                     Err(error) => Err(error),
                 },
             }
         };
-        if let Err(error) = removed {
-            tracing::info!("an item an upload left with other content is not removed yet: {error}");
-            return CleanedOutcome::Failed { retry_after: Self::find_retry_after(&error) };
-        }
+        let is_gone = match removed {
+            Ok(is_gone) => is_gone,
+            Err(error) => {
+                tracing::info!("an item an upload left with other content is not removed yet: {error}");
+                return CleanedOutcome::Failed { retry_after: Self::find_retry_after(&error) };
+            }
+        };
         let forgotten = left.item.clone();
-        match self.graph.store.call(move |store| store.step_memory().forget_mismatched_item(&forgotten)).await {
+        // Removed or gone: the row a listing made of it loses its OneDrive version in the same transaction.
+        let forget = move |store: &mut konedrive_tree::TreeStore| if is_gone { store.step_memory().forget_removed_mismatched_item(&forgotten) } else { store.step_memory().forget_mismatched_item(&forgotten) };
+        match self.graph.store.call(forget).await {
             Ok(()) => CleanedOutcome::Done,
             Err(error) => {
                 tracing::warn!("an item an upload left is not forgotten: {error}");
@@ -272,8 +283,9 @@ impl SessionCancellations {
     /// only while it is unchanged since the upload that left it
     /// (`MismatchedItem::is_unchanged_since_upload`, read by `item`, `G/mod.rs:217`;
     /// `delete_item`, `G/write.rs:140`, guarded by the eTag just read), and forgets each
-    /// that was removed, found gone, or found changed by another
-    /// (`StepMemory::forget_mismatched_item`). The list never holds an item the folder
+    /// that was removed or found gone (`StepMemory::forget_removed_mismatched_item`: the
+    /// row a listing made of it loses its OneDrive version with it) or found changed by
+    /// another (`StepMemory::forget_mismatched_item`). The list never holds an item the folder
     /// has. One that fails waits, and those that wait are passed over, as
     /// [`cancel_sessions`](Self::cancel_sessions) does; called as it is.
     pub async fn remove_mismatched_items(&self, limit: usize) -> CancellationRound {
@@ -310,7 +322,8 @@ impl SessionCancellations {
     /// over, as one whose next try is not due is; one that cannot be read now waits
     /// ([`decide_next_cancellation_try`], not before a time OneDrive named). While a
     /// record stands, its item and its destination are busy to the plan: the caller wakes
-    /// the plan when `done_count` is not 0 (`WakeCause::RequestRecordSettled`), and its
+    /// the plan when `done_count` is not 0 (`WakeCause::RequestRecordSettled`), asks the
+    /// listing for a cycle when `left_to_listing_count` is not 0, and its
     /// timer takes `next_try_at` (`sync_plan_task::decide_next_wake`). Called by the plan's task as
     /// [`cancel_sessions`](Self::cancel_sessions) is, which is after the first listing of
     /// a start ended.
@@ -336,7 +349,11 @@ impl SessionCancellations {
                 break;
             }
             let outcome = match self.lost_answers.settle_lost_answer(&record).await {
-                Ok(()) => CleanedOutcome::Done,
+                Ok(SettledRecord::Settled) => CleanedOutcome::Done,
+                Ok(SettledRecord::LeftToListing) => {
+                    round.left_to_listing_count += 1;
+                    CleanedOutcome::Done
+                }
                 Err(refusal) => {
                     tracing::info!("what became of the request of item {} is not known yet: {refusal:?}", record.item);
                     let retry_after = if let StepRefusal::Throttled { retry_after } = refusal { retry_after } else { None };
