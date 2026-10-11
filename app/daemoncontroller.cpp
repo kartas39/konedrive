@@ -229,9 +229,8 @@ void DaemonController::remove(const QString &path)
     m_removeNeedsHelper = false;
     Q_EMIT removeChanged();
 
-    // TODO: before this call the window warns as before a Forget: it asks the account's `UploadQueue.UnsentCount()`
-    // and, when the answer is not 0, asks the user to confirm "N changes were not sent to OneDrive and will stay only
-    // on this computer". Remove is never refused for what is unsent.
+    // Never refused for what is unsent: the page's question warns with the account's
+    // SyncController::readUnsentCount() before it calls.
     auto message = QDBusMessage::createMethodCall(ServiceName, ObjectPath, InterfaceName, QStringLiteral("Remove"));
     message << QVariant::fromValue(QDBusObjectPath(path));
     auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(message, std::numeric_limits<int>::max()), this);

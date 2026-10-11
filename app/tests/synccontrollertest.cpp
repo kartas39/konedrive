@@ -267,6 +267,30 @@ private Q_SLOTS:
         QVERIFY(m_fake->calls.contains(QStringLiteral("Refresh")));
     }
 
+    /// What a Forget and the account's removal warn of: UnsentCount, and 0 when it
+    /// cannot be read, so that neither waits for it.
+    void theUnsentCountIsReadOrNothing()
+    {
+        startFake();
+        const QString root = QStringLiteral("/home/u/OneDrive");
+        m_fake->outboxRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("running"), 5, 10, QString(), 0},
+                              {2, QStringLiteral("create"), root + QStringLiteral("/b.odt"), QStringLiteral("pending"), 0, 10, QString(), 0}};
+        SyncController controller(fake::FirstAccount);
+        QTRY_VERIFY(controller.serviceAvailable());
+        QSignalSpy read(&controller, &SyncController::unsentCountRead);
+        controller.readUnsentCount();
+        QTRY_COMPARE(read.count(), 1);
+        QCOMPARE(read.at(0).at(0).toULongLong(), 2ULL);
+        QVERIFY(m_fake->calls.contains(QStringLiteral("UnsentCount")));
+        QVERIFY(!m_fake->calls.contains(QStringLiteral("Unregister")));
+
+        // No daemon: answered all the same.
+        m_daemon->stop();
+        controller.readUnsentCount();
+        QTRY_COMPARE(read.count(), 2);
+        QCOMPARE(read.at(1).at(0).toULongLong(), 0ULL);
+    }
+
     /// The scalar properties reach the window.
     void followsLastCheckedLocalSpaceAndConflictCount()
     {

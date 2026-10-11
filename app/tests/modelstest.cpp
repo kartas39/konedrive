@@ -83,9 +83,18 @@ private Q_SLOTS:
         QCOMPARE(uploadReasonText(QStringLiteral("no-guard")), QStringLiteral("KOneDrive's record of this change is incomplete (no-guard): it stays here until the file is changed again."));
         QCOMPARE(uploadReasonText(QStringLiteral("not allowed now: the folder is read-only")), QStringLiteral("Uploads are not allowed now: it goes on when they are (the folder is read-only)."));
         for (const QString &kind : {QStringLiteral("uploaded"), QStringLiteral("cloud-moved"), QStringLiteral("cloud-deleted"), QStringLiteral("restored"),
-                                    QStringLiteral("not-uploaded")}) {
+                                    QStringLiteral("not-uploaded"), QStringLiteral("not-removed-here")}) {
             QVERIFY2(ActivityModel::describe(kind, QString()) != kind, qPrintable(kind));
         }
+        // A directory that cannot be removed here: its row says why, and what to do.
+        ActivityModel notRemoved;
+        notRemoved.prepend({1, QStringLiteral("not-removed-here"), QStringLiteral("/d/Notebooks"), QString()});
+        const QModelIndex row = notRemoved.index(0);
+        QCOMPARE(notRemoved.data(row, ActivityModel::NameRole).toString(), QStringLiteral("Notebooks"));
+        QCOMPARE(notRemoved.data(row, ActivityModel::TextRole).toString(), QStringLiteral("Cannot be removed here"));
+        QCOMPARE(notRemoved.data(row, ActivityModel::DetailTextRole).toString(),
+                 QStringLiteral("It holds items that cannot be shown on this computer. Remove it in OneDrive."));
+        QCOMPARE(notRemoved.data(row, ActivityModel::IconRole).toString(), QStringLiteral("dialog-warning"));
 
         ConflictModel conflicts;
         conflicts.setConflicts({{2, root + QStringLiteral("/Report.docx"), root + QStringLiteral("/Report-fedora.docx"), QStringLiteral("copy")},

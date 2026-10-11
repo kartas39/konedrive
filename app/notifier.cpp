@@ -110,8 +110,15 @@ Notifier::Notifier(AccountController *account, SyncController *sync, Notificatio
 void Notifier::onActivity(qint64, const QString &kind, const QString &path, const QString &detail)
 {
     const QString name = fileName(path);
-    // TODO: a `not-removed-here` event is a notification: "This folder cannot be removed here because it holds items
-    // that cannot be shown here; remove it in OneDrive", naming the folder (`path`). Not posted yet.
+    if (kind == QLatin1String("not-removed-here")) {
+        // The path is the directory; rmdir itself could only say "not empty". Nothing to press.
+        // TODO: wording
+        post({QStringLiteral("notRemovedHere"),
+              i18nc("@title notification", "Folder not removed"),
+              i18n("%1 cannot be removed here: it holds items that cannot be shown on this computer. Remove it in OneDrive.", name),
+              {}});
+        return;
+    }
     if (kind == QLatin1String("conflict")) {
         // M3: past 50 conflicts in one cycle, the daemon adds one more
         // `conflict` event whose path is the root and whose detail is
@@ -264,6 +271,8 @@ Notice Notifier::summary(const Window &window) const
     } else if (notice.event == QLatin1String("conflict")) {
         // "Show in Folder" stays on the last one moved.
         notice.text = i18np("1 more of your changed files was moved out of the way.", "%1 more of your changed files were moved out of the way.", n);
+    } else if (notice.event == QLatin1String("notRemovedHere")) {
+        notice.text = i18np("1 more folder cannot be removed here.", "%1 more folders cannot be removed here.", n);
     } else if (notice.event == QLatin1String("uploadFailed")) {
         notice.text = i18np("1 more change could not be uploaded.", "%1 more changes could not be uploaded.", n);
     }

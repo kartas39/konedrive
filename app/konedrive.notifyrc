@@ -33,3 +33,8 @@ Action=Popup
 Name=Upload failed
 Comment=A change made on this computer cannot be uploaded: a name OneDrive refuses, a full OneDrive, a sign-in without the permission
 Action=Popup
+
+[Event/notRemovedHere]
+Name=Folder not removed
+Comment=A folder could not be removed on this computer because it holds items that cannot be shown here
+Action=Popup

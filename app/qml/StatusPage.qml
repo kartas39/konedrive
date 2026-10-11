@@ -28,6 +28,8 @@ FormCard.FormCardPage {
     /// And the folder does: a folder that cannot be watched runs read-only for now
     /// (Folder.Writable).
     readonly property bool uploading: uploadingOn && sync !== null && sync.writable
+    /// Read-only was asked for while changes were unsent: the account sends them first.
+    readonly property bool switchingToReadOnly: account !== null && account.switchingToReadOnly
     // A no-interception folder is one Free Up Space warning; a folder that
     // shows OneDrive but whose helper is not connected (including a legacy
     // folder still waiting to switch, which publishes RootState "error", not
@@ -312,8 +314,13 @@ FormCard.FormCardPage {
         FormCard.FormTextDelegate {
             objectName: "modeLine"
             visible: page.oneDrive
-            text: page.uploading ? i18n("Changes upload") : page.uploadingOn ? i18n("Read-only for now") : i18n("Read-only")
-            description: page.uploading ? i18n("What you add, change, move or delete in the folder is uploaded to OneDrive.")
+            // TODO: wording
+            text: page.switchingToReadOnly ? i18np("Switching to read-only: 1 change still to send",
+                                                   "Switching to read-only: %1 changes still to send",
+                                                   page.account.unsentCount)
+                  : page.uploading ? i18n("Changes upload") : page.uploadingOn ? i18n("Read-only for now") : i18n("Read-only")
+            description: page.switchingToReadOnly ? i18n("Uploading turns off by itself once they are sent. It can be turned off at once, or left on, on the Account page.")
+                         : page.uploading ? i18n("What you add, change, move or delete in the folder is uploaded to OneDrive.")
                          : page.uploadingOn ? i18n("Uploading is on for this account, but this folder is read-only at the moment, and nothing is uploaded. If it stays so, the problem is shown on this page.")
                                             : i18n("Files in this folder cannot be changed here, and nothing is uploaded. Uploading can be turned on on the Account page.")
             leading: Kirigami.Icon {

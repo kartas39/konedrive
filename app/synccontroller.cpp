@@ -437,12 +437,20 @@ void SyncController::cancelPending()
 
 void SyncController::forget()
 {
-    // TODO: before this call the window warns: it asks `UploadQueue.UnsentCount()` (m_queue->UnsentCount(), answered
-    // for a folder in any state) and, when the answer is not 0, asks the user to confirm "N changes were not sent
-    // to OneDrive and will stay only on this computer". Unregister is never refused for what is unsent.
+    // Never refused for what is unsent: the page warns with readUnsentCount() before it calls.
     // M6: no timeout, as Register and FreeUpSpace have.
     const auto message = QDBusMessage::createMethodCall(ServiceName, m_path, FolderInterface, QStringLiteral("Unregister"));
     call(m_bus.asyncCall(message, std::numeric_limits<int>::max()));
+}
+
+void SyncController::readUnsentCount()
+{
+    auto *watcher = new QDBusPendingCallWatcher(m_queue->UnsentCount(), this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
+        w->deleteLater();
+        const QDBusPendingReply<qulonglong> reply = *w;
+        Q_EMIT unsentCountRead(reply.isError() ? 0 : reply.value());
+    });
 }
 
 void SyncController::refresh()

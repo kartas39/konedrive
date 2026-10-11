@@ -38,6 +38,15 @@ FormCard.FormCardPage {
         }
     }
 
+    /// What a Forget and the account's removal say first of `count` changes made here
+    /// that are not sent to OneDrive.
+    function unsentWarning(count) {
+        // TODO: wording
+        return i18np("1 change was not sent to OneDrive and will stay only on this computer.",
+                     "%1 changes were not sent to OneDrive and will stay only on this computer.",
+                     count);
+    }
+
     /// Sign In calls this once the account it just added is signed in,
     /// named and chosen: "a sign-in exists to sync something".
     function openFolderPicker() {
@@ -50,6 +59,7 @@ FormCard.FormCardPage {
     title: window ? window.accountTitle(i18nc("@title", "Account")) : i18nc("@title", "Account")
 
     Kirigami.InlineMessage {
+        objectName: "accountError"
         Layout.fillWidth: true
         Layout.topMargin: Kirigami.Units.largeSpacing
         Layout.leftMargin: Kirigami.Units.largeSpacing
@@ -186,6 +196,46 @@ FormCard.FormCardPage {
             text: i18nc("@action:button", "Cancel")
             icon.name: "dialog-cancel"
             onClicked: page.account.cancelModeSwitch()
+        }
+        // Read-only was asked for while changes were unsent: the account sends them
+        // and switches by itself. A state of the page, with its two ways out.
+        FormCard.FormDelegateSeparator {
+            visible: switchingToReadOnlyLine.visible
+        }
+        FormCard.FormTextDelegate {
+            id: switchingToReadOnlyLine
+            objectName: "switchingToReadOnlyLine"
+            visible: page.account !== null && page.account.switchingToReadOnly
+            // TODO: wording
+            text: page.account ? i18np("Switching to read-only: 1 change still to send",
+                                       "Switching to read-only: %1 changes still to send",
+                                       page.account.unsentCount) : ""
+            // TODO: wording
+            description: i18n("Uploading turns off by itself once they are sent.")
+            leading: Kirigami.Icon {
+                source: "cloud-upload"
+                implicitWidth: Kirigami.Units.iconSizes.medium
+                implicitHeight: Kirigami.Units.iconSizes.medium
+            }
+        }
+        FormCard.FormButtonDelegate {
+            objectName: "switchToReadOnlyNow"
+            visible: switchingToReadOnlyLine.visible
+            enabled: page.account !== null && page.account.switchingTo.length === 0
+            text: i18nc("@action:button", "Switch Now")
+            // TODO: wording
+            description: i18n("What is not sent stays on this computer, and is sent when uploading is turned on again.")
+            icon.name: "object-locked"
+            onClicked: page.account.setMode("read-only", true)
+        }
+        FormCard.FormButtonDelegate {
+            objectName: "cancelReadOnlySwitch"
+            visible: switchingToReadOnlyLine.visible
+            enabled: page.account !== null && page.account.switchingTo.length === 0
+            text: i18nc("@action:button", "Cancel")
+            description: i18n("Uploading stays on.")
+            icon.name: "dialog-cancel"
+            onClicked: page.account.setMode("read-write", false)
         }
     }
 
@@ -424,7 +474,8 @@ FormCard.FormCardPage {
             text: i18nc("@action:button", "Forget Folder")
             description: i18n("The files stay where they are; KOneDrive stops keeping them in step.")
             icon.name: "edit-delete-remove"
-            onClicked: page.sync.forget()
+            // Never refused for what is unsent: asked first only when something is.
+            onClicked: forgetDialog.ask()
         }
     }
 
@@ -626,6 +677,77 @@ FormCard.FormCardPage {
         }
     }
 
+    // A Forget while changes made here are not sent: they stay only on this computer.
+    // With none unsent, or a count that cannot be read, the folder is forgotten unasked.
+    Kirigami.PromptDialog {
+        id: forgetDialog
+        objectName: "forgetDialog"
+
+        /// The account whose folder is to be forgotten (an AccountItem), from the click
+        /// until its count is read or the question is answered; null otherwise.
+        property QtObject item: null
+        property double unsentCount: 0
+
+        function ask() {
+            item = Current.item;
+            if (item) {
+                item.sync.readUnsentCount();
+            }
+        }
+
+        function confirm() {
+            if (item) {
+                item.sync.forget();
+            }
+            close();
+        }
+
+        title: i18nc("@title:window", "Forget Folder?")
+        subtitle: page.unsentWarning(unsentCount)
+        onClosed: item = null
+        dialogType: Kirigami.PromptDialog.Warning
+        maximumWidth: Math.min(absoluteMaximumWidth, Kirigami.Units.gridUnit * 30)
+        standardButtons: Kirigami.Dialog.NoButton
+        customFooterActions: [
+            Kirigami.Action {
+                text: i18nc("@action:button", "Forget Folder")
+                icon.name: "edit-delete-remove"
+                enabled: forgetDialog.item !== null
+                onTriggered: forgetDialog.confirm()
+            },
+            Kirigami.Action {
+                text: i18nc("@action:button", "Cancel")
+                icon.name: "dialog-cancel"
+                onTriggered: forgetDialog.close()
+            }
+        ]
+
+        Connections {
+            target: forgetDialog.item ? forgetDialog.item.sync : null
+            function onUnsentCountRead(count) {
+                if (forgetDialog.visible) {
+                    return;
+                }
+                if (count > 0) {
+                    forgetDialog.unsentCount = count;
+                    forgetDialog.open();
+                } else {
+                    forgetDialog.item.sync.forget();
+                    forgetDialog.item = null;
+                }
+            }
+        }
+
+        // Another account shown, or this one gone: not the question asked.
+        Connections {
+            target: Current
+            function onChanged() {
+                forgetDialog.item = null;
+                forgetDialog.close();
+            }
+        }
+    }
+
     Kirigami.PromptDialog {
         id: removeDialog
         objectName: "removeDialog"
@@ -640,11 +762,31 @@ FormCard.FormCardPage {
             close();
         }
 
+        /// How many changes made here are not sent to OneDrive (UnsentCount), read when
+        /// the question is asked; 0 until it is answered, and when it cannot be read.
+        property double unsentCount: 0
+
         title: item ? i18nc("@title:window", "Remove %1?", item.account.label) : ""
-        subtitle: item && item.sync.rootPath.length > 0
-            ? i18n("The files that were downloaded, and your own, stay in %1. Files that were never downloaded are not on this computer.", item.sync.rootPath)
-            : i18n("KOneDrive signs out of this account and forgets it on this computer. Nothing in OneDrive is deleted.")
-        onAboutToShow: item = Current.item
+        subtitle: {
+            const stays = item && item.sync.rootPath.length > 0
+                ? i18n("The files that were downloaded, and your own, stay in %1. Files that were never downloaded are not on this computer.", item.sync.rootPath)
+                : i18n("KOneDrive signs out of this account and forgets it on this computer. Nothing in OneDrive is deleted.");
+            return unsentCount > 0 ? page.unsentWarning(unsentCount) + "\n\n" + stays : stays;
+        }
+        onAboutToShow: {
+            item = Current.item;
+            unsentCount = 0;
+            if (item) {
+                item.sync.readUnsentCount();
+            }
+        }
+
+        Connections {
+            target: removeDialog.item ? removeDialog.item.sync : null
+            function onUnsentCountRead(count) {
+                removeDialog.unsentCount = count;
+            }
+        }
         dialogType: Kirigami.PromptDialog.Warning
         maximumWidth: Math.min(absoluteMaximumWidth, Kirigami.Units.gridUnit * 30)
         standardButtons: Kirigami.Dialog.NoButton

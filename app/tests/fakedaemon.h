@@ -112,6 +112,12 @@ public:
     /// SetMode("read-write") is refused Failed with these words, when not empty: a test that
     /// loads the whole window keeps the sign-in, and so the browser, from starting.
     QString readWriteFails;
+    /// Changes made here that are not sent: while not 0, an unforced SetMode("read-only")
+    /// keeps the wish and LastError says so, as the daemon's does.
+    qulonglong unsentChanges = 0;
+
+    /// LastError of an account that keeps a wish for read-only, as the daemon writes it.
+    static QString switchingNote(qulonglong unsent) { return QStringLiteral("switching to read-only: %1 changes still to send").arg(unsent); }
 
 public Q_SLOTS:
     QString BeginSignIn()
@@ -145,8 +151,9 @@ public Q_SLOTS:
         set({{QStringLiteral("Label"), label.trimmed()}});
     }
     /// As the daemon's: the sign-in state, for read-write, which
-    /// answers a sign-in URL (grantReadWrite() then ends it); read-only is
-    /// switched to at once, forced or not.
+    /// answers a sign-in URL (grantReadWrite() then ends it), or takes a wish for
+    /// read-only back; read-only is switched to at once when nothing is unsent
+    /// or it is forced, and is a wish kept otherwise.
     QString SetMode(const QString &mode, bool force, const QDBusMessage &message)
     {
         calls << QStringLiteral("SetMode:%1:%2").arg(mode, force ? QStringLiteral("force") : QStringLiteral("no-force"));
@@ -156,6 +163,10 @@ public Q_SLOTS:
             return QString();
         };
         if (mode == QLatin1String("read-write")) {
+            if (lastError().startsWith(QLatin1String("switching to read-only"))) {
+                set({{QStringLiteral("LastError"), QString()}});
+                return QString();
+            }
             if (state() != QLatin1String("signed-in")) {
                 return refuse(QStringLiteral("org.konedrive.Error.NotSignedIn"), QStringLiteral("sign in first; then switch the account to read-write"));
             }
@@ -166,7 +177,11 @@ public Q_SLOTS:
             return QStringLiteral("https://login.example/authorize?scope=Files.ReadWrite&account=") + id();
         }
         if (mode == QLatin1String("read-only")) {
-            set({{QStringLiteral("Mode"), QStringLiteral("read-only")}});
+            if (unsentChanges > 0 && !force) {
+                set({{QStringLiteral("LastError"), switchingNote(unsentChanges)}});
+                return QString();
+            }
+            set({{QStringLiteral("Mode"), QStringLiteral("read-only")}, {QStringLiteral("LastError"), QString()}});
             return QString();
         }
         return refuse(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("unknown mode ") + mode);

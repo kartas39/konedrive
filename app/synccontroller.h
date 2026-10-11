@@ -260,6 +260,11 @@ public:
     Q_INVOKABLE void retryRegistration();
     Q_INVOKABLE void cancelPending();
     Q_INVOKABLE void forget();
+    /// Asks UploadQueue.UnsentCount(): how many changes made here are not sent to
+    /// OneDrive, which a Forget or the account's removal leaves only on this computer.
+    /// Answers unsentCountRead; a count that cannot be read is 0, so that nothing waits
+    /// for it.
+    Q_INVOKABLE void readUnsentCount();
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void loadSkipped();
     Q_INVOKABLE void openFolder();
@@ -307,6 +312,8 @@ public:
     void setCallTimeout(int ms);
 
 Q_SIGNALS:
+    /// readUnsentCount()'s answer.
+    void unsentCountRead(qulonglong count);
     void serviceAvailableChanged();
     void syncChanged();
     void skippedChanged();

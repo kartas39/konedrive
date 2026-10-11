@@ -113,6 +113,19 @@ private Q_SLOTS:
         QVERIFY(m_sink.sent.first().text.contains(QStringLiteral("the connection was reset")));
     }
 
+    /// A directory that cannot be removed here is told once, with why and what to do,
+    /// and offers nothing to press.
+    void aDirectoryNotRemovedHereNotifies()
+    {
+        start();
+        report(QStringLiteral("not-removed-here"), QStringLiteral("Notebooks"), QString());
+        QCOMPARE(m_sink.sent.size(), 1);
+        QCOMPARE(m_sink.sent.first().event, QStringLiteral("notRemovedHere"));
+        QCOMPARE(m_sink.sent.first().text,
+                 QStringLiteral("Notebooks cannot be removed here: it holds items that cannot be shown on this computer. Remove it in OneDrive."));
+        QCOMPARE(m_sink.sent.first().showPath, QString());
+    }
+
     /// A replacement that failed is its own kind, `update-failed`.
     void aFailedUpdateNotifies()
     {
