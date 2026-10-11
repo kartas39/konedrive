@@ -14,8 +14,6 @@ fn conditions() -> SendingConditions {
         largest_file_size: 100,
         quiet_until: None,
         is_onedrive_full: false,
-        sending_state: SendingState::ReadWrite,
-        unsent_since: Some(5),
         refusal: None,
         next_try: None,
         now: 500,
@@ -36,17 +34,6 @@ fn with_nothing_in_its_way_everything_is_sent() {
 fn nothing_of_an_ignored_item_is_sent() {
     let ignored = Some(SendingObstacle::Ignored);
     assert_eq!(obstacles(&SendingConditions { is_ignored: true, ..conditions() }), [ignored.clone(), ignored.clone(), ignored.clone(), ignored.clone(), ignored]);
-}
-
-#[test]
-fn a_read_only_folder_sends_what_was_unsent_when_it_was_switched() {
-    let read_only = Some(SendingObstacle::ReadOnlyFolder);
-    let switched_at = |last_unsent_since| SendingConditions { sending_state: SendingState::ReadOnly { last_unsent_since }, ..conditions() };
-    assert_eq!(obstacles(&switched_at(5)), [None, None, None, None, None], "unsent at the switch");
-    assert_eq!(obstacles(&switched_at(9)), [None, None, None, None, None], "unsent before the switch");
-    assert_eq!(obstacles(&switched_at(4)), [read_only.clone(), read_only.clone(), read_only.clone(), read_only.clone(), read_only.clone()], "unsent since after the switch");
-    let never_stamped = SendingConditions { unsent_since: None, ..switched_at(9) };
-    assert_eq!(obstacles(&never_stamped), [read_only.clone(), read_only.clone(), read_only.clone(), read_only.clone(), read_only], "with no stamp it was not unsent at the switch");
 }
 
 #[test]
@@ -74,14 +61,11 @@ fn of_several_obstacles_the_one_that_does_not_end_by_itself_is_said_first() {
         size: Some(101),
         quiet_until: Some(77),
         is_onedrive_full: true,
-        sending_state: SendingState::ReadOnly { last_unsent_since: 0 },
         ..conditions()
     };
     let new_file = |conditions: &SendingConditions| find_sending_obstacle(SentPart::NewFile, conditions);
     assert_eq!(new_file(&all), Some(SendingObstacle::Ignored));
     let all = SendingConditions { is_ignored: false, ..all };
-    assert_eq!(new_file(&all), Some(SendingObstacle::ReadOnlyFolder));
-    let all = SendingConditions { sending_state: SendingState::ReadWrite, ..all };
     assert_eq!(new_file(&all), Some(SendingObstacle::NameRefused(Reason::NameSpaces)));
     let all = SendingConditions { name_refusal: None, ..all };
     assert_eq!(new_file(&all), Some(SendingObstacle::TooLarge));

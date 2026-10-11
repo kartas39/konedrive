@@ -64,15 +64,13 @@ fn a_file_held_open_for_writing_whose_content_onedrive_changed_is_not_planned_un
     let mut open = with_content_in_onedrive(with_content_here(synced_file(2, ROOT, "a.txt"), written_here()), hashed("theirs"));
     open.content_before_write = Some(hashed("h2"));
     let closed_unchanged = with_content_in_onedrive(on_disk(synced_file(2, ROOT, "a.txt")), hashed("theirs"));
-    for sending_state in [SendingState::ReadWrite, SendingState::ReadOnly { last_unsent_since: 0 }] {
+    {
         let mut given = input(vec![open.clone()]);
-        given.sending_state = sending_state;
         given.items_open_for_writing = [id(2)].into();
-        assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::User(Reason::OpenForWriting)), "{sending_state:?}");
+        assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::User(Reason::OpenForWriting)));
 
-        let mut given = input(vec![closed_unchanged.clone()]);
-        given.sending_state = sending_state;
-        assert_eq!(answer(&given, 2), folder_step(FolderStep::TakeOneDriveContent { item: versions(&given, 2) }), "{sending_state:?}");
+        let given = input(vec![closed_unchanged.clone()]);
+        assert_eq!(answer(&given, 2), folder_step(FolderStep::TakeOneDriveContent { item: versions(&given, 2) }));
     }
 }
 

@@ -276,21 +276,15 @@ impl ItemFact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FolderFact {
     ListingUnderWay,
-    /// Switched to read-only when item 2 was the last to have come to be unsent.
-    ReadOnly,
     OneDriveFull,
 }
 
-const EVERY_FOLDER_FACT: [FolderFact; 3] = [FolderFact::ListingUnderWay, FolderFact::ReadOnly, FolderFact::OneDriveFull];
-
-/// The last stamp given before the folder of [`FolderFact::ReadOnly`] was switched.
-const LAST_UNSENT_SINCE_AT_SWITCH: u64 = 2;
+const EVERY_FOLDER_FACT: [FolderFact; 2] = [FolderFact::ListingUnderWay, FolderFact::OneDriveFull];
 
 impl FolderFact {
     fn tell(self, given: &mut SyncPlanInput) {
         match self {
             FolderFact::ListingUnderWay => given.is_listing_under_way = true,
-            FolderFact::ReadOnly => given.sending_state = SendingState::ReadOnly { last_unsent_since: LAST_UNSENT_SINCE_AT_SWITCH },
             FolderFact::OneDriveFull => given.is_onedrive_full = true,
         }
     }
@@ -667,8 +661,7 @@ fn find_step_the_rows_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<S
 ///   here and whose removal is still to be sent: one removal, of the outermost.
 /// - The move of a directory the folder cannot show.
 /// - The removal of a directory while a listing is under way.
-/// - In a read-only folder, a step towards OneDrive of what came to be unsent after the
-///   switch; while OneDrive is full, or within a file's quiet time, a sending of content;
+/// - While OneDrive is full, or within a file's quiet time, a sending of content;
 ///   a sending of a name OneDrive cannot hold.
 /// - What the user made sent into a directory the folder cannot show as OneDrive has it,
 ///   or merged with an item it cannot show.
@@ -799,11 +792,6 @@ fn find_step_the_callers_facts_refuse(given: &SyncPlanInput, plan: &SyncPlan) ->
                 if taken.synced_place.is_none() && taken.synced_content.is_none() {
                     return Some(format!("the removal of the directory {number} takes with it item {}, which the folder never showed", taken.local_item_id));
                 }
-            }
-        }
-        if let SendingState::ReadOnly { last_unsent_since } = given.sending_state {
-            if row.unsent_since.is_none_or(|since| since > last_unsent_since) {
-                return Some(format!("item {number} is sent in a read-only folder, and was not unsent when the folder was switched"));
             }
         }
         if sends_content && given.is_onedrive_full {

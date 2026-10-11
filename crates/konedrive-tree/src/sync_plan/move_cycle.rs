@@ -130,7 +130,7 @@ pub(crate) struct MoveCycles {
 /// - Of the directories moved here whose move would put them into what is to be in them,
 ///   the move of the one with the lowest id is taken back, and the others wait for it: the
 ///   plan made after it sees whether their moves still close a cycle. This holds also for a
-///   move that is not sent now (a read-only folder, a name OneDrive cannot hold).
+///   move that is not sent now (a name OneDrive cannot hold, a next try still to come).
 /// - A directory OneDrive moved into what the folder shows in it is not moved here yet: it
 ///   waits for the first directory on the way that is out of place. Nor into what the
 ///   folder would show in it once another directory's move of this plan ran: of two such

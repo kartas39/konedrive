@@ -386,8 +386,7 @@ pub fn void_local_step_tries(items: &ItemReader<'_>, local_step_tries: &LocalSte
 }
 
 /// What the plan is told of the folder as a whole, with no row yet: read once for a plan,
-/// whatever is given later. What the store says — whether a listing is under way, the
-/// folder's state of sending — and what `facts` say: running, the
+/// whatever is given later. What the store says — whether a listing is under way — and what `facts` say: running, the
 /// destinations of the running steps (each reference turned into its row by
 /// `find_bound_item`), OneDrive full, the time, the settings.
 pub fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<SyncPlanInput, TreeError> {
@@ -415,7 +414,6 @@ pub fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Sy
         is_listing_under_way: items.find_listing_under_way()?.is_some(),
         is_onedrive_full: facts.is_onedrive_full,
         largest_file_size: facts.settings.largest_file_size,
-        sending_state: items.find_sending_state()?,
         computer_name: facts.settings.computer_name.clone(),
         places_taken_in_onedrive: BTreeMap::new(),
         items_left_by_uploads: BTreeMap::new(),

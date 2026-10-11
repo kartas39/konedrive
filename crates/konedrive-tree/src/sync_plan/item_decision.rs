@@ -462,7 +462,6 @@ fn decide_bound_item_onedrive_never_listed(case: &ItemCase<'_>) -> ItemDecision 
 fn find_decision_not_to_send(case: &ItemCase<'_>, sent_part: SentPart) -> Option<ItemDecision> {
     Some(match find_sending_obstacle(sent_part, &case.sending)? {
         SendingObstacle::Ignored => ItemDecision::Exclusion(ExclusionReason::NameIgnored),
-        SendingObstacle::ReadOnlyFolder => ItemDecision::Wait(WaitReason::User(Reason::NotAllowed(Some(READ_ONLY_FOLDER.to_owned())))),
         SendingObstacle::NameRefused(reason) => ItemDecision::Wait(WaitReason::User(reason)),
         SendingObstacle::TooLarge => ItemDecision::Wait(WaitReason::User(Reason::TooLarge)),
         SendingObstacle::OneDriveFull => ItemDecision::Wait(WaitReason::User(Reason::WaitingForSpace)),
@@ -471,10 +470,6 @@ fn find_decision_not_to_send(case: &ItemCase<'_>, sent_part: SentPart) -> Option
         SendingObstacle::TriedAgainLater { until, reason } => ItemDecision::Wait(WaitReason::Time { until, reason }),
     })
 }
-
-/// What stands behind "not allowed now" for an item that waits for its folder to be
-/// read-write again.
-pub const READ_ONLY_FOLDER: &str = "the folder is read-only";
 
 /// A step towards OneDrive that sends the item into the directory the folder shows it in,
 /// under its name here: made by `step` from that directory's binding and the name. Waits

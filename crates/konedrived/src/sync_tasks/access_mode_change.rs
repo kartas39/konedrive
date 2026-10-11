@@ -48,7 +48,6 @@
 // test: a_close_after_the_switch_is_written_and_waits_under_the_hold
 // test: the_switch_stops_neither_task
 // test: a_folder_started_read_only_holds_what_is_unsent_from_its_first_plan
-// TODO: `SendingState::ReadOnly { last_unsent_since }`, the store's stamp of the switch (`item_store::sending_switch`: `switch_sending_to_read_only`, `switch_sending_to_read_write`, `find_sending_state`) and the plan's rule for it have no caller by this rule: a read-only folder is held as a whole. Check that nothing else needs them, and remove them with the plan's rule if so.
 #![allow(dead_code, unused_variables)]
 
 use crate::config::Mode;

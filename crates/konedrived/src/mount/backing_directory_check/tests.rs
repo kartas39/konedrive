@@ -6,7 +6,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use konedrive_fs::placeholder::{self, State, XATTR_CTAG, XATTR_ITEM_ID, XATTR_STATE};
 use konedrive_tree::{
     make_sync_plan, Change, ContentPresence, ContentVersion, DriveId, FileSyncState, Item, ItemKind, ItemPlace, Kind, ListingLink, LocalItemId, LocalVersionChange, OneDriveItemId, OneDriveItemReference,
-    OneDriveStep, Placement, Row, SendingState, SyncPlan, SyncPlanInput, SyncStep, TreeStore,
+    OneDriveStep, Placement, Row, SyncPlan, SyncPlanInput, SyncStep, TreeStore,
 };
 
 use super::{BackingDirectoryCheck, DiskFinding, DiskFindings, UnresolvedReason};
@@ -344,7 +344,6 @@ impl Folder {
             is_listing_under_way: items.find_listing_under_way().unwrap().is_some(),
             is_onedrive_full: false,
             largest_file_size: 250 << 30,
-            sending_state: SendingState::ReadWrite,
             computer_name: "pc".to_owned(),
             places_taken_in_onedrive: Default::default(),
             items_left_by_uploads: Default::default(),

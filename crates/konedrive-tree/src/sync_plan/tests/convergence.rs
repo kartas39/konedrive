@@ -413,33 +413,6 @@ impl World {
         self.check_converged(&expected)
     }
 
-    /// As [`change_and_converge`](Self::change_and_converge), in a folder that is switched
-    /// to read-only after the first round: what was unsent then is sent, what comes to be
-    /// unsent later waits for the user, and all of it converges once the folder is
-    /// read-write again.
-    fn change_and_converge_through_a_read_only_folder(&mut self, here: usize, in_onedrive: usize) -> Result<(), Failure> {
-        let listed = self.make_changes(here, in_onedrive);
-        write_listing_of_changes(&mut self.store, &listed);
-        let expected = ExpectedEnd::of(&mut self.store);
-        self.run(1)?;
-        self.facts.sending_state = SendingState::ReadOnly { last_unsent_since: self.store.item_store().last_unsent_since().unwrap() };
-        let read_only = self.run_to_the_end()?;
-        // What is left waits for the user, or for an item that does.
-        let waited_for = |item: LocalItemId| read_only.waits.iter().find(|wait| wait.item == item).map(|wait| &wait.reason);
-        for wait in &read_only.waits {
-            let mut reason = Some(&wait.reason);
-            for _ in 0..read_only.waits.len() {
-                let Some(WaitReason::AnotherItem(another)) = reason else { break };
-                reason = waited_for(*another);
-            }
-            if !matches!(reason, Some(WaitReason::User(_))) {
-                return Err(format!("in the read-only folder item {} waits, and not for the user: {:?}, at last {reason:?}", wait.item, wait.reason));
-            }
-        }
-        self.facts.sending_state = SendingState::ReadWrite;
-        self.run_to_the_end()?;
-        self.check_converged(&expected)
-    }
 }
 
 /// What must be on both sides once a run has ended, read off the rows before it begins:
@@ -596,8 +569,6 @@ enum RunKind {
     Plain,
     /// The listing in two pages, the plan running between them.
     ListingOfTwoPages,
-    /// The folder switched to read-only after the first round, and back at the end.
-    ReadOnlyFolder,
     /// Two unsent items and two OneDrive changed are read at first, and the directories
     /// above an item are given only when the plan asks for them.
     FewItemsGiven,
@@ -632,7 +603,6 @@ fn run(seed: u64, kind: RunKind, times: usize, changes: usize) -> Result<World, 
         let converged = match kind {
             RunKind::Plain | RunKind::FewItemsGiven | RunKind::CallerFactsDrawn => world.change_and_converge(changes, changes),
             RunKind::ListingOfTwoPages => world.change_and_converge_through_a_listing_of_two_pages(changes, changes),
-            RunKind::ReadOnlyFolder => world.change_and_converge_through_a_read_only_folder(changes, changes),
             RunKind::RequestsInFlight => world.change_and_converge_with_requests_in_flight(changes, changes),
         };
         if let Err(failure) = converged {
@@ -643,7 +613,7 @@ fn run(seed: u64, kind: RunKind, times: usize, changes: usize) -> Result<World, 
     Ok(world)
 }
 
-const RUN_KINDS: [RunKind; 6] = [RunKind::Plain, RunKind::ListingOfTwoPages, RunKind::ReadOnlyFolder, RunKind::FewItemsGiven, RunKind::CallerFactsDrawn, RunKind::RequestsInFlight];
+const RUN_KINDS: [RunKind; 5] = [RunKind::Plain, RunKind::ListingOfTwoPages, RunKind::FewItemsGiven, RunKind::CallerFactsDrawn, RunKind::RequestsInFlight];
 
 /// The design's §12, "convergence": new. A few seeds of each kind of run; more of the one
 /// with requests in flight, whose cases are rarer.

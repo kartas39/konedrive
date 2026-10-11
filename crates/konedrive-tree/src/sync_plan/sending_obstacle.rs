@@ -4,7 +4,7 @@
 
 use konedrive_reason::Reason;
 
-use super::{NextTry, SendingState};
+use super::NextTry;
 
 /// What a step towards OneDrive sends of an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,9 +47,6 @@ pub(crate) struct SendingConditions {
     /// The time the quiet time of the file's content ends; `None` when it has ended.
     pub(crate) quiet_until: Option<i64>,
     pub(crate) is_onedrive_full: bool,
-    pub(crate) sending_state: SendingState,
-    /// Since when the item is unsent ([`Item::unsent_since`](crate::Item::unsent_since)).
-    pub(crate) unsent_since: Option<u64>,
     /// Why OneDrive refused what was sent of the item, for good or for lack of space, as
     /// the steps remember it; `None` when it did not.
     pub(crate) refusal: Option<Reason>,
@@ -64,8 +61,6 @@ pub(crate) struct SendingConditions {
 pub(crate) enum SendingObstacle {
     /// The item is left here: never sent.
     Ignored,
-    /// The folder is read-only, and the item came to be unsent after it was switched.
-    ReadOnlyFolder,
     /// OneDrive cannot hold the name; it is not sent and not altered.
     NameRefused(Reason),
     /// The file is larger than OneDrive takes.
@@ -85,7 +80,6 @@ pub(crate) enum SendingObstacle {
 /// that holds, what never ends by itself before what does:
 ///
 /// - an ignored item is never sent, whatever is sent of it;
-/// - a read-only folder sends only what was unsent when it was switched;
 /// - a name OneDrive cannot hold, where the name is sent;
 /// - what OneDrive refused of the item, as the steps remember it, whatever is sent;
 /// - a file larger than OneDrive takes, OneDrive being full, and the quiet time, where
@@ -94,11 +88,6 @@ pub(crate) enum SendingObstacle {
 pub(crate) fn find_sending_obstacle(sent_part: SentPart, conditions: &SendingConditions) -> Option<SendingObstacle> {
     if conditions.is_ignored {
         return Some(SendingObstacle::Ignored);
-    }
-    if let SendingState::ReadOnly { last_unsent_since } = conditions.sending_state {
-        if conditions.unsent_since.is_none_or(|since| since > last_unsent_since) {
-            return Some(SendingObstacle::ReadOnlyFolder);
-        }
     }
     if sent_part.has_name() {
         if let Some(reason) = &conditions.name_refusal {

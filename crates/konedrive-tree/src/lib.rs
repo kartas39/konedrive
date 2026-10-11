@@ -55,7 +55,7 @@ pub use schema::SCHEMA_VERSION;
 pub use schema::{decide_old_store, find_stored_version, list_old_store_upload_sessions, OldStoreDecision, RebuildLoss, StoreOrigin, StoredVersion};
 pub use shared::{Store, QUEUE};
 pub use sync_plan::{
-    is_same_content_but_for_time, make_conflict_copy_name, make_sync_plan, make_temporary_name, ExclusionReason, FolderStep, FolderStepKind, ItemExclusion, ItemVersions, ItemWait, NextTry, OneDriveStep, PlanFault, RowStep, RowStepKind, SendingState, SyncPlan, SyncPlanInput, SyncStep, TriedStep,
+    is_same_content_but_for_time, make_conflict_copy_name, make_sync_plan, make_temporary_name, ExclusionReason, FolderStep, FolderStepKind, ItemExclusion, ItemVersions, ItemWait, NextTry, OneDriveStep, PlanFault, RowStep, RowStepKind, SyncPlan, SyncPlanInput, SyncStep, TriedStep,
     WaitReason, READ_ONLY_FOLDER,
 };
 

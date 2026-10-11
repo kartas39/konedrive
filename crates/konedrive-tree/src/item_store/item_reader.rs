@@ -52,7 +52,6 @@ use super::item_row::{self, item_from, name_value, CONTENT_COLUMNS, ITEM_COLUMNS
 use super::{find_folder_visibility, find_path, is_ignored, list_rows_up_in_onedrive, refuse};
 use crate::model::{FolderVisibility, Item, ItemKind, LocalItemId, OneDriveItemId, OneDriveItemReference, Placement, SkipReason};
 use crate::step_memory::find_mismatched_item;
-use crate::sync_plan::SendingState;
 use crate::{FoldedName, ListingUnderWay, Store, TreeError, TreeStore, MAX_CHAIN};
 
 /// SQL for "the row's own placement says the folder cannot show the item". The index
@@ -514,14 +513,6 @@ impl ItemReader<'_> {
             }
         }
         Err(refuse(format!("the directories item {item} was agreed to be below do not end at one the folder shows")))
-    }
-
-    /// The folder's state of sending, with the stamp of its switch to read-only, as
-    /// [`ItemStore::switch_sending_to_read_only`](super::ItemStore::switch_sending_to_read_only)
-    /// left it; read-write in a store that was never switched. Called by the plan's task
-    /// at each plan and at start. MISSING-1.c.
-    pub fn find_sending_state(&self) -> Result<SendingState, TreeError> {
-        super::sending_switch::read_sending_state(self.conn())
     }
 
     /// Whether a full listing was asked for and has not begun

@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use konedrive_reason::Reason;
 
-use super::item_decision::READ_ONLY_FOLDER;
 use super::*;
 use crate::model::{ContentPresence, ContentVersion, DriveId, ItemKind, ItemPlace, ItemVersion, OneDriveItemId, OneDriveItemReference, Placement};
 
@@ -201,7 +200,6 @@ pub(crate) fn input(items: Vec<Item>) -> SyncPlanInput {
         is_listing_under_way: false,
         is_onedrive_full: false,
         largest_file_size: 250 << 30,
-        sending_state: SendingState::ReadWrite,
         computer_name: "pc".to_owned(),
         places_taken_in_onedrive: BTreeMap::new(),
         items_left_by_uploads: BTreeMap::new(),
@@ -372,37 +370,6 @@ fn while_onedrive_is_full_no_content_is_sent_and_moves_and_removals_go_on() {
     assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendMove { item: versions(&given, 4), parent: reference("root"), name: "c.txt".into() }));
     assert_eq!(answer(&given, 5), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 5) }));
     assert_eq!(answer(&given, 6), onedrive_step(OneDriveStep::MakeDirectory { item: versions(&given, 6), parent: reference("root"), name: "d".into() }));
-}
-
-/// Differs from today, as the design says (§13, 3): a read-only folder sends what was
-/// unsent when it was switched, and what came to be unsent later waits for the folder to be
-/// read-write again. Today a switched folder sends nothing
-/// (`unsent_changes_wait_while_the_folder_is_read_only`, `tests/fuse-probe/file_writes.sh`),
-/// and a conflict copy made in one is not recorded
-/// (`a_removed_directory_kept_in_a_read_only_folder_is_not_made_again`,
-/// `fuse/conflict_copies/tests.rs`). Steps towards the folder go on.
-#[test]
-fn a_read_only_folder_sends_what_was_unsent_when_it_was_switched_and_nothing_later() {
-    // The items 2 to 4 were unsent at the switch (their stamps are their numbers); 7 to 9
-    // came to be unsent after it.
-    let mut given = input(vec![
-        made_file(2, ROOT, "new.txt"),
-        moved_here(synced_file(3, ROOT, "b.txt"), ROOT, "c.txt"),
-        removed_here(synced_file(4, ROOT, "d.txt")),
-        made_file(7, ROOT, "copy.txt"),
-        removed_here(synced_directory(8, ROOT, "gone")),
-        with_content_here(synced_file(9, ROOT, "e.txt"), written_here()),
-        listed(10, ItemKind::File, ROOT, "theirs.txt"),
-    ]);
-    given.sending_state = SendingState::ReadOnly { last_unsent_since: 4 };
-    let waits_for_read_write = Answer::Wait(WaitReason::User(Reason::NotAllowed(Some(READ_ONLY_FOLDER.to_owned()))));
-    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendNewFile { item: versions(&given, 2), parent: reference("root"), name: "new.txt".into() }));
-    assert_eq!(answer(&given, 3), onedrive_step(OneDriveStep::SendMove { item: versions(&given, 3), parent: reference("root"), name: "c.txt".into() }));
-    assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 4) }));
-    assert_eq!(answer(&given, 7), waits_for_read_write);
-    assert_eq!(answer(&given, 8), waits_for_read_write);
-    assert_eq!(answer(&given, 9), waits_for_read_write);
-    assert_eq!(answer(&given, 10), folder_step(FolderStep::ShowItem { item: versions(&given, 10) }));
 }
 
 /// New: a row the schema refuses (something of OneDrive's, or something agreed on, with no

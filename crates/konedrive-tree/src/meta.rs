@@ -41,10 +41,6 @@ pub(crate) const LAST_UNSENT_SINCE: &str = "last_unsent_since";
 /// Set while a full listing was asked for and has not begun, to the words of who asked
 /// (`item_store::full_listing_request`, which alone reads and writes it).
 pub(crate) const FULL_LISTING_REQUESTED: &str = "full_listing_requested";
-/// The last stamp `unsent_since` given before the folder was switched to read-only; absent
-/// while the folder is read-write (`item_store::sending_switch`, which alone reads and
-/// writes it).
-pub(crate) const SENDING_READ_ONLY_SINCE: &str = "sending_read_only_since";
 
 /// The value of `key`, read on `conn`: a transaction's too.
 pub(crate) fn get(conn: &Connection, key: &str) -> Result<Option<String>, TreeError> {

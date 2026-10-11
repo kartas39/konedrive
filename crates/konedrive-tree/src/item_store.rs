@@ -100,8 +100,6 @@ mod own_upload_content;
 mod plan_readers;
 /// A file's local content written by the mount apart from a change of its local version.
 mod local_content;
-/// The folder's state of sending, with the stamp of its switch to read-only.
-mod sending_switch;
 /// The conflict copy a step made, on record with its commit.
 mod step_record;
 /// Which content of a file a thumbnail was made for.
@@ -232,8 +230,7 @@ impl ItemStore<'_> {
 
     /// The last stamp given to an item that came to be unsent; 0 before the first. Every
     /// item unsent now has this stamp or an earlier one, and every item that comes to be
-    /// unsent from now on a later one: what a folder notes when it is switched to
-    /// read-only, to tell afterwards what was unsent then.
+    /// unsent from now on a later one.
     pub fn last_unsent_since(&self) -> Result<u64, TreeError> {
         Ok(crate::meta::get(&self.store.conn, crate::meta::LAST_UNSENT_SINCE)?.and_then(|stamp| stamp.parse().ok()).unwrap_or(0))
     }

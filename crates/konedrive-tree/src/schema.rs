@@ -114,8 +114,7 @@ pub const SCHEMA_VERSION: &str = "27";
 /// - `pins`: the items that carry a pin of their own, by OneDrive item id
 ///   ([`crate::item_store`]'s `item_pins`).
 /// - `meta` keeps, beside what is named above, `full_listing_requested` while a full
-///   listing was asked for and has not begun, and `sending_read_only_since`, the stamp of
-///   the folder's switch to read-only.
+///   listing was asked for and has not begun.
 fn schema() -> String {
     // Whether a row being written names, on that side, a parent that is no directory's row.
     let no_parent_directory = |side: &str| {

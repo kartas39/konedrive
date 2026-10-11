@@ -8,14 +8,13 @@ use konedrive_reason::Reason;
 
 use crate::model::{Item, ItemKind, ItemPlace, LocalItemId};
 use crate::sync_plan::name_exchange::make_temporary_name;
-use crate::{make_conflict_copy_name, make_sync_plan, FoldedName, SendingState, SyncPlan, SyncPlanInput, TreeStore, WaitReason};
+use crate::{make_conflict_copy_name, make_sync_plan, FoldedName, SyncPlan, SyncPlanInput, TreeStore, WaitReason};
 
 pub(crate) const COMPUTER_NAME: &str = "pc";
 
 /// What only the caller of a plan knows, as these tests have it.
 #[derive(Debug, Clone)]
 pub(crate) struct CallerFacts {
-    pub(crate) sending_state: SendingState,
     /// How many unsent items, and how many items OneDrive changed, are read at first.
     pub(crate) items_read_at_once: usize,
     /// Whether the directories above an item are given with it; when not, the plan has to
@@ -34,7 +33,6 @@ pub(crate) struct CallerFacts {
 impl CallerFacts {
     pub(crate) fn of_read_write_folder() -> Self {
         Self {
-            sending_state: SendingState::ReadWrite,
             items_read_at_once: 1000,
             gives_directories_above: true,
             places_taken_in_onedrive: BTreeMap::new(),
@@ -155,7 +153,6 @@ fn describe(store: &mut TreeStore, facts: &CallerFacts, rows: Vec<Item>) -> Sync
         is_listing_under_way: items.find_listing_under_way().unwrap().is_some(),
         is_onedrive_full: facts.is_onedrive_full,
         largest_file_size: 250 << 30,
-        sending_state: facts.sending_state,
         computer_name: COMPUTER_NAME.to_owned(),
         places_taken_in_onedrive: facts.places_taken_in_onedrive.clone(),
         items_left_by_uploads,

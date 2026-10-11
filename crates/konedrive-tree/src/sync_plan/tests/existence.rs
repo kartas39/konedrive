@@ -33,14 +33,13 @@ fn a_file_with_a_clean_copy_that_onedrive_removed_goes_here_its_copy_with_it() {
 #[test]
 fn a_file_held_open_for_writing_that_onedrive_removed_is_not_planned_until_it_is_closed() {
     let file = removed_in_onedrive(with_content_here(synced_file(2, ROOT, "a.txt"), written_here()));
-    for sending_state in [SendingState::ReadWrite, SendingState::ReadOnly { last_unsent_since: 0 }] {
+    {
         let mut given = input(vec![file.clone()]);
-        given.sending_state = sending_state;
         given.items_open_for_writing = [id(2)].into();
-        assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::User(Reason::OpenForWriting)), "{sending_state:?}");
+        assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::User(Reason::OpenForWriting)));
         // Closed changed: E7's cell.
         given.items_open_for_writing.clear();
-        assert_eq!(answer(&given, 2), row_step(RowStep::GiveUpBinding { item: versions(&given, 2) }), "{sending_state:?}");
+        assert_eq!(answer(&given, 2), row_step(RowStep::GiveUpBinding { item: versions(&given, 2) }));
     }
 }
 

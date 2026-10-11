@@ -71,7 +71,6 @@ mod sync_step;
 mod tried_step;
 
 pub use conflict_copy_name::make_conflict_copy_name;
-pub use item_decision::READ_ONLY_FOLDER;
 pub use name_exchange::make_temporary_name;
 pub(crate) use removed_directory::{decide_directory_removal, DirectoryRemovalOutcome, ItemBelowRemovedDirectory};
 pub use side_change::is_same_content_but_for_time;
@@ -83,19 +82,11 @@ use plan_items::PlanItems;
 use item_decision::{decide_content_while_place_waits, ItemAnswers, ItemCase, ItemDecision, LocalDirectoryBinding, LocalPlaceAvailability, OneDriveContentOrigin, Overruling};
 use sending_obstacle::SendingConditions;
 
-/// The folder's state of sending.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SendingState {
-    /// Everything unsent is sent.
-    ReadWrite,
-    /// The folder refuses every change, and what was unsent when it was switched is sent:
-    /// an item whose [`unsent_since`](Item::unsent_since) is `last_unsent_since`, the last
-    /// stamp given before the switch
-    /// ([`ItemStore::last_unsent_since`](crate::ItemStore::last_unsent_since)), or an
-    /// earlier one. What came to be unsent later waits for the folder to be read-write
-    /// again.
-    ReadOnly { last_unsent_since: u64 },
-}
+/// What stands behind "not allowed now" (`Reason::NotAllowed`) for an unsent item of a
+/// folder that is read-only. The plan knows no read-only folder: such a folder sends
+/// nothing at all, which is its caller's hold of all sending, and the caller says this of
+/// what waits under it.
+pub const READ_ONLY_FOLDER: &str = "the folder is read-only";
 
 /// What a plan is made from, all as values.
 ///
@@ -208,7 +199,6 @@ pub struct SyncPlanInput {
     pub is_onedrive_full: bool,
     /// The largest size of a file OneDrive takes, in bytes.
     pub largest_file_size: u64,
-    pub sending_state: SendingState,
     /// This computer's name, as a conflict copy's name holds it
     /// ([`make_conflict_copy_name`]).
     pub computer_name: String,
@@ -582,8 +572,6 @@ fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Ite
             largest_file_size: input.largest_file_size,
             quiet_until: input.quiet_until.get(&id).copied(),
             is_onedrive_full: input.is_onedrive_full,
-            sending_state: input.sending_state,
-            unsent_since: item.unsent_since,
             refusal: input.sending_refusals.get(&id).cloned(),
             next_try: input.next_tries.get(&(id, TriedStep::TowardsOneDrive)).cloned(),
             now: input.now,
