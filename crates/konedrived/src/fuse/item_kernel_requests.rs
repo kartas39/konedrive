@@ -14,7 +14,7 @@
 //! | opendir, readdir, readdirplus, releasedir | mount | `ItemLookup::list_entries`, `describe` (`describe_listed_item`, an item at a time) | — |
 //! | getxattr, listxattr | mount | `ItemLookup::find_xattr`, `list_xattr_names` | — |
 //! | open (read) | mount | `decide_open_to_read`, `PlaceChanges::open_at_row_path` | — (a clean row over a missing copy is mended: `NotOnDisk`) |
-//! | read | mount, then runtime for a range | `decide_read`, `fetch_read_range` | — |
+//! | read | mount, then runtime for a range | `decide_read`, `fetch_read_range` or `fetch_range_after_download` | — |
 //! | open (write) | mount, runtime, write | `find_file_to_fill`, `open_to_write` | `OpenedForWriting` (+ on disk) |
 //! | open (`O_TRUNC`) | mount, write | `open_to_overwrite` | `OpenedForWriting` (+ on disk) |
 //! | create | mount, write | `make(FileOpenedForWriting)` | `apply_made_open_for_writing` |
@@ -62,12 +62,21 @@
 //! transaction, and the row must still say that content is on disk, or kept from before
 //! a write: `decide_not_on_disk_read_origin`); and the file of the running download of
 //! that very item and content, below a mark the download's source raises only for
-//! answers it has told to be of that content (`item_downloader::download_source`). A
-//! content OneDrive answered a download of with another one is `ESTALE`
-//! (`ItemDownloadStates::is_another_content`) and no range of it is asked for.
-//! [`fetch_read_range`] answers what the range fetcher lets through
+//! answers it has told to be of that content (`item_downloader::download_source`), and
+//! which is taken back to 0 the moment the download finds what it wrote not to be the
+//! content. [`fetch_read_range`] answers what the range fetcher lets through
 //! (`item_range_fetcher::decide_is_another_content`), which through Graph cannot tell
 //! another content of the item until a download or a listing did.
+//!
+//! **A content OneDrive stated another one for** in its answer to the last download of it
+//! (`ItemDownloadStates::is_another_content`) is not an error by itself: that is a fact
+//! from one answer, and it only changes what the read asks of OneDrive. No range is
+//! trusted for it, so the read asks for the whole download of the content — or joins
+//! the one that runs — and waits for it ([`fetch_range_after_download`]): the download
+//! forgets what was remembered and asks OneDrive anew. Stated another content again:
+//! `ESTALE`, remembered again. Stated the asked content: the download lands, and the
+//! read is answered its range. An old handle and a new open of the same content go the
+//! same way.
 //!
 //! **Nothing is announced to the inotify bridge here.** What a program asks for through
 //! the mount the kernel tells its watchers itself; the bridge is for what a step towards
@@ -110,6 +119,11 @@
 // test: a_read_past_the_threshold_starts_no_download_again_while_downloads_end_without_landing
 // test: a_reader_whose_content_landed_reads_the_backing_file_beside_a_writer_that_opened_since
 // test: a_part_of_a_directory_reading_hands_out_the_kept_listing_and_copies_nothing
+// test: a_read_of_a_content_onedrive_answered_with_another_once_asks_anew_and_succeeds
+// test: every_read_is_stale_and_costs_one_asking_while_onedrive_states_another_content
+// test: a_read_of_an_item_onedrive_did_not_have_once_goes_on_as_ranges
+// test: a_read_is_not_answered_from_a_downloads_file_once_its_bytes_failed_the_hash
+// test: what_a_read_does_once_its_whole_download_ended_per_case
 #![allow(dead_code)]
 
 use std::ffi::OsStr;
@@ -210,6 +224,11 @@ pub(super) enum ReadAnswer {
     Bytes(Vec<u8>),
     /// A range to fetch from OneDrive on the runtime.
     Range(RangeToFetch),
+    /// A range of a content OneDrive stated another one for in its answer to the last
+    /// download of it: on the runtime, the whole download of the content is asked for
+    /// first, which asks OneDrive anew, and the range fetched once it landed
+    /// (`fetch_range_after_download`).
+    WholeDownload(RangeToFetch),
 }
 
 /// A range of a file that is not on disk, with everything its fetch needs, as values.
@@ -219,9 +238,22 @@ pub(super) struct RangeToFetch {
     pub(super) source: RangeSource,
     pub(super) from: u64,
     pub(super) end: u64,
-    /// The download to start when this read reaches the threshold of bytes read as
-    /// ranges.
+    /// The whole download of the content the range is of: started when this read reaches
+    /// the threshold of bytes read as ranges, and asked for before the range where no
+    /// range is trusted (`ReadAnswer::WholeDownload`).
     pub(super) download_at_threshold: ItemToDownload,
+}
+
+/// What the download states say of the content a read is of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ContentDownload {
+    /// No download of it runs, or the one that runs has no file yet.
+    None,
+    /// One runs, and has written its file up to here in order.
+    WrittenUpTo(u64),
+    /// OneDrive stated another content in its answer to the last one, and none was
+    /// started since.
+    AnotherContent,
 }
 
 /// Where the bytes of one read of a file that is not on disk come from.
@@ -234,19 +266,40 @@ pub(super) enum RangeOrigin {
     RunningDownload { from: u64, end: u64 },
     /// OneDrive: the bytes from `from` up to `end`.
     OneDrive { from: u64, end: u64 },
+    /// OneDrive, once the whole download of the content was asked for and landed: the
+    /// bytes from `from` up to `end`.
+    WholeDownload { from: u64, end: u64 },
 }
 
-/// Where the `size` bytes at `offset` of a content `content_size` long come from, when a
-/// download of that content has written its file up to `written_up_to` in order (`None`:
-/// none runs, or it has no file yet). The read ends at the content's end. Pure.
-pub(super) fn decide_range_origin(content_size: u64, written_up_to: Option<u64>, offset: u64, size: u32) -> RangeOrigin {
+/// Where the `size` bytes at `offset` of a content `content_size` long come from, by what
+/// the download states say of that content. The read ends at the content's end, and one
+/// at or past it asks nothing of anybody. Pure.
+pub(super) fn decide_range_origin(content_size: u64, download: ContentDownload, offset: u64, size: u32) -> RangeOrigin {
     let end = offset.saturating_add(u64::from(size)).min(content_size);
     if offset >= end {
         return RangeOrigin::Nothing;
     }
-    match written_up_to {
-        Some(written_up_to) if end.saturating_add(WRITTEN_BEHIND) <= written_up_to => RangeOrigin::RunningDownload { from: offset, end },
-        Some(_) | None => RangeOrigin::OneDrive { from: offset, end },
+    match download {
+        ContentDownload::WrittenUpTo(written_up_to) if end.saturating_add(WRITTEN_BEHIND) <= written_up_to => RangeOrigin::RunningDownload { from: offset, end },
+        ContentDownload::WrittenUpTo(_) | ContentDownload::None => RangeOrigin::OneDrive { from: offset, end },
+        ContentDownload::AnotherContent => RangeOrigin::WholeDownload { from: offset, end },
+    }
+}
+
+/// What a read that asked for the whole download of its content does once the download
+/// ended and its waiter heard `heard`: `Ok` to fetch its range, or the errno it is
+/// answered. Pure.
+///
+/// - Landed: OneDrive stated the asked content, and the range is fetched.
+/// - `EEXIST`, a place held on disk: OneDrive stated the asked content all the same —
+///   the file was whole and checked — and the range is fetched, as the reads of such a
+///   file are answered while nothing was remembered of it.
+/// - `ESTALE`: OneDrive stated another content again, or does not have the item, or the
+///   row changed. Any other errno: the asking failed, and so does the read.
+pub(super) fn decide_read_after_download(heard: Result<(), i32>) -> Result<(), Errno> {
+    match heard {
+        Ok(()) | Err(libc::EEXIST) => Ok(()),
+        Err(errno) => Err(Errno::from_i32(errno)),
     }
 }
 
@@ -484,10 +537,11 @@ impl ItemKernelRequests {
     /// on disk: the row is read again and `decide_not_on_disk_read_origin` asked with the
     /// content the handle was opened as; then the backing file once the content landed
     /// (`PlaceChanges::open_at_row_path`, whose closure asks the same decision of the row
-    /// it reads the path with; `ItemHandles::switch_to_backing_file`), or `ESTALE` once
-    /// OneDrive answered a download of that content with another
-    /// (`ItemDownloadStates::is_another_content`), or the file of the running download of
-    /// that content (`ItemDownloadStates::find_running_download`), or a range to fetch
+    /// it reads the path with; `ItemHandles::switch_to_backing_file`), or the file of the
+    /// running download of that content (`ItemDownloadStates::find_running_download`),
+    /// or a range to fetch, or — for a content OneDrive stated another one for in its
+    /// answer to the last download of it (`ItemDownloadStates::is_another_content`) — a
+    /// range to fetch once the whole download was asked for anew
     /// ([`decide_range_origin`]). `EBADF` for an `fh` that holds no file.
     pub(super) fn decide_read(&self, fh: Fh, offset: u64, size: u32) -> Result<ReadAnswer, Errno> {
         let (item, content) = match self.item_handles.find_file(fh).ok_or(Errno::EBADF)? {
@@ -525,22 +579,23 @@ impl ItemKernelRequests {
                 }
             };
             let key = DownloadKey { item, content: content.clone() };
-            if self.download_states.is_another_content(&key) {
-                // OneDrive has another content of the item by now, and no listing said
-                // so yet: a range would be of that one.
-                return Err(Errno::ESTALE);
-            }
             let running_download = self.download_states.find_running_download(&key);
-            return match decide_range_origin(content.size(), running_download.as_ref().map(|running| running.written_up_to), offset, size) {
+            let download = match &running_download {
+                Some(running) => ContentDownload::WrittenUpTo(running.written_up_to),
+                // What one answer of OneDrive said: it answers nothing here, and only
+                // changes what the read asks of OneDrive.
+                None if self.download_states.is_another_content(&key) => ContentDownload::AnotherContent,
+                None => ContentDownload::None,
+            };
+            let to_fetch = |from, end| RangeToFetch { item, from, end, download_at_threshold: ItemToDownload { item, onedrive_item: source.onedrive_item.clone(), content: content.clone() }, source: source.clone() };
+            return match decide_range_origin(content.size(), download, offset, size) {
                 RangeOrigin::Nothing => Ok(ReadAnswer::Bytes(Vec::new())),
                 RangeOrigin::RunningDownload { from, end } => match running_download {
                     Some(running) => read_file_range(&running.file, from, (end - from) as u32).map(ReadAnswer::Bytes),
                     None => Err(Errno::EIO),
                 },
-                RangeOrigin::OneDrive { from, end } => {
-                    let download_at_threshold = ItemToDownload { item, onedrive_item: source.onedrive_item.clone(), content };
-                    Ok(ReadAnswer::Range(RangeToFetch { item, source, from, end, download_at_threshold }))
-                }
+                RangeOrigin::OneDrive { from, end } => Ok(ReadAnswer::Range(to_fetch(from, end))),
+                RangeOrigin::WholeDownload { from, end } => Ok(ReadAnswer::WholeDownload(to_fetch(from, end))),
             };
         }
         Err(Errno::EIO)
@@ -553,14 +608,44 @@ impl ItemKernelRequests {
     /// caller keeps the task's abort handle for the kernel's interrupt, as today
     /// (`interruptible_reads`).
     pub(super) async fn fetch_read_range(&self, range: RangeToFetch) -> Result<Vec<u8>, Errno> {
-        let bytes = self.range_fetcher.fetch_range(range.item, &range.source, range.from, range.end).await.map_err(|refusal| match refusal {
-            RangeRefusal::AnotherContent => Errno::ESTALE,
-            RangeRefusal::Failed { errno } => Errno::from_i32(errno),
-        })?;
+        let bytes = self.fetch_range(&range).await?;
         if self.download_states.count_bytes_read(range.item, bytes.len() as u64, range.source.content.size()) {
             self.downloader.download(range.download_at_threshold, DownloadAsker::Read, None);
         }
         Ok(bytes)
+    }
+
+    /// The rest of a read of a content OneDrive stated another one for
+    /// (`ReadAnswer::WholeDownload`), on the runtime: the whole download of the content
+    /// is asked for, or joined (`ItemDownloader::download` as `DownloadAsker::Read`, with
+    /// a waiter) — its start forgets what was remembered, and it asks OneDrive anew —
+    /// and awaited; then what its waiter heard decides ([`decide_read_after_download`]):
+    /// `ESTALE` where OneDrive stated another content again, which is remembered again,
+    /// and the range fetched where it stated the asked one. That range is not counted
+    /// towards a whole download: one just ended. No row is read here. The caller keeps
+    /// the task's abort handle for the kernel's interrupt, as for
+    /// [`fetch_read_range`](Self::fetch_read_range).
+    ///
+    /// **What one such read costs.** One asking of OneDrive for the content — through
+    /// Graph the item's metadata and the request for its bytes, whose body is dropped
+    /// unread where the metadata states another content — in one slot of the pool's open
+    /// class, given back when the download ends; reads that come while it runs join it.
+    /// Nothing but the program's own reads bounds how often: a read is asked by a
+    /// program, and each is answered what OneDrive states then.
+    pub(super) async fn fetch_range_after_download(&self, range: RangeToFetch) -> Result<Vec<u8>, Errno> {
+        let (waiter, downloaded) = oneshot::channel();
+        self.downloader.download(range.download_at_threshold.clone(), DownloadAsker::Read, Some(waiter));
+        decide_read_after_download(downloaded.await.unwrap_or(Err(libc::EIO)))?;
+        self.fetch_range(&range).await
+    }
+
+    /// The bytes of `range`, from OneDrive (`ItemRangeFetcher::fetch_range`); another
+    /// content than the one opened is `ESTALE`.
+    async fn fetch_range(&self, range: &RangeToFetch) -> Result<Vec<u8>, Errno> {
+        self.range_fetcher.fetch_range(range.item, &range.source, range.from, range.end).await.map_err(|refusal| match refusal {
+            RangeRefusal::AnotherContent => Errno::ESTALE,
+            RangeRefusal::Failed { errno } => Errno::from_i32(errno),
+        })
     }
 
     /// Downloads `file` for a program that writes it, and waits for the landing: what

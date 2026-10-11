@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use konedrive_tree::{ContentPresence, Item, LocalVersionChange};
 
-use super::download_source::{decide_answer_use, decide_refusal, find_gravest_refusal, AnswerUse};
+use super::download_source::{decide_answer_use, decide_refusal, find_gravest_refusal, find_told_size, AnswerUse};
 use super::*;
 use crate::folder::running_steps::{RunningStep, StepClass};
 use crate::fuse::item_fixture::ItemFixture;
@@ -60,6 +60,10 @@ fn make_downloader(fixture: &ItemFixture, source: &Arc<HeldSource>) -> Arc<ItemD
 }
 
 fn make_downloader_and_landing(fixture: &ItemFixture, source: &Arc<HeldSource>) -> (Arc<ItemDownloader>, Arc<ItemDownloadLanding>) {
+    make_downloader_from(fixture, Arc::clone(source) as Arc<dyn ContentSource>)
+}
+
+fn make_downloader_from(fixture: &ItemFixture, source: Arc<dyn ContentSource>) -> (Arc<ItemDownloader>, Arc<ItemDownloadLanding>) {
     let landing = Arc::new(ItemDownloadLanding::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.running_steps), Arc::clone(&fixture.mount_take_down)));
     let downloader = Arc::new(ItemDownloader::new(
         Arc::clone(&fixture.backing_directory),
@@ -67,7 +71,7 @@ fn make_downloader_and_landing(fixture: &ItemFixture, source: &Arc<HeldSource>) 
         Arc::clone(&landing),
         Arc::clone(&fixture.inotify_bridge),
         Arc::clone(&fixture.write_operation_thread),
-        Arc::clone(source) as Arc<dyn ContentSource>,
+        source,
         Arc::clone(&fixture.pool),
         Arc::clone(&fixture.split_download_share),
         Report::nowhere(),
@@ -211,7 +215,7 @@ fn a_refusal_of_the_source_is_typed_by_what_the_plans_task_does_about_it() {
     let wait = Duration::from_secs(30);
     assert_eq!(decide_refusal(&SourceError::SignedOut("401".into())), DownloadRefusal::SignedOut);
     assert_eq!(decide_refusal(&SourceError::Throttled { detail: "429".into(), retry_after: Some(wait) }), DownloadRefusal::Throttled { retry_after: Some(wait) });
-    assert_eq!(decide_refusal(&SourceError::NotFound("404".into())), DownloadRefusal::ItemGone);
+    assert_eq!(decide_refusal(&SourceError::NotFound("404".into())), DownloadRefusal::ItemGone, "\"no such item\" states no other content");
     assert_eq!(decide_refusal(&SourceError::Transient("no network".into())), DownloadRefusal::Transient { detail: "no network".into() });
 
     // A download that failed is answered by what the source last refused, and else by its errno.
@@ -223,6 +227,7 @@ fn a_refusal_of_the_source_is_typed_by_what_the_plans_task_does_about_it() {
     assert_eq!(decide_waiters_answer(&Ok(landed)), Ok(()));
     assert_eq!(decide_waiters_answer(&Ok(ItemLandingOutcome::RowsChanged)), Err(libc::ESTALE));
     assert_eq!(decide_waiters_answer(&Err(DownloadRefusal::ItemGone)), Err(libc::ESTALE));
+    assert_eq!(decide_waiters_answer(&Err(DownloadRefusal::AnotherContent)), Err(libc::ESTALE));
     assert_eq!(decide_waiters_answer(&Ok(ItemLandingOutcome::PlaceHeld { path: "a".into() })), Err(libc::EEXIST));
     assert_eq!(decide_waiters_answer(&Ok(ItemLandingOutcome::Failed { errno: libc::ENOSPC })), Err(libc::ENOSPC));
     for end in [Ok(ItemLandingOutcome::StepStopped), Err(DownloadRefusal::SignedOut), Err(DownloadRefusal::Throttled { retry_after: None }), Err(DownloadRefusal::Transient { detail: String::new() })] {
@@ -243,15 +248,20 @@ fn content_of_another_size_or_version_than_was_asked_for_is_not_the_asked_conten
     let ctag = format!("c-{}", crate::fake_onedrive::qx(b"the content"));
     let version = |ctag: &str, quick_xor| Version { ctag: ctag.to_owned(), quick_xor };
 
-    assert!(decide_is_asked_content(&asked, 11, Some(&version(&ctag, Some(hash)))));
-    assert!(decide_is_asked_content(&asked, 11, Some(&version("another cTag", Some(hash)))), "the hash says it where both have one");
-    assert!(!decide_is_asked_content(&asked, 11, Some(&version(&ctag, Some(other_hash)))), "another hash");
-    assert!(!decide_is_asked_content(&asked, 12, Some(&version(&ctag, Some(hash)))), "another size");
-    assert!(decide_is_asked_content(&asked, 11, Some(&version(&ctag, None))), "no hash of the source's: the cTag");
-    assert!(!decide_is_asked_content(&asked, 11, Some(&version("another cTag", None))));
-    assert!(decide_is_asked_content(&asked, 11, None), "a source that says no version: the size alone");
+    assert!(decide_is_asked_content(&asked, Some(11), Some(&version(&ctag, Some(hash)))));
+    assert!(decide_is_asked_content(&asked, Some(11), Some(&version("another cTag", Some(hash)))), "the hash says it where both have one");
+    assert!(!decide_is_asked_content(&asked, Some(11), Some(&version(&ctag, Some(other_hash)))), "another hash");
+    assert!(!decide_is_asked_content(&asked, Some(12), Some(&version(&ctag, Some(hash)))), "another size");
+    assert!(decide_is_asked_content(&asked, Some(11), Some(&version(&ctag, None))), "no hash of the source's: the cTag");
+    assert!(!decide_is_asked_content(&asked, Some(11), Some(&version("another cTag", None))));
+    assert!(decide_is_asked_content(&asked, Some(11), None), "a source that says no version: the size alone");
     let without_marks = ContentVersion::Hashed { size: 11, mtime: 0, mtime_nsec: 0, hash: None, ctag: None };
-    assert!(decide_is_asked_content(&without_marks, 11, Some(&version("any", Some(hash)))), "a content told by neither is any content of its size");
+    assert!(decide_is_asked_content(&without_marks, Some(11), Some(&version("any", Some(hash)))), "a content told by neither is any content of its size");
+    // A size that was not told disagrees with nothing: the version tells, where one was told.
+    assert!(decide_is_asked_content(&asked, None, Some(&version(&ctag, Some(hash)))));
+    assert!(!decide_is_asked_content(&asked, None, Some(&version(&ctag, Some(other_hash)))));
+    assert!(!decide_is_asked_content(&asked, None, Some(&version("another cTag", None))));
+    assert!(decide_is_asked_content(&asked, None, None), "nothing was told: nothing disagrees");
 }
 
 #[test]
@@ -310,7 +320,7 @@ fn a_download_of_content_onedrive_no_longer_has_lands_nothing() {
 
     begin_download_step(&fixture, &shown);
     let planned = fixture.runtime().block_on(downloader.download_and_land(to_download(&shown), ItemVersions::of(&shown)));
-    assert_eq!(planned, Err(DownloadRefusal::ItemGone));
+    assert_eq!(planned, Err(DownloadRefusal::AnotherContent));
     assert_eq!(presence_of(&fixture, &shown), ContentPresence::NotOnDisk);
 }
 
@@ -554,22 +564,26 @@ fn an_answer_of_the_source_is_used_by_its_content_and_its_place_case_by_case() {
     let asked = ItemFixture::onedrive_content_of(b"the content");
     let (same, other) = (version_of(b"the content"), version_of(b"THE CONTENT"));
     // The one stream of the file: what is on disk counts from where it starts.
-    assert_eq!(decide_answer_use(&asked, 11, Some(&same), 0, 0, None), AnswerUse::WrittenInOrder { from: 0 });
-    assert_eq!(decide_answer_use(&asked, 11, Some(&same), 4, 4, None), AnswerUse::WrittenInOrder { from: 4 }, "gone on from a checkpoint, or after a break");
+    assert_eq!(decide_answer_use(&asked, Some(11), Some(&same), 0, 0, None), AnswerUse::WrittenInOrder { from: 0 });
+    assert_eq!(decide_answer_use(&asked, Some(11), Some(&same), 4, 4, None), AnswerUse::WrittenInOrder { from: 4 }, "gone on from a checkpoint, or after a break");
     // A stream that starts elsewhere than asked is refused by the download: nothing is counted.
-    assert_eq!(decide_answer_use(&asked, 11, Some(&same), 0, 4, None), AnswerUse::NotCounted);
-    assert_eq!(decide_answer_use(&asked, 11, Some(&same), 8, 4, None), AnswerUse::NotCounted);
+    assert_eq!(decide_answer_use(&asked, Some(11), Some(&same), 0, 4, None), AnswerUse::NotCounted);
+    assert_eq!(decide_answer_use(&asked, Some(11), Some(&same), 8, 4, None), AnswerUse::NotCounted);
     // A part of a download in parts tells nothing of how far the file is written.
-    assert_eq!(decide_answer_use(&asked, 11, Some(&same), 4, 4, Some(8)), AnswerUse::NotCounted);
+    assert_eq!(decide_answer_use(&asked, Some(11), Some(&same), 4, 4, Some(8)), AnswerUse::NotCounted);
     // Another content, of the same size: whole, gone on, or a part.
-    assert_eq!(decide_answer_use(&asked, 11, Some(&other), 0, 0, None), AnswerUse::AnotherContent);
-    assert_eq!(decide_answer_use(&asked, 11, Some(&other), 4, 4, None), AnswerUse::AnotherContent);
-    assert_eq!(decide_answer_use(&asked, 11, Some(&other), 4, 4, Some(8)), AnswerUse::AnotherContent);
+    assert_eq!(decide_answer_use(&asked, Some(11), Some(&other), 0, 0, None), AnswerUse::AnotherContent);
+    assert_eq!(decide_answer_use(&asked, Some(11), Some(&other), 4, 4, None), AnswerUse::AnotherContent);
+    assert_eq!(decide_answer_use(&asked, Some(11), Some(&other), 4, 4, Some(8)), AnswerUse::AnotherContent);
     // Another size, whatever the version says.
-    assert_eq!(decide_answer_use(&asked, 12, Some(&same), 0, 0, None), AnswerUse::AnotherContent);
-    assert_eq!(decide_answer_use(&asked, 12, None, 0, 0, None), AnswerUse::AnotherContent);
+    assert_eq!(decide_answer_use(&asked, Some(12), Some(&same), 0, 0, None), AnswerUse::AnotherContent);
+    assert_eq!(decide_answer_use(&asked, Some(12), None, 0, 0, None), AnswerUse::AnotherContent);
     // A source that says no version: the size alone tells.
-    assert_eq!(decide_answer_use(&asked, 11, None, 0, 0, None), AnswerUse::WrittenInOrder { from: 0 });
+    assert_eq!(decide_answer_use(&asked, Some(11), None, 0, 0, None), AnswerUse::WrittenInOrder { from: 0 });
+    // No size told: the version alone tells, and with neither nothing disagrees.
+    assert_eq!(decide_answer_use(&asked, None, Some(&same), 0, 0, None), AnswerUse::WrittenInOrder { from: 0 });
+    assert_eq!(decide_answer_use(&asked, None, Some(&other), 0, 0, None), AnswerUse::AnotherContent);
+    assert_eq!(decide_answer_use(&asked, None, None, 0, 0, None), AnswerUse::WrittenInOrder { from: 0 });
 }
 
 #[test]
@@ -582,7 +596,7 @@ fn an_answer_of_another_content_ends_the_download_before_the_mark_is_raised_or_a
     let fetched = run(source.fetch("id", 0, None));
     assert!(matches!(fetched, Err(SourceError::NotFound(_))), "answered as a file OneDrive does not have: the download ends at once");
     assert_eq!(written_up_to.load(Ordering::SeqCst), 0, "nothing is said to be written");
-    assert_eq!(source.find_refusal(), Some(DownloadRefusal::ItemGone));
+    assert_eq!(source.find_refusal(), Some(DownloadRefusal::AnotherContent));
     assert_eq!(*inner.fetches.lock().unwrap(), [(0, None)]);
 
     // The asked content first, and another content after a break: the mark stays where
@@ -595,7 +609,7 @@ fn an_answer_of_another_content_ends_the_download_before_the_mark_is_raised_or_a
     assert_eq!((read.as_slice(), written_up_to.load(Ordering::SeqCst)), (&b"the c"[..], 5), "counted as it is read");
     assert!(matches!(run(source.fetch("id", 5, None)), Err(SourceError::NotFound(_))));
     assert_eq!(written_up_to.load(Ordering::SeqCst), 5);
-    assert_eq!(source.find_refusal(), Some(DownloadRefusal::ItemGone));
+    assert_eq!(source.find_refusal(), Some(DownloadRefusal::AnotherContent));
 
     // A part of another content is refused as the one stream is; a part of the asked
     // content is handed on and tells nothing of how far the file is written.
@@ -606,7 +620,7 @@ fn an_answer_of_another_content_ends_the_download_before_the_mark_is_raised_or_a
     assert_eq!(run(async { read_whole(source.fetch("id", 4, Some(8)).await.ok().expect("a part of the asked content")).await }), b"cont");
     assert!(matches!(run(source.fetch("id", 0, Some(4))), Err(SourceError::NotFound(_))));
     assert_eq!(written_up_to.load(Ordering::SeqCst), 0);
-    assert_eq!(source.find_refusal(), Some(DownloadRefusal::ItemGone));
+    assert_eq!(source.find_refusal(), Some(DownloadRefusal::AnotherContent));
 }
 
 #[test]
@@ -616,6 +630,7 @@ fn a_refusal_is_kept_until_the_same_range_is_answered_and_the_gravest_is_told() 
     assert_eq!(find_gravest_refusal([transient.clone(), throttled.clone()]), Some(throttled.clone()));
     assert_eq!(find_gravest_refusal([throttled.clone(), DownloadRefusal::SignedOut, transient.clone()]), Some(DownloadRefusal::SignedOut));
     assert_eq!(find_gravest_refusal([DownloadRefusal::SignedOut, DownloadRefusal::ItemGone]), Some(DownloadRefusal::ItemGone));
+    assert_eq!(find_gravest_refusal([DownloadRefusal::ItemGone, DownloadRefusal::AnotherContent, DownloadRefusal::SignedOut]), Some(DownloadRefusal::AnotherContent), "what was stated of the content before a part that was not found");
 
     let asked = ItemFixture::onedrive_content_of(b"the content");
     let part = |served_from: u64, bytes: &[u8]| Ok(QueuedAnswer { size: 11, version: Some(version_of(b"the content")), served_from, bytes: bytes.to_vec() });
@@ -709,4 +724,90 @@ fn a_download_whose_landing_removed_what_it_named_starts_the_next_with_a_new_fil
     assert_eq!(fixture.read_disk_file("report.txt").as_deref(), Some(&b"the report"[..]));
     assert_eq!(presence_of(&fixture, &shown), ContentPresence::OnDisk);
     fixture.assert_rows_and_disk_agree();
+}
+
+/// The second review's "premise 1": a "no such item" after a part of the file is down
+/// throws nothing away, and is not remembered as another content.
+#[test]
+fn a_download_of_an_item_onedrive_does_not_have_fails_and_keeps_its_unfinished_file() {
+    let fixture = ItemFixture::new();
+    let shown = fixture.show_onedrive_file("report.txt", b"the report");
+    let source = HeldSource::held(&fixture);
+    let downloader = make_downloader(&fixture, &source);
+
+    let heard = ask(&downloader, &shown, DownloadAsker::Read);
+    let file_of_first = wait_until_it_writes(&fixture, &shown);
+    source.refuse(Some(|| SourceError::NotFound("404".into())));
+    source.gate.add_permits(1);
+    assert_eq!(hear(heard), Err(libc::ESTALE), "the errno of an item that is gone");
+    assert!(!fixture.download_states.is_another_content(&key_of(&shown)), "no other content was stated");
+
+    // OneDrive has the item again: the next download goes on from the file that was kept.
+    source.refuse(None);
+    let heard = ask(&downloader, &shown, DownloadAsker::Read);
+    assert_eq!(wait_until_it_writes(&fixture, &shown), file_of_first, "the unfinished file is kept, as after any failure");
+    source.let_go();
+    assert_eq!(hear(heard), Ok(()));
+    assert_eq!(fixture.read_disk_file("report.txt").as_deref(), Some(&b"the report"[..]));
+}
+
+#[test]
+fn a_size_the_source_does_not_tell_is_no_other_content() {
+    let asked = ItemFixture::onedrive_content_of(b"the content");
+    let empty = ItemFixture::onedrive_content_of(b"");
+    assert_eq!(find_told_size(11, &asked), Some(11));
+    assert_eq!(find_told_size(12, &asked), Some(12));
+    assert_eq!(find_told_size(0, &asked), None, "0 for a content that has bytes: not said");
+    assert_eq!(find_told_size(0, &empty), Some(0), "an empty file is 0 bytes long");
+    assert_eq!(find_told_size(5, &empty), Some(5));
+
+    // Through the download's source: no size and the asked version is let through, and
+    // nothing is kept as a refusal; no size and another version is another content.
+    let inner = QueuedSource::default();
+    inner.queue(Ok(QueuedAnswer { size: 0, version: Some(version_of(b"the content")), served_from: 0, bytes: b"the content".to_vec() }));
+    inner.queue(Ok(QueuedAnswer { size: 0, version: None, served_from: 0, bytes: b"the content".to_vec() }));
+    inner.queue(Ok(QueuedAnswer { size: 0, version: Some(version_of(b"")), served_from: 0, bytes: Vec::new() }));
+    let source = DownloadSource::new(&inner, asked.clone(), Arc::default());
+    assert!(run(source.fetch("id", 0, None)).is_ok());
+    assert!(run(source.fetch("id", 0, None)).is_ok(), "neither told: nothing disagrees");
+    assert_eq!(source.find_refusal(), None);
+    assert!(matches!(run(source.fetch("id", 0, None)), Err(SourceError::NotFound(_))), "emptied in OneDrive: its version says so");
+    assert_eq!(source.find_refusal(), Some(DownloadRefusal::AnotherContent));
+    // A real empty file against a row of 0 bytes.
+    let inner = QueuedSource::default();
+    inner.queue_content(b"", 0);
+    inner.queue_content(b"bytes", 0);
+    let source = DownloadSource::new(&inner, empty, Arc::default());
+    assert!(run(source.fetch("id", 0, None)).is_ok());
+    assert!(matches!(run(source.fetch("id", 0, None)), Err(SourceError::NotFound(_))));
+
+    // A whole download: the answer that tells no size fails that one asking, and nothing
+    // is remembered of it.
+    let fixture = ItemFixture::new();
+    let shown = fixture.show_onedrive_file("report.txt", b"the content");
+    let inner = Arc::new(QueuedSource::default());
+    inner.queue(Ok(QueuedAnswer { size: 0, version: Some(version_of(b"the content")), served_from: 0, bytes: b"the content".to_vec() }));
+    let (downloader, _) = make_downloader_from(&fixture, Arc::clone(&inner) as Arc<dyn ContentSource>);
+    assert_eq!(hear(ask(&downloader, &shown, DownloadAsker::Read)), Err(libc::EIO));
+    assert!(!fixture.download_states.is_another_content(&key_of(&shown)));
+    assert_eq!(fixture.read_disk_file("report.txt"), None);
+}
+
+#[test]
+fn the_mark_is_taken_back_the_moment_the_download_does_not_trust_what_is_on_disk() {
+    let asked = ItemFixture::onedrive_content_of(b"the content");
+    let (inner, written_up_to) = (QueuedSource::default(), Arc::new(AtomicU64::new(0)));
+    inner.queue_content(b"the content", 0);
+    inner.queue_content(b"the content", 0);
+    let source = DownloadSource::new(&inner, asked, Arc::clone(&written_up_to));
+    run(async { read_whole(source.fetch("id", 0, None).await.ok().expect("the asked content")).await });
+    assert_eq!(written_up_to.load(Ordering::SeqCst), 11);
+
+    // The download found the hash of what it wrote wrong: at once, with no fetch between.
+    source.reject_written();
+    assert_eq!(written_up_to.load(Ordering::SeqCst), 0);
+    assert_eq!(inner.fetches.lock().unwrap().len(), 1);
+    // What it writes when it starts over counts again.
+    run(async { read_whole(source.fetch("id", 0, None).await.ok().expect("the asked content")).await });
+    assert_eq!(written_up_to.load(Ordering::SeqCst), 11);
 }

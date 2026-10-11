@@ -244,13 +244,20 @@ pub(super) fn verify(item_id: &str, version: &Option<Version>, hash: &QuickXor) 
 /// - A checkpoint goes whenever its bytes are no prefix of what the next attempt downloads
 ///   — and after a mismatch even when no attempt follows: it counts bytes of content that
 ///   failed the hash, and the roll-back would keep them for the next fill.
+/// - The source is told that what is on disk counts no more
+///   (`ContentSource::reject_written`) as the first thing after either of the two and
+///   after [`End::DropCheckpoint`], whether an attempt follows or not. A failure takes
+///   nothing back.
 #[derive(Default)]
 pub(super) struct StartOver {
     used: bool,
 }
 
 impl StartOver {
-    pub(super) async fn after(&mut self, end: End, target: &Target, item_id: &str, tuning: &Tuning) -> Result<(), i32> {
+    pub(super) async fn after(&mut self, end: End, target: &Target, item_id: &str, source: &dyn ContentSource, tuning: &Tuning) -> Result<(), i32> {
+        if matches!(end, End::Changed | End::Mismatch | End::DropCheckpoint) {
+            source.reject_written();
+        }
         let checkpoints = tuning.checkpoint_every.is_some();
         let drop_checkpoint = || async {
             if checkpoints {
@@ -283,3 +290,6 @@ impl StartOver {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

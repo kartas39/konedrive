@@ -15,7 +15,20 @@
 //! held against the asked content ([`decide_answer_use`]) before its stream is handed on
 //! and before the mark that reads go by is touched: an answer of another content is
 //! answered to the download as a file OneDrive does not have, which ends it at once with
-//! nothing written and nothing more fetched.
+//! nothing written and nothing more fetched. That error is only what ends the download
+//! (`hydration::source` has no other word that does); what the answer WAS is kept here,
+//! typed: `DownloadRefusal::AnotherContent`, where the source's own "no such item" is
+//! `DownloadRefusal::ItemGone` ([`decide_refusal`]).
+//!
+//! **A size that was not told** disagrees with nothing ([`find_told_size`]): the answer
+//! is held against the asked content by its version alone, and with no version either it
+//! states no other content. The download then refuses it as it refuses a size of 0 for a
+//! file that has bytes (`guards::check_answer`): a failure of that one asking.
+//!
+//! **The mark is taken back to 0** the moment the download does not trust what is on
+//! disk any more — a hash that does not match, a version that changed between two
+//! answers, a checkpoint it cannot go on from (`ContentSource::reject_written`, told by
+//! `guards::StartOver`) — and not at the answer to its next fetch.
 //!
 //! **What is not proven here:** a content the row tells by neither hash nor cTag, and a
 //! source that says no version, are told by the size alone; and the bytes below the mark
@@ -32,6 +45,7 @@ use super::{decide_is_asked_content, DownloadRefusal};
 use crate::hydration::source::{ContentSource, Fetched, SourceError, Version};
 
 /// What `error` of the content source is, by what the plan's task does about it. Pure.
+/// "No such item" states no content: it is not `DownloadRefusal::AnotherContent`.
 pub(super) fn decide_refusal(error: &SourceError) -> DownloadRefusal {
     match error {
         SourceError::SignedOut(_) => DownloadRefusal::SignedOut,
@@ -55,11 +69,22 @@ pub(super) enum AnswerUse {
     AnotherContent,
 }
 
+/// The size an answer that says `answered` tells the item to be, for a download of
+/// `asked`; `None` when it tells none. Pure.
+///
+/// `Fetched::size` is 0 both for an empty file and from a source OneDrive told no size
+/// (`hydration::graph_source`). Against a content that is empty, 0 is its size. Against
+/// one that has bytes, 0 is not told apart from "not said", and is taken as not said: a
+/// file emptied in OneDrive is another content by its version, where one is told.
+pub(super) fn find_told_size(answered: u64, asked: &ContentVersion) -> Option<u64> {
+    (answered != 0 || asked.size() == 0).then_some(answered)
+}
+
 /// What the download of `asked` does with an answer that says the item is `size` bytes
-/// long and of `version`, and serves bytes from `served_from`, to a fetch from
-/// `asked_from` up to `end` (`None`: the rest of the file). Pure; the content is told by
-/// [`decide_is_asked_content`].
-pub(super) fn decide_answer_use(asked: &ContentVersion, size: u64, version: Option<&Version>, served_from: u64, asked_from: u64, end: Option<u64>) -> AnswerUse {
+/// long (`None`: it tells no size) and of `version`, and serves bytes from `served_from`,
+/// to a fetch from `asked_from` up to `end` (`None`: the rest of the file). Pure; the
+/// content is told by [`decide_is_asked_content`].
+pub(super) fn decide_answer_use(asked: &ContentVersion, size: Option<u64>, version: Option<&Version>, served_from: u64, asked_from: u64, end: Option<u64>) -> AnswerUse {
     match (decide_is_asked_content(asked, size, version), end) {
         (false, _) => AnswerUse::AnotherContent,
         (true, None) if served_from == asked_from => AnswerUse::WrittenInOrder { from: served_from },
@@ -67,15 +92,16 @@ pub(super) fn decide_answer_use(asked: &ContentVersion, size: u64, version: Opti
     }
 }
 
-/// Which of `refusals` a download that failed is answered by: what ends every download —
-/// a content OneDrive does not have, a sign-out — before what holds them back, before
-/// what passes. Pure.
+/// Which of `refusals` a download that failed is answered by: what was stated of the
+/// content before what ends every download — an item OneDrive does not have, a
+/// sign-out — before what holds them back, before what passes. Pure.
 pub(super) fn find_gravest_refusal(refusals: impl IntoIterator<Item = DownloadRefusal>) -> Option<DownloadRefusal> {
     refusals.into_iter().min_by_key(|refusal| match refusal {
-        DownloadRefusal::ItemGone => 0,
-        DownloadRefusal::SignedOut => 1,
-        DownloadRefusal::Throttled { .. } => 2,
-        DownloadRefusal::Transient { .. } => 3,
+        DownloadRefusal::AnotherContent => 0,
+        DownloadRefusal::ItemGone => 1,
+        DownloadRefusal::SignedOut => 2,
+        DownloadRefusal::Throttled { .. } => 3,
+        DownloadRefusal::Transient { .. } => 4,
     })
 }
 
@@ -101,7 +127,7 @@ impl<'a> DownloadSource<'a> {
     /// What the source refused and no later answer for the same range took back, the
     /// gravest of it ([`find_gravest_refusal`]); `None` when every range that was asked
     /// for was answered last, and when nothing was fetched. An answer of another content
-    /// than the asked one is kept as `ItemGone`.
+    /// than the asked one is kept as `AnotherContent`.
     pub(super) fn find_refusal(&self) -> Option<DownloadRefusal> {
         find_gravest_refusal(crate::panic::lock(&self.refusals).values().cloned())
     }
@@ -135,10 +161,11 @@ impl ContentSource for DownloadSource<'_> {
             }
         };
         // Before the stream is handed on and before the mark is touched.
-        match decide_answer_use(&self.asked, fetched.size, fetched.version.as_ref(), fetched.served_from, from, end) {
+        match decide_answer_use(&self.asked, find_told_size(fetched.size, &self.asked), fetched.version.as_ref(), fetched.served_from, from, end) {
             AnswerUse::AnotherContent => {
-                crate::panic::lock(&self.refusals).insert(end, DownloadRefusal::ItemGone);
+                crate::panic::lock(&self.refusals).insert(end, DownloadRefusal::AnotherContent);
                 // Answered as a file OneDrive does not have: the download ends at once.
+                // What it was is kept above, typed; nothing reads this error's text.
                 return Err(SourceError::NotFound(format!("{item_id} is of another content in OneDrive than the one that was asked for")));
             }
             AnswerUse::WrittenInOrder { from } => {
@@ -153,5 +180,12 @@ impl ContentSource for DownloadSource<'_> {
 
     fn progress(&self, done: u64, size: u64) {
         self.inner.progress(done, size);
+    }
+
+    fn reject_written(&self) {
+        // From this moment, not from the answer to the next fetch: a read is answered
+        // nothing of what the download does not trust.
+        self.written_up_to.store(0, Ordering::SeqCst);
+        self.inner.reject_written();
     }
 }

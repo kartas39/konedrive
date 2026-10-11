@@ -93,4 +93,12 @@ pub trait ContentSource: Send + Sync {
     /// download says it here; a source that shows progress
     /// (`tracked::Tracked`) shows this one.
     fn progress(&self, _done: u64, _size: u64) {}
+
+    /// The download does not trust what is on disk of the file any more — the hash of
+    /// the bytes it wrote does not match, the file changed in OneDrive between two
+    /// answers, or the checkpoint it was to go on from cannot be continued: nothing of
+    /// it counts from this moment. Said before the download starts over or gives up
+    /// (`guards::StartOver`); a source that tells readers how far the file is written
+    /// takes that back here.
+    fn reject_written(&self) {}
 }

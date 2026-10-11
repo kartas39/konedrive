@@ -83,6 +83,7 @@
 // test: a_death_between_the_disk_and_the_commit_is_undone_by_the_check_at_start_from_the_steps_record
 // test: a_commit_that_writes_takes_the_steps_record_and_one_that_finds_the_rows_changed_leaves_it
 // test: what_a_download_answered_is_the_steps_outcome_case_by_case
+// test: a_pinned_files_download_that_onedrive_refused_once_lands_when_the_step_runs_again
 // test: a_step_after_a_take_down_was_asked_for_and_one_whose_thread_stopped_do_not_run
 // test: steps_towards_the_folder_run_against_a_programs_writes_and_renames_and_deaths
 //!
@@ -144,6 +145,8 @@ pub(super) fn decide_download_outcome(end: Result<ItemLandingOutcome, DownloadRe
         Err(DownloadRefusal::SignedOut) => StepOutcome::Refused(StepRefusal::SignedOut),
         Err(DownloadRefusal::Throttled { retry_after }) => StepOutcome::Refused(StepRefusal::Throttled { retry_after }),
         Err(DownloadRefusal::ItemGone) => StepOutcome::Refused(StepRefusal::ItemGone),
+        // OneDrive has another version of the item than the step was planned from.
+        Err(DownloadRefusal::AnotherContent) => StepOutcome::Refused(StepRefusal::ItemChanged),
         Err(DownloadRefusal::Transient { detail }) => StepOutcome::Refused(StepRefusal::Transient { detail }),
     }
 }
@@ -353,8 +356,11 @@ impl FolderSteps {
     /// (`ItemDownloader::download_and_land` with the step's versions; a download of the
     /// same content that runs already is joined), and only its landing is such a job
     /// (`ItemDownloadLanding::land`, which calls `commit_download_content`). The source's
-    /// refusal is answered as `StepRefusal::{SignedOut, Throttled, ItemGone, Transient}`
-    /// ([`decide_download_outcome`]).
+    /// refusal is answered as `StepRefusal::{SignedOut, Throttled, ItemGone, ItemChanged,
+    /// Transient}` ([`decide_download_outcome`]). `ItemChanged` is OneDrive stating
+    /// another content than the row's: the settlement asks for a cycle and plans the
+    /// step again, and the next download of the content asks OneDrive anew
+    /// (`ItemDownloadStates::start_or_join` forgets what the last one was answered).
     /// When this future is dropped (the step's task aborted), a guard cancels the
     /// download (`ItemDownloader::cancel`: aborted when the plan alone asked for it). The plan's task runs it as its own class of step
     /// (`StepClass::Download`), held by the pause and the sign-out, never holding back

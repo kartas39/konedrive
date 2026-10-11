@@ -20,16 +20,24 @@
 //! **What the source refuses, typed.** The download (`download_staged`) answers an errno;
 //! the source it fetches through (`download_source`) keeps what the content source
 //! refused, and a download that failed is answered by it: a sign-out, a throttle, an item
-//! OneDrive does not have.
+//! OneDrive does not have, another content than the asked one.
 //!
-//! **Another content than was asked for** — OneDrive has another content than the row by
-//! now — is told from the FIRST answer of the source, before a byte of it is written and
-//! before the mark that reads go by is raised (`download_source`): the download ends
-//! there and fetches no further, its waiters hear `ESTALE`, nothing lands, and the
-//! download states remember it (`ItemDownloadStates::finish_as_another_content`), so that
-//! a read through a handle opened as the asked content is `ESTALE` too. So a read is
-//! answered from a running download's file only once that download is known to be of
-//! the content the handle was opened as.
+//! **Another content than was asked for** — OneDrive states another content than the row
+//! by now — is told from the FIRST answer of the source, before a byte of it is written
+//! and before the mark that reads go by is raised (`download_source`): the download ends
+//! there and fetches no further, its waiters hear `ESTALE`, nothing lands, nothing of its
+//! file is kept, and the download states remember it
+//! (`ItemDownloadStates::finish_as_another_content`). So a read is answered from a
+//! running download's file only once that download is known to be of the content the
+//! handle was opened as. What is remembered answers nothing by itself: it is forgotten
+//! when the next download of that item and content starts, which asks OneDrive anew — a
+//! read of such a content asks for exactly that (`item_kernel_requests`), and the plan's
+//! next step for a pinned file does.
+//!
+//! **An item OneDrive does not have** (`DownloadRefusal::ItemGone`: the source's "no such
+//! item"), and an answer that tells neither a size nor a version, state no other content:
+//! the download failed, as by any other refusal. Its waiters hear the errno, nothing is
+//! remembered, and its unfinished file is kept to be gone on from.
 //!
 //! **The class a download runs in** is the starter's ([`decide_pool_class`]) — until
 //! anything but the plan asks for a download the plan started and that still waits for
@@ -79,6 +87,9 @@
 // test: a_download_asked_for_after_the_stop_answers_eio_and_fetches_nothing
 // test: an_open_for_writing_that_joins_the_plans_download_does_not_wait_for_the_pause
 // test: a_download_whose_landing_removed_what_it_named_starts_the_next_with_a_new_file
+// test: a_download_of_an_item_onedrive_does_not_have_fails_and_keeps_its_unfinished_file
+// test: a_size_the_source_does_not_tell_is_no_other_content
+// test: the_mark_is_taken_back_the_moment_the_download_does_not_trust_what_is_on_disk
 #![allow(dead_code)]
 
 use std::fs::File;
@@ -126,8 +137,12 @@ pub enum DownloadRefusal {
     SignedOut,
     /// 429 or 503, with the time the source named.
     Throttled { retry_after: Option<std::time::Duration> },
-    /// OneDrive does not have the item, or not this content of it, any more.
+    /// OneDrive does not have the item (the source's "no such item"): this one asking
+    /// failed, and nothing is said of the content.
     ItemGone,
+    /// OneDrive stated another content of the item than the asked one: a size or a
+    /// version that disagrees, in an answer to this download.
+    AnotherContent,
     /// The network, or the download was aborted: tried again later.
     Transient { detail: String },
 }
@@ -153,20 +168,22 @@ pub(super) fn decide_landing_condition(file: &ItemToDownload, asker: &DownloadAs
     }
 }
 
-/// Whether what was downloaded — `size` bytes, checked as `version` when the source said
-/// one — is `content`, the content that was asked for. Pure.
+/// Whether what OneDrive told — `size` bytes, when a size was told, of `version`, when the
+/// source said one — is `content`, the content that was asked for. Pure. What was not
+/// told disagrees with nothing: the content is told by what else was.
 ///
 /// - Another size: no.
 /// - The source said a version: it is the asked one when both have a QuickXorHash and the
 ///   hashes are equal; when either has none, when the asked content has no cTag or the
 ///   cTags are equal.
 /// - The source said none: the size alone says it.
-pub(super) fn decide_is_asked_content(content: &ContentVersion, size: u64, version: Option<&Version>) -> bool {
+/// - Neither was told: nothing disagrees.
+pub(super) fn decide_is_asked_content(content: &ContentVersion, size: Option<u64>, version: Option<&Version>) -> bool {
     let (asked_hash, asked_ctag) = match content {
         ContentVersion::Hashed { hash, ctag, .. } => (hash.as_deref().and_then(decode_base64), ctag.as_deref()),
         ContentVersion::ChangedHere { .. } => (None, None),
     };
-    content.size() == size
+    size.is_none_or(|size| content.size() == size)
         && version.is_none_or(|version| match (asked_hash, version.quick_xor) {
             (Some(asked), Some(downloaded)) => asked == downloaded,
             (None, _) | (_, None) => asked_ctag.is_none_or(|ctag| ctag == version.ctag),
@@ -185,12 +202,11 @@ pub(super) fn decide_download_failure(errno: i32, refusal: Option<DownloadRefusa
 
 /// What whoever waits for a download is answered when it ended as `end`: nothing for a
 /// landed file, else an errno. `ESTALE` when the row, or OneDrive's content, is not what
-/// was asked for any more: the next read starts a download of what the folder shows
-/// then. Pure.
+/// was asked for any more, and when OneDrive does not have the item. Pure.
 pub(super) fn decide_waiters_answer(end: &DownloadEnd) -> Result<(), i32> {
     match end {
         Ok(ItemLandingOutcome::Landed { .. }) => Ok(()),
-        Ok(ItemLandingOutcome::RowsChanged) | Err(DownloadRefusal::ItemGone) => Err(libc::ESTALE),
+        Ok(ItemLandingOutcome::RowsChanged) | Err(DownloadRefusal::ItemGone | DownloadRefusal::AnotherContent) => Err(libc::ESTALE),
         Ok(ItemLandingOutcome::PlaceHeld { .. }) => Err(libc::EEXIST),
         Ok(ItemLandingOutcome::Failed { errno }) => Err(*errno),
         Ok(ItemLandingOutcome::StepStopped) | Err(DownloadRefusal::SignedOut | DownloadRefusal::Throttled { .. } | DownloadRefusal::Transient { .. }) => Err(libc::EIO),
@@ -273,7 +289,8 @@ impl ItemDownloader {
     /// same item and content.
     ///
     /// Called by read at the threshold of bytes read as ranges (`DownloadAsker::Read`, no
-    /// waiter), by the open for writing and the truncation of a file that is not on disk
+    /// waiter), by a read of a content OneDrive stated another one for (`Read`, with a
+    /// waiter: `ItemKernelRequests::fetch_range_after_download`), by the open for writing and the truncation of a file that is not on disk
     /// (`OpenForWriting`), by `ItemFilesInterface::download` (`FilesInterface`), and by
     /// [`download_and_land`](Self::download_and_land) (`PlanPin`, which carries the
     /// versions the step was planned from). The landing's condition follows from the
@@ -303,9 +320,10 @@ impl ItemDownloader {
             if let Some(answer) = answer {
                 let _ = answer.send(end.clone());
             }
-            // The task's last act: after it the key is free for another download.
+            // The task's last act: after it the key is free for another download. Only
+            // an answer that stated another content is remembered as one.
             match &end {
-                Err(DownloadRefusal::ItemGone) => downloader.download_states.finish_as_another_content(&running.run),
+                Err(DownloadRefusal::AnotherContent) => downloader.download_states.finish_as_another_content(&running.run),
                 end => downloader.download_states.finish(&running.run, decide_waiters_answer(end)),
             }
         });
@@ -397,9 +415,9 @@ impl ItemDownloader {
         };
         // Every answer was held against the asked content already; asked once more of
         // what the download says it checked the whole file as.
-        if !decide_is_asked_content(&file.content, downloaded.size, downloaded.version.as_ref()) {
+        if !decide_is_asked_content(&file.content, Some(downloaded.size), downloaded.version.as_ref()) {
             tracing::info!("{shown_path}: OneDrive has another content than the one that was asked for; nothing lands");
-            return Err(DownloadRefusal::ItemGone);
+            return Err(DownloadRefusal::AnotherContent);
         }
         // Whole from here on: it may be given a name, and is never gone on from.
         self.download_states.end_writing(run);
@@ -440,7 +458,7 @@ impl ItemDownloader {
     /// As [`download`](Self::download) for the plan's pin (`DownloadAsker::PlanPin {
     /// planned_from }`), awaited: what the landing answered, or the source's refusal
     /// typed, for the plan's step (`FolderSteps::run_download_content`, which turns it
-    /// into `StepRefusal::{SignedOut, Throttled, ItemGone, Transient}`). Where the plan's
+    /// into `StepRefusal::{SignedOut, Throttled, ItemGone, ItemChanged, Transient}`). Where the plan's
     /// asking joined a download somebody else started, the answer is made of what the
     /// plan's waiter heard ([`decide_joined_end`]); a download that was aborted, and one
     /// asked for after the stop — the mount stops — is `DownloadRefusal::Transient`.

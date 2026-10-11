@@ -409,3 +409,27 @@ fn the_count_of_bytes_read_as_ranges_starts_over_once_it_reached_the_threshold()
     assert!(!download_states.count_bytes_read(item, 95, 1000));
     assert!(download_states.count_bytes_read(item, 1, 1000), "as many bytes read again");
 }
+
+#[test]
+fn no_more_than_the_latest_contents_onedrive_answered_with_another_are_remembered() {
+    let download_states = download_states();
+    let answer_with_another_content = |item: i64| download_states.finish_as_another_content(&start_anew(&download_states, &key(item, "c1")));
+    let count_remembered = |items: std::ops::Range<i64>| items.filter(|item| download_states.is_another_content(&key(*item, "c1"))).count();
+    let kept = ANOTHER_CONTENTS_REMEMBERED as i64;
+    (0..kept).for_each(answer_with_another_content);
+    assert_eq!(count_remembered(0..kept), ANOTHER_CONTENTS_REMEMBERED);
+
+    // One more: the oldest goes.
+    answer_with_another_content(kept);
+    assert!(!download_states.is_another_content(&key(0, "c1")), "the oldest is forgotten");
+    assert_eq!(count_remembered(0..kept + 1), ANOTHER_CONTENTS_REMEMBERED);
+    // Answered so again, it is the latest: the next to go is the oldest by then.
+    answer_with_another_content(1);
+    answer_with_another_content(kept + 1);
+    assert!(download_states.is_another_content(&key(1, "c1")) && !download_states.is_another_content(&key(2, "c1")));
+    // A failed download's unfinished file is not counted among them, nor they among those.
+    let failed = fail_download(&download_states, &key(900, "c1"));
+    answer_with_another_content(kept + 2);
+    assert!(Arc::ptr_eq(&start(&download_states, &key(900, "c1")).unwrap().1.unwrap(), &failed));
+    assert_eq!(count_remembered(0..kept + 3), ANOTHER_CONTENTS_REMEMBERED);
+}

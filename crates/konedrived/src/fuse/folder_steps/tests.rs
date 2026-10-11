@@ -7,6 +7,7 @@ use konedrive_tree::{make_temporary_name, Change, Kind, ListingLink, OneDriveIte
 use super::*;
 use crate::folder::running_steps::{RunningStep, StepClass};
 use crate::fuse::item_download_landing::ItemDownloadLanding;
+use crate::fuse::item_download_states::DownloadKey;
 use crate::fuse::item_fixture::{DiskMarksRead, ItemFixture, ONEDRIVE_MTIME, ROOT_ONEDRIVE_ID};
 use crate::status::report::Report;
 
@@ -233,6 +234,7 @@ fn what_a_download_answered_is_the_steps_outcome_case_by_case() {
     assert_eq!(decide_download_outcome(Err(DownloadRefusal::SignedOut)), StepOutcome::Refused(StepRefusal::SignedOut));
     assert_eq!(decide_download_outcome(Err(DownloadRefusal::Throttled { retry_after: Some(wait) })), StepOutcome::Refused(StepRefusal::Throttled { retry_after: Some(wait) }));
     assert_eq!(decide_download_outcome(Err(DownloadRefusal::ItemGone)), StepOutcome::Refused(StepRefusal::ItemGone));
+    assert_eq!(decide_download_outcome(Err(DownloadRefusal::AnotherContent)), StepOutcome::Refused(StepRefusal::ItemChanged));
     assert_eq!(decide_download_outcome(Err(DownloadRefusal::Transient { detail: "no network".into() })), StepOutcome::Refused(StepRefusal::Transient { detail: "no network".into() }));
 }
 
@@ -592,6 +594,40 @@ fn a_pinned_files_content_is_downloaded_as_the_plans_step() {
     // What the source refuses is the step's refusal.
     fixture.refuse_content(other.local_item_id, Some(crate::fuse::item_fixture::ContentRefusal::NotFound));
     assert_eq!(run(&fixture, &steps, FolderStep::DownloadContent { item: ItemVersions::of(&other) }), StepOutcome::Refused(StepRefusal::ItemGone));
+}
+
+/// What the plan's download leaves after OneDrive stated another content, or had no such
+/// item, and no listing changed the row: the same step, run again, asks OneDrive anew.
+#[test]
+fn a_pinned_files_download_that_onedrive_refused_once_lands_when_the_step_runs_again() {
+    let fixture = ItemFixture::new();
+    let pinned = fixture.show_onedrive_file("pinned.txt", b"pinned");
+    let steps = make_steps(&fixture);
+    let step = || FolderStep::DownloadContent { item: ItemVersions::of(&pinned) };
+    let key = DownloadKey { item: pinned.local_item_id, content: pinned.local.as_ref().and_then(|local| local.content.clone()).unwrap() };
+    let written = StepOutcome::Written { events: vec![StepEvent { kind: ActivityKind::Downloaded, path: "pinned.txt".into(), former_path: None }] };
+
+    // One answer states another content.
+    fixture.serve_content(pinned.local_item_id, b"PINNED");
+    assert_eq!(run(&fixture, &steps, step()), StepOutcome::Refused(StepRefusal::ItemChanged));
+    assert!(fixture.download_states.is_another_content(&key));
+    // OneDrive states the row's content again; the row is as it was, so the plan's next
+    // step is the same one.
+    fixture.serve_content(pinned.local_item_id, b"pinned");
+    assert_eq!(fixture.versions_of(pinned.local_item_id), ItemVersions::of(&pinned));
+    assert_eq!(run(&fixture, &steps, step()), written);
+    assert!(!fixture.download_states.is_another_content(&key));
+    assert_eq!(fixture.read_disk_file("pinned.txt").as_deref(), Some(&b"pinned"[..]));
+
+    // "No such item", once: nothing is remembered, and the step run again lands.
+    let other = fixture.show_onedrive_file("other.txt", b"other");
+    let other_key = DownloadKey { item: other.local_item_id, content: other.local.as_ref().and_then(|local| local.content.clone()).unwrap() };
+    fixture.refuse_content(other.local_item_id, Some(crate::fuse::item_fixture::ContentRefusal::NotFound));
+    assert_eq!(run(&fixture, &steps, FolderStep::DownloadContent { item: ItemVersions::of(&other) }), StepOutcome::Refused(StepRefusal::ItemGone));
+    assert!(!fixture.download_states.is_another_content(&other_key));
+    fixture.refuse_content(other.local_item_id, None);
+    assert!(matches!(run(&fixture, &steps, FolderStep::DownloadContent { item: ItemVersions::of(&other) }), StepOutcome::Written { .. }));
+    fixture.assert_rows_and_disk_agree();
 }
 
 /// The rows, without what a death and its check may move and nothing says: nothing.

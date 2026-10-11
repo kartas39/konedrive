@@ -174,7 +174,7 @@ pub(super) async fn download(
     loop {
         match attempt(target, item_id, original_size, source, checkpoint.take(), split, &joined, tuning).await {
             Ok(downloaded) => return Ok(downloaded),
-            Err(end) => start_over.after(end, target, item_id, tuning).await?,
+            Err(end) => start_over.after(end, target, item_id, source, tuning).await?,
         }
     }
 }
