@@ -47,9 +47,10 @@ pub(super) fn publish(folder: &Folder) -> Published {
     let sync = match folder.up().map(|up| &up.sync) {
         None => SyncView::None,
         // One that was told to stop is not running: a change that told it may have been
-        // cut before it took it out of the state.
-        // TODO: check that the stop's token (`SyncTasks::stop_handle`) is all a reader needs of
-        // a running sync, and fix if needed.
+        // cut before it took it out of the state. The stop's token is all a reader takes
+        // of the sync itself (whether it runs, and to tell it to stop); what else a reader
+        // needs of a running sync — its poll, its holds, its space — is beside it in the
+        // view, and is there exactly while the sync is shown as running.
         Some(Sync::Running(started)) if started.tasks.stop_handle().is_cancelled() => SyncView::Stopped(None),
         Some(Sync::Running(started)) => SyncView::Running(started.tasks.stop_handle()),
         Some(Sync::Stopped(Why::CannotStart(why) | Why::DriveNotKnown(why))) => SyncView::Stopped(Some(why.clone())),
@@ -57,15 +58,17 @@ pub(super) fn publish(folder: &Folder) -> Published {
         Some(Sync::Stopped(Why::TakenDown { cause, .. })) => SyncView::Stopped(Some(cause.clone())),
         Some(Sync::Stopped(_)) => SyncView::Stopped(None),
     };
+    // The sync whose handles the view gives: one that runs and was not told to stop, as `sync` says it.
+    let running = folder.acted_on().and_then(|_| folder.running()).filter(|started| !started.tasks.stop_handle().is_cancelled());
     let view = |down: Option<String>| View {
         record: folder.acted_on().map(Record::bare),
         down,
         wanted: folder.wanted,
         parts: folder.acted_on().and_then(|_| folder.parts()),
         // Of a running sync alone: with none the queue's answers say them as not known.
-        poll: folder.acted_on().and_then(|_| folder.running()).map(|started| started.tasks.poll()),
-        sending_holds: folder.acted_on().and_then(|_| folder.running()).map(|started| Arc::clone(started.tasks.sending_holds())),
-        onedrive_space: folder.acted_on().and_then(|_| folder.running()).map(|started| Arc::clone(&started.onedrive_space)),
+        poll: running.map(|started| started.tasks.poll()),
+        sending_holds: running.map(|started| Arc::clone(started.tasks.sending_holds())),
+        onedrive_space: running.map(|started| Arc::clone(&started.onedrive_space)),
         sync: sync.clone(),
     };
     let (state, error, down) = match &folder.is {

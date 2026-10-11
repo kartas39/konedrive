@@ -231,3 +231,27 @@ fn the_daemons_end_stops_the_running_sync_and_the_mount_it_kept() {
         assert!(read_sync(&service, |folder| folder.running().is_none()).await);
     });
 }
+
+/// A sync that was told to stop is published as stopped, and with none of its handles: a
+/// reader that asks the view for the poll, the holds or the space of a running sync gets
+/// none, as the sync itself is not shown as running.
+#[test]
+fn a_sync_told_to_stop_is_published_with_none_of_its_handles() {
+    let fixture = ItemFixture::new();
+    fixture.runtime().block_on(async {
+        let graph = fixture.start_fake_onedrive().await;
+        let (service, _clock) = make_service_with_drive(&fixture, graph.client());
+        stage_running_sync(&service, &fixture, graph.client()).await;
+        {
+            let folder = service.folder.read().await;
+            let running = crate::account_folder::publish::publish(&folder).view;
+            assert!(matches!(running.sync, SyncView::Running(_)) && running.poll.is_some() && running.sending_holds.is_some() && running.onedrive_space.is_some());
+            folder.running().expect("the sync runs").tasks.stop_handle().cancel();
+            let told_to_stop = crate::account_folder::publish::publish(&folder).view;
+            assert!(matches!(told_to_stop.sync, SyncView::Stopped(None)));
+            assert!(told_to_stop.poll.is_none() && told_to_stop.sending_holds.is_none() && told_to_stop.onedrive_space.is_none(), "the handles of a sync that is not shown as running");
+            assert!(told_to_stop.parts.is_some(), "the parts stay: the store and the mount are the folder's");
+        }
+        end_running_sync(&service).await;
+    });
+}

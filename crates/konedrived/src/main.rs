@@ -88,7 +88,9 @@ async fn main() -> anyhow::Result<()> {
     // One call per account: its sync is stopped, then its folder loses its mount and is locked.
     // The folders that got there within the bound are kept, for the desktop to be told. The unit's
     // tidy step does the same for a daemon that could not.
-    // TODO: check that a folder whose stop was cut at the bound, or by a second signal, is left to the tidy step as before (its mount was stopped after the bound until now), and fix if needed.
+    // A folder whose end was cut at the bound, or by a second signal, is left as it is: the process exits with its
+    // mount still over the folder, which is then a mount whose daemon is gone, or with the write bits half removed.
+    // The tidy step takes such a mount off and removes the write bits of the whole folder (`mount::tidy_folder`).
     let ended: Arc<std::sync::Mutex<Vec<std::path::PathBuf>>> = Arc::default();
     let ending: Vec<_> = registry
         .accounts()

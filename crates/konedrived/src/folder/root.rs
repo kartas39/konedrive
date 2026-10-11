@@ -17,19 +17,18 @@ use xattr::FileExt;
 static UNDER: Mutex<Vec<(PathBuf, Arc<File>)>> = Mutex::new(Vec::new());
 
 /// From now on the folder at `path` is opened through `folder` ([`SyncRoot::open_registered`]):
-/// a mount lies over its path.
-// TODO: check that the mount over the rows says so here when it is served (`ItemMount::serve`),
-// and fix if needed: nothing calls it now.
-#[allow(dead_code)]
+/// a mount lies over its path. Called by the mount when it goes over the folder
+/// (`ItemMount::serve`), with a descriptor it took before. A guard: the one reader of
+/// the folder by its root id (`mark_drive`) is asked only of a folder with no mount, and
+/// would open the mount itself by the path if it ever were not.
 pub(crate) fn mounted_over(path: &Path, folder: Arc<File>) {
     let mut under = crate::panic::lock(&UNDER);
     under.retain(|(at, _)| at != path);
     under.push((path.to_path_buf(), folder));
 }
 
-/// The mount over `path` is gone: the folder is opened by its path again.
-// Called by `ItemMount::stop` once its body is written.
-#[allow(dead_code)]
+/// The mount over `path` is gone: the folder is opened by its path again. Called by the
+/// mount once its session is taken off the folder, and when it could not be served.
 pub(crate) fn mount_gone(path: &Path) {
     crate::panic::lock(&UNDER).retain(|(at, _)| at != path);
 }

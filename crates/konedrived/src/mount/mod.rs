@@ -47,8 +47,9 @@ mod backing_directory_check;
 mod errno;
 mod range_readers;
 mod stale_mount;
-// TODO: check whether the tidy step after the daemon's end (`konedrived --tidy`) stays as it is
-// with the mount over the rows, and fix if needed: `main` is its one caller.
+// The tidy step after the daemon's end (`konedrived --tidy`, the unit's `ExecStopPost`): it reads
+// the kernel's table of mounts and the folder on disk and nothing of the rows, so it is the same
+// for whichever mount was served.
 mod tidy_step;
 #[allow(dead_code, unused_imports)]
 mod upload_rules;

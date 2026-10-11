@@ -55,7 +55,12 @@ impl SyncService {
 /// The downloads that never ended in a folder served through FUSE: each one's size on disk
 /// and its checkpoint (`ItemFilesInterface::list_unfinished_downloads`); none for a folder
 /// that is not mounted.
-// TODO: check whether the VM suite still asks for them, and fix if needed.
+///
+/// The VM suite asks for them (`fuse-service staged`): after a file was read whole it
+/// checks that the list is empty (`mounted_folder.sh`), and the service group prints it
+/// after a download that was cut off (`guest.sh`). The list is of the files the mount's
+/// download states keep — a running download's file that is not whole, and the file kept
+/// of a failed one —, each with its size on disk and the checkpoint written on it.
 pub async fn staged(service: &SyncService) -> Vec<(u64, Option<u64>)> {
     let Some(mount) = service.mount() else { return Vec::new() };
     let unfinished = mount.files_interface().list_unfinished_downloads().await.unwrap_or_default();
