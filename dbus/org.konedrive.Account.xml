@@ -36,8 +36,8 @@
          To read-only while changes wait to be uploaded: not refused, and
          not to be asked twice. The wish is kept, the account stays
          read-write and goes on uploading, and switches by itself when
-         nothing is left; LastError says "switching to read-only: N changes
-         still to send" meanwhile. With force it switches at once: what is
+         nothing is left; ReadOnlyWanted and UnsentBeforeReadOnly say so
+         meanwhile. With force it switches at once: what is
          not uploaded stays here, not sent and not lost, and is sent when
          the account is read-write again. Nothing is dropped. To read-write
          while the wish is kept takes the wish back. No sign-in: the next
@@ -61,6 +61,18 @@
     <!-- signed-out | signing-in | signed-in -->
     <property name="State" type="s" access="read"/>
     <property name="LastError" type="s" access="read"/>
+    <!-- A switch to read-only that waits: the user asked for read-only
+         while changes made here were unsent (SetMode). The account is
+         read-write still, sends them, and switches by itself when none is
+         left. ReadOnlyWanted is true from the wish kept until the switch
+         is made, forced (SetMode("read-only", true)) or taken back
+         (SetMode("read-write")); it survives a restart of the daemon.
+         UnsentBeforeReadOnly is how many changes are still to send, as the
+         folder last counted them: 0 until its first count after a
+         restart, and 0 while ReadOnlyWanted is false. A state, not an
+         error: LastError says nothing of it. -->
+    <property name="ReadOnlyWanted" type="b" access="read"/>
+    <property name="UnsentBeforeReadOnly" type="t" access="read"/>
     <property name="DisplayName" type="s" access="read"/>
     <property name="Email" type="s" access="read"/>
     <!-- The account's one quota, whoever reads it: the account's info (a

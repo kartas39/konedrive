@@ -76,6 +76,20 @@ fn every_mode_note_says_what_last_error_said() {
     );
 }
 
+/// A wish for read-only that waits is no word of `LastError`: an error and a note come and
+/// go beside it, and it goes when the account is no longer signed in.
+#[test]
+fn a_wish_for_read_only_is_a_state_beside_last_error() {
+    let mut s = AccountSnapshot { read_only_wish: Some(ReadOnlyWish { unsent: 3 }), ..AccountSnapshot::default() };
+    assert_eq!(s.published_error(), "");
+    s.set_error("no network");
+    s.set_mode_note(Some(ModeNote::DriveNotSeen));
+    s.clear_error();
+    assert_eq!((s.read_only_wish, s.published_error().as_str()), (Some(ReadOnlyWish { unsent: 3 }), ""));
+    s.clear_account();
+    assert_eq!(s.read_only_wish, None);
+}
+
 /// An error and the mode's note stand in one place: each takes the other's, and a note
 /// taken back leaves an error said since.
 #[test]

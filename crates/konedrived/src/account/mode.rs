@@ -32,7 +32,7 @@ impl AccountService {
     ///     when its plan finds nothing unsent the switch is made by itself
     ///     ([`switch_to_read_only_when_sent`](Self::switch_to_read_only_when_sent)).
     ///     Until then `Account.Mode` reads `read-write` and `LastError` carries
-    ///     `ModeNote::SwitchingToReadOnly`. Asked again with `force` it switches at once;
+    ///     `AccountSnapshot::read_only_wish`. Asked again with `force` it switches at once;
     ///   - a switch to read-write still waiting for its browser is given up.
     /// - **To read-write while a wish for read-only is kept**: the wish is taken back
     ///   ([`take_read_only_wish_back`](Self::take_read_only_wish_back)); no sign-in.
@@ -211,9 +211,9 @@ impl AccountService {
 
     /// Keeps the user's wish for read-only until nothing is unsent: written to
     /// `config.toml` beside the mode (`[accounts] read_only_wanted = true`, so that it
-    /// survives a restart of the daemon: at its start the account shows the note again
+    /// survives a restart of the daemon: at its start the account shows the wish again
     /// and the folder's first plan with nothing unsent makes the switch), and shown
-    /// (`ModeNote::SwitchingToReadOnly { unsent }`: `recompute_mode` keeps the note while
+    /// (`AccountSnapshot::read_only_wish`: `recompute_mode` keeps it while
     /// the wish stands and leaves its count as it is; the count is written by
     /// `FolderAccount::tell_unsent_count`, which the folder's plan calls after every
     /// plan). The account's mode does not change. The ONE keeper of the wish is the
@@ -226,11 +226,11 @@ impl AccountService {
                 Ok::<_, ConfigError>(())
             })
             .map_err(|e| ModeError::Failed(format!("cannot save the configuration: {e}")))?;
-        // Worked out again first: a note that says more than the wish stays, and the wish is said with the count just read.
+        // Worked out again first, which shows the wish; then it is said with the count just read.
         self.recompute_mode();
         self.state.update(|s| {
-            if matches!(s.mode_note, Some(ModeNote::SwitchingToReadOnly { .. })) {
-                s.set_mode_note(Some(ModeNote::SwitchingToReadOnly { unsent }));
+            if let Some(wish) = &mut s.read_only_wish {
+                wish.unsent = unsent;
             }
         });
         tracing::info!("the account {:?} switches to read-only once its {unsent} unsent change(s) are sent", self.id);
@@ -244,8 +244,8 @@ impl AccountService {
         self.config.current().and_then(|config| config.account(&self.id).map(|account| account.read_only_wanted)).unwrap_or(false)
     }
 
-    /// Takes the wish for read-only back: `read_only_wanted` off `config.toml`, the note
-    /// gone. The account is read-write as it was; nothing else changes. Nothing for an
+    /// Takes the wish for read-only back: `read_only_wanted` off `config.toml`, and no
+    /// wish shown. The account is read-write as it was; nothing else changes. Nothing for an
     /// account that keeps no wish. Called by [`set_mode`](Self::set_mode) to read-write.
     async fn take_read_only_wish_back(&self) -> Result<(), ModeError> {
         if !self.keeps_read_only_wish() {
@@ -257,7 +257,7 @@ impl AccountService {
                 Ok::<_, ConfigError>(())
             })
             .map_err(|e| ModeError::Failed(format!("cannot save the configuration: {e}")))?;
-        // The note goes with the wish.
+        // What is shown goes with the wish.
         self.recompute_mode();
         tracing::info!("the account {:?} stays read-write: the wish for read-only is taken back", self.id);
         Ok(())
@@ -346,7 +346,7 @@ impl AccountService {
             if held.is_request_in_flight {
                 // A request that changes OneDrive is still in flight: sent again under a token that cannot write it
                 // would be refused, and the refusal kept on the file. The token stays until the folder says none is.
-                self.state.update(|s| s.set_mode_note(Some(ModeNote::SwitchingToReadOnly { unsent: held.unsent })));
+                // Nothing is shown of it: the account is read-only already, and no wish waits.
                 if let Some(service) = self.me.upgrade() {
                     // In a task of its own: the call that asked for the switch does not wait for a request that hangs.
                     // The folder by a weak reference: the wait keeps no folder alive.
@@ -363,7 +363,6 @@ impl AccountService {
     /// `Files.Read` (§2.2). The last step of a switch to read-only.
     async fn give_write_token_up(&self) {
         self.tokens.invalidate().await;
-        // The note of a switch that waited goes with it.
         self.recompute_mode();
         tracing::info!("the account {:?} is read-only now", self.id);
     }
@@ -373,7 +372,7 @@ impl AccountService {
     /// (`PendingUploads::has_request_in_flight`, which holds no door of the folder), after a short wait
     /// ([`REQUEST_IN_FLIGHT_ASKED_AGAIN_AFTER`]), until it answers that none is, and only
     /// then the token goes ([`give_write_token_up`](Self::give_write_token_up)). The
-    /// account shows `ModeNote::SwitchingToReadOnly` meanwhile. Ends without giving the
+    /// account is read-only meanwhile, and shows nothing of it. Ends without giving the
     /// token up when `config.toml` says read-write again (the user switched back), when
     /// the account is retired, and when the folder is gone — then nothing sends.
     async fn give_write_token_up_when_sent(&self, folder: Weak<dyn PendingUploads>) {

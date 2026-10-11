@@ -219,7 +219,7 @@ pub trait FolderAccount: Send + Sync {
     fn drive_seen(&self, drive: &str);
     /// The folder's plan counted `unsent` unsent changes. For an account whose user asked
     /// for read-only while changes were unsent: the count shown is this one
-    /// (`ModeNote::SwitchingToReadOnly { unsent }`, written here when it changed), and at
+    /// (`AccountSnapshot::read_only_wish`, written here when it changed), and at
     /// 0 the account switches (`AccountService::switch_to_read_only_when_sent`, in a task
     /// of its own: this never waits). Nothing for an account that keeps no such wish.
     /// Called by the folder, from the report it gave its sync
@@ -249,15 +249,15 @@ impl FolderAccount for AccountService {
     }
 
     fn tell_unsent_count(&self, unsent: u64) {
-        let is_shown = matches!(self.state.get().mode_note, Some(ModeNote::SwitchingToReadOnly { .. }));
-        if !is_shown && !self.config.account(&self.id).is_some_and(|account| account.read_only_wanted) {
+        let shown = self.state.get().read_only_wish;
+        if shown.is_none() && !self.config.account(&self.id).is_some_and(|account| account.read_only_wanted) {
             return;
         }
         // Written when it changed: every plan says the count, and most say the one before.
-        if self.state.get().mode_note.as_ref().is_some_and(|note| matches!(note, ModeNote::SwitchingToReadOnly { unsent: shown } if *shown != unsent)) {
+        if shown.is_some_and(|wish| wish.unsent != unsent) {
             self.state.update(|s| {
-                if matches!(s.mode_note, Some(ModeNote::SwitchingToReadOnly { .. })) {
-                    s.mode_note = Some(ModeNote::SwitchingToReadOnly { unsent });
+                if let Some(wish) = &mut s.read_only_wish {
+                    wish.unsent = unsent;
                 }
             });
         }
@@ -507,14 +507,9 @@ impl AccountService {
             } else {
                 None
             };
-            // The wish for read-only is said while it stands and nothing else is to say: its count is left as it is
+            // The wish for read-only is said while it stands and the account is read-write: its count is left as it is
             // (`tell_unsent_count` writes it), 0 until the folder's first plan counted.
-            let why = why.or_else(|| {
-                (is_read_only_wanted && s.mode == Mode::ReadWrite).then(|| match &s.mode_note {
-                    Some(ModeNote::SwitchingToReadOnly { unsent }) => ModeNote::SwitchingToReadOnly { unsent: *unsent },
-                    _ => ModeNote::SwitchingToReadOnly { unsent: 0 },
-                })
-            });
+            s.read_only_wish = (is_read_only_wanted && s.mode == Mode::ReadWrite).then(|| s.read_only_wish.unwrap_or(state::ReadOnlyWish { unsent: 0 }));
             // The note takes the place of what `LastError` said; with no reason left, only
             // the note goes, and an error said since stays.
             s.set_mode_note(why);

@@ -16,7 +16,7 @@ use common::*;
 use konedrive_dbus::accounts::{AccountProxy, AccountsProxy, TokenExportProxy};
 use konedrive_dbus::error_name;
 use konedrive_dbus::testing::TestBus;
-use konedrived::account::state::{ModeNote, SignInState};
+use konedrived::account::state::{ReadOnlyWish, SignInState};
 use konedrived::account::{
     AccountService, FolderAccount, HeldUnsentChanges, PendingUploads, CONFIG_UNREADABLE, DRIVE_NOT_KNOWN, DRIVE_NOT_SEEN, SIGN_IN_TO_WRITE,
 };
@@ -369,6 +369,8 @@ struct UnsentFolder {
     unsent: AtomicU64,
     is_request_in_flight: AtomicBool,
     is_held: AtomicBool,
+    /// How many times it was asked again whether a request is in flight.
+    asked_again: AtomicU64,
 }
 
 impl UnsentFolder {
@@ -389,6 +391,7 @@ impl PendingUploads for UnsentFolder {
     }
 
     fn has_request_in_flight(&self) -> bool {
+        self.asked_again.fetch_add(1, Ordering::SeqCst);
         self.is_request_in_flight.load(Ordering::SeqCst)
     }
 }
@@ -435,21 +438,57 @@ async fn a_switch_to_read_only_asked_with_changes_unsent_keeps_the_wish_and_is_m
     assert_eq!((f.svc.configured_mode(), f.svc.mode()), (Mode::ReadWrite, Mode::ReadWrite), "the account is read-write still");
     assert!(keeps_wish(&f), "the wish is in config.toml");
     assert!(!folder.is_held.load(Ordering::SeqCst), "the folder goes on sending");
-    assert_eq!(f.svc.state().get().mode_note, Some(ModeNote::SwitchingToReadOnly { unsent: 3 }));
+    assert_eq!((f.svc.state().get().read_only_wish, f.svc.state().get().published_error()), (Some(ReadOnlyWish { unsent: 3 }), String::new()), "a state, and no error");
 
     // The folder's plan counts what is left.
     folder.unsent.store(1, Ordering::SeqCst);
     f.svc.tell_unsent_count(1);
-    assert_eq!(f.svc.state().get().mode_note, Some(ModeNote::SwitchingToReadOnly { unsent: 1 }));
+    assert_eq!(f.svc.state().get().read_only_wish, Some(ReadOnlyWish { unsent: 1 }));
     assert_eq!(f.svc.configured_mode(), Mode::ReadWrite, "not yet");
 
     folder.unsent.store(0, Ordering::SeqCst);
     f.svc.tell_unsent_count(0);
     let svc = &f.svc;
-    eventually("the switch made by itself", || async move { svc.configured_mode() == Mode::ReadOnly && svc.state().get().mode_note.is_none() }).await;
+    eventually("the switch made by itself", || async move { svc.configured_mode() == Mode::ReadOnly && svc.state().get().read_only_wish.is_none() }).await;
     assert!(folder.is_held.load(Ordering::SeqCst), "the folder was told to hold");
     assert!(!keeps_wish(&f), "the wish went with the switch");
     assert_eq!(f.svc.mode(), Mode::ReadOnly);
+}
+
+/// On the bus a wish for read-only that waits is a state of its own: `ReadOnlyWanted` with
+/// `UnsentBeforeReadOnly`, the count as the folder last told it, and `LastError` says
+/// nothing of it; taken back, both are as with no wish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_bus_says_a_wish_for_read_only_with_its_count_and_not_as_an_error() {
+    let s = signed_in(&[]).await;
+    let folder = UnsentFolder::with_unsent(2);
+    s.config().record_drive(&s.id, &DriveId::new("D1").unwrap()).unwrap();
+    s.config()
+        .update_account(&s.id, |a| {
+            a.mode = Mode::ReadWrite;
+            Ok::<_, ConfigError>(())
+        })
+        .unwrap();
+    s.service.state().update(|state| {
+        state.granted_scopes = READ_WRITE.to_owned();
+        state.live_drive = "D1".to_owned();
+    });
+    s.service.recheck_mode();
+    let uploads: std::sync::Weak<UnsentFolder> = Arc::downgrade(&folder);
+    s.service.set_uploads(uploads);
+    assert_eq!(s.account.mode().await.unwrap(), "read-write");
+    assert_eq!((s.account.read_only_wanted().await.unwrap(), s.account.unsent_before_read_only().await.unwrap()), (false, 0));
+
+    assert_eq!(s.account.set_mode("read-only", false).await.unwrap(), "");
+    assert_eq!((s.account.read_only_wanted().await.unwrap(), s.account.unsent_before_read_only().await.unwrap()), (true, 2));
+    assert_eq!((s.account.mode().await.unwrap().as_str(), s.account.last_error().await.unwrap().as_str()), ("read-write", ""));
+
+    s.service.tell_unsent_count(1);
+    assert_eq!((s.account.read_only_wanted().await.unwrap(), s.account.unsent_before_read_only().await.unwrap()), (true, 1));
+
+    assert_eq!(s.account.set_mode("read-write", false).await.unwrap(), "", "the wish is taken back with no sign-in");
+    assert_eq!((s.account.read_only_wanted().await.unwrap(), s.account.unsent_before_read_only().await.unwrap()), (false, 0));
+    assert_eq!(s.account.mode().await.unwrap(), "read-write");
 }
 
 /// A wish for read-only is taken back by a switch to read-write: no sign-in, the account
@@ -463,7 +502,7 @@ async fn a_wish_for_read_only_is_taken_back_by_a_switch_to_read_write() {
     assert!(keeps_wish(&f));
     assert_eq!(f.svc.set_mode("read-write", false).await.unwrap(), "", "no sign-in is needed");
     assert!(!keeps_wish(&f));
-    assert_eq!((f.svc.configured_mode(), f.svc.mode(), f.svc.state().get().mode_note), (Mode::ReadWrite, Mode::ReadWrite, None));
+    assert_eq!((f.svc.configured_mode(), f.svc.mode(), f.svc.state().get().read_only_wish), (Mode::ReadWrite, Mode::ReadWrite, None));
 
     folder.unsent.store(0, Ordering::SeqCst);
     f.svc.tell_unsent_count(0);
@@ -485,7 +524,7 @@ async fn a_forced_switch_to_read_only_is_made_at_once_and_what_is_unsent_stays_h
     assert!(!keeps_wish(&f));
     assert!(folder.is_held.load(Ordering::SeqCst), "the folder holds what is unsent");
     assert_eq!(folder.pending_uploads().await, 3, "nothing is dropped");
-    assert_eq!(f.svc.state().get().mode_note, None);
+    assert_eq!((f.svc.state().get().read_only_wish, f.svc.state().get().mode_note), (None, None));
 }
 
 /// A wish that is kept is not asked a second time: asked again with force the switch is
@@ -523,34 +562,45 @@ async fn a_switch_to_read_only_of_a_read_only_account_holds_again_and_drops_noth
 }
 
 /// The token that can write is not given up while a request that changes OneDrive is in
-/// flight: the switch is made (`config.toml`, the folder held) and the account says
-/// "switching" until the folder, asked again after a short wait, says none is — only then
-/// the note goes with the token.
+/// flight: the switch is made (`config.toml`, the folder held), the account is read-only
+/// and says nothing of it — no wish waits — and the folder is asked again after a short
+/// wait until it says none is; then it is asked no more.
 #[tokio::test]
-async fn the_switch_to_read_only_is_shown_as_under_way_while_a_request_is_in_flight() {
+async fn the_switch_to_read_only_asks_the_folder_again_while_a_request_is_in_flight() {
     let folder = UnsentFolder::with_unsent(2);
     folder.is_request_in_flight.store(true, Ordering::SeqCst);
     let f = read_write_account(&folder).await;
     f.svc.set_mode("read-only", true).await.unwrap();
     assert_eq!(f.svc.configured_mode(), Mode::ReadOnly);
     assert!(folder.is_held.load(Ordering::SeqCst));
-    assert_eq!(f.svc.state().get().mode_note, Some(ModeNote::SwitchingToReadOnly { unsent: 2 }), "the token is kept: the switch is under way");
+    assert_eq!((f.svc.state().get().read_only_wish, f.svc.state().get().mode_note), (None, None), "the account is read-only already: no wish waits, and nothing is said");
 
-    // Asked again while the request still hangs: nothing changes.
+    // Asked again while the request still hangs: nothing changes. The wait has started first.
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(6)).await;
     for _ in 0..20 {
         tokio::task::yield_now().await;
     }
-    assert_eq!(f.svc.state().get().mode_note, Some(ModeNote::SwitchingToReadOnly { unsent: 2 }), "still in flight");
+    let asked = folder.asked_again.load(Ordering::SeqCst);
+    assert!(asked >= 1, "still in flight: the folder is asked again");
+    assert_eq!((f.svc.state().get().read_only_wish, f.svc.state().get().mode_note), (None, None));
 
-    // The request ended: at the next ask the token goes, and the note with it.
+    // The request ended: at the next ask the token goes, and the folder is asked no more.
     folder.is_request_in_flight.store(false, Ordering::SeqCst);
     tokio::time::advance(Duration::from_secs(6)).await;
     for _ in 0..20 {
         tokio::task::yield_now().await;
     }
-    assert_eq!(f.svc.state().get().mode_note, None);
+    let asked = folder.asked_again.load(Ordering::SeqCst);
+    tokio::time::advance(Duration::from_secs(12)).await;
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(folder.asked_again.load(Ordering::SeqCst), asked, "the wait has ended");
+    assert_eq!((f.svc.state().get().read_only_wish, f.svc.state().get().mode_note), (None, None));
     assert_eq!((f.svc.configured_mode(), f.svc.mode()), (Mode::ReadOnly, Mode::ReadOnly));
 }
 

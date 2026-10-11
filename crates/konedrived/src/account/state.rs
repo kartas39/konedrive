@@ -35,6 +35,13 @@ pub struct AccountSnapshot {
     /// for: `recompute_mode`'s alone to set and to take back. It stands in `LastError`
     /// where an error would, so one takes the other's place.
     pub mode_note: Option<ModeNote>,
+    /// The user asked for read-only while changes were unsent: the account is still
+    /// read-write and sends them, and switches by itself when none is left
+    /// (`AccountService::keep_read_only_wish`). `None` with no such wish, and once the
+    /// account is read-only. `recompute_mode`'s to set and to take back; its count is
+    /// `FolderAccount::tell_unsent_count`'s. `Account.ReadOnlyWanted` and
+    /// `Account.UnsentBeforeReadOnly`: a state of its own, never in `LastError`.
+    pub read_only_wish: Option<ReadOnlyWish>,
     pub client_id: String,
     /// `Account.Label`: what the account is called here, as `config.toml` keeps it.
     pub label: String,
@@ -67,6 +74,7 @@ impl Default for AccountSnapshot {
             state: SignInState::SignedOut,
             last_error: String::new(),
             mode_note: None,
+            read_only_wish: None,
             client_id: String::new(),
             label: String::new(),
             display_name: String::new(),
@@ -120,7 +128,17 @@ impl AccountSnapshot {
         self.wider_grant.clear();
         self.live_drive.clear();
         self.mode = Mode::ReadOnly;
+        self.read_only_wish = None;
     }
+}
+
+/// A wish for read-only that waits for what is unsent
+/// ([`AccountSnapshot::read_only_wish`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadOnlyWish {
+    /// How many changes are still to send, as the folder last counted them; 0 until its
+    /// first plan counted.
+    pub unsent: u64,
 }
 
 /// Why an account runs read-only against `config.toml`, or holds more than it asked for
@@ -141,11 +159,6 @@ pub enum ModeNote {
     SignInToWrite,
     /// Which drive the sign-in reaches has not been seen yet.
     DriveNotSeen,
-    /// The user asked for read-only while changes were unsent: the account is still
-    /// read-write and sends them, and switches by itself when none is left
-    /// (`AccountService::keep_read_only_wish`). How many are still to send, as the folder
-    /// last counted them. What the bus shows as "switching to read-only".
-    SwitchingToReadOnly { unsent: u64 },
 }
 
 impl ModeNote {
@@ -157,8 +170,6 @@ impl ModeNote {
                 "{WIDER_GRANT} also change files ({granted}); konedrive uses it to read only. The consent \
                  stays with Microsoft until it is revoked at https://account.live.com/consent/Manage"
             ),
-            // TODO: wording
-            Self::SwitchingToReadOnly { unsent } => format!("switching to read-only: {unsent} changes still to send"),
             Self::ConfigUnreadable => CONFIG_UNREADABLE.to_owned(),
             Self::NoDriveRecorded => NO_DRIVE_RECORDED.to_owned(),
             Self::DriveMismatch { live, recorded } => format!(

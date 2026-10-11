@@ -158,6 +158,15 @@ pub trait Account {
     fn state(&self) -> zbus::Result<String>;
     #[zbus(property)]
     fn last_error(&self) -> zbus::Result<String>;
+    /// The user asked for read-only while changes were unsent: the account is read-write
+    /// still, sends them, and switches by itself when none is left
+    /// ([`set_mode`](Self::set_mode) forced switches at once; to read-write takes the wish back).
+    #[zbus(property)]
+    fn read_only_wanted(&self) -> zbus::Result<bool>;
+    /// While [`read_only_wanted`](Self::read_only_wanted): how many changes are still to
+    /// send before the switch; 0 otherwise.
+    #[zbus(property)]
+    fn unsent_before_read_only(&self) -> zbus::Result<u64>;
     #[zbus(property)]
     fn display_name(&self) -> zbus::Result<String>;
     #[zbus(property)]
