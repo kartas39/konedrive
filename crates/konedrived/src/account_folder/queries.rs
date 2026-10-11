@@ -53,7 +53,7 @@ impl SyncService {
             .map_err(|e| SyncError::Store(e.to_string()))
     }
 
-    /// `Conflicts.Dismiss(rescued_path)`: the conflict comes off the list, and
+    /// `Conflicts.Dismiss(kept_path)`: the conflict comes off the list, and
     /// the file stays where it is. A path that names no conflict is refused
     /// with that path in the refusal.
     pub async fn dismiss_conflict(&self, rescued: &str) -> Result<(), SyncError> {

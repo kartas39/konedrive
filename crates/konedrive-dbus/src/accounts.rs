@@ -382,7 +382,7 @@ pub trait UploadQueue {
 )]
 pub trait Conflicts {
     fn list(&self) -> zbus::Result<Vec<Conflict>>;
-    fn dismiss(&self, rescued_path: &str) -> zbus::Result<()>;
+    fn dismiss(&self, kept_path: &str) -> zbus::Result<()>;
 
     #[zbus(property)]
     fn count(&self) -> zbus::Result<u32>;
@@ -401,20 +401,12 @@ pub trait LocalScan {
     /// `running`, `idle`, or `none` for a read-only folder.
     #[zbus(property)]
     fn state(&self) -> zbus::Result<String>;
-    /// Why it runs: start, read-write, helper-back, overflow, ignore-list, periodic.
+    /// Why it runs: start.
     #[zbus(property)]
     fn reason(&self) -> zbus::Result<String>;
     /// Unix seconds when it started.
     #[zbus(property)]
     fn started(&self) -> zbus::Result<i64>;
-    /// Directories and files seen so far.
-    #[zbus(property)]
-    fn directories(&self) -> zbus::Result<u64>;
-    #[zbus(property)]
-    fn files(&self) -> zbus::Result<u64>;
-    /// About how many items it will see (the base's count, not the disk's).
-    #[zbus(property)]
-    fn expected(&self) -> zbus::Result<u64>;
     /// Unix seconds when the last scan finished (0: none yet), and how long it took.
     #[zbus(property)]
     fn finished(&self) -> zbus::Result<i64>;

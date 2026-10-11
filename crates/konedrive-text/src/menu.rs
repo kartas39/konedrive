@@ -21,11 +21,9 @@ pub struct WhyText {
 }
 
 /// Every code of `free-up-why`, in the daemon's order.
-pub static FREE_UP_WHY: [WhyText; 3] = [
+pub static FREE_UP_WHY: [WhyText; 2] = [
     WhyText { why: "pinned-above", refusal: Some(Refusal::NotAllowed), tooltip: "Kept on this device because “{by}” is; unpin it first." },
     WhyText { why: "not-uploaded", refusal: Some(Refusal::NotUploaded), tooltip: "Not uploaded yet: freeing it up would lose the changes made here." },
-    // The daemon cannot tell now: no refusal says this.
-    WhyText { why: "unknown", refusal: None, tooltip: "KOneDrive cannot tell yet whether a change here waits to be uploaded. Try again in a moment." },
 ];
 
 /// "Always keep on this device" is checked and cannot be unchecked

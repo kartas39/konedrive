@@ -59,10 +59,9 @@
       <arg name="account" type="o"/>
     </signal>
     <!-- Removes an account: forgets its folder exactly as Folder.Unregister
-         does (so refused NoHelper under the same rule, before anything
-         changes), cancels a sign-in under way, deletes its refresh token, its
+         does, cancels a sign-in under way, deletes its refresh token, its
          cached name and quota and its tree store, then removes the object.
-         The folder's files and the rescued files are kept. NoAccount for a
+         The folder's files are kept. NoAccount for a
          path that names no account. Never refused for changes made here
          that are not sent, as Folder.Unregister is not: the caller warns
          with UploadQueue.UnsentCount before it calls. Failed when the token
@@ -101,15 +100,6 @@
          they are called. -->
     <property name="PauseOnMetered" type="b" access="read"/>
     <property name="OnBattery" type="s" access="read"/>
-    <!-- The privileged helper, as the daemon sees it: "connected" (files
-         download when opened), "not-installed" (no konedrive-helper service
-         on this system), "stopped" (installed, not running: systemctl start
-         konedrive-helper), "failed" (the service failed: systemctl status
-         konedrive-helper), "unknown" (systemd cannot be asked, or the helper
-         has started but the daemon has no link to it yet). A OneDrive
-         folder is kept in step only while this is "connected". Here rather
-         than on each account: one helper serves every account. -->
-    <property name="HelperState" type="s" access="read"/>
     <!-- Trouble that belongs to no account: config.toml cannot be read, or
          was written by a newer version, or a migration step failed, or an
          account in it could not be loaded. Empty when there is none. -->

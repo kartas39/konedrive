@@ -15,8 +15,8 @@ impl Conflicts {
         Ok(rows.into_iter().map(|c| Conflict { at: c.at, original: c.original, kept: c.rescued, how: c.kind.as_str().to_owned() }).collect())
     }
 
-    async fn dismiss(&self, rescued_path: &str) -> Result<()> {
-        Ok(self.service.dismiss_conflict(rescued_path).await?)
+    async fn dismiss(&self, kept_path: &str) -> Result<()> {
+        Ok(self.service.dismiss_conflict(kept_path).await?)
     }
 
     #[zbus(property)]

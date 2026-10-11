@@ -73,11 +73,11 @@ fn a_full_listing_is_asked_for_only_where_the_check_bound_entries_of_a_kept_stor
 
 #[test]
 fn the_check_at_start_is_said_as_a_scan_that_runs_and_then_as_one_that_finished() {
-    let last = LocalScan { state: ScanState::Idle, reason: "start".into(), started: 10, directories: 0, files: 0, expected: 0, finished: 14, took: 4 };
+    let last = LocalScan { state: ScanState::Idle, reason: "start".into(), started: 10, finished: 14, took: 4 };
 
     let running = describe_running_check(&last, 100);
 
-    assert_eq!(running, LocalScan { state: ScanState::Running, reason: "start".into(), started: 100, directories: 0, files: 0, expected: 0, finished: 14, took: 4 }, "the last one's end stays while this one runs");
+    assert_eq!(running, LocalScan { state: ScanState::Running, reason: "start".into(), started: 100, finished: 14, took: 4 }, "the last one's end stays while this one runs");
     assert_eq!(describe_finished_check(&running, 107), LocalScan { state: ScanState::Idle, finished: 107, took: 7, ..running.clone() });
     // A clock that went back gives no length, and no panic.
     assert_eq!(describe_finished_check(&running, 90).took, 0);

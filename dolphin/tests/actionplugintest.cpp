@@ -141,9 +141,6 @@ private Q_SLOTS:
             << QStringLiteral("Kept on this device because “sub” is; unpin it first.") << false;
         QTest::newRow("free up: not uploaded") << true << off << disabled << QStringLiteral("not-uploaded") << none << hidden << keepAndFreeUp << false << none << false
                                                << QStringLiteral("Not uploaded yet: freeing it up would lose the changes made here.") << false;
-        QTest::newRow("free up: the daemon cannot tell")
-            << true << off << disabled << QStringLiteral("unknown") << none << hidden << keepAndFreeUp << false << none << false
-            << QStringLiteral("KOneDrive cannot tell yet whether a change here waits to be uploaded. Try again in a moment.") << false;
         // Locked by the folder, and "Free up space" refused for something
         // else first: each entry says its own reason.
         QTest::newRow("locked by a folder, free up for a change not uploaded")

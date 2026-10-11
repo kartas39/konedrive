@@ -74,8 +74,6 @@ MenuAnswer menuAnswerFrom(const QVariantMap &answer)
             result.freeUpWhy = MenuAnswer::FreeUpWhy::PinnedAbove;
         } else if (why == QLatin1String("not-uploaded")) {
             result.freeUpWhy = MenuAnswer::FreeUpWhy::NotUploaded;
-        } else if (why == QLatin1String("unknown")) {
-            result.freeUpWhy = MenuAnswer::FreeUpWhy::Unknown;
         }
     }
     result.blockedBy = answer.value(QStringLiteral("blocked-by")).toString();

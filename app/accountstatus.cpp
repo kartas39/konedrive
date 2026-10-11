@@ -221,20 +221,13 @@ void AccountStatus::update()
         }
     }
 
-    // The local scan: never a percentage, since only the base's count is known in advance.
+    // The check of the folder on disk at the start of its sync.
     QString scanLine;
     const QString scanState = m_sync->scanState();
     if (scanState == QLatin1String("running")) {
-        QString seen = i18nc("@info local scan: N folders and M files",
-                             "%1 and %2",
-                             i18ncp("@info local scan", "1 folder", "%1 folders", m_sync->scanDirectories()),
-                             i18ncp("@info local scan", "1 file", "%1 files", m_sync->scanFiles()));
-        if (m_sync->scanExpected() > 0) {
-            seen = i18nc("@info local scan: what was seen, of about N", "%1, of about %2", seen, m_sync->scanExpected());
-        }
-        scanLine = i18nc("@info local scan: what was seen, when it started, why",
-                         "Checking local files: %1 — started %2, %3",
-                         seen,
+        // TODO: wording
+        scanLine = i18nc("@info local scan: when it started, why",
+                         "Checking local files — started %1, %2",
                          ago(m_sync->scanStarted()),
                          scanReasonText(m_sync->scanReason()));
         ages = true;

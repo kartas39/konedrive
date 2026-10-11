@@ -3,7 +3,7 @@
 
 use konedrive_dbus::overall::{Overall, Reason};
 
-use super::formats::{checked_text, grouped, human_bytes, local_time, seconds_text};
+use super::formats::{checked_text, human_bytes, local_time, seconds_text};
 use super::transfers::waiting_download_text;
 use super::uploads::{space_waiting_text, waiting_text};
 
@@ -85,9 +85,6 @@ pub fn overall_text(overall: &Overall, trouble: &str, not_updated: &str) -> Stri
         Some(Reason::TooBig) => "files are too big for the space left in OneDrive".to_owned(),
         Some(Reason::Blocked) => "changes cannot be uploaded".to_owned(),
         Some(Reason::NotUpdated) => or(not_updated, "files changed in OneDrive could not be updated here yet"),
-        Some(Reason::HelperUnavailable) => {
-            "the konedrive helper is not available: files are not kept in step, and nothing downloads when it is opened".to_owned()
-        }
         Some(Reason::Trouble) => said("something is wrong"),
         Some(Reason::Paused) => "you paused syncing".to_owned(),
         Some(Reason::HeldBack) => "the account holds back by itself".to_owned(),
@@ -382,32 +379,23 @@ pub fn mode_text(mode: &str, writable: Option<bool>) -> String {
     }
 }
 
-/// The Full local scan as `LocalScan`'s properties say it.
+/// The check of the folder on disk at its start, as `LocalScan`'s properties say it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LocalScan {
     pub state: String,
     pub reason: String,
     pub started: i64,
-    pub directories: u64,
-    pub files: u64,
-    pub expected: u64,
     pub finished: i64,
     pub took: u32,
 }
 
-/// `sync status`'s `Local scan:` line: `running — 1 234 folders and 45 678 files, of about
-/// 50 000 (2 min, after the switch to read-write)`, `last finished 5 min ago (took 40 s)`,
-/// `not yet since the daemon started`, or `none — read-only`.
+/// `sync status`'s `Local scan:` line: `running (2 min, as syncing started)`,
+/// `last finished 5 min ago (took 40 s)`, or `not yet since the daemon started`.
 pub fn local_scan_text(scan: &LocalScan, now: i64) -> String {
     match scan.state.as_str() {
-        "none" => "none — read-only".to_owned(),
         "running" => {
-            let mut text = format!("running — {} folders and {} files", grouped(scan.directories), grouped(scan.files));
-            if scan.expected > 0 {
-                text.push_str(&format!(", of about {}", grouped(scan.expected)));
-            }
             let running = seconds_text(u64::try_from(now - scan.started).unwrap_or(0));
-            format!("{text} ({running}, {})", scan_reason_text(&scan.reason))
+            format!("running ({running}, {})", scan_reason_text(&scan.reason))
         }
         _ if scan.finished == 0 => "not yet since the daemon started".to_owned(),
         _ => format!("last finished {} (took {})", checked_text(scan.finished, now), seconds_text(u64::from(scan.took))),
@@ -418,11 +406,6 @@ pub fn local_scan_text(scan: &LocalScan, now: i64) -> String {
 pub fn scan_reason_text(reason: &str) -> String {
     match reason {
         "start" => "as syncing started".to_owned(),
-        "read-write" => "after the switch to read-write".to_owned(),
-        "helper-back" => "after the helper came back".to_owned(),
-        "overflow" => "after too many changes at once for the notifications".to_owned(),
-        "ignore-list" => "after the ignore list changed".to_owned(),
-        "periodic" => "the regular scan while part of the folder cannot be watched".to_owned(),
         other => other.to_owned(),
     }
 }

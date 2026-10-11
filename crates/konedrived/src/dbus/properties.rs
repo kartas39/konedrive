@@ -241,19 +241,12 @@ properties! {
     /// Seconds the uploads left take at the last 30 s's speed; 0 when unknown, and while paused.
     UPLOAD_TIME_LEFT: u32 = MOVING, "UploadTimeLeft", |s| s.snapshot.transfers.queue.up.time_left;
 
-    /// The Full local scan: `running`, `idle`, or `none` for a read-only folder.
+    /// The check of the folder on disk at its start: `running`, `idle`, or `none` before the first.
     SCAN_STATE: String = SCAN, "State", |s| s.snapshot.local.scan.state.as_str().to_owned();
-    /// Why the running (or the last) scan runs: start, read-write, helper-back, overflow,
-    /// ignore-list, periodic.
+    /// Why the running (or the last) check runs: `start`.
     SCAN_REASON: String = SCAN, "Reason", |s| s.snapshot.local.scan.reason.clone();
     /// Unix seconds when it started; 0 before the first.
     SCAN_STARTED: i64 = SCAN, "Started", |s| s.snapshot.local.scan.started;
-    /// Directories it has seen so far.
-    SCAN_DIRECTORIES: u64 = SCAN, "Directories", |s| s.snapshot.local.scan.directories;
-    /// Files (and other entries that are not directories) it has seen so far.
-    SCAN_FILES: u64 = SCAN, "Files", |s| s.snapshot.local.scan.files;
-    /// About how many items it will see: the items the base had placed when it started.
-    SCAN_EXPECTED: u64 = SCAN, "Expected", |s| s.snapshot.local.scan.expected;
     /// Unix seconds when the last scan finished; 0 for none since the daemon started.
     SCAN_FINISHED: i64 = SCAN, "Finished", |s| s.snapshot.local.scan.finished;
     /// How long the last finished scan took, in seconds.

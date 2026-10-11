@@ -60,16 +60,16 @@ private Q_SLOTS:
     void followsEveryInterfaceOfTheFolder()
     {
         startFake();
-        m_fake->scan->set({{QStringLiteral("Reason"), QStringLiteral("overflow")}});
+        m_fake->scan->set({{QStringLiteral("Reason"), QStringLiteral("start")}});
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
-        QCOMPARE(controller.scanReason(), QStringLiteral("overflow")); // from GetAll
+        QCOMPARE(controller.scanReason(), QStringLiteral("start")); // from GetAll
         QCOMPARE(controller.poolSize(), 16u);
 
         m_fake->folder->set({{QStringLiteral("State"), QStringLiteral("ready")}});
-        m_fake->scan->set({{QStringLiteral("State"), QStringLiteral("running")}, {QStringLiteral("Files"), QVariant::fromValue<qulonglong>(7)}});
+        m_fake->scan->set({{QStringLiteral("State"), QStringLiteral("running")}, {QStringLiteral("Started"), QVariant::fromValue<qlonglong>(7)}});
         QTRY_COMPARE(controller.scanState(), QStringLiteral("running"));
-        QCOMPARE(controller.scanFiles(), 7ULL);
+        QCOMPARE(controller.scanStarted(), 7LL);
         QCOMPARE(controller.rootState(), QStringLiteral("ready"));
 
         m_fake->transfers->set({{QStringLiteral("PoolSize"), QVariant::fromValue<uint>(8)}, {QStringLiteral("LargeStreams"), QVariant::fromValue<uint>(2)}});

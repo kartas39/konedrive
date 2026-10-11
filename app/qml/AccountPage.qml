@@ -408,7 +408,7 @@ FormCard.FormCardPage {
         FormCard.FormTextDelegate {
             visible: page.hasFolder
             text: page.sync ? page.sync.rootPath : ""
-            description: page.sync && page.sync.rootSource === "onedrive" ? i18n("Shows your OneDrive") : i18n("Filled from a local folder")
+            description: i18n("Shows your OneDrive")
             leading: Kirigami.Icon {
                 source: "folder-cloud"
                 implicitWidth: Kirigami.Units.iconSizes.medium

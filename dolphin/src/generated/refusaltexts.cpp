@@ -165,8 +165,6 @@ QString freeUpWhyToolTip(MenuAnswer::FreeUpWhy why, const QString &blockedBy)
         return i18nc("@info:tooltip", "Kept on this device because “%1” is; unpin it first.", blockedBy);
     case MenuAnswer::FreeUpWhy::NotUploaded:
         return i18nc("@info:tooltip", "Not uploaded yet: freeing it up would lose the changes made here.");
-    case MenuAnswer::FreeUpWhy::Unknown:
-        return i18nc("@info:tooltip", "KOneDrive cannot tell yet whether a change here waits to be uploaded. Try again in a moment.");
     case MenuAnswer::FreeUpWhy::NotSaid:
         break;
     }

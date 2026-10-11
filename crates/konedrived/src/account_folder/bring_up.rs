@@ -67,21 +67,6 @@ impl SyncService {
         self.register(stopped, path).await
     }
 
-    /// `PopulateFromDirectory`: refused. It filled a folder registered without interception
-    /// with placeholders of a local directory's files; there is no such folder any more.
-    pub async fn populate_from_directory(&self, _source: &Path) -> Result<u64, SyncError> {
-        Err(SyncError::Unsupported("a folder cannot be filled from a directory any more: every folder shows OneDrive through its mount".into()))
-    }
-
-    /// `RegisterWithoutInterception`: refused. It made a folder filled by hand from a local
-    /// directory, whose files were placeholders; every folder shows OneDrive through its
-    /// mount now, and `Register` is the one way to make one.
-    pub async fn register_root_without_interception(&self, _path: &Path) -> Result<(), SyncError> {
-        Err(SyncError::Unsupported(
-            "a folder cannot be registered without interception any more: every folder shows OneDrive through its mount; register it as any other".into(),
-        ))
-    }
-
     /// Holds this account's folder back (`docs/design/accounts.md` §4.1): `config.toml` gives
     /// the account an id, a label, a drive or a folder an earlier account
     /// has. The folder is not brought up, `State` reads `error`,

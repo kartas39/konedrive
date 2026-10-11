@@ -66,8 +66,6 @@ pub enum Reason {
     Blocked,
     /// Files changed in OneDrive could not be updated here yet; `Folder.NotUpdated` says it.
     NotUpdated,
-    /// The helper is in trouble, for a folder it intercepts.
-    HelperUnavailable,
     /// Any other trouble that does not stop the folder; `Folder.Trouble` says it.
     Trouble,
     /// The user paused the account.
@@ -80,7 +78,7 @@ pub enum Reason {
 
 impl Reason {
     /// Every reason.
-    pub const ALL: [Reason; 18] = [
+    pub const ALL: [Reason; 17] = [
         Self::SigningIn,
         Self::SignedOut,
         Self::NoFolder,
@@ -94,7 +92,6 @@ impl Reason {
         Self::TooBig,
         Self::Blocked,
         Self::NotUpdated,
-        Self::HelperUnavailable,
         Self::Trouble,
         Self::Paused,
         Self::HeldBack,
@@ -117,7 +114,6 @@ impl Reason {
             Self::TooBig => "too-big",
             Self::Blocked => "blocked",
             Self::NotUpdated => "not-updated",
-            Self::HelperUnavailable => "helper-unavailable",
             Self::Trouble => "trouble",
             Self::Paused => "paused",
             Self::HeldBack => "held-back",
@@ -141,7 +137,6 @@ impl Reason {
             | Self::TooBig
             | Self::Blocked
             | Self::NotUpdated
-            | Self::HelperUnavailable
             | Self::Trouble => State::Warning,
             Self::Paused | Self::HeldBack => State::Paused,
             Self::UpToDate => State::Ok,

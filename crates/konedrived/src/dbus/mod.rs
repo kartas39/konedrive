@@ -3,7 +3,7 @@
 //! exercised with no bus at all.
 //!
 //! - `/org/konedrive/Accounts`: `org.konedrive.Accounts` (the accounts, the settings they
-//!   share, `HelperState`, which reads `connected`) and `org.konedrive.Files` (the per-file calls, routed by
+//!   share) and `org.konedrive.Files` (the per-file calls, routed by
 //!   path), over the `daemon::manager::AccountManager`; `org.konedrive.DevTools` too in a
 //!   development build.
 //! - `/org/konedrive/Accounts/<id>`: one account's `org.konedrive.Account` (and

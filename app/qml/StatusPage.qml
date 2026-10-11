@@ -280,7 +280,7 @@ FormCard.FormCardPage {
                 implicitHeight: Kirigami.Units.iconSizes.medium
             }
         }
-        // The Full local scan: how far it got, or when the last one finished. None read-only.
+        // The check of the local files at the start of the sync: since when it runs, or when the last one finished.
         FormCard.FormTextDelegate {
             objectName: "scanLine"
             visible: page.oneDrive && page.status !== null && page.status.scanLine.length > 0

@@ -75,8 +75,6 @@ struct MenuAnswer {
         /// A folder above keeps an item pinned: `blockedBy`.
         PinnedAbove,
         NotUploaded,
-        /// The daemon cannot tell now whether a change waits to be uploaded.
-        Unknown,
     };
 
     /// What Pin(), Unpin() or FreeUp() is called with.

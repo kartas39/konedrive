@@ -13,18 +13,8 @@ impl Folder {
         Ok(self.service.register_root(Path::new(path)).await?)
     }
 
-    /// Refused: kept for the clients that still know the call.
-    async fn register_without_interception(&self, path: &str) -> Result<()> {
-        Ok(self.service.register_root_without_interception(Path::new(path)).await?)
-    }
-
     async fn unregister(&self) -> Result<()> {
         Ok(self.service.unregister_root().await?)
-    }
-
-    /// Refused: kept for the clients that still know the call.
-    async fn populate_from_directory(&self, source_dir: &str) -> Result<u64> {
-        Ok(self.service.populate_from_directory(Path::new(source_dir)).await?)
     }
 
     async fn refresh(&self) -> Result<()> {

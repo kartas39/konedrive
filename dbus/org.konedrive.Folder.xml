@@ -3,62 +3,44 @@
 <node>
   <!-- /org/konedrive/Accounts/<id>: this account's folder. Calls on one
        file or on chosen paths (Hydrate, Dehydrate, ItemState, Pin, Unpin,
-       FreeUp) are org.konedrive.Files's, routed by path; the helper's state
-       is Accounts.HelperState. The same object serves what moves
+       FreeUp) are org.konedrive.Files's, routed by path. The same object
+       serves what moves
        (org.konedrive.Transfers), what waits to go up
        (org.konedrive.UploadQueue), the conflicts (org.konedrive.Conflicts),
-       the local scan (org.konedrive.LocalScan) and the events
+       the check of the folder on disk at its start
+       (org.konedrive.LocalScan) and the events
        (org.konedrive.ActivityLog). -->
   <interface name="org.konedrive.Folder">
-    <!-- Refused Overlaps when the folder is, is inside, or contains another
-         account's folder (the message names that account), and NotEmpty
-         when the folder carries user.konedrive.drive naming another drive
-         than this account's; otherwise as before. Refused
+    <!-- Registers the directory at the path as the account's folder: it
+         shows the account's OneDrive through a mount of the daemon's own
+         from then on. Refused Overlaps when the folder is, is inside, or
+         contains another account's folder (the message names that
+         account), NotEmpty when it is not empty or carries
+         user.konedrive.drive naming another drive than this account's,
+         and Unsupported for what is no directory or is on a filesystem
+         that cannot hold a folder (the message says which). Refused
          AlreadyRegistered while the account has a folder, up or not: one
          config.toml records counts from the daemon's start. A registration
-         that fails at the helper is undone there and in config.toml; when
-         the helper cannot confirm it let go, the folder is kept instead,
-         with interception, and the refusal (Failed) says so: it is brought
-         up the next time the helper connects, unless Unregister takes it
-         away first. -->
+         that fails is undone in config.toml. -->
     <method name="Register">
       <arg name="path" type="s" direction="in"/>
     </method>
-    <!-- The developer's mode: registers a folder with nothing intercepting
-         opens inside it. The folder is always local — filled with
-         PopulateFromDirectory, never from OneDrive; a OneDrive folder needs
-         the helper. Files in it read as zeros until they are explicitly
-         hydrated. State then reports "no-interception" and LastError
-         says so. Made while no helper is connected, the folder switches to
-         interception by itself when the helper connects (State becomes
-         "ready"); made while one is connected, it stays without. Refused
-         Overlaps as Register is. -->
-    <method name="RegisterWithoutInterception">
-      <arg name="path" type="s" direction="in"/>
-    </method>
-    <!-- Forgets the folder, up or not; its files are left as they are. A folder
-         registered with interception is forgotten through the helper or
-         not at all: with no helper connected this is refused NoHelper.
+    <!-- Forgets the folder, up or not: the mount is taken off it, and the
+         files downloaded so far and the files made here are left in it as
+         plain local files.
          Never refused because changes made here are not uploaded: whoever
          asks accepts that those files stay only on this computer, as plain
          local files. A client warns before it calls, with the count of
          what is unsent. -->
     <method name="Unregister"/>
-    <method name="PopulateFromDirectory">
-      <arg name="source_dir" type="s" direction="in"/>
-      <arg name="created" type="t" direction="out"/>
-    </method>
     <!-- Asks OneDrive for changes now rather than within the minute, and
          tries the changes waiting to be uploaded that are in backoff now.
          Reads the quota again (Account.QuotaRemaining, QuotaState, ...): with
          space again, a full OneDrive ends (UploadQueue.QuotaFull), and the
          files too big before go up once they fit.
-         Refused NoHelper while the helper is not connected, and Unsupported
-         for a folder that is up and not connected to OneDrive. A folder that
-         is down after a failure (a bring-up that failed, the folder moved
-         away, a registration that was kept), connected to OneDrive or not,
-         is brought up first; a folder that is not connected to OneDrive has
-         nothing more to refresh then, and the call succeeds. Only the
+         A folder that is down after a failure (a bring-up that failed, the
+         folder moved away) is brought up first, and one whose sync could
+         not start, or was taken down by a fault, has it started. Only the
          folder that was registered is brought up: a directory at its path
          that does not carry its root id is left alone. Refused NotUp, with
          why, when the bring-up fails, for a folder that only waits (State
@@ -73,25 +55,19 @@
          this computer. The fourth is the full path it has here while it still
          is: its old place, or a copy name beside it (name-<machine>) that it
          stepped aside to when another item took its name.
-         An item that still is, because something in it waits, has what it
-         waits for there, as <key>:<detail>: cycle (no cycle has looked at
-         it yet), uploads:<how many changes wait in the outbox>, and, with
-         the full path of the first thing found, changes (made, changed,
-         moved or deleted here and not recorded yet), open-for-writing,
-         unknown-state (a file whose state cannot be read), not-downloaded
-         (a file that is not downloaded and is not where OneDrive has it), local-only (a name
-         on the ignore list), mounted-inside (another filesystem) and
-         moved-in-onedrive (an item OneDrive moved out of it whose new name
-         is taken here). It
-         leaves the disk in the first cycle that finds none of these. An
-         item still here that OneDrive has inside a folder that is not
-         placed is an entry of its own, with that folder's reason. -->
+         An item that still is, because something of it waits, has what it
+         waits for there, as <key>:<detail>: cycle (no plan has looked at
+         it yet), uploads:<how many changes of it wait to be sent>, and
+         open-for-writing with its full path (a program holds it open). It
+         leaves the folder once none of these holds. An item still here
+         that OneDrive has inside a folder that is not shown is an entry of
+         its own, with that folder's reason. -->
     <method name="Skipped">
       <arg name="items" type="a(ssss)" direction="out"/>
       <!-- For Qt's generator (app/skippeditem.h); ignored by everything else. -->
       <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveNotInFolderList"/>
     </method>
-    <!-- Frees every downloaded file under the folder that is not in use:
+    <!-- Frees the space of every downloaded file under the folder that is not in use:
          how many files, how many bytes, how many were skipped as busy. A
          file with a change waiting to be uploaded is left, and counted as
          busy. -->
@@ -115,9 +91,9 @@
     <!-- The names of local files that are never uploaded, as shell globs
          matched against a name (not a path), case-sensitively; they apply
          only to files that did not come from OneDrive. Written to
-         config.toml; a scan of the whole folder follows, so a name no longer
-         ignored is uploaded, and a directory newly ignored takes the changes
-         waiting inside it along. Refused
+         config.toml and taken at once: a name no longer ignored is
+         uploaded, and a directory newly ignored takes the changes waiting
+         inside it along. Refused
          org.freedesktop.DBus.Error.InvalidArgs for an empty pattern, one
          holding "/" or a NUL, and one longer than 255 bytes. -->
     <method name="SetIgnorePatterns">
@@ -143,18 +119,15 @@
          config.toml records has its path from the daemon's start, while
          State is still waiting: it is not brought up yet. -->
     <property name="Path" type="s" access="read"/>
-    <!-- none | waiting | listing | ready | no-interception | error.
+    <!-- none | waiting | ready | error.
          waiting: a folder is recorded and not up yet, and nothing is known
-         to be wrong: it is being brought up, or waits for the helper to
-         connect (the start of a session). It reads error instead once
-         Accounts.HelperState says the helper is not installed, stopped or
-         failed, or the bring-up failed. LastError is empty while waiting. -->
+         to be wrong: it is being brought up. It reads error instead once
+         the bring-up failed. LastError is empty while waiting. -->
     <property name="State" type="s" access="read"/>
     <!-- Every current problem, joined with ". ". While a changed file cannot
          be replaced here, one part reads "N file(s) changed in OneDrive could
          not be updated here yet: <reason>" (NotUpdated is that part alone).
-         While this folder waits for the helper, it begins with the helper's
-         advice for Accounts.HelperState. For the log and for older clients:
+         For the log and for older clients:
          nothing is decided by this text, Overall says the state. -->
     <property name="LastError" type="s" access="read"/>
     <!-- The state the account is in as a whole, and the reason for it. The
@@ -174,8 +147,6 @@
            warning  blocked             changes cannot be uploaded
            warning  not-updated         files changed in OneDrive could not be
                                         updated here yet
-           warning  helper-unavailable  the helper is not connected, for a
-                                        folder it intercepts
            paused   paused              the user paused the account
            paused   held-back           the account holds back by itself
            offline  unreachable         OneDrive cannot be reached, and nothing
@@ -194,10 +165,9 @@
     </property>
     <!-- The sentence of the trouble there is now, whatever Overall's reason
          is; empty with none. While State is "error": everything LastError
-         says. While State is "ready" or "no-interception": the problems of
+         says. While State is "ready": the problems of
          LastError that do not stop the folder, OneDrive out of reach among
-         them, joined with ". ", without the no-interception warning and the
-         failed-update note. Empty in every other State: no such trouble is
+         them, joined with ". ", without the failed-update note. Empty in every other State: no such trouble is
          counted while the first listing runs. A client shows it as the
          sentence of "stopped", "trouble" and "unreachable", and may show it
          under any other reason too (a pause). -->
@@ -208,8 +178,8 @@
          "not-updated". -->
     <property name="NotUpdated" type="s" access="read"/>
     <!-- "onedrive": the folder shows this account's drive (Account.Mode
-         says whether changes made here go up). "local": filled with
-         PopulateFromDirectory. Empty: none. -->
+         says whether changes made here go up). Empty: the account has no
+         folder. -->
     <property name="Source" type="s" access="read"/>
     <!-- Items in OneDrive (the root not counted), items in the folder, and
          skipped items: see Skipped(). Coalesced to a few changes a second. -->
@@ -218,8 +188,9 @@
     <property name="SkippedCount" type="t" access="read"/>
     <!-- Unix seconds of the last successful check with OneDrive; 0 = never. -->
     <property name="LastChecked" type="x" access="read"/>
-    <!-- Bytes the folder's files take on this disk (st_blocks * 512): a
-         placeholder counts as what it occupies, not its size. -->
+    <!-- Bytes the folder's files take on this disk (st_blocks * 512, of
+         the directory under the mount): a file that is not downloaded
+         takes none. -->
     <property name="LocalBytes" type="t" access="read"/>
     <!-- How many files and folders carry their own "Always keep on this
          device" pin. -->
@@ -238,12 +209,11 @@
          stops, but is not the user's pause: Paused stays false, and it is
          worked out again from the machine's state after a restart. -->
     <property name="HeldBack" type="s" access="read"/>
-    <!-- Whether what is added, changed, moved or deleted in the folder is
-         uploaded now: the folder shows OneDrive, its account's Mode is
-         "read-write", the folder is watched for changes and the read-only
-         lock is off it. False for a folder that runs read-only although its
-         account is read-write (it cannot be watched; LastError says why),
-         and while the folder's sync is starting or not running. -->
+    <!-- Whether the folder takes changes now, and what is added, changed,
+         moved or deleted in it is uploaded: its mount is up and switched to
+         read-write, which follows its account's Mode. False for a folder
+         that is not up, and for one whose account is read-only: the mount
+         then refuses every change. -->
     <property name="Writable" type="b" access="read"/>
     <!-- How changes made in OneDrive reach this computer: "connected" (at
          once, through Graph's notification socket; the poll runs every 5

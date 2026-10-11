@@ -30,8 +30,7 @@ impl LiveChanges {
 /// `LocalScan.State`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ScanState {
-    /// No local scan: what is published now. The folder's mount records each change as it
-    /// is made, and nothing scans the folder.
+    /// No check ran since the daemon started: the folder's sync was not started yet.
     #[default]
     None,
     Idle,
@@ -48,8 +47,8 @@ impl ScanState {
     }
 }
 
-/// The folder's local scan, as `LocalScan`'s properties publish it. While idle, the
-/// reason, the start and the counts are the last scan's.
+/// The check of the folder on disk at its start, as `LocalScan`'s properties publish it.
+/// While idle, the reason and the start are the last check's.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LocalScan {
     pub state: ScanState,
@@ -57,12 +56,6 @@ pub struct LocalScan {
     pub reason: String,
     /// Unix seconds; 0 before the first scan.
     pub started: i64,
-    /// Directories and other entries seen so far, the root not counted.
-    pub directories: u64,
-    pub files: u64,
-    /// Items the base has placed in the folder when the scan started: about how many it
-    /// will see. The disk's own count is not known in advance.
-    pub expected: u64,
     /// Unix seconds when the last scan finished; 0 for none since the daemon started.
     pub finished: i64,
     /// How long the last finished scan took, in seconds.

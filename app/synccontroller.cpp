@@ -270,9 +270,6 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         text("State", m_scanState);
         text("Reason", m_scanReason);
         time("Started", m_scanStarted);
-        number("Directories", m_scanDirectories);
-        number("Files", m_scanFiles);
-        number("Expected", m_scanExpected);
         time("Finished", m_scanFinished);
         count("Took", m_scanTook);
     }

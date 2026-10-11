@@ -9,23 +9,14 @@
        refused OutsideRoot (ItemState answers "not-managed"). Once routed,
        each call acts in that account's folder. -->
   <interface name="org.konedrive.Files">
-    <!-- Downloads one file now. A file already downloaded is left as it is.
-         A file in any state but online-only may still carry the helper's
-         ignore mark, which has to be cleared before a download that could
-         fail empties the file: in a folder registered with interception and
-         no helper connected, or in any folder while a helper runs that the
-         daemon is not connected to, that is refused NoHelper. -->
+    <!-- Downloads one file now. A file already downloaded is left as it is. -->
     <method name="Hydrate">
       <arg name="path" type="s" direction="in"/>
     </method>
-    <!-- Frees up one downloaded file's space. The helper's ignore mark on it
-         is cleared first, in either registration mode: refused NoHelper in a
-         folder registered with interception and no helper connected, and in
-         any folder while a helper runs that the daemon is not connected to;
-         with no helper running at all, a folder registered without
-         interception frees it up anyway. A file with a change waiting to be
-         uploaded is refused NotUploaded: freeing it up would lose the
-         change. -->
+    <!-- Frees up one downloaded file's space: its copy on disk goes, and
+         the folder goes on showing the file, which is downloaded again when
+         it is opened. A file with a change waiting to be uploaded is
+         refused NotUploaded: freeing it up would lose the change. -->
     <method name="Dehydrate">
       <arg name="path" type="s" direction="in"/>
     </method>
@@ -93,7 +84,7 @@
          call per menu, so that the rules of Pin, Unpin, FreeUp and WebUrl are
          decided here and nowhere else. Nothing is changed and no file is
          opened (nothing is downloaded): the answer comes from what the
-         daemon knows and the marks on the paths, and does not wait for a
+         daemon's store says of the paths, and does not wait for a
          sync that is writing to the account's store. The keys:
            paths (as): the selected paths Pin takes, in the order given;
              what Pin, Unpin or FreeUp is then called with. A path in no
@@ -107,18 +98,9 @@
              paths would be refused: free-up-why says for what).
            free-up-why (s): why free-up is "disabled"; empty otherwise. One
              reason: the first of these that holds, in this order.
-             "no-helper": the folder is intercepted and its helper is not
-             connected. "pinned-above": a folder above keeps a path pinned
-             (blocked-by names it). "unknown": the daemon cannot tell now
-             whether a downloaded file among the paths has a change waiting
-             to be uploaded: a mark on a file among them cannot be read, or
-             the account's sync has not started, or its store cannot be
-             read. "not-uploaded": one has such a change. The last two are
-             answered only for a folder that shows OneDrive.
-             A mark that cannot be read is found before the store is asked,
-             so the answer is then "unknown" even when another file of the
-             selection has a change waiting; FreeUp goes file by file, and
-             refuses for whichever of the two it meets first.
+             "pinned-above": a folder above keeps a path pinned
+             (blocked-by names it). "not-uploaded": a downloaded file among
+             the paths has a change waiting to be uploaded.
              Over several accounts' folders each account finds its own
              first reason, and the answer is that of the first account that
              refuses, in the order the accounts' paths first come in the

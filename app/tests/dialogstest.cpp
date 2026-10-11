@@ -560,9 +560,8 @@ private Q_SLOTS:
         fake.stop();
     }
 
-    /// Issue #8: the Status page says how the local scan goes — how far a running one got,
-    /// of about how many, since when and why; then when the last one finished; and nothing
-    /// for a read-only folder.
+    /// The Status page says how the check of the local files goes — since when a running
+    /// one runs and why; then when the last one finished.
     void theStatusPageShowsTheLocalScan()
     {
         FakeDaemon fake;
@@ -572,10 +571,7 @@ private Q_SLOTS:
                                 {QStringLiteral("Source"), QStringLiteral("onedrive")}});
         fake.sync->scan->set({{QStringLiteral("State"), QStringLiteral("running")},
                               {QStringLiteral("Reason"), QStringLiteral("start")},
-                              {QStringLiteral("Started"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 125)},
-                              {QStringLiteral("Directories"), QVariant::fromValue<qulonglong>(12)},
-                              {QStringLiteral("Files"), QVariant::fromValue<qulonglong>(345)},
-                              {QStringLiteral("Expected"), QVariant::fromValue<qulonglong>(500)}});
+                              {QStringLiteral("Started"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 125)}});
         QVERIFY(fake.start());
 
         Autostart autostart;
@@ -610,7 +606,7 @@ private Q_SLOTS:
         QVERIFY(line);
         QTRY_VERIFY(line->isVisible());
         QCOMPARE(line->property("text").toString(),
-                 QStringLiteral("Checking local files: 12 folders and 345 files, of about 500 — started 2 min ago, as syncing started"));
+                 QStringLiteral("Checking local files — started 2 min ago, as syncing started"));
 
         fake.sync->scan->set({{QStringLiteral("State"), QStringLiteral("idle")},
                               {QStringLiteral("Finished"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 300)},

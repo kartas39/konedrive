@@ -15,23 +15,17 @@ fn the_local_scan_line_says_how_far_it_got_or_when_it_last_finished() {
     let now = 1_000_000;
     let running = super::LocalScan {
         state: "running".into(),
-        reason: "read-write".into(),
+        reason: "start".into(),
         started: now - 130,
-        directories: 1_234,
-        files: 45_678,
-        expected: 50_000,
         ..Default::default()
     };
-    assert_eq!(
-        super::local_scan_text(&running, now),
-        "running — 1 234 folders and 45 678 files, of about 50 000 (2 min, after the switch to read-write)"
-    );
+    assert_eq!(super::local_scan_text(&running, now), "running (2 min, as syncing started)");
     let idle = super::LocalScan { state: "idle".into(), finished: now - 300, took: 40, ..running.clone() };
     assert_eq!(super::local_scan_text(&idle, now), "last finished 5 min ago (took 40 s)");
     let never = super::LocalScan { state: "idle".into(), ..Default::default() };
     assert_eq!(super::local_scan_text(&never, now), "not yet since the daemon started");
     let none = super::LocalScan { state: "none".into(), ..Default::default() };
-    assert_eq!(super::local_scan_text(&none, now), "none — read-only");
+    assert_eq!(super::local_scan_text(&none, now), "not yet since the daemon started");
 }
 
 /// `sync status` of a folder that shows OneDrive: every line there can be, in its order, with

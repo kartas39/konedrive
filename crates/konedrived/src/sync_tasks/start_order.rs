@@ -419,7 +419,7 @@ const CHECK_REASON: &str = "start";
 /// What `LocalScan` says while the check at start runs, which began at `began_at`: the
 /// last finished one's end and length stay. Pure.
 fn describe_running_check(last: &LocalScan, began_at: i64) -> LocalScan {
-    LocalScan { state: ScanState::Running, reason: CHECK_REASON.to_owned(), started: began_at, directories: 0, files: 0, expected: 0, finished: last.finished, took: last.took }
+    LocalScan { state: ScanState::Running, reason: CHECK_REASON.to_owned(), started: began_at, finished: last.finished, took: last.took }
 }
 
 /// What `LocalScan` says once the check that `running` describes ended at `ended_at`,

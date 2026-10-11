@@ -86,13 +86,6 @@ impl Accounts {
     }
 
     #[zbus(property)]
-    async fn helper_state(&self) -> String {
-        // No helper is used any more: the word that says nothing is wrong with it, for the
-        // clients that still read the property.
-        "connected".to_owned()
-    }
-
-    #[zbus(property)]
     async fn last_error(&self) -> String {
         self.manager.config.last_error()
     }

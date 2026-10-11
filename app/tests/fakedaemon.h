@@ -316,7 +316,6 @@ public:
 
 public Q_SLOTS:
     void Register(const QString &path, const QDBusMessage &message);
-    void RegisterWithoutInterception(const QString &path);
     void Unregister();
     void Refresh(const QDBusMessage &message);
     KonedriveNotInFolderList Skipped();
@@ -501,9 +500,6 @@ class FakeLocalScan : public FakeFolderInterface
     Q_PROPERTY(QString State READ state)
     Q_PROPERTY(QString Reason READ reason)
     Q_PROPERTY(qlonglong Started READ started)
-    Q_PROPERTY(qulonglong Directories READ directories)
-    Q_PROPERTY(qulonglong Files READ files)
-    Q_PROPERTY(qulonglong Expected READ expected)
     Q_PROPERTY(qlonglong Finished READ finished)
     Q_PROPERTY(uint Took READ took)
 
@@ -516,9 +512,6 @@ public:
                                   {QStringLiteral("State"), QStringLiteral("none")},
                                   {QStringLiteral("Reason"), QString()},
                                   {QStringLiteral("Started"), QVariant::fromValue<qlonglong>(0)},
-                                  {QStringLiteral("Directories"), QVariant::fromValue<qulonglong>(0)},
-                                  {QStringLiteral("Files"), QVariant::fromValue<qulonglong>(0)},
-                                  {QStringLiteral("Expected"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("Finished"), QVariant::fromValue<qlonglong>(0)},
                                   {QStringLiteral("Took"), QVariant::fromValue<uint>(0)},
                               })
@@ -528,9 +521,6 @@ public:
     QString state() const { return value("State").toString(); }
     QString reason() const { return value("Reason").toString(); }
     qlonglong started() const { return value("Started").toLongLong(); }
-    qulonglong directories() const { return value("Directories").toULongLong(); }
-    qulonglong files() const { return value("Files").toULongLong(); }
-    qulonglong expected() const { return value("Expected").toULongLong(); }
     qlonglong finished() const { return value("Finished").toLongLong(); }
     uint took() const { return value("Took").toUInt(); }
 };
@@ -669,12 +659,6 @@ inline void FakeFolder::Register(const QString &path, const QDBusMessage &messag
         return;
     }
     set({{QStringLiteral("Path"), path}, {QStringLiteral("State"), QStringLiteral("listing")}, {QStringLiteral("Source"), QStringLiteral("onedrive")}});
-}
-
-inline void FakeFolder::RegisterWithoutInterception(const QString &path)
-{
-    m_sync->calls << QStringLiteral("RegisterWithoutInterception:") + path;
-    set({{QStringLiteral("Path"), path}, {QStringLiteral("State"), QStringLiteral("no-interception")}, {QStringLiteral("Source"), QStringLiteral("onedrive")}});
 }
 
 inline void FakeFolder::Unregister()

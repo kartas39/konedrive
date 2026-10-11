@@ -7,7 +7,7 @@
     <!-- The changes waiting to be uploaded, oldest first, at most `limit`
          (0 for all): (seq, kind, full path, state, bytes sent, bytes in all,
          reason, next try in unix seconds or 0). Kinds: create, mkdir,
-         update, move, delete, move-out. States: waiting (not quiet: open
+         update, move, delete. States: waiting (not quiet: open
          for writing), ready, running, retry (in backoff until next try),
          blocked (needs the user; the reason says why), paused (while the
          account is paused, every row that is not blocked). Refused Unsupported
