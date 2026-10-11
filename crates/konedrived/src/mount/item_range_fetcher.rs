@@ -88,7 +88,8 @@ impl ItemRangeFetcher {
         ItemRangeFetcher { range_readers, source }
     }
 
-    /// The bytes of `source` from `from` up to `end`. Asks the content source by the
+    /// The bytes of `source` from `from` up to `end`, all of them: an answer that ends
+    /// before `end` fails the read (`EIO`), and no part of it is given. Asks the content source by the
     /// binding's item id (`ContentSource::read_range`; the drive is the account's until
     /// the source can ask by drive), and tells another content by what the answer says of
     /// the item's size and version against `source.content`
@@ -134,7 +135,14 @@ impl ItemRangeFetcher {
         }
         let mut bytes = Vec::with_capacity(end.saturating_sub(from) as usize);
         let answered = asked.elapsed();
-        fetched.stream.take(end.saturating_sub(from)).read_to_end(&mut bytes).await.map_err(|error| RangeRefusal::Failed { errno: to_raw_errno(&error) })?;
+        let wanted = end.saturating_sub(from);
+        fetched.stream.take(wanted).read_to_end(&mut bytes).await.map_err(|error| RangeRefusal::Failed { errno: to_raw_errno(&error) })?;
+        // The caller asks within the content it opened: an answer that ends sooner is not the range, and its end is
+        // not the file's.
+        if bytes.len() as u64 != wanted {
+            tracing::warn!("item {item}: asked for {wanted} bytes at {from} and the answer of OneDrive ended after {}", bytes.len());
+            return Err(RangeRefusal::Failed { errno: libc::EIO });
+        }
         tracing::info!("{} bytes at {from} of item {item} came from OneDrive in {} ms ({} ms to the answer)", bytes.len(), asked.elapsed().as_millis(), answered.as_millis());
         Ok(bytes)
     }

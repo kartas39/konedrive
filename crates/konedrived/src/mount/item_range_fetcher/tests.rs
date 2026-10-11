@@ -96,6 +96,25 @@ async fn a_stream_that_starts_elsewhere_than_asked_is_an_error() {
     assert_eq!(range_fetcher.fetch_range(ITEM, &opened(), 0, 4).await, Ok(b"0123".to_vec()));
 }
 
+/// A source whose answer starts where it was asked and ends after two bytes, as a
+/// connection that is cut does.
+struct CutSource;
+
+#[async_trait::async_trait]
+impl ContentSource for CutSource {
+    async fn fetch(&self, _item_id: &str, from: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
+        let served: Vec<u8> = b"0123456789".iter().copied().skip(from as usize).take(2).collect();
+        Ok(Fetched { served_from: from, size: None, mtime: UNIX_EPOCH + Duration::from_secs(MTIME as u64), version: None, stream: Box::new(std::io::Cursor::new(served)) })
+    }
+}
+
+#[tokio::test]
+async fn an_answer_that_ends_before_the_end_asked_is_an_error() {
+    let range_fetcher = fetcher(Arc::new(CutSource));
+    assert_eq!(range_fetcher.fetch_range(ITEM, &opened(), 4, 8).await, Err(RangeRefusal::Failed { errno: libc::EIO }), "never a part as if it were the range");
+    assert_eq!(range_fetcher.fetch_range(ITEM, &opened(), 8, 10).await, Ok(b"89".to_vec()), "a range that is answered whole is given");
+}
+
 #[tokio::test]
 async fn a_range_of_a_content_onedrive_no_longer_has_is_stale() {
     let source = Arc::new(FixtureContentSource::default());
