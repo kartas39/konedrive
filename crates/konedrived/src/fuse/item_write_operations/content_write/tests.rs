@@ -518,3 +518,32 @@ fn a_file_opened_for_writing_and_never_closed_is_changed_here_after_the_check_at
     assert_eq!(row.content_before_write, None);
     assert!(row.unsent_since.is_some(), "{row:?}");
 }
+
+/// The review's S4: the plan's reads and the bus share the store's one reading thread,
+/// and an open for writing does not wait behind them.
+#[test]
+fn what_is_downloaded_before_a_write_is_read_without_waiting_for_the_stores_reading_thread() {
+    use std::sync::mpsc;
+    let operations = OperationsFixture::new();
+    let remote = operations.fixture.show_onedrive_file("remote.txt", b"in OneDrive").local_item_id;
+    // The store's reading thread is taken, as by the plan's read of every row.
+    let ((let_go, held), (taken_sender, taken)) = (mpsc::channel::<()>(), mpsc::channel::<()>());
+    let store = operations.fixture.store.clone();
+    let holder = std::thread::spawn(move || {
+        store.read_items_blocking(move |_| {
+            taken_sender.send(()).unwrap();
+            let _ = held.recv();
+            Ok(())
+        })
+    });
+    taken.recv().unwrap();
+    let (answer_sender, answer) = mpsc::channel();
+    let on_mount_thread = Arc::clone(&operations.operations);
+    let asker = std::thread::spawn(move || answer_sender.send(on_mount_thread.find_file_to_fill(remote, None)));
+    let answered = answer.recv_timeout(Duration::from_secs(2));
+    let_go.send(()).unwrap();
+    holder.join().unwrap().unwrap();
+    asker.join().unwrap().unwrap();
+    let answered = answered.expect("answered while the store's reading thread is taken");
+    assert!(matches!(answered, Ok(FileToFill::Download(ItemToDownload { item, .. })) if item == remote), "{answered:?}");
+}

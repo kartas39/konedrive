@@ -138,6 +138,7 @@ fn build_over(backing_directory: Arc<BackingDirectory>, setup: ItemMountSetup, r
         Arc::clone(&place_changes),
         Arc::clone(&backing_directory),
         store.clone(),
+        Arc::clone(&read_connections),
         Arc::clone(&item_handles),
         Arc::clone(&download_states),
         Arc::clone(&upload_rules),

@@ -99,6 +99,7 @@ impl OperationsFixture {
             Arc::clone(&fixture.place_changes),
             Arc::clone(&fixture.backing_directory),
             fixture.store.clone(),
+            Arc::clone(&fixture.read_connections),
             Arc::clone(&fixture.item_handles),
             Arc::clone(&fixture.download_states),
             Arc::clone(&fixture.upload_rules),

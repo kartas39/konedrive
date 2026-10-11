@@ -14,6 +14,7 @@
 // test: a_file_on_disk_is_opened_from_its_backing_file
 // test: a_file_not_on_disk_is_opened_by_its_item_and_its_content_and_nothing_on_disk
 // test: a_reader_whose_content_landed_since_reads_the_backing_file
+// test: a_reader_whose_content_landed_and_which_a_writer_opened_since_reads_the_backing_file
 // test: a_reader_whose_row_is_gone_is_stale
 // test: a_reader_whose_item_shows_another_content_by_now_is_stale
 // test: a_file_with_no_binding_and_nothing_on_disk_cannot_be_read
@@ -86,16 +87,27 @@ pub(super) enum NotOnDiskReadOrigin {
 /// content is still the old one: the old content is read by its version) and after the
 /// step.
 ///
+/// A content that landed and that a writer opened since is on disk all the same: the row's
+/// content is the writer's by then, and `opened_as` is the one the row keeps from before
+/// the write. The handle goes on from the backing file, as a reader that opened the file
+/// on disk reads beside a writer. After a close that changed the file the row keeps
+/// nothing of `opened_as`, and a handle that asks again is `ESTALE`: a handle that was
+/// answered `LandedSince` once should keep its backing file and not ask again.
+///
 /// A row with the content opened and no binding (`EIO`) is one no operation leaves.
 pub(super) fn decide_not_on_disk_read_origin(row: &NodeRow, opened_as: &ContentVersion) -> NotOnDiskReadOrigin {
     let NodeRow::Shown(item) = row else { return NotOnDiskReadOrigin::Refused(Errno::ESTALE) };
-    if item.local.as_ref().and_then(|local| local.content.as_ref()) != Some(opened_as) {
+    let is_content_of_row = item.local.as_ref().and_then(|local| local.content.as_ref()) == Some(opened_as);
+    let is_content_before_write = item.content_before_write.as_ref() == Some(opened_as);
+    if item.content_presence == ContentPresence::OnDisk && (is_content_of_row || is_content_before_write) {
+        return NotOnDiskReadOrigin::LandedSince;
+    }
+    if !is_content_of_row {
         return NotOnDiskReadOrigin::Refused(Errno::ESTALE);
     }
-    match (item.content_presence, &item.onedrive_item) {
-        (ContentPresence::OnDisk, _) => NotOnDiskReadOrigin::LandedSince,
-        (ContentPresence::NotOnDisk, Some(onedrive_item)) => NotOnDiskReadOrigin::OneDriveRange(RangeSource { onedrive_item: onedrive_item.clone(), content: opened_as.clone() }),
-        (ContentPresence::NotOnDisk, None) => NotOnDiskReadOrigin::Refused(Errno::EIO),
+    match &item.onedrive_item {
+        Some(onedrive_item) => NotOnDiskReadOrigin::OneDriveRange(RangeSource { onedrive_item: onedrive_item.clone(), content: opened_as.clone() }),
+        None => NotOnDiskReadOrigin::Refused(Errno::EIO),
     }
 }
 

@@ -66,6 +66,7 @@ use super::item_download_states::ItemDownloadStates;
 use super::item_handles::ItemHandles;
 use super::mount_take_down::{MountTakeDown, TakeDownCause};
 use super::place_changes::{PlaceChange, PlaceChanges, PlaceRefusal, PlaceUndo};
+use super::read_connections::ReadConnections;
 use super::upload_rules::UploadRules;
 use crate::folder::running_steps::RunningSteps;
 use crate::folder::sync_plan_wake::{SyncPlanWake, WakeCause};
@@ -149,6 +150,10 @@ pub(super) struct ItemWriteOperations {
     backing_directory: Arc<BackingDirectory>,
     /// The writer: every read and write of an operation is a job of the store's thread.
     store: Store,
+    /// For the one read made on a thread of the mount, before a job is queued
+    /// (`find_file_to_fill`): through that thread's own connection, so that it waits for
+    /// neither the store's thread nor its one reading thread.
+    read_connections: Arc<ReadConnections>,
     item_handles: Arc<ItemHandles>,
     download_states: Arc<ItemDownloadStates>,
     upload_rules: Arc<UploadRules>,
@@ -169,6 +174,7 @@ impl ItemWriteOperations {
         place_changes: Arc<PlaceChanges>,
         backing_directory: Arc<BackingDirectory>,
         store: Store,
+        read_connections: Arc<ReadConnections>,
         item_handles: Arc<ItemHandles>,
         download_states: Arc<ItemDownloadStates>,
         upload_rules: Arc<UploadRules>,
@@ -181,6 +187,7 @@ impl ItemWriteOperations {
             place_changes,
             backing_directory,
             store,
+            read_connections,
             item_handles,
             download_states,
             upload_rules,

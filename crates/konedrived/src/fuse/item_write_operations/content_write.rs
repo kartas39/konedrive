@@ -66,6 +66,9 @@
 // test: an_empty_file_opened_and_closed_untouched_is_a_clean_copy_again
 // test: a_backing_file_that_cannot_be_made_after_its_row_asks_for_the_take_down
 // test: a_time_set_through_a_writer_is_written_by_its_close
+// test: what_is_downloaded_before_a_write_is_read_without_waiting_for_the_stores_reading_thread
+// test: bytes_written_through_a_handle_that_was_never_closed_are_unsent_after_the_check_at_start_though_size_and_time_stand
+// test: a_file_opened_for_writing_and_never_closed_is_changed_here_after_the_check_at_start_also_when_nothing_was_written
 #![allow(dead_code)]
 
 use std::fs::File;
@@ -179,12 +182,12 @@ impl ItemWriteOperations {
     /// read-only folder refuses here, before anything is downloaded for a write it will
     /// not take. Called on the mount's thread, before the job is queued; the download
     /// then runs on the runtime and the job after it (as today,
-    /// `write_operations/write.rs:54`). Read through the store's reading connection
-    /// (`Store::read_items_blocking`), one read transaction: the write operations hold no
-    /// connection of the mount's threads.
+    /// `write_operations/write.rs:54`). Read through the calling thread's own reading
+    /// connection (`ReadConnections::read`), as a lookup reads: it waits for neither the
+    /// store's thread nor the one reading thread the plan and the bus share.
     pub(in crate::fuse) fn find_file_to_fill(&self, node: LocalItemId, new_size: Option<u64>) -> Result<FileToFill, Errno> {
         self.access_mode_switch.check_read_write()?;
-        let row = self.store.read_items_blocking(move |reader| reader.find_item(node)).map_err(|error| {
+        let row = self.read_connections.read(|reader| reader.find_item(node)).map_err(|error| {
             tracing::warn!("the row of a file to be written could not be read: {error}");
             Errno::EIO
         })?;

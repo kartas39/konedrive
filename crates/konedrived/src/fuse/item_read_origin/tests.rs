@@ -52,6 +52,23 @@ fn a_reader_whose_content_landed_since_reads_the_backing_file() {
     assert_eq!(decide_not_on_disk_read_origin(&landed, &content("c1", 10)), NotOnDiskReadOrigin::LandedSince);
 }
 
+/// The review's S2: the content landed, and then a writer opened the file. The row's
+/// content is the writer's by now, and the content the reader opened is the one the row
+/// keeps from before the write: it is on disk, in the backing file.
+#[test]
+fn a_reader_whose_content_landed_and_which_a_writer_opened_since_reads_the_backing_file() {
+    let opened_as = content("c1", 10);
+    let writers = ContentVersion::ChangedHere { size: 10, mtime: 1_600_000_000, mtime_nsec: 0, change_count: 1 };
+    let written = NodeRow::Shown(Item { content_before_write: Some(opened_as.clone()), ..file(writers.clone(), ContentPresence::OnDisk) });
+    assert_eq!(decide_not_on_disk_read_origin(&written, &opened_as), NotOnDiskReadOrigin::LandedSince);
+    // A writer of another content than the one opened: stale, as before.
+    let of_another = NodeRow::Shown(Item { content_before_write: Some(content("c2", 10)), ..file(writers.clone(), ContentPresence::OnDisk) });
+    assert_eq!(decide_not_on_disk_read_origin(&of_another, &opened_as), NotOnDiskReadOrigin::Refused(Errno::ESTALE));
+    // After a close that changed the file the row keeps nothing of the content opened.
+    let closed = NodeRow::Shown(file(writers, ContentPresence::OnDisk));
+    assert_eq!(decide_not_on_disk_read_origin(&closed, &opened_as), NotOnDiskReadOrigin::Refused(Errno::ESTALE));
+}
+
 #[test]
 fn a_reader_whose_row_is_gone_is_stale() {
     let not_shown = NodeRow::NotShown;
