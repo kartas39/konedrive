@@ -42,27 +42,31 @@ Source1:        %{name}-%{version}-vendor.tar.gz
 
 ExclusiveArch:  %{rust_arches}
 
+# The least KDE Frameworks: KF_MIN_VERSION of app/CMakeLists.txt and
+# dolphin/CMakeLists.txt (docs/limitations/K34.md).
+%global kf6_min 6.21
+
 BuildRequires:  cargo
 BuildRequires:  rust
 BuildRequires:  gcc
 BuildRequires:  gcc-c++
 BuildRequires:  make
 BuildRequires:  cmake
-BuildRequires:  extra-cmake-modules
+BuildRequires:  extra-cmake-modules >= %{kf6_min}
 BuildRequires:  kf6-rpm-macros
 BuildRequires:  qt6-qtbase-devel
 BuildRequires:  qt6-qtdeclarative-devel
-BuildRequires:  kf6-kirigami-devel
+BuildRequires:  kf6-kirigami-devel >= %{kf6_min}
 BuildRequires:  kf6-kirigami-addons-devel
-BuildRequires:  kf6-ki18n-devel
-BuildRequires:  kf6-kcoreaddons-devel
-BuildRequires:  kf6-kconfig-devel
-BuildRequires:  kf6-knotifications-devel
-BuildRequires:  kf6-kstatusnotifieritem-devel
-BuildRequires:  kf6-kdbusaddons-devel
-BuildRequires:  kf6-kio-devel
-BuildRequires:  kf6-kwindowsystem-devel
-BuildRequires:  kf6-kjobwidgets-devel
+BuildRequires:  kf6-ki18n-devel >= %{kf6_min}
+BuildRequires:  kf6-kcoreaddons-devel >= %{kf6_min}
+BuildRequires:  kf6-kconfig-devel >= %{kf6_min}
+BuildRequires:  kf6-knotifications-devel >= %{kf6_min}
+BuildRequires:  kf6-kstatusnotifieritem-devel >= %{kf6_min}
+BuildRequires:  kf6-kdbusaddons-devel >= %{kf6_min}
+BuildRequires:  kf6-kio-devel >= %{kf6_min}
+BuildRequires:  kf6-kwindowsystem-devel >= %{kf6_min}
+BuildRequires:  kf6-kjobwidgets-devel >= %{kf6_min}
 BuildRequires:  desktop-file-utils
 BuildRequires:  systemd-rpm-macros
 
@@ -75,6 +79,9 @@ Requires:       kf6-qqc2-desktop-style%{?_isa}
 Requires:       qt6-qtdeclarative%{?_isa}
 # The daemon mounts each OneDrive folder with fusermount3.
 Requires:       fuse3
+# Below this KIO's "Move to Trash" copies a file of the folder into the home
+# trash, which downloads it (docs/limitations/K34.md).
+Requires:       kf6-kio-core%{?_isa} >= %{kf6_min}
 Recommends:     %{name}-kde = %{version}-%{release}
 
 %description

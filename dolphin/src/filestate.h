@@ -1,8 +1,8 @@
 // What a file in the sync folder is, read from its extended attributes alone.
 //
 // Everything here answers by path, with lstat(2), lgetxattr(2) and getxattr(2).
-// None of them opens anything: in this project opening a placeholder
-// downloads it, so a plugin that opened files to decide what to draw would
+// None of them opens anything: reading a file that is not on this computer
+// downloads it, so a plugin that opened files to decide what to draw could
 // download every file Dolphin shows.
 
 #pragma once
