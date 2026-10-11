@@ -431,6 +431,7 @@ pub fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Sy
         places_taken_in_onedrive: BTreeMap::new(),
         items_left_by_uploads: BTreeMap::new(),
         temporary_names: BTreeMap::new(),
+        own_upload_contents: BTreeMap::new(),
         sent_removal_count: items.find_sent_removal_window(facts.now)?.removal_count,
         now: facts.now,
         next_tries: BTreeMap::new(),
@@ -449,7 +450,9 @@ pub fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Sy
 /// its memory, kept in `given`, with the temporary name it keeps
 /// (`SyncPlanInput::temporary_names`), and whether it is an item an upload left with other
 /// content (`ItemReader::find_mismatched_item` of its binding:
-/// `SyncPlanInput::items_left_by_uploads`); and what `facts` say of it: left by the check, its quiet
+/// `SyncPlanInput::items_left_by_uploads`), and whether its content in OneDrive is what an
+/// upload of this folder left (`ItemReader::find_own_upload_content`:
+/// `SyncPlanInput::own_upload_contents`); and what `facts` say of it: left by the check, its quiet
 /// time ([`decide_quiet_until`]), a name OneDrive cannot hold ([`find_name_refusal`]).
 /// Then, of everything given so far: the rows by their id, the counts of the directories
 /// given whole, the next tries ([`describe_next_tries`], with `local_step_tries`: the
@@ -463,6 +466,9 @@ pub fn describe_given_items(items: &ItemReader<'_>, facts: &DaemonFacts, local_s
         // An item of OneDrive an upload of this folder left with other content, which a listing brought.
         if let Some(upload) = row.onedrive_item.as_ref().map(|onedrive_item| items.find_mismatched_item(onedrive_item)).transpose()?.flatten() {
             input.items_left_by_uploads.insert(item, upload.file);
+        }
+        if let Some(upload) = items.find_own_upload_content(item)? {
+            input.own_upload_contents.insert(item, upload);
         }
         if row.onedrive.is_some() {
             input.folder_visibility.insert(item, items.find_folder_visibility(item)?);

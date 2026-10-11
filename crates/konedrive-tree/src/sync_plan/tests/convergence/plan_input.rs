@@ -162,6 +162,7 @@ fn describe(store: &mut TreeStore, facts: &CallerFacts, rows: Vec<Item>) -> Sync
         places_taken_in_onedrive: facts.places_taken_in_onedrive.clone(),
         items_left_by_uploads: BTreeMap::new(),
         temporary_names: BTreeMap::new(),
+        own_upload_contents: BTreeMap::new(),
         sent_removal_count: if facts.confirms_removals { 0 } else { items.find_sent_removal_window(facts.now).unwrap().removal_count },
         now: facts.now,
         next_tries: BTreeMap::new(),

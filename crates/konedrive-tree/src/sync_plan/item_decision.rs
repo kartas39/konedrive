@@ -201,6 +201,17 @@ pub(crate) enum LocalPlaceAvailability {
     IsTemporaryNameOf(LocalItemId),
 }
 
+/// Whose the content is that OneDrive has of a file, where it is not the one agreed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OneDriveContentOrigin {
+    /// OneDrive's: another client or OneDrive itself changed it.
+    OneDrive,
+    /// What an upload of this folder into the item left there in place of what it sent
+    /// ([`OwnUploadContent`](crate::OwnUploadContent)): no change of OneDrive's. The local
+    /// content stands.
+    OwnUpload,
+}
+
 /// One item as the plan decides on it: its row, and what the plan was given or found among
 /// the other rows about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,6 +235,7 @@ pub(crate) struct ItemCase<'a> {
     /// An upload of this folder left the item in OneDrive with other content than was
     /// sent, and it waits to be removed there.
     pub(crate) is_left_by_upload: bool,
+    pub(crate) onedrive_content_origin: OneDriveContentOrigin,
     /// One of the items the folder shows in the item, a directory.
     pub(crate) first_shown_in_it: Option<LocalItemId>,
     /// The item is no directory whose answer is made from what is in it, or the plan was
@@ -497,7 +509,9 @@ fn decide_new_here(case: &ItemCase<'_>) -> ItemDecision {
 ///
 /// - A file whose content OneDrive changed comes back, and where the folder cannot show it,
 ///   what was agreed on is forgotten, so that its row is that of an item of OneDrive the
-///   folder cannot show.
+///   folder cannot show. A content an upload of this folder left
+///   ([`OneDriveContentOrigin::OwnUpload`]) is no change of OneDrive's: the removal is
+///   sent.
 /// - The removal of any other file is sent, guarded by the eTag, also when OneDrive moved
 ///   it.
 /// - A directory's removal is unguarded and takes all OneDrive has in the directory: it is
@@ -512,15 +526,15 @@ fn decide_removed_here(case: &ItemCase<'_>, onedrive_content: ContentChange) -> 
     if let Some(directory) = case.onedrive_directory_not_given {
         return ItemDecision::Wait(WaitReason::ItemNotGiven(directory));
     }
-    match (case.item.kind, onedrive_content) {
-        (ItemKind::File, ContentChange::Changed | ContentChange::NotKnownWithoutHash) => match show_onedrive_item(case) {
+    match (case.item.kind, onedrive_content, case.onedrive_content_origin) {
+        (ItemKind::File, ContentChange::Changed | ContentChange::NotKnownWithoutHash, OneDriveContentOrigin::OneDrive) => match show_onedrive_item(case) {
             ItemDecision::Exclusion(ExclusionReason::CannotBeShown) => row_step(RowStep::ForgetSyncedVersion { item: case.versions() }),
             comes_back => comes_back,
         },
-        (ItemKind::File, ContentChange::Same) => {
+        (ItemKind::File, ContentChange::Same, _) | (ItemKind::File, _, OneDriveContentOrigin::OwnUpload) => {
             find_decision_not_to_send(case, SentPart::Removal).unwrap_or_else(|| onedrive_step(OneDriveStep::SendFileRemoval { item: case.versions() }))
         }
-        (ItemKind::Directory, _) => match decide_directory_removal(case.is_listing_under_way, &case.below_in_onedrive) {
+        (ItemKind::Directory, _, _) => match decide_directory_removal(case.is_listing_under_way, &case.below_in_onedrive) {
             DirectoryRemovalOutcome::WaitsForListing => ItemDecision::Wait(WaitReason::Listing),
             DirectoryRemovalOutcome::WaitsFor(kept) => ItemDecision::Wait(WaitReason::AnotherItem(kept)),
             DirectoryRemovalOutcome::IsOfFolderAlone => row_step(RowStep::ForgetSyncedVersion { item: case.versions() }),
@@ -689,18 +703,23 @@ pub(crate) fn decide_place(case: &ItemCase<'_>, here: PlaceChange, in_onedrive: 
 /// - Changed here, same in OneDrive: the content is sent.
 /// - Changed on both sides: the same hash, agree; another, both are kept, the local one
 ///   giving up the binding; not known without a hash, the local content is hashed.
+/// - Not the one agreed on in OneDrive, and what an upload of this folder left there
+///   ([`OneDriveContentOrigin::OwnUpload`]): no change of OneDrive's. The local content
+///   stands and is sent, whatever was done to it here; the file does not take OneDrive's,
+///   and nothing is kept beside it.
 pub(crate) fn decide_content(case: &ItemCase<'_>, here: ContentChange, in_onedrive: ContentChange) -> ItemDecision {
     let item = case.item;
     let local = item.local.as_ref().and_then(|local| local.content.as_ref());
     let onedrive = item.onedrive.as_ref().and_then(|onedrive| onedrive.content.as_ref());
-    match (here, in_onedrive) {
-        (ContentChange::Same, ContentChange::Same) if local == item.synced_content.as_ref() && is_same_content_but_for_time(onedrive, item.synced_content.as_ref()) => ItemDecision::NothingToDo,
-        (ContentChange::Same, ContentChange::Same) => row_step(RowStep::AgreeOnContent { item: case.versions() }),
-        (ContentChange::Same, ContentChange::Changed | ContentChange::NotKnownWithoutHash) => folder_step(FolderStep::TakeOneDriveContent { item: case.versions() }),
-        (ContentChange::Changed | ContentChange::NotKnownWithoutHash, ContentChange::Same) => {
+    match (here, in_onedrive, case.onedrive_content_origin) {
+        (ContentChange::Same, ContentChange::Same, _) if local == item.synced_content.as_ref() && is_same_content_but_for_time(onedrive, item.synced_content.as_ref()) => ItemDecision::NothingToDo,
+        (ContentChange::Same, ContentChange::Same, _) => row_step(RowStep::AgreeOnContent { item: case.versions() }),
+        (ContentChange::Same, ContentChange::Changed | ContentChange::NotKnownWithoutHash, OneDriveContentOrigin::OneDrive) => folder_step(FolderStep::TakeOneDriveContent { item: case.versions() }),
+        // TODO: check the sending of a content that is the one agreed on here (the user put it back after the upload: the row is not unsent) and fix if needed, as for a move sent from such a row (`decide_place`).
+        (ContentChange::Changed | ContentChange::NotKnownWithoutHash, ContentChange::Same, _) | (_, ContentChange::Changed | ContentChange::NotKnownWithoutHash, OneDriveContentOrigin::OwnUpload) => {
             find_decision_not_to_send(case, SentPart::Content).unwrap_or_else(|| onedrive_step(OneDriveStep::SendContent { item: case.versions() }))
         }
-        (ContentChange::Changed | ContentChange::NotKnownWithoutHash, ContentChange::Changed | ContentChange::NotKnownWithoutHash) => match compare_local_content(local, onedrive) {
+        (ContentChange::Changed | ContentChange::NotKnownWithoutHash, ContentChange::Changed | ContentChange::NotKnownWithoutHash, OneDriveContentOrigin::OneDrive) => match compare_local_content(local, onedrive) {
             ContentChange::Same => row_step(RowStep::AgreeOnContent { item: case.versions() }),
             ContentChange::Changed => row_step(RowStep::GiveUpBinding { item: case.versions() }),
             ContentChange::NotKnownWithoutHash => row_step(RowStep::HashLocalContent { item: case.versions() }),

@@ -206,6 +206,7 @@ pub(crate) fn input(items: Vec<Item>) -> SyncPlanInput {
         places_taken_in_onedrive: BTreeMap::new(),
         items_left_by_uploads: BTreeMap::new(),
         temporary_names: BTreeMap::new(),
+        own_upload_contents: BTreeMap::new(),
         sent_removal_count: 0,
         now: 500,
         next_tries: BTreeMap::new(),

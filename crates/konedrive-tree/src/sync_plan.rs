@@ -40,7 +40,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use konedrive_reason::Reason;
 
 use crate::model::{FolderVisibility, Item, ItemKind, ItemPlace, LocalItemId};
-use crate::TemporaryName;
+use crate::{OwnUploadContent, TemporaryName};
 
 /// The name of a conflict copy.
 mod conflict_copy_name;
@@ -83,7 +83,7 @@ pub use sync_step::{FolderStep, FolderStepKind, ItemVersions, OneDriveStep, RowS
 pub use tried_step::TriedStep;
 
 use plan_items::PlanItems;
-use item_decision::{decide_content_while_place_waits, ItemAnswers, ItemCase, ItemDecision, LocalDirectoryBinding, LocalPlaceAvailability, Overruling};
+use item_decision::{decide_content_while_place_waits, ItemAnswers, ItemCase, ItemDecision, LocalDirectoryBinding, LocalPlaceAvailability, OneDriveContentOrigin, Overruling};
 use sending_obstacle::SendingConditions;
 
 /// The folder's state of sending.
@@ -253,6 +253,18 @@ pub struct SyncPlanInput {
     /// item is sent on to its local place (`SendMove`) — also for a new item whose row
     /// was merged with the one a listing made of it under the temporary name.
     pub temporary_names: BTreeMap<LocalItemId, TemporaryName>,
+    /// The files whose content in OneDrive is what an upload of this folder left there in
+    /// place of what it sent, each with that content and the local one that was sent
+    /// ([`ItemReader::find_own_upload_content`](crate::ItemReader::find_own_upload_content),
+    /// asked by the caller of every file it gives). Such a content is no change of
+    /// OneDrive's: the local content stands and is sent again (`SendContent`), the file
+    /// does not take it (`TakeOneDriveContent`), no conflict copy is made against it, and
+    /// a file removed here does not come back for it. *Enforced* as far as the row says
+    /// it: an entry counts only while the row's OneDrive content is the one it names. The
+    /// store answers the fact so too — a listing that wrote another content voids it —
+    /// and forgets it once the content was sent again and confirmed or OneDrive's was
+    /// taken; it goes with the item's row, and stays with the item when its binding moves.
+    pub own_upload_contents: BTreeMap<LocalItemId, OwnUploadContent>,
     /// How many items the removals took from OneDrive that this client sent a short time
     /// ago: what the store counted, as of `now`
     /// ([`ItemStore::find_sent_removal_window`](crate::ItemStore::find_sent_removal_window),
@@ -445,6 +457,16 @@ fn find_local_directory_binding(input: &SyncPlanInput, items: &PlanItems<'_>, it
     }
 }
 
+/// Whose the content is that OneDrive has of `item`: this folder's own upload while the
+/// content `input` names for it is the one the row says OneDrive has.
+fn find_onedrive_content_origin(input: &SyncPlanInput, item: &Item) -> OneDriveContentOrigin {
+    let in_onedrive = item.onedrive.as_ref().and_then(|onedrive| onedrive.content.as_ref());
+    match input.own_upload_contents.get(&item.local_item_id) {
+        Some(upload) if in_onedrive == Some(&upload.onedrive_content) => OneDriveContentOrigin::OwnUpload,
+        _ => OneDriveContentOrigin::OneDrive,
+    }
+}
+
 /// Whether the plan was given all that is in `item` where its answer is made from that
 /// ([`SyncPlanInput`]): the caller's number of it is the number of rows given.
 fn is_given_with_all_in_it(input: &SyncPlanInput, items: &PlanItems<'_>, item: &Item, folder_visibility: FolderVisibility) -> bool {
@@ -568,6 +590,7 @@ fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Ite
         local_directory: find_local_directory_binding(input, items, item),
         local_place_availability: find_local_place_availability(input, items, item),
         is_left_by_upload: input.items_left_by_uploads.contains_key(&id),
+        onedrive_content_origin: find_onedrive_content_origin(input, item),
         is_left_by_start_up_check: is_left_by_start_up_check(input, items, item),
         is_sent_into_by_running_step: input.destinations_of_running_steps.contains(&id),
         first_shown_in_it: items.find_first_shown_in(id),

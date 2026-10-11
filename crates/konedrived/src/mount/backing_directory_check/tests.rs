@@ -353,6 +353,7 @@ impl Folder {
             places_taken_in_onedrive: Default::default(),
             items_left_by_uploads: Default::default(),
             temporary_names: Default::default(),
+            own_upload_contents: Default::default(),
             sent_removal_count: 0,
             now: 0,
             next_tries: Default::default(),
