@@ -30,8 +30,11 @@ pub enum WakeCause {
     ListingEnded,
     /// A step finished, whatever came of it.
     StepFinished,
-    /// The user answered: removals confirmed or taken back, a refresh asked for.
+    /// The user answered: removals confirmed or taken back, a pin set or taken off.
     UserAnswered,
+    /// A refresh was asked for, by the user or because the network is back: every next
+    /// try is due.
+    RefreshAsked,
     /// The quota was read: OneDrive may have space again, or none.
     QuotaRead,
     /// What holds all sending changed: the pause, the sign-in, the network, the access

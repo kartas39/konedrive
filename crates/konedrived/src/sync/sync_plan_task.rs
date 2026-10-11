@@ -26,25 +26,29 @@
 //! - *sleep*: until a cause, a time, or the stop.
 //!
 //! **What bounds the plans.** A plan is made when a cause other than a finished step
-//! came, when a time was reached, or when every step of the last plan was started and
-//! has ended — never once per finished step. Every step is conditional, so a step of a
+//! came, when a time was reached, or when a step that ended changed something a plan is
+//! made from (it was written, its rows changed, a try was counted, a cycle asked for, a
+//! hold set) — once for all the steps that are settled together, and never for steps that
+//! changed nothing. The steps the last plan left are replaced by the new plan's. Every
+//! step is conditional, so a step of a
 //! plan that is a few steps old is safe: its commit finds the rows changed and writes
 //! nothing. The `ShowItem` steps of one plan are run as one job
 //! (`FolderSteps::run_show_items`), and the outcomes that are ready together are settled
 //! in one job of the store. A first listing of N items is then some plans per page and a
-//! few jobs, not N of each; the one reader that scans (`list_pinned_files_to_download`)
-//! is asked only in a plan that a listing's page or the user's answer woke.
+//! few jobs, not N of each. The one reader that scans (`list_pinned_files_to_download`)
+//! is asked with every plan: a plan that left the pinned files out would drop the
+//! downloads the last one planned.
 //!
 //! **How many steps run at once** (one per item): of the rows, all at once, in the plan's
 //! order; towards the folder, as they come — each is one job of the write-operation
 //! thread, which runs one at a time; downloads of pinned files, as the pool's download
 //! slots allow; towards OneDrive, content as the pool's upload slots allow and the rest
 //! one at a time. What holds all sending holds the last two, and a pause and a sign-out
-//! the downloads.
+//! the downloads; while OneDrive is full no content is started.
 //!
 //! **What wakes it** (`WakeCause`): a local version written by the mount; a listing's
-//! page written, a listing ended; a step finished; the user's answer; a quota read; what
-//! holds all sending changed. And the time: the soonest of the plan's waits until a
+//! page written, a listing ended; a step finished; the user's answer; a refresh asked
+//! for; a quota read; what holds all sending changed. And the time: the soonest of the plan's waits until a
 //! time (the step memory's next tries among them: the plan is told), the end of a
 //! throttle or a timed pause, and the quota's next read.
 //!
@@ -74,10 +78,9 @@
 // test: a_hash_that_runs_at_a_stop_is_aborted_and_writes_nothing
 // test: the_plans_read_waits_for_no_job_of_the_stores_writer
 // test: rows_changed_at_random_on_both_sides_converge_through_the_task
-#![allow(dead_code, unused_variables)]
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -88,7 +91,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::folder::published_plan::{ItemAnswer, PublishedPlan};
 use crate::folder::running_steps::{RunningSteps, StepClass};
-use crate::folder::step_outcome::{StepObstacle, StepOutcome, StepRefusal};
+use crate::folder::step_outcome::{StepFailure, StepObstacle, StepOutcome, StepRefusal};
 use crate::folder::sync_plan_wake::{SyncPlanWake, WakeCause};
 use crate::fuse::StartCheckFindings;
 use crate::remote::listing_poller::ListingPollHandle;
@@ -148,17 +151,17 @@ pub struct SyncPlanTaskParts {
     pub quota_reader: Arc<dyn Fn() -> RunningFuture<Option<DriveQuota>> + Send + Sync>,
 }
 
-/// How many upload sessions are cancelled, and how many items uploads left are removed,
-/// in one round.
-const LEFTOVERS_ASKED_AT_ONCE: usize = 16;
+/// How many upload sessions are cancelled, and how many items uploads left with other
+/// content are removed, by one call of `SessionCancellations`.
+const SESSION_CANCELLATIONS_AT_ONCE: usize = 16;
 
 /// How long after the old openings of upload sessions were forgotten they are forgotten
 /// again, in seconds: once a day.
 const OLD_OPENINGS_FORGOTTEN_EVERY: i64 = 24 * 60 * 60;
 
-/// How long the task waits before it tries again what it could not read: the store for
+/// How long the task waits before it reads again what it could not read: the store for
 /// a plan, the quota that was due. Seconds.
-const RETRY_AFTER: i64 = 60;
+const READ_RETRY_WAIT: i64 = 60;
 
 /// The plan's task of one folder. It holds its parts and runs the loop; what each part
 /// does is the part's.
@@ -171,38 +174,65 @@ pub struct SyncPlanTask {
     /// The failed tries of the steps towards the folder and of the rows, for this run.
     /// Changed by the loop alone: when a plan is made, to what the rows of that plan's
     /// reading still say (`PlannedRound::local_step_tries`); at a settlement
-    /// (`step_settlement::change_local_step_tries`); and at the user's refresh
-    /// (`LocalStepTries::clear_next_tries`).
+    /// (`step_settlement::change_local_step_tries`); and at a refresh
+    /// (`WakeCause::RefreshAsked`, `LocalStepTries::clear_next_tries`).
     local_step_tries: std::sync::Mutex<LocalStepTries>,
     /// The steps that ended and are not settled yet, each with what came of it: put by
     /// the task of a step, taken by the loop.
     ended_steps: std::sync::Mutex<Vec<(SyncStep, StepOutcome)>>,
     /// The faults of the last plan: what a fault is said once by.
     told_faults: std::sync::Mutex<Vec<PlanFault>>,
+    /// The items a full listing was asked for (`PlanFault::FullListingNeeded`) that no
+    /// listing ended for since: none is asked for these again. Emptied when a listing
+    /// ended and the store's request has begun.
+    full_listings_asked: std::sync::Mutex<BTreeSet<LocalItemId>>,
+    /// When the read of the quota that was due failed last, Unix seconds: it is not asked
+    /// again before `READ_RETRY_WAIT` passed. None once a read answered.
+    quota_read_failed_at: std::sync::Mutex<Option<i64>>,
+    /// Whether the task that cancels upload sessions and removes the items uploads left
+    /// runs: one at a time.
+    are_session_cancellations_running: Arc<AtomicBool>,
 }
 
 /// What a round does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoundDecision {
-    /// A plan is made: a cause other than a finished step came, a time was reached, or no
-    /// step of the last plan is left to start or running.
+    /// A plan is made: a cause other than a finished step came, a time was reached, or a
+    /// step that was settled in this round changed something.
     MakePlan,
-    /// The last plan is gone on with: steps of it are left to start, and only steps
-    /// finished since.
+    /// The last plan is gone on with: steps of it are left to start, only steps finished
+    /// since, and none of them changed anything.
     GoOnWithLastPlan,
     /// Nothing to do until the next cause or time.
     Sleep,
 }
 
-/// What the round does, from the causes that woke it (none: a time was reached), how many
-/// steps of the last plan are not started, and how many steps run. Pure.
-pub fn decide_round(causes: &BTreeSet<WakeCause>, steps_left_to_start: usize, running_step_count: usize) -> RoundDecision {
+/// What the round does, from the causes that woke it (none: a time was reached), whether
+/// a step settled in this round changed anything a plan is made from
+/// (`step_settlement::has_changed_anything`), and how many steps of the last plan are not
+/// started. A round of finished steps alone makes a plan when one of them changed
+/// something — also while steps of the last plan are left, which the new plan's replace:
+/// what waited for the step is planned at once, whatever holds the steps left. When none
+/// changed anything no plan is made by that round — the plan would be the one before, and
+/// a step that cannot run (the mount's take-down asked for, the write-operation thread
+/// gone) would be planned and ended without a wait between: the steps left that can start
+/// are started, else the task sleeps until a cause or a time. Pure.
+pub fn decide_round(causes: &BTreeSet<WakeCause>, has_settled_change: bool, steps_left_to_start: usize) -> RoundDecision {
     let is_only_finished_steps = !causes.is_empty() && causes.iter().all(|cause| *cause == WakeCause::StepFinished);
-    match (is_only_finished_steps, steps_left_to_start, running_step_count) {
-        (false, _, _) | (true, 0, 0) => RoundDecision::MakePlan,
-        (true, 0, _) => RoundDecision::Sleep,
-        (true, _, _) => RoundDecision::GoOnWithLastPlan,
+    match (is_only_finished_steps, has_settled_change, steps_left_to_start) {
+        (false, _, _) | (true, true, _) => RoundDecision::MakePlan,
+        (true, false, 0) => RoundDecision::Sleep,
+        (true, false, _) => RoundDecision::GoOnWithLastPlan,
     }
+}
+
+/// What the end of a step's task that answered no outcome is settled as: nothing for a
+/// task that was aborted (a stop: `RunningSteps::abort_requests` took its step off
+/// already), a failure for any other end — a panic of the runner —, so that the step
+/// ends, counts a try and waits. Pure.
+pub fn decide_outcome_of_ended_task(is_cancelled: bool, detail: String) -> Option<StepOutcome> {
+    // TODO: `StepFailure` has no case for a runner that panicked; `Store` is said in its place, and the reason kept is the store's. Check whether a case of its own is wanted, and fix if needed.
+    (!is_cancelled).then_some(StepOutcome::Failed(StepFailure::Store { detail }))
 }
 
 /// When the task wakes by itself next, Unix seconds: the soonest of the plan's waits
@@ -218,7 +248,7 @@ pub fn decide_next_wake(plan: &SyncPlan, hold_end: Option<i64>, next_quota_read:
 impl SyncPlanTask {
     /// Made by the folder's start (`sync_tasks::start_order::start_sync_tasks`).
     pub fn new(parts: SyncPlanTaskParts) -> Arc<Self> {
-        Arc::new(SyncPlanTask { parts, logged_since_listing_ended: AtomicUsize::new(0), local_step_tries: std::sync::Mutex::new(LocalStepTries::default()), ended_steps: std::sync::Mutex::default(), told_faults: std::sync::Mutex::default() })
+        Arc::new(SyncPlanTask { parts, logged_since_listing_ended: AtomicUsize::new(0), local_step_tries: std::sync::Mutex::new(LocalStepTries::default()), ended_steps: std::sync::Mutex::default(), told_faults: std::sync::Mutex::default(), full_listings_asked: std::sync::Mutex::default(), quota_read_failed_at: std::sync::Mutex::new(None), are_session_cancellations_running: Arc::new(AtomicBool::new(false)) })
     }
 
     /// Runs the loop until `stop`, then ends its steps as the module's doc says, and
@@ -235,8 +265,8 @@ impl SyncPlanTask {
         // The first round is one of a time reached: a plan is made.
         let mut causes = BTreeSet::new();
         loop {
-            self.settle_steps(self.take_ended_steps(), &memories).await;
-            match decide_round(&causes, steps_left_to_start.len(), parts.running_steps.list_steps().len()) {
+            let has_settled_change = self.settle_steps(self.take_ended_steps(), &memories).await;
+            match decide_round(&causes, has_settled_change, steps_left_to_start.len()) {
                 RoundDecision::MakePlan => {
                     let now = (parts.clock)();
                     if now.saturating_sub(old_openings_forgotten_at) >= OLD_OPENINGS_FORGOTTEN_EVERY {
@@ -244,12 +274,13 @@ impl SyncPlanTask {
                         old_openings_forgotten_at = now;
                     }
                     self.apply_wake_causes(&causes).await;
-                    match self.make_plan(self.gather_daemon_facts(&causes)).await {
+                    match self.make_plan(self.gather_daemon_facts()).await {
                         Ok(round) => {
                             let now = (parts.clock)();
                             self.publish_round(&round, parts.sending_holds.find(now).as_ref()).await;
                             // A read of the quota that was due and failed is tried again after a wait, not at once.
-                            let next_quota_read = parts.onedrive_space.find_next_read().map(|at| if at > now { at } else { now.saturating_add(RETRY_AFTER) });
+                            // The steps the last plan left are replaced by this plan's.
+                            let next_quota_read = parts.onedrive_space.find_next_read().map(|at| if at > now { at } else { now.saturating_add(READ_RETRY_WAIT) });
                             next_wake = decide_next_wake(&round.plan, parts.sending_holds.find_end(now), next_quota_read, now);
                             steps_left_to_start = self.start_steps(round.plan.steps, now);
                             memories = round.memories;
@@ -258,7 +289,7 @@ impl SyncPlanTask {
                             tracing::warn!("cannot make the sync plan of {}: {error}", parts.folder.display());
                             steps_left_to_start.clear();
                             // The store could not be read: the plan is tried again by itself.
-                            next_wake = Some((parts.clock)().saturating_add(RETRY_AFTER));
+                            next_wake = Some((parts.clock)().saturating_add(READ_RETRY_WAIT));
                         }
                     }
                 }
@@ -272,6 +303,7 @@ impl SyncPlanTask {
         }
         parts.sending_holds.set_stopping();
         parts.running_steps.abort_requests();
+        // TODO: a step towards the folder waits for the folder's lease and a step of the rows for the tree lock, and a stop aborts neither (the review's Q3): if whoever awaits this holds the lease for writing, or the tree lock, this loop does not end. Check `SyncTasks::stop` and its callers once they are filled, and fix if needed.
         loop {
             self.settle_steps(self.take_ended_steps(), &memories).await;
             if parts.running_steps.count_steps_to_settle() == 0 {
@@ -298,28 +330,32 @@ impl SyncPlanTask {
         }
     }
 
-    /// Applies what a wake's causes ask before the plan is made: a quota read, and a read
-    /// of the quota that is due (`quota_reader`, `OneDriveSpace::apply_quota`, then
-    /// `StepMemory::forget_fitting_space_refusals`);
-    /// the user's refresh (`StepMemory::clear_next_tries`, and
-    /// `LocalStepTries::clear_next_tries` of the task's own); a listing ended
-    /// (`SendingHolds::set_listing_ended`, the count of logged events to 0). And, when
-    /// sending is not held and their lists are not empty: `SessionCancellations::
-    /// cancel_sessions` and `remove_mismatched_items`.
-    async fn apply_wake_causes(&self, causes: &BTreeSet<WakeCause>) {
+    /// Applies what a wake's causes ask before the plan is made: a read of the quota that
+    /// is due (`quota_reader`, `OneDriveSpace::apply_quota`, then
+    /// `StepMemory::forget_fitting_space_refusals`; one that failed is not asked again
+    /// before `READ_RETRY_WAIT` passed); a refresh (`WakeCause::RefreshAsked`:
+    /// `StepMemory::clear_next_tries`, and `LocalStepTries::clear_next_tries` of the
+    /// task's own); a listing ended (`SendingHolds::set_listing_ended`, the count of
+    /// logged events to 0, and the full listings asked for forgotten once the store's
+    /// request has begun). And, when sending is not held: the upload sessions left to
+    /// cancel and the items uploads left are asked for, off the loop
+    /// ([`start_session_cancellations`](Self::start_session_cancellations)).
+    async fn apply_wake_causes(self: &Arc<Self>, causes: &BTreeSet<WakeCause>) {
         let parts = &self.parts;
         let now = (parts.clock)();
+        // TODO: on `WakeCause::QuotaRead` the quota another just read is to be applied (`OneDriveSpace::apply_quota`), with no second request; nothing gives the task that read (`OneDriveSpace` keeps the account's quota to itself). Check who wakes `QuotaRead` and how the figures come here, and fix if needed.
         let is_quota_read_due = parts.onedrive_space.find_next_read().is_some_and(|at| at <= now);
-        if causes.contains(&WakeCause::QuotaRead) || is_quota_read_due {
-            if let Some(quota) = (parts.quota_reader)().await {
-                if let SpaceChange::HasSpace { free_space, .. } = parts.onedrive_space.apply_quota(&quota, now) {
-                    if let Err(error) = parts.store.call(move |store| store.step_memory().forget_fitting_space_refusals(free_space)).await {
-                        tracing::warn!("cannot forget the refusals for lack of space that fit now: {error}");
-                    }
+        let is_retry_due = crate::panic::lock(&self.quota_read_failed_at).is_none_or(|failed_at| now.saturating_sub(failed_at) >= READ_RETRY_WAIT);
+        if is_quota_read_due && is_retry_due {
+            let quota = (parts.quota_reader)().await;
+            *crate::panic::lock(&self.quota_read_failed_at) = quota.is_none().then_some(now);
+            if let Some(SpaceChange::HasSpace { free_space, .. }) = quota.map(|quota| parts.onedrive_space.apply_quota(&quota, now)) {
+                if let Err(error) = parts.store.call(move |store| store.step_memory().forget_fitting_space_refusals(free_space)).await {
+                    tracing::warn!("cannot forget the refusals for lack of space that fit now: {error}");
                 }
             }
         }
-        if causes.contains(&WakeCause::UserAnswered) {
+        if causes.contains(&WakeCause::RefreshAsked) {
             if let Err(error) = parts.store.call(|store| store.step_memory().clear_next_tries()).await {
                 tracing::warn!("cannot make the next tries due: {error}");
             }
@@ -328,42 +364,75 @@ impl SyncPlanTask {
         if causes.contains(&WakeCause::ListingEnded) {
             parts.sending_holds.set_listing_ended();
             self.logged_since_listing_ended.store(0, Ordering::SeqCst);
+            // A request the store still keeps has not begun: the listing that ended is not the one asked for.
+            match parts.store.read_items(|items| items.is_full_listing_requested()).await {
+                Ok(false) => crate::panic::lock(&self.full_listings_asked).clear(),
+                Ok(true) => {}
+                Err(error) => tracing::warn!("cannot read whether a full listing is asked for: {error}"),
+            }
         }
-        if parts.sending_holds.is_held(StepClass::Metadata, (parts.clock)()) {
+        self.start_session_cancellations();
+    }
+
+    /// Cancels the upload sessions left to cancel and removes the items uploads left with
+    /// other content (`SessionCancellations::cancel_sessions`, `remove_mismatched_items`),
+    /// as a task of its own, one at a time: the loop waits for none of these requests.
+    /// It goes on, `SESSION_CANCELLATIONS_AT_ONCE` of each at a time, until both lists
+    /// are empty, sending is held (a stop holds it), or a call got none of its own through:
+    /// what is left then is asked for with the next plan.
+    fn start_session_cancellations(self: &Arc<Self>) {
+        let is_held = |task: &Self| task.parts.sending_holds.is_held(StepClass::Metadata, (task.parts.clock)());
+        if is_held(self) || self.are_session_cancellations_running.swap(true, Ordering::SeqCst) {
             return;
         }
-        let leftovers = parts.store.read_items(|items| Ok((!items.list_upload_session_cancellations(1)?.is_empty(), !items.list_mismatched_item_removals(1)?.is_empty()))).await;
-        match leftovers {
-            Ok((has_cancellations, has_removals)) => {
-                if has_cancellations {
-                    parts.session_cancellations.cancel_sessions(LEFTOVERS_ASKED_AT_ONCE).await;
+        let task = Arc::clone(self);
+        let cancellations = tokio::spawn(async move {
+            while !is_held(&task) {
+                let read = |items: &konedrive_tree::ItemReader<'_>| Ok((items.list_upload_session_cancellations(SESSION_CANCELLATIONS_AT_ONCE)?.len(), items.list_mismatched_item_removals(SESSION_CANCELLATIONS_AT_ONCE)?.len()));
+                let (cancellation_count, removal_count) = match task.parts.store.read_items(read).await {
+                    Ok(counts) => counts,
+                    Err(error) => {
+                        tracing::warn!("cannot read what uploads left to cancel and to remove: {error}");
+                        break;
+                    }
+                };
+                let mut left_count = 0;
+                if cancellation_count > 0 {
+                    left_count += task.parts.session_cancellations.cancel_sessions(SESSION_CANCELLATIONS_AT_ONCE).await;
                 }
-                if has_removals {
-                    parts.session_cancellations.remove_mismatched_items(LEFTOVERS_ASKED_AT_ONCE).await;
+                if removal_count > 0 {
+                    left_count += task.parts.session_cancellations.remove_mismatched_items(SESSION_CANCELLATIONS_AT_ONCE).await;
+                }
+                // TODO: nothing here waits between tries that fail (the review's Q5): a call that gets none through ends this task, and the next plan starts it again, so a session that cannot be cancelled is asked once per plan. Check whether `SessionCancellations` is to keep a next try, and fix if needed.
+                if left_count >= cancellation_count + removal_count {
+                    break;
                 }
             }
-            Err(error) => tracing::warn!("cannot read what uploads left to cancel and to remove: {error}"),
-        }
+        });
+        // The flag is let go whatever ended the task, a panic too.
+        let is_running = Arc::clone(&self.are_session_cancellations_running);
+        tokio::spawn(async move {
+            if let Err(error) = cancellations.await {
+                tracing::warn!("the task that cancels upload sessions ended: {error}");
+            }
+            is_running.store(false, Ordering::SeqCst);
+        });
     }
 
     /// What the daemon knows beside the rows, as values, read now: the items with a
     /// running step (`RunningSteps::list_items`), whether OneDrive is full, the time, the
-    /// destinations of the running steps, the rows the check at start left, a copy of
-    /// the task's tries of the steps towards the folder and of the rows,
-    /// and whether this plan asks the reader that scans (a
-    /// listing's page or the user's answer is among `causes`, or there is no cause: a
-    /// time reached, which the first plan of a run is too). What is open for
+    /// destinations of the running steps, the rows the check at start left, and a copy of
+    /// the task's tries of the steps towards the folder and of the rows. What is open for
     /// writing is NOT gathered here: it is read from the rows of the plan's own moment.
-    fn gather_daemon_facts(&self, causes: &BTreeSet<WakeCause>) -> DaemonFacts {
+    fn gather_daemon_facts(&self) -> DaemonFacts {
         let parts = &self.parts;
+        // TODO: the facts name the running steps alone (the review's Q1). `DaemonFacts` says they hold a request whose answer was lost, and one a stop left, until its item was read from OneDrive: nothing here keeps such an item or its destination once its step ended (`Refused(Transient)` ends it). Check whether `OneDriveSteps` keeps the step running until then, and fix if needed.
         DaemonFacts {
             items_with_running_step: parts.running_steps.list_items(),
             destinations_of_running_steps: parts.running_steps.list_destinations(),
             is_onedrive_full: parts.onedrive_space.is_full(),
             now: (parts.clock)(),
             left_by_start_up_check: parts.start_check.held_items.clone(),
-            // No cause is a time reached, the first plan of a run among them: a pinned file's download waits for such a time.
-            reads_pinned_files: causes.is_empty() || causes.contains(&WakeCause::ListingPageWritten) || causes.contains(&WakeCause::UserAnswered),
             local_step_tries: crate::panic::lock(&self.local_step_tries).clone(),
             settings: parts.settings.clone(),
         }
@@ -393,18 +462,28 @@ impl SyncPlanTask {
     }
 
     /// Hands the steps that ended to the loop, and wakes it (`WakeCause::StepFinished`).
-    /// Called by the task of a step, when its runner answered.
+    /// Called when the task of a step ended: with what its runner answered, or with a
+    /// failure when it answered nothing (`decide_outcome_of_ended_task`).
     fn hand_over_ended_steps(&self, ended: Vec<(SyncStep, StepOutcome)>) {
+        if ended.is_empty() {
+            return;
+        }
         crate::panic::lock(&self.ended_steps).extend(ended);
         self.parts.sync_plan_wake.wake(WakeCause::StepFinished);
     }
 
     /// Starts the steps of `planned` that can start at `now`
     /// (`step_choice::decide_steps_to_start`): the `ShowItem` steps as one task, every
-    /// other as its own. Answers the steps that stay for a later round of this plan.
+    /// other as its own. Answers the steps that stay for a later round of this plan. While
+    /// OneDrive is full no content is sent: the steps of the last plan that send content
+    /// stay, each would be refused in its turn.
     fn start_steps(self: &Arc<Self>, planned: Vec<SyncStep>, now: i64) -> Vec<SyncStep> {
         let parts = &self.parts;
-        let choice = step_choice::decide_steps_to_start(planned, &parts.running_steps.list_steps(), &self.read_step_limits(), &parts.sending_holds.list_held_classes(now));
+        let mut held_classes = parts.sending_holds.list_held_classes(now);
+        if parts.onedrive_space.is_full() {
+            held_classes.insert(StepClass::Content);
+        }
+        let choice = step_choice::decide_steps_to_start(planned, &parts.running_steps.list_steps(), &self.read_step_limits(), &held_classes);
         if !choice.show_steps.is_empty() {
             self.start_show_steps(choice.show_steps);
         }
@@ -425,13 +504,17 @@ impl SyncPlanTask {
         if !self.parts.running_steps.begin(running_step) {
             return;
         }
+        let running = tokio::spawn((self.parts.step_runners.run_step)(step.clone()));
+        self.parts.running_steps.keep_abort_handle(item, running.abort_handle());
+        // Whatever ended the step's task, its outcome is handed over: a panic too.
         let task = Arc::clone(self);
-        let running = (self.parts.step_runners.run_step)(step.clone());
-        let spawned = tokio::spawn(async move {
-            let outcome = running.await;
-            task.hand_over_ended_steps(vec![(step, outcome)]);
+        tokio::spawn(async move {
+            let outcome = match running.await {
+                Ok(outcome) => Some(outcome),
+                Err(error) => decide_outcome_of_ended_task(error.is_cancelled(), format!("the step's task ended: {error}")),
+            };
+            task.hand_over_ended_steps(outcome.map(|outcome| (step, outcome)).into_iter().collect());
         });
-        self.parts.running_steps.keep_abort_handle(item, spawned.abort_handle());
     }
 
     /// Starts the `ShowItem` steps of one plan as ONE task: every item marked running,
@@ -452,17 +535,26 @@ impl SyncPlanTask {
             return;
         }
         let shown_items: Vec<LocalItemId> = started.iter().map(SyncStep::local_item_id).collect();
+        let running = tokio::spawn((self.parts.step_runners.run_show_steps)(items));
+        for item in shown_items {
+            self.parts.running_steps.keep_abort_handle(item, running.abort_handle());
+        }
+        // Whatever ended the task, an outcome of every step is handed over: a panic too.
         let task = Arc::clone(self);
-        let running = (self.parts.step_runners.run_show_steps)(items);
-        let spawned = tokio::spawn(async move {
-            // An outcome the runner did not answer is that of a step that did not run.
-            let mut outcomes = running.await.into_iter();
-            let ended = started.into_iter().map(|step| (step, outcomes.next().unwrap_or(StepOutcome::NotRun(StepObstacle::SendingStopped)))).collect();
+        tokio::spawn(async move {
+            let ended = match running.await {
+                // An outcome the runner did not answer is that of a step that did not run.
+                Ok(outcomes) => {
+                    let mut outcomes = outcomes.into_iter();
+                    started.into_iter().map(|step| (step, outcomes.next().unwrap_or(StepOutcome::NotRun(StepObstacle::SendingStopped)))).collect()
+                }
+                Err(error) => match decide_outcome_of_ended_task(error.is_cancelled(), format!("the task of the show steps ended: {error}")) {
+                    Some(outcome) => started.into_iter().map(|step| (step, outcome.clone())).collect(),
+                    None => Vec::new(),
+                },
+            };
             task.hand_over_ended_steps(ended);
         });
-        for item in shown_items {
-            self.parts.running_steps.keep_abort_handle(item, spawned.abort_handle());
-        }
     }
 
     /// Settles the steps that ended, all that are ready together: for each
@@ -474,10 +566,12 @@ impl SyncPlanTask {
     /// then what they say of all sending applied (`SendingHolds`), the listing asked for
     /// a cycle once when any says so, each step ended (`RunningSteps::end`). The loop
     /// goes on with a round of `WakeCause::StepFinished`. `memories` are those of the
-    /// last plan's round (`PlannedRound::memories`). Nothing for no step.
-    async fn settle_steps(&self, ended: Vec<(SyncStep, StepOutcome)>, memories: &BTreeMap<LocalItemId, ItemMemory>) {
+    /// last plan's round (`PlannedRound::memories`). Answers whether any of the steps
+    /// changed something a plan is made from (`step_settlement::has_changed_anything`):
+    /// what `decide_round` asks. Nothing, and `false`, for no step.
+    async fn settle_steps(&self, ended: Vec<(SyncStep, StepOutcome)>, memories: &BTreeMap<LocalItemId, ItemMemory>) -> bool {
         if ended.is_empty() {
-            return;
+            return false;
         }
         let parts = &self.parts;
         let now = (parts.clock)();
@@ -485,6 +579,7 @@ impl SyncPlanTask {
             let mut local_step_tries = crate::panic::lock(&self.local_step_tries);
             let count_tries = |step: &SyncStep| match LocalStep::of(step) {
                 Some(local_step) => local_step_tries.count_tries(&local_step),
+                // TODO: the count is of the last plan's memories: for a step that ran across a plan in which its item was not given it is 0, and the next try is a second away while the store's own count goes on. Check whether the store's answer of the count (`FailedTryStanding::Counted`) is to set the wait, and fix if needed.
                 None => memories.get(&step.local_item_id()).and_then(|memory| memory.failed_tries.as_ref()).map_or(0, |failed_tries| failed_tries.count),
             };
             let settled: Vec<(SyncStep, StepSettlement)> = ended.iter().map(|(step, outcome)| (step.clone(), step_settlement::decide_step_settlement(step, outcome, count_tries(step), now))).collect();
@@ -506,6 +601,7 @@ impl SyncPlanTask {
             Ok(logged) => {
                 self.logged_since_listing_ended.fetch_add(logged, Ordering::SeqCst);
             }
+            // TODO: when this job fails no try of a step towards OneDrive is counted, and the step is planned again at once. Check whether such steps are to wait, and fix if needed.
             Err(error) => tracing::warn!("cannot write what came of {} steps: {error}", settled.len()),
         }
         for ((_, outcome), (_, settlement)) in ended.iter().zip(&settled) {
@@ -530,14 +626,18 @@ impl SyncPlanTask {
         for (step, _) in &settled {
             parts.running_steps.end(step.local_item_id());
         }
+        ended.iter().zip(&settled).any(|((_, outcome), (_, settlement))| step_settlement::has_changed_anything(outcome, settlement))
     }
 
     /// Publishes what a plan answered: the answers per item (`PublishedPlan::publish`),
-    /// the folder's counts and note on the bus (through `state`, with
-    /// `ItemReader::count_items`), the faults of the plan in the journal, each once;
-    /// `PlanFault::FullListingNeeded` asks the store for a full listing
+    /// the folder's counts (`PlannedRound::item_counts`, of the plan's own reading) and
+    /// note on the bus (through `state`), the faults of the plan in the journal, each
+    /// once. The task is the one owner of the note (`OutboxStatus::note`): it writes it
+    /// with every plan, also to none, and nobody else may. For
+    /// `PlanFault::FullListingNeeded` the store is asked for a full listing
     /// (`ItemStore::request_full_listing`) and then the poller for a cycle
-    /// (`ListingPollHandle::refresh_after_full_listing_request`).
+    /// (`ListingPollHandle::refresh_after_full_listing_request`): once per item until a
+    /// listing asked for it ended, and again when the request failed.
     async fn publish_round(&self, round: &PlannedRound, hold: Option<&SendingHold>) {
         let parts = &self.parts;
         let plan = &round.plan;
@@ -553,31 +653,32 @@ impl SyncPlanTask {
             Some(SendingHold::WritesNotAllowed { reason }) => Some(OutboxNote::GateClosed(reason.clone())),
             Some(SendingHold::Stopping | SendingHold::SignedOut | SendingHold::Paused { .. } | SendingHold::FirstListingNotEnded) | None => None,
         };
-        match parts.store.read_items(|items| items.count_items()).await {
-            Ok(counts) => parts.state.update_if_changed(|state| {
-                state.cycle.items_listed = counts.in_onedrive;
-                state.cycle.items_placed = counts.shown;
-                state.cycle.skipped_count = counts.cannot_be_shown;
-                state.outbox.note = note;
-            }),
-            Err(error) => {
-                tracing::warn!("cannot count the items of {}: {error}", parts.folder.display());
-                parts.state.update_if_changed(|state| state.outbox.note = note);
-            }
-        }
+        let counts = round.item_counts;
+        parts.state.update_if_changed(|state| {
+            state.cycle.items_listed = counts.in_onedrive;
+            state.cycle.items_placed = counts.shown;
+            state.cycle.skipped_count = counts.cannot_be_shown;
+            state.outbox.note = note;
+        });
 
         // Each fault once: not one the plan before answered too.
         let new_faults: Vec<PlanFault> = {
             let mut told_faults = crate::panic::lock(&self.told_faults);
             let new_faults = plan.faults.iter().filter(|fault| !told_faults.contains(fault)).cloned().collect();
-            *told_faults = plan.faults.clone();
+            told_faults.clone_from(&plan.faults);
             new_faults
         };
         for fault in new_faults {
             tracing::warn!("the sync plan of {} is at fault: {fault:?}", parts.folder.display());
-            let PlanFault::FullListingNeeded(item) = fault else { continue };
+        }
+        let asked = crate::panic::lock(&self.full_listings_asked).clone();
+        for item in plan.faults.iter().filter_map(|fault| if let PlanFault::FullListingNeeded(item) = fault { Some(*item) } else { None }).filter(|item| !asked.contains(item)) {
             match parts.store.call(move |store| store.item_store().request_full_listing(FullListingCause::PlanFault(item))).await {
-                Ok(()) => parts.poll.refresh_after_full_listing_request(),
+                Ok(()) => {
+                    crate::panic::lock(&self.full_listings_asked).insert(item);
+                    parts.poll.refresh_after_full_listing_request();
+                }
+                // Not kept as asked: the next plan that answers the fault asks again.
                 Err(error) => tracing::warn!("cannot ask for a full listing for item {item}: {error}"),
             }
         }

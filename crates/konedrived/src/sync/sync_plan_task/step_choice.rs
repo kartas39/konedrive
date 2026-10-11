@@ -11,7 +11,6 @@
 // test: nothing_towards_onedrive_is_started_while_sending_is_held
 // test: a_step_one_of_whose_rows_has_a_running_step_is_not_started
 // test: the_steps_are_started_in_the_order_the_plan_gave_them
-#![allow(dead_code, unused_variables)]
 
 use std::collections::BTreeSet;
 

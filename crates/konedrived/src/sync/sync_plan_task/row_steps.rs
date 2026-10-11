@@ -20,7 +20,6 @@
 // test: the_tree_lock_is_not_held_while_a_file_is_hashed
 // test: an_item_that_gave_its_binding_up_has_no_onedrive_marks_on_disk
 // test: a_content_agreed_on_is_marked_as_the_whole_copy_with_its_ctag
-#![allow(dead_code, unused_variables)]
 
 use std::sync::Arc;
 
@@ -69,10 +68,20 @@ impl RowSteps {
         }
     }
 
+    /// A step that is its commit and nothing else: [`commit`](Self::commit), answered as
+    /// the step's outcome.
+    async fn run_commit_alone(&self, item: LocalItemId, commit: impl FnOnce(&mut ItemStore<'_>) -> Result<StepCommitOutcome, TreeError> + Send + 'static) -> StepOutcome {
+        match self.commit(item, commit).await {
+            Ok(()) => StepOutcome::Written { events: Vec::new() },
+            Err(outcome) => outcome,
+        }
+    }
+
     /// Changes the marks of what `item` has on disk, off the runtime and with no lock. The
     /// row is written by then: a mark that could not be changed is said in the journal,
     /// and the step is done all the same.
     async fn change_marks(&self, item: LocalItemId, change: impl FnOnce(LocalItemId) -> std::io::Result<()> + Send + 'static) {
+        // TODO: a mark that fails here, or a stop between the commit and the mark, is never tried again: the step is written and no plan gives it again (the review's S8). What is missing is a later pass that puts the marks on disk in step with the rows; check and fix if needed.
         match tokio::task::spawn_blocking(move || change(item)).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => tracing::warn!("cannot change the marks of item {item} on disk: {error}"),
@@ -133,19 +142,13 @@ impl RowSteps {
     /// `AgreeOnRemoval`: `commit_agree_on_removal(item)`. Both sides removed the item.
     async fn run_agree_on_removal(&self, item: &ItemVersions) -> StepOutcome {
         let versions = item.clone();
-        match self.commit(item.local_item_id, move |items| items.commit_agree_on_removal(&versions)).await {
-            Ok(()) => StepOutcome::Written { events: Vec::new() },
-            Err(outcome) => outcome,
-        }
+        self.run_commit_alone(item.local_item_id, move |items| items.commit_agree_on_removal(&versions)).await
     }
 
     /// `ForgetSyncedVersion`: `commit_forget_synced_version(item)`.
     async fn run_forget_synced_version(&self, item: &ItemVersions) -> StepOutcome {
         let versions = item.clone();
-        match self.commit(item.local_item_id, move |items| items.commit_forget_synced_version(&versions)).await {
-            Ok(()) => StepOutcome::Written { events: Vec::new() },
-            Err(outcome) => outcome,
-        }
+        self.run_commit_alone(item.local_item_id, move |items| items.commit_forget_synced_version(&versions)).await
     }
 
     /// `HashLocalContent`: with no lock, opens the content the step was planned from
@@ -161,23 +164,19 @@ impl RowSteps {
             Ok(Ok(hash)) => hash,
             Ok(Err(StepTrouble::Obstacle(obstacle))) => return StepOutcome::NotRun(obstacle),
             Ok(Err(StepTrouble::Failure(failure))) => return StepOutcome::Failed(failure),
+            // The hash panicked: a failure, which counts a try, so that the step waits.
+            Err(error) if error.is_panic() => return StepOutcome::Failed(StepFailure::Store { detail: format!("the hash of item {} ended by a panic: {error}", item.local_item_id) }),
             // The hash was aborted with the runtime: nothing was written.
             Err(_) => return StepOutcome::NotRun(StepObstacle::SendingStopped),
         };
         let versions = item.clone();
-        match self.commit(item.local_item_id, move |items| items.commit_hash_local_content(&versions, &hash)).await {
-            Ok(()) => StepOutcome::Written { events: Vec::new() },
-            Err(outcome) => outcome,
-        }
+        self.run_commit_alone(item.local_item_id, move |items| items.commit_hash_local_content(&versions, &hash)).await
     }
 
     /// `AgreeOnPlace`: `commit_agree_on_place(item)`.
     async fn run_agree_on_place(&self, item: &ItemVersions) -> StepOutcome {
         let versions = item.clone();
-        match self.commit(item.local_item_id, move |items| items.commit_agree_on_place(&versions)).await {
-            Ok(()) => StepOutcome::Written { events: Vec::new() },
-            Err(outcome) => outcome,
-        }
+        self.run_commit_alone(item.local_item_id, move |items| items.commit_agree_on_place(&versions)).await
     }
 
     /// `AgreeOnContent`: `commit_agree_on_content(item)`; then the copy on disk marked as

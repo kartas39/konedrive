@@ -28,7 +28,9 @@
 //! | `NotRun(OpenForWriting \| SendingStopped)` | — | — (the close, or the end of the hold, wakes the plan) |
 //! | `NotRun(ContentChanged \| BackingFileMissing \| PlaceHeldOnDisk)` | `remember_failed_try(reason, next)` | the journal: none of them ends by itself |
 //! | `Failed(UndoFailed)` | — | the mount's take-down was asked for by the runner |
-//! | `Failed(_)` | `remember_failed_try(Failed, next)` | the journal |
+//! | `Failed(Store)` | `remember_failed_try(Store, next)` | the journal |
+//! | `Failed(Disk)` | `remember_failed_try(LocalIo, next)` | the journal |
+//! | `Failed(AnswerUnreadable)` | `remember_failed_try(Failed, next)` | the journal |
 //!
 //! **Whose the failed tries are.** `remember_failed_try` in the table is two things, by
 //! the direction of the step. A step towards OneDrive: the store's
@@ -49,7 +51,6 @@
 // test: the_settlements_of_several_steps_are_written_in_one_job
 // test: a_failed_try_of_a_step_towards_onedrive_is_the_stores_and_any_other_the_tasks
 // test: a_step_towards_the_folder_that_is_written_forgets_the_tasks_tries_of_it
-#![allow(dead_code, unused_variables)]
 
 use konedrive_tree::{ActivityKind, ActivityRow, FactStanding, FailedTryStanding, FullListingCause, ItemVersions, LocalItemId, OneDriveStep, Reason, Refusal, RefusedVersion, SpaceRefusal, StepFact, SyncStep, TakenName, TreeError, TreeStore};
 
@@ -61,7 +62,7 @@ use crate::upload::{BACKOFF_FIRST, BACKOFF_MAX};
 /// One write of the step memory, as its operations are named. A fact of a local change
 /// that is not sent — a failed try, a refusal, a refusal for lack of space, a taken name —
 /// is written with the stamp of the versions the step was planned from
-/// (`ItemVersions::unsent_since`, read off the step by `write_step_settlements`), and the
+/// (`ItemVersions::unsent_since`, kept in `StepSettlement::unsent_since`), and the
 /// store keeps it only for a row that still has that stamp. All of them are of a step
 /// towards OneDrive: nothing is written to the store for a step towards the folder or of
 /// the rows that failed ([`LocalStepTriesChange`]).
@@ -260,9 +261,25 @@ pub fn decide_step_settlement(step: &SyncStep, outcome: &StepOutcome, tries: u32
         StepOutcome::NotRun(StepObstacle::ContentChanged) => count_failed_try(&mut settlement, Reason::Changed),
         StepOutcome::NotRun(StepObstacle::BackingFileMissing | StepObstacle::PlaceHeldOnDisk { .. }) => count_failed_try(&mut settlement, Reason::LocalIo),
         StepOutcome::Failed(StepFailure::UndoFailed { .. }) => {}
-        StepOutcome::Failed(_) => count_failed_try(&mut settlement, Reason::Failed),
+        StepOutcome::Failed(StepFailure::Store { .. }) => count_failed_try(&mut settlement, Reason::Store),
+        StepOutcome::Failed(StepFailure::Disk { .. }) => count_failed_try(&mut settlement, Reason::LocalIo),
+        StepOutcome::Failed(StepFailure::AnswerUnreadable { .. }) => count_failed_try(&mut settlement, Reason::Failed),
     }
     settlement
+}
+
+/// Whether what came of a step changed anything a plan is made from: the step was
+/// written, its commit found the rows changed, OneDrive refused it (a try counted, a fact
+/// kept, a hold set, OneDrive full), a try was counted, a cycle was asked for. A step
+/// that did not run for a cause that ends by itself, and one whose undo failed, changed
+/// nothing: the plan made after it would be the plan before it. What the plan's task
+/// asks before it makes a plan for finished steps alone (`decide_round`). Pure.
+pub fn has_changed_anything(outcome: &StepOutcome, settlement: &StepSettlement) -> bool {
+    matches!(outcome, StepOutcome::Written { .. } | StepOutcome::RowsChanged(_) | StepOutcome::Refused(_))
+        || !settlement.memory.is_empty()
+        || settlement.local_step_tries != LocalStepTriesChange::Nothing
+        || settlement.cycle != CycleRequest::None
+        || settlement.hold.is_some()
 }
 
 /// Applies what the settlements of `ended` say of the task's own tries, each to the step
@@ -288,35 +305,19 @@ pub fn change_local_step_tries(tries: &mut LocalStepTries, ended: &[(SyncStep, S
 /// of what OneDrive changed were logged. `now` is the time the events are logged with. A
 /// refusal for good is logged here, once per reason, with the item's path as the rows
 /// say it now. A fact the row does not say any more is not written
-/// (`FactStanding::VersionGone`): the item changed since, and the next plan decides.
+/// (`FactStanding::VersionGone`): the item changed since, and the next plan decides. A
+/// write the store refuses — an item whose row went — is said in the journal and is that
+/// item's alone: the other writes and every event are written all the same.
 /// Called by `SyncPlanTask::settle_steps`.
 pub fn write_step_settlements(store: &mut TreeStore, settlements: &[StepSettlement], folder: &std::path::Path, logged_since_listing_ended: usize, now: i64) -> Result<usize, TreeError> {
     let mut events = Vec::new();
     let mut logged_count = 0;
     for settlement in settlements {
-        let (item, unsent_since) = (settlement.item, settlement.unsent_since);
         for write in &settlement.memory {
-            match write {
-                MemoryWrite::FailedTry { reason, next_try_at } => {
-                    // A try that was not counted is of another unsent change by now: the next plan decides.
-                    let _: FailedTryStanding = store.step_memory().remember_failed_try(item, unsent_since, reason, *next_try_at)?;
-                }
-                MemoryWrite::Refusal(refusal) => {
-                    // The event, once per reason: not for a refusal the item is kept with already.
-                    let is_kept_already = store.step_memory().find_item_memory(item)?.refusal.is_some_and(|kept| kept.reason == refusal.reason);
-                    let standing = store.step_memory().remember_refusal(item, unsent_since, refusal)?;
-                    if standing == FactStanding::StillSaid && !is_kept_already {
-                        let path = store.read_items(|items| items.find_path(item))?.unwrap_or_default();
-                        events.push(ActivityRow { at: now, kind: ActivityKind::UploadFailed, path: folder.join(path).to_string_lossy().into_owned(), detail: refusal.reason.to_string() });
-                    }
-                }
-                MemoryWrite::SpaceRefusal(space_refusal) => {
-                    let _: FactStanding = store.step_memory().remember_space_refusal(item, unsent_since, space_refusal)?;
-                }
-                MemoryWrite::TakenName(taken_name) => {
-                    let _: FactStanding = store.step_memory().remember_taken_name(item, unsent_since, taken_name)?;
-                }
-                MemoryWrite::Forget(fact) => store.step_memory().forget_fact(item, *fact)?,
+            // A write the store refuses is that item's alone: an item whose row went has nothing to remember.
+            match write_memory(store, settlement, write, folder, now) {
+                Ok(event) => events.extend(event),
+                Err(error) => tracing::warn!("cannot keep {write:?} of item {}: {error}", settlement.item),
             }
         }
         for event in decide_events_to_log(&settlement.events, logged_since_listing_ended + logged_count) {
@@ -331,4 +332,34 @@ pub fn write_step_settlements(store: &mut TreeStore, settlements: &[StepSettleme
         store.add_activity(&events)?;
     }
     Ok(logged_count)
+}
+
+/// Writes one `write` of `settlement` into the step memory, and answers the event a
+/// refusal for good is logged with, once per reason: none for a refusal the item is kept
+/// with already, and none for one the row does not say any more.
+fn write_memory(store: &mut TreeStore, settlement: &StepSettlement, write: &MemoryWrite, folder: &std::path::Path, now: i64) -> Result<Option<ActivityRow>, TreeError> {
+    let (item, unsent_since) = (settlement.item, settlement.unsent_since);
+    match write {
+        MemoryWrite::FailedTry { reason, next_try_at } => {
+            // A try that was not counted is of another unsent change by now: the next plan decides.
+            let _: FailedTryStanding = store.step_memory().remember_failed_try(item, unsent_since, reason, *next_try_at)?;
+        }
+        MemoryWrite::Refusal(refusal) => {
+            let is_kept_already = store.step_memory().find_item_memory(item)?.refusal.is_some_and(|kept| kept.reason == refusal.reason);
+            let standing = store.step_memory().remember_refusal(item, unsent_since, refusal)?;
+            if standing == FactStanding::StillSaid && !is_kept_already {
+                // An item removed here has no local place: its path is the one agreed on.
+                let path = store.read_items(|items| Ok(items.find_path(item)?.or(items.find_synced_path(item)?)))?.unwrap_or_default();
+                return Ok(Some(ActivityRow { at: now, kind: ActivityKind::UploadFailed, path: folder.join(path).to_string_lossy().into_owned(), detail: refusal.reason.to_string() }));
+            }
+        }
+        MemoryWrite::SpaceRefusal(space_refusal) => {
+            let _: FactStanding = store.step_memory().remember_space_refusal(item, unsent_since, space_refusal)?;
+        }
+        MemoryWrite::TakenName(taken_name) => {
+            let _: FactStanding = store.step_memory().remember_taken_name(item, unsent_since, taken_name)?;
+        }
+        MemoryWrite::Forget(fact) => store.step_memory().forget_fact(item, *fact)?,
+    }
+    Ok(None)
 }

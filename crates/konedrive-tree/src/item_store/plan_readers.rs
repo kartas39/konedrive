@@ -51,8 +51,8 @@ impl ItemReader<'_> {
     }
 
     /// As `ItemStore::list_pinned_files_to_download`. Reads every row below a pinned
-    /// directory: the plan's task asks it only when a pin or a listing's page changed
-    /// what it answers (`WakeCause::UserAnswered`, `ListingPageWritten`). No index makes
+    /// directory, and the plan's task asks it with every plan: a plan that left the pinned
+    /// files out would drop the downloads the last one planned. No index makes
     /// it cheap: a pin holds for what is below it by the places in the folder, which
     /// change with every move, so a row cannot keep "a pin holds for me" without every
     /// move of a directory rewriting all that is below it.
