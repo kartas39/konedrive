@@ -118,7 +118,8 @@ impl ItemRangeFetcher {
                 tracing::info!("a range of item {item} was not fetched: OneDrive does not have the content that was opened: {detail}");
                 return Err(RangeRefusal::AnotherContent);
             }
-            Err(SourceError::Transient(detail)) => {
+            // A sign-out and a throttle are no other content: the read fails, and is asked again.
+            Err(SourceError::Transient(detail) | SourceError::SignedOut(detail) | SourceError::Throttled { detail, .. }) => {
                 tracing::warn!("a range of item {item} was not fetched: {detail}");
                 return Err(RangeRefusal::Failed { errno: libc::EIO });
             }

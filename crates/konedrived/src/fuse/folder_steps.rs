@@ -108,7 +108,7 @@ use konedrive_tree::{
 };
 
 use super::backing_directory::EntryKind;
-use super::item_announcements::ItemAnnouncement;
+use super::item_announcements::{describe_move, ItemAnnouncement};
 use super::item_download_landing::ItemLandingOutcome;
 use super::item_download_states::ItemDownloadStates;
 use super::item_downloader::{DownloadRefusal, ItemDownloader, ItemToDownload};
@@ -460,7 +460,7 @@ impl FolderSteps {
             Err(outcome) => return outcome,
         };
         let (id, to) = (rows.row.local_item_id, rows.destination.map(|(to, _)| to).unwrap_or_default());
-        self.inotify_bridge.announce(vec![ItemAnnouncement::Vanished { item: id, former_place: rows.place, kind: rows.row.kind }, ItemAnnouncement::Appeared { item: id, place: place.clone() }]);
+        self.inotify_bridge.announce(describe_move(id, rows.row.kind, rows.place, place.clone()));
         StepOutcome::Written { events: vec![StepEvent { kind, path: to, former_path: Some(rows.path) }] }
     }
 

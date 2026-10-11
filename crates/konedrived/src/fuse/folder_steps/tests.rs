@@ -168,7 +168,10 @@ fn run_in_halves(fixture: &ItemFixture, steps: &Arc<FolderSteps>, step: &FolderS
             FolderStep::MoveItem { .. } => Box::new(move |store, record| store.item_store().commit_move_item(&item, false, record)),
             FolderStep::TakeMoveBack { .. } => Box::new(move |store, record| store.item_store().commit_take_move_back(&item, false, record)),
             FolderStep::MoveToTemporaryName { place, .. } => Box::new(move |store, record| store.item_store().commit_move_to_temporary_name(&item, &place, false, record)),
-            FolderStep::RenameToConflictCopy { name, .. } => Box::new(move |store, record| store.item_store().commit_rename_to_conflict_copy(&item, &name, upload_rules.is_name_ignored(&name)).inspect(|_| drop(record))),
+            FolderStep::RenameToConflictCopy { name, .. } => {
+                let conflict = ConflictRow { at: 0, original: "a.txt".into(), rescued: "the copy".into(), kind: ConflictKind::Copy };
+                Box::new(move |store, record| store.item_store().commit_rename_to_conflict_copy_on_record(&item, &name, upload_rules.is_name_ignored(&name), &conflict, record))
+            }
             FolderStep::RemoveItem { .. } => Box::new(move |store, record| store.item_store().commit_remove_item(&item, record)),
             FolderStep::TakeOneDriveContent { .. } => Box::new(move |store, record| store.item_store().commit_take_onedrive_content(&item, record)),
             FolderStep::ShowItem { .. } | FolderStep::DownloadContent { .. } => unreachable!(),

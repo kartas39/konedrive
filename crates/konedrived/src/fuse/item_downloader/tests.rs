@@ -295,7 +295,9 @@ fn the_file_is_synced_before_the_landing_job_is_queued() {
     let source = HeldSource::open(&fixture);
     let downloader = make_downloader(&fixture, &source);
     let (let_thread_go, thread_held) = mpsc::channel::<()>();
-    fixture.write_operation_thread.run(move || drop(thread_held.recv()));
+    fixture.write_operation_thread.run(move || {
+        let _ = thread_held.recv();
+    });
 
     let heard = ask(&downloader, &shown, DownloadAsker::Read);
     wait_until("the landing's job is queued", || fixture.write_operation_thread.count_queued_jobs() == 1);
