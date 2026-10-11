@@ -26,7 +26,10 @@ async fn main() -> anyhow::Result<()> {
         let folders = konedrived::mount::tidy_served_folders(&Paths::from_xdg()?.config_file);
         // A file manager that showed the mount reads the folder on disk now.
         let directories = folders.iter().flat_map(|folder| konedrived::mount::list_directories(folder)).collect();
-        konedrived::desktop::dirnotify::read_again(directories).await;
+        // The tidy step has no daemon's connection: it opens the session bus itself, and with none says nothing.
+        if let Ok(connection) = zbus::Connection::session().await {
+            konedrived::desktop::dirnotify::read_again(&connection, directories).await;
+        }
         return Ok(());
     }
     tracing_subscriber::fmt()
@@ -69,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
     tasks.spawn("the network's watcher", stop::Need::WhileItCan, konedrived::conditions::network::watch(Arc::clone(&registry)));
 
     tracing::info!("konedrived ready");
-    let _connection = daemon.connection;
+    let connection = daemon.connection;
     // A signal stops the daemon; so does the end of a task it cannot work without, and then
     // it leaves with a failure, for systemd to start it again (`Restart=on-failure`).
     let code = match stop::stopped(signals.next(), &mut tasks).await {
@@ -107,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
     // Last: whoever showed a mount that is gone is told to read the folder on disk.
     let ended: Vec<std::path::PathBuf> = std::mem::take(&mut *konedrived::panic::lock(&ended));
     for folder in ended {
-        konedrived::desktop::dirnotify::read_again(konedrived::mount::list_directories(&folder)).await;
+        konedrived::desktop::dirnotify::read_again(&connection, konedrived::mount::list_directories(&folder)).await;
     }
     // Not through the runtime's drop, which would wait for blocking tasks.
     std::process::exit(code)

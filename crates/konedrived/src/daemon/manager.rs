@@ -132,6 +132,8 @@ pub struct AccountManager {
     /// The accounts as their folders see each other. It is written only here, by
     /// [`list`](Self::list) and [`unlist`](Self::unlist), with `accounts`.
     registry: Arc<Registry>,
+    /// The daemon's connection to the session bus, given to every account's folder.
+    desktop_bus: Option<Connection>,
     siblings: Arc<Siblings>,
     accounts: Mutex<Vec<Arc<Account>>>,
     /// The sign-ins of `Accounts.SignIn`: the one under way belongs to no account, and is
@@ -145,13 +147,18 @@ pub struct AccountManager {
 impl AccountManager {
     /// The registry takes the hold's settings from `config` now, before any account is
     /// listed.
-    pub fn new(config: Arc<ConfigStore>, paths: Paths, options: Options, registry: Arc<Registry>) -> Arc<Self> {
+    ///
+    /// `desktop_bus` is the daemon's connection to the session bus, which every account's
+    /// folder tells the desktop's programs on (`Wiring::desktop_bus`); with none they are told
+    /// nothing.
+    pub fn new(config: Arc<ConfigStore>, paths: Paths, options: Options, registry: Arc<Registry>, desktop_bus: Option<Connection>) -> Arc<Self> {
         registry.set_hold_settings(HoldSettings::of(&config.snapshot()));
         Arc::new(Self {
             config,
             paths,
             options,
             registry,
+            desktop_bus,
             siblings: Arc::new(Siblings::default()),
             accounts: Mutex::new(Vec::new()),
             sign_ins: Mutex::new(SignIns::default()),
@@ -278,6 +285,7 @@ impl AccountManager {
         let sync = SyncService::new(Wiring {
             onedrive,
             baloo: (self.options.baloo)(),
+            desktop_bus: self.desktop_bus.clone(),
             transfers: Transfers { ceiling: config.transfer_ceiling(), large: config.transfer_large(), download_after: config.download_after() },
             ..Wiring::new(Arc::clone(&self.registry), Arc::clone(&account) as Arc<dyn crate::account::FolderAccount>, persist)
         });

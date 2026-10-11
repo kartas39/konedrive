@@ -297,12 +297,14 @@ impl SyncService {
             }
             me.report.space.kick();
             // The folder's directories show the backing directory now: whoever lists one lists it again.
-            let folder = root.path.clone();
-            tokio::spawn(async move {
-                if let Ok(directories) = tokio::task::spawn_blocking(move || crate::mount::list_directories(&folder)).await {
-                    crate::desktop::dirnotify::read_again(directories).await;
-                }
-            });
+            if let Some(desktop_bus) = me.wiring.desktop_bus.clone() {
+                let folder = root.path.clone();
+                tokio::spawn(async move {
+                    if let Ok(directories) = tokio::task::spawn_blocking(move || crate::mount::list_directories(&folder)).await {
+                        crate::desktop::dirnotify::read_again(&desktop_bus, directories).await;
+                    }
+                });
+            }
             next_try_at.is_some()
         };
         if is_tried_again {

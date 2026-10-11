@@ -268,7 +268,7 @@ pub fn parts(service: &SyncService) -> Parts {
 
 /// A [`Wiring`] of fakes, part by part; what is not said is: a registry of the service's
 /// own, a signed-in read-only account, a `config.toml` in a temporary directory
-/// of its own, no drive (no folder can be registered), no Baloo, the default schedule, the
+/// of its own, no drive (no folder can be registered), no Baloo, no bus to tell the desktop on, the default schedule, the
 /// real source behind its switch, and the system's clock.
 #[derive(Default)]
 pub struct Builder {
@@ -279,6 +279,7 @@ pub struct Builder {
     baloo: Option<Baloo>,
     schedule: Option<Schedule>,
     clock: Option<Arc<ManualClock>>,
+    desktop_bus: Option<zbus::Connection>,
 }
 
 /// Starts a [`Builder`].
@@ -327,6 +328,13 @@ impl Builder {
         self
     }
 
+    /// The desktop's programs are told on `connection`, a private bus of the test's: without
+    /// it the service tells the desktop nothing.
+    pub fn desktop_bus(mut self, connection: zbus::Connection) -> Self {
+        self.desktop_bus = Some(connection);
+        self
+    }
+
     /// The service, made with all of it and added to its registry, as the account manager
     /// adds the daemon's. [`parts`] finds what it was made with.
     pub fn build(self) -> Arc<SyncService> {
@@ -354,6 +362,7 @@ impl Builder {
         if let Some(schedule) = self.schedule {
             wiring.schedule = schedule;
         }
+        wiring.desktop_bus = self.desktop_bus;
         if let Some(clock) = &self.clock {
             wiring.clock = Arc::clone(clock) as Arc<dyn Clock>;
         }

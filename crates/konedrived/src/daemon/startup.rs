@@ -81,7 +81,7 @@ pub async fn start_on(
     let config = Arc::new(ConfigStore::open(&paths, legacy_token).await);
     crate::config::migrate::finish_file_moves(&config, &paths);
     crate::config::migrate::move_hold_settings(&config);
-    let manager = AccountManager::new(config, paths, options, registry);
+    let manager = AccountManager::new(config, paths, options, registry, Some(connection.clone()));
     manager.load().await;
     serve(&connection, &manager).await?;
     manager.resume_all().await;

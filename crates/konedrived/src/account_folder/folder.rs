@@ -406,9 +406,7 @@ impl<'a> Stopped<'a> {
     /// came, or shows other modes now.
     pub fn read_again(&mut self) {
         self.told = true;
-        if let (Some(store), Some(record)) = (self.folder.store(), self.folder.record()) {
-            tokio::spawn(crate::desktop::dirnotify::read_folder_again(store, record.root.path.clone()));
-        }
+        self.service.tell_desktop_to_read_folder_again(&self.folder);
     }
 
     /// Whether the folder's mount takes changes now.
@@ -565,9 +563,7 @@ impl Drop for HeldFolder<'_> {
         // read it again, as a `Stopped` does: the modes its mount shows are others.
         let is_writable = self.folder.mount().is_some_and(|mount| mount.access_mode_switch().is_read_write());
         if is_writable != self.was_writable {
-            if let (Some(store), Some(record)) = (self.folder.store(), self.folder.record()) {
-                tokio::spawn(crate::desktop::dirnotify::read_folder_again(store, record.root.path.clone()));
-            }
+            self.service.tell_desktop_to_read_folder_again(&self.folder);
         }
         self.service.publish(&self.folder, |_| {});
     }
@@ -671,6 +667,15 @@ impl SyncService {
                 let mut stopped = service.change().await;
                 service.start_again(&mut stopped).await;
             });
+        }
+    }
+
+    /// Tells the desktop's programs to read the directories `folder` shows again, in a task of its own, on the
+    /// bus the service was made with (`Wiring::desktop_bus`); nothing with none, and nothing for a folder that
+    /// keeps no open store to read its directories from.
+    fn tell_desktop_to_read_folder_again(&self, folder: &Folder) {
+        if let (Some(desktop_bus), Some(store), Some(record)) = (self.wiring.desktop_bus.clone(), folder.store(), folder.record()) {
+            tokio::spawn(crate::desktop::dirnotify::read_folder_again(desktop_bus, store, record.root.path.clone()));
         }
     }
 

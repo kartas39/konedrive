@@ -178,3 +178,72 @@ async fn the_second_door_changes_the_wanted_mode_and_publishes_it() {
     assert_eq!(service.mode(), crate::config::Mode::ReadWrite, "published when the door is let go of");
     assert!(read_sync(&service, |folder| matches!(folder.up().map(|up| &up.sync), Some(Sync::Stopped(Why::NotStarted)))).await, "the sync is not touched");
 }
+
+/// The file URL of a directory as `desktop::dirnotify` says it: no slash at its end.
+fn directory_url(directory: &std::path::Path) -> String {
+    url::Url::from_directory_path(directory).unwrap().as_str().trim_end_matches('/').to_owned()
+}
+
+/// A change that leaves the folder's mount taking changes where it took none has the
+/// desktop's programs read the folder's directories again: `FilesAdded` of
+/// `org.kde.KDirNotify` for the folder and each directory it shows, on the bus the service
+/// was made with — here a private one, which another connection of it listens on.
+#[test]
+fn a_change_of_the_mounts_access_mode_tells_the_desktop_on_the_bus_the_service_was_given() {
+    use futures_util::StreamExt;
+
+    let bus = konedrive_dbus::testing::TestBus::start();
+    let fixture = ItemFixture::new();
+    fixture.show_onedrive_directory("docs");
+    fixture.runtime().block_on(async {
+        let listener = bus.connect().await;
+        let rule = zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal).interface("org.kde.KDirNotify").unwrap().member("FilesAdded").unwrap().build();
+        let mut told = zbus::MessageStream::for_match_rule(rule, &listener, None).await.unwrap();
+
+        let clock = crate::account_folder::testing::ManualClock::at(crate::account_folder::staged_folder::START);
+        let service = crate::account_folder::testing::wiring().clock(&clock).desktop_bus(bus.connect().await).build();
+        let kept = make_kept_parts(&fixture);
+        let mount = Arc::clone(&kept.mount);
+        stage_folder(&service, &fixture.folder(), Sync::Stopped(Why::NotStarted), Some(kept)).await;
+        assert!(!mount.access_mode_switch().is_read_write());
+
+        // The account turned read-write: the kept mount is switched, behind the second door.
+        crate::account_folder::testing::parts(&service).account.state().update(|s| s.mode = crate::config::Mode::ReadWrite);
+        service.follow_mode(crate::config::Mode::ReadWrite).await;
+        assert!(mount.access_mode_switch().is_read_write());
+
+        let mut urls = Vec::new();
+        for _ in 0..2 {
+            // The bound is the test's own guard against a signal that never comes, not a wait.
+            let message = tokio::time::timeout(std::time::Duration::from_secs(30), told.next()).await.expect("the desktop is told").unwrap().unwrap();
+            let (url,): (String,) = message.body().deserialize().unwrap();
+            urls.push(url);
+        }
+        assert_eq!(urls, [directory_url(&fixture.folder()), directory_url(&fixture.folder().join("docs"))], "the folder first, then what it shows");
+
+        let kept = service.folder.write().await.record_mut().and_then(|record| record.kept.parts.take());
+        service.view.send_replace(View::default());
+        tokio::task::spawn_blocking(move || drop((kept, mount))).await.unwrap();
+    });
+}
+
+/// A service made with no bus tells the desktop nothing and reaches no bus by itself: the
+/// same change is made and published, and that is all of it.
+#[test]
+fn a_service_with_no_bus_changes_the_access_mode_and_tells_nobody() {
+    let fixture = ItemFixture::new();
+    fixture.runtime().block_on(async {
+        let (service, _clock) = make_service();
+        assert!(service.wiring.desktop_bus.is_none());
+        let kept = make_kept_parts(&fixture);
+        let mount = Arc::clone(&kept.mount);
+        stage_folder(&service, &fixture.folder(), Sync::Stopped(Why::NotStarted), Some(kept)).await;
+        crate::account_folder::testing::parts(&service).account.state().update(|s| s.mode = crate::config::Mode::ReadWrite);
+        service.follow_mode(crate::config::Mode::ReadWrite).await;
+        assert!(mount.access_mode_switch().is_read_write() && service.writable());
+
+        let kept = service.folder.write().await.record_mut().and_then(|record| record.kept.parts.take());
+        service.view.send_replace(View::default());
+        tokio::task::spawn_blocking(move || drop((kept, mount))).await.unwrap();
+    });
+}

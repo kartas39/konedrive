@@ -18,14 +18,11 @@ const MOST: usize = 20_000;
 /// How many directories one read of the store answers.
 const DIRECTORIES_READ_AT_ONCE: usize = 1000;
 
-/// Asks whoever lists one of `directories` to list it again. Best effort: with no session bus
-/// nothing is said.
-pub async fn read_again(directories: Vec<PathBuf>) {
-    // A test build tells nobody: no test reaches the session bus.
-    if cfg!(test) {
-        return;
-    }
-    let Ok(connection) = zbus::Connection::session().await else { return };
+/// Asks whoever lists one of `directories` to list it again, on `connection`: the session bus
+/// of whoever calls — the daemon's own connection, which the folder's service was made with,
+/// or the one `main` opens for the tidy step. This opens none itself. Best effort: a signal
+/// that cannot be sent ends it.
+pub async fn read_again(connection: &zbus::Connection, directories: Vec<PathBuf>) {
     for directory in directories {
         let Ok(url) = url::Url::from_directory_path(&directory) else { continue };
         // As KIO writes a directory: no slash at its end.
@@ -39,7 +36,7 @@ pub async fn read_again(directories: Vec<PathBuf>) {
 
 /// [`read_again`] for the folder at `folder` and every directory `store` names in it: after
 /// its mount came, or the modes its mount shows changed.
-pub async fn read_folder_again(store: Store, folder: PathBuf) {
+pub async fn read_folder_again(connection: zbus::Connection, store: Store, folder: PathBuf) {
     let mut directories = Vec::new();
     let mut after = None;
     while directories.len() < MOST {
@@ -55,5 +52,5 @@ pub async fn read_folder_again(store: Store, folder: PathBuf) {
         directories.extend(page.into_iter().map(|(_, path)| folder.join(path)));
     }
     directories.truncate(MOST);
-    read_again(directories).await;
+    read_again(&connection, directories).await;
 }

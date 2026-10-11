@@ -99,6 +99,10 @@ pub struct Wiring {
     pub sources: Arc<dyn Sources>,
     /// The clock the account's pause is kept by.
     pub clock: Arc<dyn Clock>,
+    /// The bus the desktop's programs are told on to read the folder's directories again
+    /// (`desktop::dirnotify`): the daemon's own connection to the session bus. `None`: the
+    /// service tells the desktop nothing, and reaches no bus by itself.
+    pub desktop_bus: Option<zbus::Connection>,
 }
 
 impl Wiring {
@@ -116,6 +120,7 @@ impl Wiring {
             transfers: Transfers::default(),
             sources: Arc::new(RealSources),
             clock: Arc::new(SystemClock),
+            desktop_bus: None,
         }
     }
 }
