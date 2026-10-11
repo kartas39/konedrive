@@ -156,6 +156,16 @@ kill_service() {
     exec 8>&-
 }
 
+# The service stopped as the daemon is stopped, by SIGTERM: how it says its stop ended
+# (`Finished`, or `Bound` when the stop's bound passed first); nothing when it did not end.
+stop_service() {
+    kill -TERM "$SERVICE_PID"
+    wait_for 20 service_has_ended
+    wait "$SERVICE_PID" 2> /dev/null
+    exec 8>&-
+    sed -n 's/^stopped: //p' "$LOGS/service.out"
+}
+
 # What the unit runs after the daemon's end: the dead mount goes and the folder is locked.
 tidy_folder_at_once() { $U "$bin/fuse-service" --tidy "$F"; }
 

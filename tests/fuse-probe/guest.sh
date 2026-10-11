@@ -3,16 +3,17 @@
 # the daemon and every program as uid 1000. Usage: guest.sh <bin-dir> [<group>…]
 #
 # The groups: `service`, the daemon's service command by command, whose lines are read by a
-# person; `file_writes`, `file_reads` and `daemon_restarts` (a file each), scenarios with
-# checks; `cli`, `konedrivectl`'s tests of a mounted folder. ONLY, when set, names the
+# person; `mounted_folder`, `file_writes`, `file_reads` and `daemon_restarts` (a file each),
+# scenarios with checks; `cli`, `konedrivectl`'s tests of a mounted folder. ONLY, when set, names the
 # scenarios to run of the groups asked for.
 set -u
 bin=$1
 shift
-tests=${*:-service file_writes file_reads daemon_restarts cli}
+tests=${*:-service mounted_folder file_writes file_reads daemon_restarts cli}
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/scenario_checks.sh"
 . "$here/scenario_folder.sh"
+. "$here/mounted_folder.sh"
 . "$here/file_writes.sh"
 . "$here/file_reads.sh"
 . "$here/daemon_restarts.sh"
