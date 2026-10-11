@@ -12,6 +12,7 @@ use super::*;
 use crate::sync_parts::running_steps::{RunningStep, StepClass};
 use crate::mount::item_fixture::ItemFixture;
 use crate::content_source::source::{Fetched, SourceError};
+use crate::status::transfers::Transfer;
 
 /// A content source the test holds: it answers through the fixture's, when the test lets
 /// it, or what the test says it refuses.
@@ -969,7 +970,6 @@ fn a_failure_that_stands_for_a_content_onedrive_stated_another_one_for_is_told_o
     let announced_before = count_announcements();
     let told = || (count_events(EventKind::Failed), count_announcements() - announced_before);
     let read = || hear(ask(&downloader, &shown, DownloadAsker::Read));
-    let transfers = report.transfers.subscribe();
 
     // OneDrive states another content: told, and remembered.
     assert_eq!(read(), Err(libc::ESTALE));
@@ -998,7 +998,7 @@ fn a_failure_that_stands_for_a_content_onedrive_stated_another_one_for_is_told_o
     source.refuse(Some(|| SourceError::NotFound("404".into())));
     assert_eq!((read(), read()), (Err(libc::ESTALE), Err(libc::ESTALE)));
     assert_eq!(told(), (4, 5));
-    assert!(!transfers.has_changed().unwrap(), "none of these downloads was a transfer");
+    assert_eq!(report.transfers.list(), [], "none of these downloads left an entry of `Transfers`");
 
     // OneDrive states the asked content again: told as any download.
     source.refuse(None);
@@ -1019,12 +1019,11 @@ fn a_content_onedrive_keeps_stating_another_one_for_is_told_once() {
     let count_events = |kind: EventKind| report.activity.recent(100).expect("the activity kept in memory").iter().filter(|event| event.kind == kind).count();
     let count_announcements = || fixture.inotify_bridge.list_queued().iter().flatten().filter(|announcement| matches!(announcement, ItemAnnouncement::ContentChanged { item: announced, .. } if *announced == item)).count();
     let announced_before = count_announcements();
-    let transfers = report.transfers.subscribe();
 
     // The first time the content is found to be another one: everything is told.
     assert_eq!(hear(ask(&downloader, &shown, DownloadAsker::Read)), Err(libc::ESTALE));
     assert_eq!((count_events(EventKind::Failed), count_announcements() - announced_before), (1, 2));
-    assert!(!transfers.has_changed().unwrap(), "no answer was accepted: nothing was transferred, and nothing shown as a transfer");
+    assert_eq!(report.transfers.list(), [], "no answer was accepted: nothing is left shown as a transfer");
 
     // Each read asks OneDrive anew, which states the same: nothing changed to be told.
     for _read in 0..3 {
@@ -1032,12 +1031,85 @@ fn a_content_onedrive_keeps_stating_another_one_for_is_told_once() {
     }
     assert!(fixture.download_states.is_another_content(&key_of(&shown)));
     assert_eq!((count_events(EventKind::Failed), count_announcements() - announced_before), (1, 2), "the failure and the announcements of the first download only");
-    assert!(!transfers.has_changed().unwrap(), "no entry of `Transfers`, not even for the time of the asking");
+    assert_eq!(report.transfers.list(), [], "no entry of `Transfers` is left of an asking");
 
     // OneDrive states the asked content again: the download is told as any is, from its
     // first answer on.
     fixture.serve_content(item, b"the report");
     assert_eq!(hear(ask(&downloader, &shown, DownloadAsker::Read)), Ok(()));
     assert_eq!((count_events(EventKind::Failed), count_events(EventKind::Downloaded), count_announcements() - announced_before), (1, 1, 3));
-    assert!(transfers.has_changed().unwrap(), "a download OneDrive answers with the asked content is shown");
+    assert_eq!(report.transfers.list(), [], "landed: shown no more");
+}
+
+/// `Transfers` shows a download for exactly as long as it holds its slot of the pool.
+#[test]
+fn a_download_is_shown_from_its_slot_to_its_landing() {
+    let fixture = ItemFixture::new();
+    let shown = fixture.show_onedrive_file("report.txt", b"the report");
+    let (source, report) = (HeldSource::held(&fixture), make_report(&fixture));
+    let (downloader, _) = make_downloader_reporting_to(&fixture, Arc::clone(&source) as Arc<dyn ContentSource>, report.clone());
+    let path = fixture.folder().join("report.txt").display().to_string();
+    let entry = |done: u64, open: bool| vec![Transfer { path: path.clone(), done, total: 10, open }];
+    let held = || fixture.pool.held(Class::Open) + fixture.pool.held(Class::Download);
+
+    // The slot is held and OneDrive has answered nothing yet: shown, by the row's size.
+    let heard = ask(&downloader, &shown, DownloadAsker::Read);
+    wait_until_it_writes(&fixture, &shown);
+    assert_eq!((held(), report.transfers.list()), (1, entry(0, true)), "shown before the first answer");
+
+    // The bytes are all here and the landing waits for the write-operation thread: shown.
+    let (let_thread_go, thread_held) = mpsc::channel::<()>();
+    let (tell_taken, thread_taken) = mpsc::channel::<()>();
+    fixture.write_operation_thread.run(move || {
+        let _ = tell_taken.send(());
+        let _ = thread_held.recv();
+    });
+    thread_taken.recv().expect("the thread took the job that holds it");
+    source.let_go();
+    wait_until("the landing's job is queued", || fixture.write_operation_thread.count_queued_jobs() == 1);
+    assert_eq!((held(), report.transfers.list()), (1, entry(10, true)), "shown while it is checked and put in place");
+
+    // Landed, and the row written: gone with the slot.
+    let_thread_go.send(()).expect("the thread is let go");
+    assert_eq!(hear(heard), Ok(()));
+    assert_eq!(presence_of(&fixture, &shown), ContentPresence::OnDisk);
+    assert_eq!((held(), report.transfers.list()), (0, Vec::new()));
+}
+
+#[test]
+fn a_download_that_fails_is_shown_while_it_is_tried_and_leaves_no_entry() {
+    let fixture = ItemFixture::new();
+    let shown = fixture.show_onedrive_file("report.txt", b"the report");
+    let (source, report) = (HeldSource::held(&fixture), make_report(&fixture));
+    let (downloader, _) = make_downloader_reporting_to(&fixture, Arc::clone(&source) as Arc<dyn ContentSource>, report.clone());
+    source.refuse(Some(|| SourceError::SignedOut("401".into())));
+
+    let heard = ask(&downloader, &shown, DownloadAsker::Read);
+    wait_until_it_writes(&fixture, &shown);
+    assert_eq!(report.transfers.list().len(), 1, "tried: it holds a slot");
+    source.let_go();
+    assert_eq!(hear(heard), Err(libc::EIO));
+    assert_eq!(report.transfers.list(), []);
+}
+
+#[test]
+fn a_download_that_waits_for_its_slot_is_not_shown() {
+    let fixture = ItemFixture::new();
+    let shown = fixture.show_onedrive_file("pinned.txt", b"pinned");
+    let (source, report) = (HeldSource::open(&fixture), make_report(&fixture));
+    let (downloader, _) = make_downloader_reporting_to(&fixture, Arc::clone(&source) as Arc<dyn ContentSource>, report.clone());
+    let transfers = report.transfers.subscribe();
+    // "Pause syncing": the pool hands out no slot of the plan's class.
+    fixture.pool.set_paused(true);
+    begin_download_step(&fixture, &shown);
+
+    let heard = ask(&downloader, &shown, plan_pin(&shown));
+    wait_until("the download waits for its slot", || fixture.pool.waiting());
+    assert!(!transfers.has_changed().unwrap(), "held back: no slot, no entry, not even for a moment");
+
+    // Given its slot: a pinned file's download, shown and landed.
+    fixture.pool.set_paused(false);
+    assert_eq!(hear(heard), Ok(()));
+    assert!(transfers.has_changed().unwrap(), "it was shown once it had its slot");
+    assert_eq!(report.transfers.list(), []);
 }

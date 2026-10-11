@@ -5,8 +5,13 @@
        the downloads and uploads under way, their speed, the transfer pool
        and the queue totals. -->
   <interface name="org.konedrive.Transfers">
-    <!-- Downloads under way: (full path, bytes done, bytes total). Coalesced
-         to a few changes a second. -->
+    <!-- Downloads under way: (full path, bytes done, bytes total). A download
+         is under way for as long as it holds its slot of the pool: while
+         OneDrive is asked for the file (no byte done yet), while its bytes
+         come, and while the whole content is checked and put in place (all
+         bytes done), until the file is on this computer or the try failed.
+         One that waits for a slot is not listed. Coalesced to a few changes a
+         second. -->
     <property name="Downloads" type="a(stt)" access="read">
       <annotation name="org.qtproject.QtDBus.QtTypeName" value="KonedriveTransferList"/>
     </property>

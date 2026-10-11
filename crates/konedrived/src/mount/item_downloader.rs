@@ -35,7 +35,7 @@
 //! does — and it is forgotten at the first answer that download's source accepts
 //! (`download_source`), not at its start.
 //!
-//! **A download of a content that is remembered so** is shown and told from OneDrive's
+//! **A download of a content that is remembered so** is told from OneDrive's
 //! answer on, not from its asking: it is not announced as being downloaded at its start,
 //! and where its first answer states another content again, its end is no news
 //! ([`decide_end_news`]) — no activity event, no count of the space, no announcement.
@@ -43,10 +43,13 @@
 //! out, held back, the item is not there —, its failure is news once: while the downloads
 //! of the key keep failing with the same errno and OneDrive has answered none of them,
 //! nothing more is told (`AnotherContentFact::failed_asking`).
-//! The first time a content is found to be another one, everything is told. `Transfers`
-//! shows a download from the first answer its source accepts on (`content_source::tracked`,
-//! which fetches through `download_source`): one that ends at an answer of another
-//! content, the first time or again, and one OneDrive did not answer, has no entry.
+//! The first time a content is found to be another one, everything is told.
+//!
+//! **`Transfers` shows a download for as long as it holds its slot of the pool**
+//! (`fetch_and_land`): from the slot, while OneDrive is asked, through the bytes, the check
+//! and the landing, to the row written or the failure. One that waits for its slot is not
+//! shown; one OneDrive does not answer, or answers with another content, is shown for the
+//! time of its asking and leaves nothing behind.
 //!
 //! **An item OneDrive does not have** (`DownloadRefusal::ItemGone`: the source's "no such
 //! item"), and an answer that tells neither a size nor a version, state no other content:
@@ -109,6 +112,9 @@
 // test: the_end_of_a_download_is_news_per_case
 // test: a_content_onedrive_keeps_stating_another_one_for_is_told_once
 // test: a_failure_that_stands_for_a_content_onedrive_stated_another_one_for_is_told_once
+// test: a_download_is_shown_from_its_slot_to_its_landing
+// test: a_download_that_fails_is_shown_while_it_is_tried_and_leaves_no_entry
+// test: a_download_that_waits_for_its_slot_is_not_shown
 #![allow(dead_code)]
 
 use std::fs::File;
@@ -452,8 +458,9 @@ impl ItemDownloader {
     /// Fetches the content of `file` into a file that has no name — the unfinished file
     /// of an earlier try, gone on from its checkpoint, or a new one —, in the pool's slot
     /// ([`acquire_slot`](Self::acquire_slot)), through a source that lets through no
-    /// answer of another content (`download_source`) and, over it, the one that shows
-    /// the download in `Transfers` from its first answer on; checks it is the content asked
+    /// answer of another content (`download_source`) and, over it, the one that says how
+    /// far the bytes are to the download's entry of `Transfers`, which is held here with
+    /// the slot, from the slot to the landing; checks it is the content asked
     /// for; gives it the content's time and the marks of a whole copy; syncs it, with no
     /// lock held; and lands it as one job of the write-operation thread.
     async fn fetch_and_land(self: &Arc<Self>, file: &ItemToDownload, asker: &DownloadAsker, run: &DownloadRun, unfinished_file: Option<Arc<File>>, shown_path: &str) -> DownloadEnd {
@@ -461,6 +468,10 @@ impl ItemDownloader {
         let size = file.content.size();
         let mut slot = self.acquire_slot(asker, run, Size::of(size)).await;
         let class = slot.class();
+        // Shown as a transfer for as long as the slot is held: this is dropped where the
+        // slot is, whatever ends the download. The size is the row's until the source
+        // says one.
+        let shown = self.report.transfers.start_as(shown_path.to_owned(), size, class == Class::Open);
         // The file a download is built in has no name: it is in the backing directory's
         // filesystem and in no directory, so nothing lists a file that is not whole, and
         // one the daemon leaves behind goes by itself.
@@ -476,17 +487,11 @@ impl ItemDownloader {
         // source also tells the states of the first such answer.
         let written_up_to = self.download_states.begin_writing(run, Arc::clone(&staged));
         let source = DownloadSource::new(self.source.as_ref(), file.content.clone(), written_up_to, &self.download_states, run);
-        // Shown as a transfer from the first answer that source lets through: a download
-        // that ends before one was never a transfer.
-        let tracked = match class {
-            Class::Open => Tracked::opening(&source, self.report.transfers.clone(), shown_path),
-            _ => Tracked::new(&source, self.report.transfers.clone(), shown_path),
-        };
+        let tracked = Tracked::new(&source, shown.handle());
         // A large file that nothing waits to open (a pinned one) goes in parallel parts,
         // the slot held here being its first stream's.
         let split = (class != Class::Open && Size::of(size) == Size::Large).then(|| Split::new(Arc::clone(&self.pool), Arc::clone(&self.split_download_share)));
         let downloaded = download_staged(&staged, file.onedrive_item.item_id.as_str(), size, &tracked, split.as_ref()).await;
-        drop(tracked);
         let refusal = source.find_refusal();
         let downloaded = match downloaded {
             Ok(downloaded) => downloaded,

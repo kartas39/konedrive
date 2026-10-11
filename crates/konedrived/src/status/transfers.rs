@@ -30,6 +30,11 @@ pub fn large_files(downloads: &BTreeMap<u64, Transfer>, uploads: &[(String, u64,
 /// The downloads under way (`Transfers`): fills on open,
 /// `Hydrate`, and pinned files — not thumbnails.
 ///
+/// A download is under way for as long as it holds its slot of the account's pool: from
+/// the slot, before OneDrive has answered anything, through its bytes, the check of the
+/// content and the landing of its file, to the row written or the failure
+/// (`mount::item_downloader`). One that waits for a slot is not under way.
+///
 /// Watched, so that `dbus::signals` can publish it coalesced. An entry is added
 /// by [`start`](Self::start) and removed when the [`TransferEntry`] it
 /// returns is dropped, however the download ends.
@@ -96,14 +101,14 @@ impl TransferEntry {
     }
 
     /// Something that can move the entry on but does not keep it: the
-    /// stream a download reads.
+    /// source a download fetches through, and the stream it reads.
     pub fn handle(&self) -> TransferHandle {
         self.handle.clone()
     }
 
-    /// How big the download is, as far as its source has said.
+    /// How big the download is, as far as is known.
     pub fn total(&self) -> u64 {
-        self.handle.transfers.tx.borrow().get(&self.handle.id).map_or(0, |t| t.total)
+        self.handle.total()
     }
 }
 
@@ -122,6 +127,11 @@ pub struct TransferHandle {
 impl TransferHandle {
     pub fn progress(&self, done: u64, total: u64) {
         self.transfers.progress(self.id, done, total);
+    }
+
+    /// How big the download is, as far as is known; 0 once its entry is gone.
+    pub fn total(&self) -> u64 {
+        self.transfers.tx.borrow().get(&self.id).map_or(0, |t| t.total)
     }
 }
 

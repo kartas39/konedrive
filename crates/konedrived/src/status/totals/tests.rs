@@ -132,6 +132,13 @@ fn downloads_left_are_the_pinned_files_not_here_and_the_files_being_opened() {
     assert_eq!(count_downloads_left(pinned, &of(&running)), (2500, 4989 * MIB), "less what they received");
     assert_eq!(count_downloads_left(none, &of(&[transfer(MIB, 4 * MIB, true)])), (1, 3 * MIB), "a file being opened counts while it downloads");
     assert_eq!(count_downloads_left(pinned, &of(&[transfer(MIB, 2 * MIB, false), transfer(MIB, 4 * MIB, true)])), (2501, 5002 * MIB), "both");
+    // A download is shown for as long as it holds its slot. Asked for and not answered
+    // yet: all of it is left. All bytes here, being checked and put in place: the file is
+    // still one of the pinned ones the store counts, and none of its bytes is left.
+    assert_eq!(count_downloads_left(pinned, &of(&[transfer(0, 2 * MIB, false)])), (2500, 5000 * MIB), "a pinned file's download that starts");
+    assert_eq!(count_downloads_left(pinned, &of(&[transfer(2 * MIB, 2 * MIB, false)])), (2500, 4998 * MIB), "a pinned file's download that finishes");
+    assert_eq!(count_downloads_left(none, &of(&[transfer(0, 4 * MIB, true)])), (1, 4 * MIB), "a file being opened whose download starts");
+    assert_eq!(count_downloads_left(none, &of(&[transfer(4 * MIB, 4 * MIB, true)])), (1, 0), "a file being opened whose download finishes");
     // A size not known yet, and a count the store has not caught up with: nothing below 0.
     assert_eq!(count_downloads_left(none, &of(&[transfer(MIB, 2 * MIB, false), transfer(0, 0, true)])), (1, 0));
 }

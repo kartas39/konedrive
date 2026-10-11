@@ -11,7 +11,9 @@
 //!   fewer only as files land), and the files being opened that are downloaded now
 //!   (`Transfers`: files being read, `Hydrate`); less the bytes already received of the
 //!   downloads under way. No file being opened is queued ahead: it counts only while its
-//!   download runs.
+//!   download runs. A download is under way from its slot of the pool to its landing
+//!   (`Transfers`): one whose bytes are all here and whose file is not in place yet is
+//!   still a file left, with no byte left.
 //!   What is kept back — blocked, waiting for space while OneDrive is full, too big for
 //!   the space left — is not left: the Not Uploaded page counts it.
 //! - **Done.** The bytes moved that way (the transfer pool's count) since nothing was last
