@@ -11,14 +11,14 @@
 //! A menu is waited for, so the answer waits for nothing that can take long: the mount
 //! answers from its own reading connection to the tree store, which never waits for the
 //! store's writer.
-// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
-#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::path::{Path, PathBuf};
 
 use konedrive_fs::placeholder::State;
+use konedrive_tree::ItemKind;
 
 use crate::account_folder::SyncService;
+use crate::mount::{FreeUpDecision, PinHolder};
 
 /// "Always keep on this device" in the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,10 +131,37 @@ impl SyncService {
     /// asked of the folder's mount, which answers from the tree store and from the names in
     /// the folder under it.
     pub async fn menu_part(&self, paths: &[PathBuf]) -> Part {
-        // TODO: for each path `ItemFilesInterface::find_path_status` — `ItemPathStatus::pin_holder` for whose
-        // pin it is, `find_state_attribute` for the state shown of a file — and `decide_free_up(path, true)`
-        // for what "Free up space" is offered or refused for.
-        todo!()
+        let mut part = Part { taken: Vec::with_capacity(paths.len()), ..Part::default() };
+        let Some(mount) = self.mount() else { return Part { taken: vec![None; paths.len()], ..Part::default() } };
+        let files = mount.files_interface();
+        let mut changed = false;
+        for path in paths {
+            let Ok(status) = files.find_path_status(path).await else {
+                part.taken.push(None);
+                continue;
+            };
+            if let (None, PinHolder::DirectoryAbove { path: by }) = (&part.kept_by, &status.pin_holder) {
+                part.kept_by = Some(by.clone());
+            }
+            // What `FreeUp` would refuse it for once its own pin is off: a change of it that is not uploaded.
+            changed |= matches!(files.decide_free_up(path, true).await, Ok(FreeUpDecision::LeaveModifiedHere | FreeUpDecision::LeaveOpenForWriting));
+            part.taken.push(Some(Taken {
+                is_dir: status.kind == ItemKind::Directory,
+                own: status.pin_holder == PinHolder::Itself,
+                pinned: status.is_pinned,
+                hydrated: status.find_state_attribute() == Some(State::Hydrated),
+                in_onedrive: true,
+            }));
+        }
+        // `FreeUp`'s checks, in its order.
+        part.free_up_refused = if part.kept_by.is_some() {
+            Some(FreeUpWhy::PinnedAbove)
+        } else if changed {
+            Some(FreeUpWhy::NotUploaded)
+        } else {
+            None
+        };
+        part
     }
 }
 

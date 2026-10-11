@@ -1,19 +1,15 @@
 //! Taking a folder down: a Forget, `Accounts.Remove`'s first step, and a folder that was
 //! moved or deleted under its sync.
-// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
-#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 use std::sync::Arc;
 
-use super::folder::{Down, Is, Standing, Stopped};
+use super::folder::{Down, Is, Standing, Stopped, Sync, TakeDownTry, Why};
 use super::{SyncError, SyncService};
-
-/// How long a Forget waits for the tree store's connections to close before it removes
-/// the store's files.
-const STORE_CLOSES_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+use crate::mount::TakeDownCause;
+use crate::sync_tasks::stop_order::TakeDownOutcome;
 
 impl SyncService {
     /// Takes a retirement back, for an `Accounts.Remove` whose
@@ -63,7 +59,21 @@ impl SyncService {
     /// `UploadQueue.UnsentCount()` answers exactly this: the one member the window and
     /// `konedrivectl` read before `Folder.Unregister` and `Accounts.Remove`.
     pub async fn count_unsent(&self) -> Result<u64, SyncError> {
-        todo!()
+        // The open store of the folder, whether or not its sync runs.
+        if let Some(parts) = self.view().parts {
+            let unsent = parts.store.read_items(|reader| reader.count_unsent()).await;
+            return unsent.map(|unsent| unsent.count).map_err(|e| SyncError::Store(e.to_string()));
+        }
+        // No folder; or one that keeps no open store: its store's file is asked, through a reader of its own.
+        if self.folders().is_empty() {
+            return Ok(0);
+        }
+        let Some(tree_db) = self.sync_paths().map(|paths| paths.tree_db.clone()) else { return Ok(0) };
+        tokio::task::spawn_blocking(move || crate::sync_tasks::stop_order::count_unsent_of_closed_store(&tree_db))
+            .await
+            .map_err(|e| SyncError::Io(format!("the task counting what is unsent failed: {e}")))?
+            .map(|unsent| unsent.count)
+            .map_err(|e| SyncError::Store(e.to_string()))
     }
 
     /// `Accounts.Remove`'s first step: the folder forgotten exactly as
@@ -84,11 +94,48 @@ impl SyncService {
     /// and the files stay.
     /// The folder that was forgotten.
     async fn forget(&self, retire: bool) -> Result<Option<PathBuf>, SyncError> {
-        // TODO: inside the change — which stopped the sync and left its parts in `Kept::parts` —
-        // `sync_tasks::stop_order::forget_folder` over those parts, or `forget_folder_without_mount` for a
-        // folder that keeps no parts; `forgotten` and `remove_tree_store` afterwards. Nothing is asked of what
-        // is unsent. A retry after a take-down that waits is given up with it.
-        todo!()
+        let mut stopped = self.change().await;
+        self.restore_in(&mut stopped).await;
+        let Some(mut record) = stopped.folder().record().cloned() else {
+            if retire {
+                retire_in(&mut stopped);
+                return Ok(None);
+            }
+            return Err(SyncError::NoRoot);
+        };
+        // The folder is gone from the state, and with it everything kept with it — and the try after a take-down
+        // that waited: its timer finds no folder taken down. The copy of the record this call holds has the parts
+        // the stopped sync kept; the state's own went with the folder.
+        stopped.folder_mut().is = Is::Absent;
+        let kept = std::mem::take(&mut record.kept);
+        if retire {
+            retire_in(&mut stopped);
+        }
+        // Before the store is closed: `config.toml` records no folder, the view and the bus let go of the parts, and
+        // the activity log of the store.
+        self.forgotten(&stopped).await;
+        self.report.space.measure_at(None);
+        let closed = match kept.parts {
+            // In a task of its own: a caller that is cut does not leave a mount half stopped.
+            Some(parts) => tokio::spawn(crate::sync_tasks::stop_order::forget_folder(parts)).await.unwrap_or(TakeDownOutcome::StoreStillOpen),
+            // No mount whose stop would give the write bits back.
+            None => {
+                let root = record.root.clone();
+                let _ = tokio::spawn(async move { crate::sync_tasks::stop_order::forget_folder_without_mount(&root).await }).await;
+                TakeDownOutcome::StoreClosed
+            }
+        };
+        if closed == TakeDownOutcome::StoreStillOpen {
+            tracing::warn!("the tree store of {} is still open somewhere; its files are removed all the same", record.root.path.display());
+        }
+        self.remove_tree_store().await;
+        // Only when *this daemon* is the one that excluded the folder from Baloo — never a folder that arrived
+        // already excluded, and this survives a restart in between (the record carries it forward from
+        // `config.toml`).
+        if record.baloo {
+            self.wiring.baloo.include_again(&record.root.path).await;
+        }
+        Ok(Some(record.root.path))
     }
 
     /// The folder is forgotten: `config.toml` records none, and everything published about
@@ -134,16 +181,29 @@ pub(super) const STAYED_UP_AFTER: std::time::Duration = std::time::Duration::fro
 /// its mount down, by how many such starts were tried since one stayed up: 1 minute
 /// before the first (`attempt` 0), 5 minutes before the second, 30 before the third, and
 /// an hour before every later one. Pure.
-#[allow(unused_variables)]
 pub(super) fn decide_retry_wait(attempt: u32) -> std::time::Duration {
-    todo!()
+    let minutes = match attempt {
+        0 => 1,
+        1 => 5,
+        2 => 30,
+        _ => 60,
+    };
+    std::time::Duration::from_secs(minutes * 60)
 }
 
 /// The sentence the folder shows while it is down for `cause`, with the folder's path and
 /// what the user can do ("sync now" tries at once). Pure.
-#[allow(unused_variables)]
 pub(super) fn describe_take_down(cause: &crate::mount::TakeDownCause, folder: &Path) -> String {
-    todo!()
+    // TODO: wording
+    let what = match cause {
+        TakeDownCause::UndoFailed { path } => format!("a change of {} could not be recorded and could not be undone", path.display()),
+        TakeDownCause::BackingFileBehindRow { path } => format!("{} could not be made or cut on disk after the change was recorded", path.display()),
+        TakeDownCause::StoreFailed { detail } => format!("konedrive's records of the folder could not be written ({detail})"),
+    };
+    format!(
+        "the sync folder {} was stopped: {what}; konedrive checks the folder and starts it again by itself, and \"sync now\" tries at once",
+        folder.display()
+    )
 }
 
 /// Which try the next start by the owner is, after a fault took the mount down at `now`:
@@ -153,9 +213,11 @@ pub(super) fn describe_take_down(cause: &crate::mount::TakeDownCause, folder: &P
 // test: a_folder_taken_down_for_the_first_time_is_tried_as_the_first
 // test: a_try_that_was_taken_down_again_soon_is_followed_by_the_next
 // test: a_try_that_stayed_up_starts_the_count_over
-#[allow(unused_variables)]
 pub(super) fn decide_take_down_attempt(last: Option<super::folder::TakeDownTry>, now: i64) -> u32 {
-    todo!()
+    match last {
+        Some(tried) if now.saturating_sub(tried.started_at) < STAYED_UP_AFTER.as_secs() as i64 => tried.attempt.saturating_add(1),
+        _ => 1,
+    }
 }
 
 impl SyncService {
@@ -164,7 +226,12 @@ impl SyncService {
     /// never blocks: it spawns [`take_folder_down_for_fault`](Self::take_folder_down_for_fault)
     /// on the service's runtime, with a weak reference to the service.
     pub(super) fn take_down_report(self: &Arc<Self>) -> crate::mount::TakeDownReport {
-        todo!()
+        let service = Arc::downgrade(self);
+        // The service's runtime, taken now: the report is called on the mount's write-operation thread, which has none.
+        let runtime = tokio::runtime::Handle::current();
+        Arc::new(move |cause| {
+            runtime.spawn(Self::take_folder_down_for_fault(service.clone(), cause));
+        })
     }
 
     /// The owner's task for a mount that asked for its take-down; nothing when the
@@ -180,9 +247,57 @@ impl SyncService {
     /// directories again, which show the backing directory now
     /// (`desktop::dirnotify::read_again` of `mount::list_directories`). Then the wait:
     /// [`retry_after_take_down`](Self::retry_after_take_down).
-    #[allow(unused_variables)]
     pub(super) async fn take_folder_down_for_fault(service: std::sync::Weak<Self>, cause: crate::mount::TakeDownCause) {
-        todo!()
+        let is_tried_again = {
+            let Some(me) = service.upgrade() else { return };
+            let mut stopped = me.change().await;
+            // The mount that asked: the one the stopped sync kept. A report of a mount that is the folder's no more
+            // (forgotten, taken down already, the daemon at its end) takes nothing down.
+            // TODO: contract — `ItemMount` hands out no question "did you ask for your take-down" (`mount/item_mount.rs`): it is asked of the parts of the folder steps, which are handed out for another purpose.
+            let is_asked = stopped.folder().record().and_then(|record| record.kept.parts.as_ref()).is_some_and(|kept| kept.mount.folder_step_parts().mount_take_down.is_asked());
+            let Some(kept) = stopped.folder_mut().record_mut().filter(|_| is_asked).and_then(|record| record.kept.parts.take()) else {
+                me.start_again(&mut stopped).await;
+                return;
+            };
+            let now = me.clock.now();
+            let Some(up) = stopped.folder_mut().up_mut() else {
+                // Kept by a folder that is not up: there is no sync to say taken down.
+                drop(tokio::task::spawn_blocking(move || drop(kept)));
+                return;
+            };
+            let root = up.record.root.clone();
+            let tried = decide_take_down_attempt(up.take_down_try.take(), now).saturating_sub(1);
+            let said = describe_take_down(&cause, &root.path);
+            tracing::error!("{said}");
+            up.sync = Sync::Stopped(Why::TakenDown { cause: said.clone(), attempt: tried, next_try_at: None });
+            // Before the store is closed: the view and the bus let go of the parts (the record keeps none now), and
+            // the activity log of the store.
+            stopped.publish();
+            me.let_go_of_activity().await;
+            me.report.space.measure_at(None);
+            // In a task of its own: a mount is not left half stopped.
+            let closed = tokio::spawn(crate::sync_tasks::stop_order::take_folder_down(kept)).await.unwrap_or(TakeDownOutcome::StoreStillOpen);
+            // The next try, by the count; none while somebody still holds the store.
+            let next_try_at = (closed == TakeDownOutcome::StoreClosed).then(|| me.clock.now().saturating_add(decide_retry_wait(tried).as_secs() as i64));
+            if next_try_at.is_none() {
+                tracing::error!("the tree store of {} is still open somewhere: the folder is not started again until konedrive is", root.path.display());
+            }
+            if let Some(up) = stopped.folder_mut().up_mut() {
+                up.sync = Sync::Stopped(Why::TakenDown { cause: said, attempt: tried, next_try_at });
+            }
+            me.report.space.kick();
+            // The folder's directories show the backing directory now: whoever lists one lists it again.
+            let folder = root.path.clone();
+            tokio::spawn(async move {
+                if let Ok(directories) = tokio::task::spawn_blocking(move || crate::mount::list_directories(&folder)).await {
+                    crate::desktop::dirnotify::read_again(directories).await;
+                }
+            });
+            next_try_at.is_some()
+        };
+        if is_tried_again {
+            Self::retry_after_take_down(service).await;
+        }
     }
 
     /// Waits until the folder's next try is due (`Why::TakenDown::next_try_at`, by the
@@ -198,7 +313,41 @@ impl SyncService {
     /// one timer of a taken-down folder; across its wait it holds no strong reference to
     /// the service, and ends when the service is gone.
     pub(super) async fn retry_after_take_down(service: std::sync::Weak<Self>) {
-        todo!()
+        loop {
+            // The try that is waited for; no strong reference to the service is held across the wait.
+            let (clock, attempt, due_at) = {
+                let Some(me) = service.upgrade() else { return };
+                let folder = me.folder.read().await;
+                match folder.up().map(|up| &up.sync) {
+                    Some(Sync::Stopped(Why::TakenDown { attempt, next_try_at: Some(due_at), .. })) => (Arc::clone(&me.wiring.clock), *attempt, *due_at),
+                    _ => return,
+                }
+            };
+            // The clock's sleep knows nothing of a suspend or of a clock that was set: the time is looked at again.
+            while clock.now() < due_at {
+                clock.sleep_until(due_at).await;
+            }
+            let Some(me) = service.upgrade() else { return };
+            let mut stopped = me.change().await;
+            if stopped.folder().standing != Standing::Active {
+                return;
+            }
+            let now = me.clock.now();
+            // Still the try that was waited for: a `Refresh()` that started the folder, a Forget and the daemon's end
+            // leave another state, and a folder taken down again since has a timer of its own.
+            match stopped.folder_mut().up_mut() {
+                Some(up) if matches!(&up.sync, Sync::Stopped(Why::TakenDown { attempt: tried, next_try_at: Some(due), .. }) if *tried == attempt && *due == due_at) => {
+                    up.take_down_try = Some(TakeDownTry { attempt: attempt.saturating_add(1), started_at: now });
+                }
+                _ => return,
+            }
+            // With nothing kept: the check at start runs.
+            me.start_sync(&mut stopped).await;
+            if stopped.folder().running().is_some() {
+                return;
+            }
+            // Refused: the folder is taken down still, the try counted, and the next is waited for here.
+        }
     }
 
     /// A bring-up of the folder panicked, saying `panic`: a defect of the daemon. The

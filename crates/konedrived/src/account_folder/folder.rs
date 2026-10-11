@@ -13,8 +13,6 @@
 //! holder of a `Stopped`, and stopped by [`SyncService::change`], which takes it out of
 //! the state. So there is no sync without a folder that is up, and no
 //! tree store open for a folder that is forgotten.
-// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
-#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::sync::Arc;
 
@@ -22,7 +20,7 @@ use konedrive_tree::Store;
 use tokio::sync::RwLockWriteGuard;
 use tokio_util::sync::CancellationToken;
 
-use crate::sync_tasks::start_order::{KeptFolderParts, StartedFolder};
+use crate::sync_tasks::start_order::{KeptFolderParts, RefusedStart, StartedFolder};
 
 use super::SyncService;
 use crate::config::Mode;
@@ -235,6 +233,14 @@ impl Folder {
         }
     }
 
+    /// The folder that is up, to change its sync and the try it was started as.
+    pub fn up_mut(&mut self) -> Option<&mut Up> {
+        match &mut self.is {
+            Is::Up(up) => Some(up),
+            _ => None,
+        }
+    }
+
     /// The folder, when it is up.
     pub fn up(&self) -> Option<&Up> {
         match &self.is {
@@ -433,6 +439,84 @@ impl Drop for Stopped<'_> {
     }
 }
 
+impl Stopped<'_> {
+    /// Takes into the state what a start or a stop of the folder's sync left: the parts a stopped sync keeps
+    /// go into the folder's record, whole; a sync that was started is answered, for the change to stop it — it
+    /// was never in the state. Either way a sync ran, or was to: the change starts it again.
+    fn keep_left(&mut self, left: SyncChange) -> Option<Box<StartedFolder>> {
+        self.ran = true;
+        let (kept, started) = match left {
+            SyncChange::Stopped(kept) => (Some(kept), None),
+            SyncChange::Started(started) => (None, Some(started)),
+            SyncChange::Refused(refused) => (refused.kept, None),
+        };
+        if let Some(sync) = self.folder.sync_mut() {
+            *sync = Sync::Stopped(Why::Interrupted);
+        }
+        match (kept, self.folder.record_mut()) {
+            (Some(kept), Some(record)) => record.kept.parts = Some(kept),
+            // No folder is recorded to keep them: their mount is stopped where a thread may be joined.
+            (Some(kept), None) => drop(tokio::task::spawn_blocking(move || drop(kept))),
+            (None, _) => {}
+        }
+        started
+    }
+}
+
+/// What a start or a stop of the folder's sync answered.
+pub(super) enum SyncChange {
+    /// `stop_order::stop_folder_sync`'s answer.
+    Stopped(KeptFolderParts),
+    /// `start_order::start_folder_sync`'s answers.
+    Started(Box<StartedFolder>),
+    Refused(RefusedStart),
+}
+
+/// The start or the stop of the folder's sync that runs now, in a task of its own, and what it
+/// answered when nobody waited for it to its end.
+///
+/// **State owned:** the gate one such task holds while it runs, and its answer until
+/// somebody takes it. A start and a stop are never cut (`sync_tasks`' module doc): the
+/// caller that is cut leaves the task running, the task leaves its answer here, and the
+/// next change of the folder waits for the task and takes the answer
+/// ([`SyncService::change`]). Only a holder of the folder's write lock runs one, and it
+/// waits first: one task at a time.
+#[derive(Default)]
+pub(super) struct SyncChangeTask {
+    gate: Arc<tokio::sync::Mutex<()>>,
+    left: Arc<std::sync::Mutex<Option<SyncChange>>>,
+}
+
+impl SyncChangeTask {
+    /// Waits for the task that runs, if one does, and takes what it left.
+    pub async fn wait(&self) -> Option<SyncChange> {
+        let _ended = self.gate.lock().await;
+        crate::panic::lock(&self.left).take()
+    }
+
+    /// Runs `work` in a task of its own and waits for it; its answer, `None` when it
+    /// panicked. Cut while it waits, the task goes on and its answer is the next
+    /// [`wait`](Self::wait)'s.
+    pub async fn run(&self, work: impl std::future::Future<Output = SyncChange> + Send + 'static) -> Option<SyncChange> {
+        // Nothing is awaited before the task is spawned: `work` owns what it starts or stops, and is not dropped
+        // unrun. The gate is free: the caller waited under the folder's write lock.
+        let gate = Arc::clone(&self.gate).try_lock_owned().ok();
+        if gate.is_none() {
+            tracing::error!("a start or a stop of the folder's sync begins while another runs");
+        }
+        let left = Arc::clone(&self.left);
+        let task = tokio::spawn(async move {
+            let answer = work.await;
+            *crate::panic::lock(&left) = Some(answer);
+            drop(gate);
+        });
+        if let Err(error) = task.await {
+            tracing::error!("a start or a stop of the folder's sync failed inside konedrive: {error}");
+        }
+        crate::panic::lock(&self.left).take()
+    }
+}
+
 /// The folder's state, held for writing with the folder's sync LEFT RUNNING: the second
 /// door, for the changes that stop no task — the access mode
 /// (`sync_tasks::access_mode_change`, with `Folder::wanted`) and nothing else. It is what
@@ -482,28 +566,77 @@ impl SyncService {
     /// The second door ([`HeldFolder`]): takes the folder's state for writing and leaves
     /// its sync running. Nothing is told to stop.
     pub(super) async fn hold_folder(&self) -> HeldFolder<'_> {
-        todo!()
+        let folder = self.folder.write().await;
+        let was_writable = folder.mount().is_some_and(|mount| mount.access_mode_switch().is_read_write());
+        HeldFolder { service: self, folder, was_writable }
     }
 
     /// The one door to changing the folder: tells the folder's sync to stop, takes the
     /// state for writing, takes the sync out of it and waits until every part has ended.
     ///
-    /// The sync is told before the lock is waited for: a reconcile holds the state for
-    /// reading while it changes the folder, and checks for a stop between its steps, so
-    /// told first it lets go at its next step rather than at the end of the whole
-    /// reconcile. Every part is told at once.
+    /// The sync is told before the lock is waited for (the stop's token, from the view): a
+    /// step towards the folder holds the folder's lease, a read of this lock, and one that
+    /// still waits for it ends unrun once told. Every task is told at once.
     ///
-    /// Taking the sync out of the state drops it, which hands its parts to the service;
-    /// they are waited for here, under the lock, with
-    /// whatever a change that was cut before its end left there. So a section of a part
-    /// that has begun (a file call, a commit) has run to its end before the change goes
-    /// on, also when the change that stopped the part was dropped while it waited.
+    /// The stop itself (`sync_tasks::stop_order::stop_folder_sync`) runs in a task of its
+    /// own and is waited for here, under the lock, with whatever a start or a stop left
+    /// whose caller was cut before its end ([`SyncChangeTask`]). So a step that has begun
+    /// has run to its end before the change goes on, also when the change that stopped
+    /// the sync was dropped while it waited. What the stopped sync keeps — the store, the
+    /// mount, still served — goes into the folder's record, whole (`Kept::parts`): the
+    /// folder shows its names while no sync runs, and the next start is given them back.
     pub(super) async fn change(&self) -> Stopped<'_> {
-        // TODO: the owner's change of a folder at the switch: cancel `SyncTasks::stop_handle`, take the
-        // folder's write lock, then `sync_tasks::stop_order::stop_folder_sync` in a task of its own
-        // (`sync_tasks`' module doc, "What the owner's change must do"); what it answers
-        // (`KeptFolderParts`) goes into `Kept::parts`, whole.
-        todo!()
+        // Told to stop, and gone from the view in the same breath: from here on no reader takes the sync for
+        // running, also when this change is cut before it has the lock. The token is cancelled BEFORE the lock is
+        // waited for: a step towards the folder that waits for the folder's lease then ends unrun, and the stop
+        // awaited below, under the lock, waits for no step that waits for this very lock.
+        self.view.send_if_modified(|view| match &view.sync {
+            SyncView::Running(stop) => {
+                stop.cancel();
+                view.sync = SyncView::Stopped(None);
+                view.poll = None;
+                view.sending_holds = None;
+                view.onedrive_space = None;
+                true
+            }
+            _ => false,
+        });
+        let folder = self.folder.write().await;
+        let was_writable = folder.mount().is_some_and(|mount| mount.access_mode_switch().is_read_write());
+        // Dropped from here on, the change publishes what it leaves.
+        let mut stopped = Stopped { service: self, folder, ran: false, was_writable, told: false };
+        // What a start or a stop left whose caller was cut before it ended: waited for here, under the lock, and taken
+        // into the state as that caller would have taken it.
+        let mut running = match self.sync_change.wait().await {
+            Some(left) => stopped.keep_left(left),
+            None => None,
+        };
+        if let Some(sync) = stopped.folder.sync_mut() {
+            match std::mem::replace(sync, Sync::Stopped(Why::Interrupted)) {
+                Sync::Running(started) => {
+                    stopped.ran = true;
+                    running = Some(started);
+                }
+                Sync::Stopped(Why::Interrupted) => stopped.ran = true,
+                Sync::Stopped(why) => *sync = Sync::Stopped(why),
+            }
+        }
+        if let Some(started) = running {
+            stopped.ran = true;
+            // Again: the sync of a start nobody waited for was never in the view.
+            started.tasks.stop_handle().cancel();
+            // In a task of its own: a caller that is cut does not cut the stop, and the next change waits for it.
+            let stop = async move { SyncChange::Stopped(crate::sync_tasks::stop_order::stop_folder_sync(*started).await) };
+            match self.sync_change.run(stop).await {
+                Some(left) => {
+                    stopped.keep_left(left);
+                }
+                None => tracing::error!("the stop of the folder's sync failed inside konedrive: what it kept is gone, and the folder is started with nothing kept"),
+            }
+        }
+        // What the folder is now: its sync stopped, its parts kept.
+        stopped.publish();
+        stopped
     }
 
     /// What the folder is, as last published.

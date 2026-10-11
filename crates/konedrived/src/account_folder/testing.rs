@@ -52,16 +52,19 @@ impl SyncService {
     }
 }
 
+/// The downloads that never ended in a folder served through FUSE: each one's size on disk
+/// and its checkpoint (`ItemFilesInterface::list_unfinished_downloads`); none for a folder
+/// that is not mounted.
+// TODO: check whether the VM suite still asks for them, and fix if needed.
+pub async fn staged(service: &SyncService) -> Vec<(u64, Option<u64>)> {
+    let Some(mount) = service.mount() else { return Vec::new() };
+    let unfinished = mount.files_interface().list_unfinished_downloads().await.unwrap_or_default();
+    unfinished.into_iter().map(|(_, bytes_on_disk, checkpoint)| (bytes_on_disk, checkpoint)).collect()
+}
+
 /// The tree store of the folder that is up, for a test that seeds a row only the
 /// worker or the mass-delete guard would write (a blocked row, a held one): what the
 /// readers of the bus read. `None` before the folder's first sync start.
-/// The downloads that never ended in a folder served through FUSE: each one's size on disk
-/// and its checkpoint.
-pub fn staged(service: &SyncService) -> Vec<(u64, Option<u64>)> {
-    // TODO: `ItemFilesInterface::list_unfinished_downloads` of the folder's mount (each one's size on disk and its checkpoint); it is async, so this becomes async with it. Check whether the VM suite still asks for them, and fix if needed.
-    todo!()
-}
-
 pub fn tree_store(service: &SyncService) -> Option<konedrive_tree::Store> {
     service.tree_store()
 }

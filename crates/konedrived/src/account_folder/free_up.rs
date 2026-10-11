@@ -1,11 +1,9 @@
 //! Freeing up space: `Dehydrate`, `FreeUpSpace` and `FreeUp`, answered by the folder's mount,
 //! which removes the downloaded copies; the files stay in the folder as names.
-// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
-#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::path::{Path, PathBuf};
 
-use crate::mount::{FreeUpDecision, ItemPathStatus};
+use crate::mount::{FreeUpDecision, ItemPathStatus, PinHolder};
 use crate::status::activity::{self, Kind};
 use crate::account_folder::pins::refusal;
 use crate::account_folder::{SyncError, SyncService};
@@ -13,19 +11,22 @@ use crate::account_folder::{SyncError, SyncService};
 /// The refusal of a path a pin keeps: it names the folder above that pins it, or the path
 /// itself for a pin of its own.
 fn pinned(path: &Path, status: &ItemPathStatus) -> SyncError {
-    // TODO: `ItemPathStatus::pin_holder`: `PinHolder::DirectoryAbove { path }` names the folder above, `PinHolder::Itself` the path.
-    todo!()
+    match &status.pin_holder {
+        PinHolder::DirectoryAbove { path: by } => SyncError::NotAllowed(refusal(path, by)),
+        PinHolder::Itself | PinHolder::Nobody => SyncError::NotAllowed(refusal(path, path)),
+    }
 }
 
 /// What `FreeUp` refuses the path `path` for, by what a free-up decides for it once its own
-/// pin is off: a folder above that pins it (`NotAllowed`), and a change of it that waits to
+/// pin is off (`decision`: `ItemFilesInterface::decide_free_up(path, true)`): a folder above that pins it (`NotAllowed`), and a change of it that waits to
 /// be uploaded, which freeing it up would lose (`NotUploaded`). Anything else is left to the
 /// free-up itself, which counts what it leaves.
-fn refuse_free_up(path: &Path, status: &ItemPathStatus) -> Result<(), SyncError> {
-    // TODO: by the free-up's decision once the path's own pin is off, which the caller asked the mount for
-    // (`ItemFilesInterface::decide_free_up(path, true)`) and gives here beside the status — the signature gains
-    // that `FreeUpDecision` when this is filled.
-    todo!()
+fn refuse_free_up(path: &Path, status: &ItemPathStatus, decision: FreeUpDecision) -> Result<(), SyncError> {
+    match decision {
+        FreeUpDecision::LeavePinned => Err(pinned(path, status)),
+        FreeUpDecision::LeaveModifiedHere | FreeUpDecision::LeaveOpenForWriting => Err(SyncError::NotUploaded(path.display().to_string())),
+        FreeUpDecision::Free | FreeUpDecision::LeaveDownloading | FreeUpDecision::NothingToFree => Ok(()),
+    }
 }
 
 impl SyncService {
@@ -38,8 +39,20 @@ impl SyncService {
     /// downloaded, and `InUse` for one that could not be freed after all. The mount decides
     /// ([`FreeUpDecision`]); this says its decision as a refusal.
     pub async fn dehydrate(&self, path: &Path) -> Result<(), SyncError> {
-        // TODO: `ItemFilesInterface::decide_free_up(path, false)` said as the refusal (`find_path_status` for the pin's holder), then `free_up`.
-        todo!()
+        let mount = self.require_mount()?;
+        let files = mount.files_interface();
+        match files.decide_free_up(path, false).await? {
+            FreeUpDecision::Free => {}
+            FreeUpDecision::LeavePinned => return Err(pinned(path, &files.find_path_status(path).await?)),
+            FreeUpDecision::LeaveModifiedHere | FreeUpDecision::LeaveOpenForWriting => return Err(SyncError::NotUploaded(path.display().to_string())),
+            FreeUpDecision::LeaveDownloading | FreeUpDecision::NothingToFree => return Err(SyncError::NotHydrated),
+        }
+        let freed = files.free_up(path).await?;
+        if freed.files == 0 {
+            return Err(SyncError::InUse);
+        }
+        self.report.activity.record(vec![activity::event(Kind::Freed, path.display().to_string(), activity::human_size(freed.bytes))]).await;
+        Ok(())
     }
 
     /// `FreeUpSpace()`: every downloaded file of the folder is freed. One a pin keeps on
@@ -47,8 +60,14 @@ impl SyncService {
     /// as it is and counted in [`FreedUp::pinned`]. What was freed is one `freed` event for
     /// the folder, not one per file.
     pub async fn free_up_space(&self) -> Result<FreedUp, SyncError> {
-        // TODO: `ItemFilesInterface::free_up_all` (the mount's `item_files_interface`).
-        todo!()
+        let reg = self.require_record()?;
+        let freed = self.require_mount()?.files_interface().free_up_all().await?;
+        let total = FreedUp { files: freed.files as u32, bytes: freed.bytes, pinned: freed.kept as u32, ..FreedUp::default() };
+        if total.files > 0 {
+            let event = activity::event(Kind::Freed, reg.root.path.display().to_string(), freed_detail(total.files, total.bytes));
+            self.report.activity.record(vec![event]).await;
+        }
+        Ok(total)
     }
 
     /// What `FreeUp` checks before it frees anything, on its own:
@@ -57,8 +76,14 @@ impl SyncService {
     /// folder a call's paths are in first, so that a call that spans accounts is refused as
     /// a whole or not at all.
     pub async fn check_free_up(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
-        // TODO: after `check_unpinnable`, for each path `ItemFilesInterface::decide_free_up(path, true)`: `refuse_free_up`.
-        todo!()
+        self.check_unpinnable(paths).await?;
+        let mount = self.require_mount()?;
+        let files = mount.files_interface();
+        for path in paths {
+            let status = files.find_path_status(path).await?;
+            refuse_free_up(path, &status, files.decide_free_up(path, true).await?)?;
+        }
+        Ok(())
     }
 
     /// `FreeUp(paths)`, the menu's "Free up space":
@@ -75,9 +100,37 @@ impl SyncService {
     /// change not uploaded yet is left and counted in [`FreedUp::pinned`]. One `freed`
     /// event per path that freed anything.
     pub async fn free_up(&self, paths: &[PathBuf]) -> Result<FreedUp, SyncError> {
-        // TODO: `ItemFilesInterface::find_path_status` (`pin_holder`: a path pinned from above is refused, one
-        // with its own pin loses it by `set_pin`), then `free_up`, then `show_pins`.
-        todo!()
+        let mount = self.require_mount()?;
+        let files = mount.files_interface();
+        // Every path is checked before anything changes.
+        let mut own = Vec::new();
+        for path in paths {
+            let status = files.find_path_status(path).await?;
+            refuse_free_up(path, &status, files.decide_free_up(path, true).await?)?;
+            if status.pin_holder == PinHolder::Itself {
+                own.push(path);
+            }
+        }
+        // The pins come off first; one that cannot stops the call, and the pins already off stay off.
+        for path in own {
+            let unpinned = files.set_pin(path, false).await;
+            self.show_pins(&mount).await;
+            unpinned?;
+        }
+        let (mut total, mut events) = (FreedUp::default(), Vec::new());
+        for path in paths {
+            let freed = files.free_up(path).await?;
+            total.files += freed.files as u32;
+            total.bytes += freed.bytes;
+            total.pinned += freed.kept as u32;
+            if freed.files > 0 {
+                events.push(activity::event(Kind::Freed, path.display().to_string(), freed_detail(freed.files as u32, freed.bytes)));
+            }
+        }
+        if !events.is_empty() {
+            self.report.activity.record(events).await;
+        }
+        Ok(total)
     }
 }
 

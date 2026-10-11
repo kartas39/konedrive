@@ -6,8 +6,6 @@
 //! that is gone until the user reloads. `FilesAdded` is the signal every KIO program takes as
 //! "something is new in this directory: list it again"; one that does not show the directory
 //! ignores it.
-// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
-#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::path::PathBuf;
 

@@ -187,6 +187,12 @@ pub struct AccountConfig {
     /// time that has passed is no pause, and stays here until the section is written again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused_until: Option<i64>,
+    /// The user asked for read-only while changes were unsent: the account stays read-write
+    /// until nothing is unsent and then switches by itself (`account::mode`,
+    /// `keep_read_only_wish`). Absent while no such wish stands, and in every file written
+    /// before the wish was kept: both read as none.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub read_only_wanted: bool,
     /// `pause_on_metered` as an account had it before it became one setting for the whole
     /// app: read only to be moved to [`Config::pause_on_metered`]
     /// ([`crate::config::migrate::move_hold_settings`]), and gone from the file once moved.
@@ -216,6 +222,7 @@ impl AccountConfig {
             machine_name: String::new(),
             thumbnails: None,
             paused_until: None,
+            read_only_wanted: false,
             old_pause_on_metered: None,
             old_on_battery: None,
         }

@@ -2,8 +2,6 @@
 //! half of the work (`dbus/folder.rs` is the thin zbus wrapper around it, the same split
 //! `crate::account`/`crate::dbus` uses for `Account`). There is one `SyncService` per
 //! account; the list of them is the daemon's, in `registry.rs`.
-// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
-#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 pub mod bring_up;
 mod folder;
@@ -171,9 +169,9 @@ pub struct SyncService {
     /// synchronous callers. Written by nothing but `publish`.
     view: watch::Sender<View>,
     /// The activity log, the conflicts, the downloads under way and the
-    /// folder's space, shared with the folder's mount and its sync. Its store is a clone of the running sync's, attached as
-    /// the sync starts and detached by [`change`](Self::change), after which no write
-    /// holds it.
+    /// folder's space, shared with the folder's mount and its sync. Its store is a clone of the folder's, attached by
+    /// the start that opens it (`sync_tasks::start_order`) and detached before a take-down or a Forget closes it
+    /// (`let_go_of_activity`): it stays attached while a stopped sync keeps its parts.
     report: Report,
     /// The account's ignore list (`docs/design/writes.md` §4.2 rule 3), from `config.toml`: the
     /// folder's mount reads it, `SetIgnorePatterns` changes it.
@@ -189,6 +187,12 @@ pub struct SyncService {
     /// What background work runs now (`running`): the one place every reader of the pause
     /// asks, with the account's settings from `config.toml`.
     running: Arc<running::Running>,
+    /// The start or the stop of the folder's sync that runs now, and what it left when its caller was cut
+    /// ([`folder::SyncChangeTask`]).
+    sync_change: folder::SyncChangeTask,
+    /// The service itself: a start gives the mount the report of its take-down, which reaches the service by a
+    /// weak reference (`take_down_report`). Weak: it keeps nothing alive.
+    me: std::sync::Weak<SyncService>,
     /// The task that counts the queue totals into the published state
     /// (`status::totals`): the service's own, from its making to its drop, whether or not
     /// anything shows the account.
@@ -232,6 +236,8 @@ impl SyncService {
             state,
             folder: Arc::new(tokio::sync::RwLock::new(Folder::new())),
             view: watch::Sender::new(View::default()),
+            sync_change: folder::SyncChangeTask::default(),
+            me: me.clone(),
             wiring,
         })
     }
@@ -331,10 +337,21 @@ impl SyncService {
     /// caller bounds the wait (`crate::daemon::stop`): the work runs in a task of its
     /// own, which a caller that is cut leaves running until the process exits.
     pub async fn end_at_daemon_stop(&self) -> Option<std::path::PathBuf> {
-        // TODO: inside a change of the folder (which stops the sync, if one runs, and leaves its parts in
-        // `Kept::parts`): `sync_tasks::stop_order::end_kept_folder_at_daemon_stop` over those parts, taken out of
-        // the record, in a task of its own that is awaited here.
-        todo!()
+        let mut stopped = self.change().await;
+        // A folder a fault took down is not tried again: the daemon ends.
+        if let Some(folder::Sync::Stopped(folder::Why::TakenDown { next_try_at, .. })) = stopped.folder_mut().sync_mut() {
+            *next_try_at = None;
+        }
+        let record = stopped.folder_mut().record_mut()?;
+        let path = record.root.path.clone();
+        let kept = record.kept.parts.take()?;
+        // The view lets go of the parts: nothing of the bus reaches a mount that is being stopped.
+        stopped.publish();
+        // In a task of its own: a caller cut at the daemon's stop bound leaves it running until the process exits.
+        if let Err(error) = tokio::spawn(crate::sync_tasks::stop_order::end_kept_folder_at_daemon_stop(kept)).await {
+            tracing::warn!("the task ending the folder {} at the daemon's stop failed: {error}", path.display());
+        }
+        Some(path)
     }
 
     /// `Writable`: whether the folder takes changes now, and what is changed in it is

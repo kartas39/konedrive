@@ -232,23 +232,22 @@ impl FolderAccount for AccountService {
     }
 
     fn tell_unsent_count(&self, unsent: u64) {
-        // The note is there for as long as the wish stands (`keep_read_only_wish`, `recompute_mode`): an account that shows none keeps no wish.
-        let shown = match self.state.get().mode_note {
-            Some(ModeNote::SwitchingToReadOnly { unsent: shown }) => shown,
-            Some(ModeNote::WiderGrant(_) | ModeNote::ConfigUnreadable | ModeNote::NoDriveRecorded | ModeNote::DriveMismatch { .. } | ModeNote::SignInToWrite | ModeNote::DriveNotSeen) | None => return,
-        };
-        if shown != unsent {
-            // Asked again inside the write: a wish taken back meanwhile gets no note from here.
-            self.state.update(|snapshot| {
-                if let Some(ModeNote::SwitchingToReadOnly { unsent: shown }) = &mut snapshot.mode_note {
-                    *shown = unsent;
+        let is_shown = matches!(self.state.get().mode_note, Some(ModeNote::SwitchingToReadOnly { .. }));
+        if !is_shown && !self.config.account(&self.id).is_some_and(|account| account.read_only_wanted) {
+            return;
+        }
+        // Written when it changed: every plan says the count, and most say the one before.
+        if self.state.get().mode_note.as_ref().is_some_and(|note| matches!(note, ModeNote::SwitchingToReadOnly { unsent: shown } if *shown != unsent)) {
+            self.state.update(|s| {
+                if matches!(s.mode_note, Some(ModeNote::SwitchingToReadOnly { .. })) {
+                    s.mode_note = Some(ModeNote::SwitchingToReadOnly { unsent });
                 }
             });
         }
         if unsent == 0 {
-            // The switch awaits the folder and the token: a task of its own, never the caller's.
-            if let Some(account) = self.own.upgrade() {
-                tokio::spawn(async move { account.switch_to_read_only_when_sent().await });
+            // In a task of its own: the plan's task, which calls this, never waits for the switch, which waits for it.
+            if let (Some(service), Ok(runtime)) = (self.me.upgrade(), tokio::runtime::Handle::try_current()) {
+                runtime.spawn(async move { service.switch_to_read_only_when_sent().await });
             }
         }
     }
@@ -298,9 +297,9 @@ pub struct AccountService {
     siblings: std::sync::Mutex<Option<Arc<Siblings>>>,
     /// Set by `Accounts.Remove`: no sign-in is begun or stored from then on.
     retired: std::sync::atomic::AtomicBool,
-    /// This account itself, for the task it starts of its own: the switch to read-only
-    /// once nothing is unsent (`FolderAccount::tell_unsent_count`).
-    own: Weak<AccountService>,
+    /// The service itself, for the one task it starts from a call that has no `Arc` of it
+    /// (`FolderAccount::tell_unsent_count`). Weak: it keeps nothing alive.
+    me: Weak<AccountService>,
 }
 
 /// An account's own attempt ([`attempt`]): what interrupts its wait for the browser, and
@@ -336,7 +335,8 @@ impl AccountService {
         let graph = DriveClient::new(endpoints.graph.clone(), Arc::clone(&tokens) as Arc<dyn konedrive_graph::token::TokenSource>)?;
         let cache_lock = Arc::new(std::sync::Mutex::new(()));
         let quota = Quota::new(state.clone(), Some(keep_quota(paths.account_cache.clone(), Arc::clone(&cache_lock))));
-        let service = Arc::new_cyclic(|own| Self {
+        let service = Arc::new_cyclic(|me: &Weak<Self>| Self {
+            me: me.clone(),
             id: id.clone(),
             config,
             state,
@@ -465,6 +465,7 @@ impl AccountService {
         // the file last read said read-write.
         let standing = self.config.write_standing(&self.id);
         let unreadable = standing.is_none() && self.config.account(&self.id).is_some_and(|a| a.mode == Mode::ReadWrite);
+        let is_read_only_wanted = self.config.account(&self.id).is_some_and(|a| a.read_only_wanted);
         let WriteStanding { mode: configured, recorded_drive: recorded } =
             standing.unwrap_or(WriteStanding { mode: Mode::ReadOnly, recorded_drive: None });
         self.state.update(|s| {
@@ -490,6 +491,14 @@ impl AccountService {
             } else {
                 None
             };
+            // The wish for read-only is said while it stands and nothing else is to say: its count is left as it is
+            // (`tell_unsent_count` writes it), 0 until the folder's first plan counted.
+            let why = why.or_else(|| {
+                (is_read_only_wanted && s.mode == Mode::ReadWrite).then(|| match &s.mode_note {
+                    Some(ModeNote::SwitchingToReadOnly { unsent }) => ModeNote::SwitchingToReadOnly { unsent: *unsent },
+                    _ => ModeNote::SwitchingToReadOnly { unsent: 0 },
+                })
+            });
             // The note takes the place of what `LastError` said; with no reason left, only
             // the note goes, and an error said since stays.
             s.set_mode_note(why);

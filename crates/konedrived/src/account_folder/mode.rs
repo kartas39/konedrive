@@ -8,19 +8,19 @@
 //! (`sync_tasks::access_mode_change`). What the account asks of the folder for a switch
 //! is [`PendingUploads`]: how many changes are unsent, and to hold them here at the
 //! switch itself. Nothing is ever dropped.
-// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
-#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::sync::{Arc, Weak};
 
 use tokio::sync::watch;
 
-use super::folder::{Stopped, View};
+use super::folder::{Standing, Sync, Why};
 use super::SyncService;
-use crate::account::state::AccountSnapshot;
+use crate::account::state::{AccountSnapshot, SignInState};
 use crate::account::PendingUploads;
 use crate::config::{Mode, WriteStanding};
-use crate::status::snapshot::OutboxNote;
+use crate::sync_parts::sending_holds::SendingHold;
+use crate::sync_parts::sync_plan_wake::WakeCause;
+use crate::sync_tasks::access_mode_change;
 
 impl SyncService {
     /// The mode the folder follows now, as last published.
@@ -36,14 +36,30 @@ impl SyncService {
     /// The accounts manager calls this once before the folder is restored, with the mode
     /// the account starts in: nothing is up then, so the folder only takes the mode.
     pub async fn follow_mode(&self, mode: Mode) {
-        // TODO: `sync_tasks::access_mode_change::switch_to_read_only` or `switch_to_read_write`, over the parts
-        // of the running sync and while its tasks run; a folder that is not up, or whose sync does not run, only
-        // takes the mode (`Folder::wanted`), which its next start applies. Inside `hold_folder()`, not a
-        // `change()`: no task is stopped. The mode applied is the one the ACCOUNT says once the folder's lock is
-        // held (`FolderAccount::snapshot`), not `mode` as the watcher woke with it: a switch the account made
-        // meanwhile through `hold_unsent_changes` is then found made, and is never turned back by an older
-        // snapshot.
-        todo!()
+        // Inside the second door: no task of the sync is stopped for a switch.
+        let mut held = self.hold_folder().await;
+        // The mode the ACCOUNT says now that the lock is held, not `mode` as the caller woke with it: a switch the
+        // account made meanwhile (`hold_unsent_changes`) is found made, and is never turned back by an older snapshot.
+        let woken_with = mode;
+        let mode = self.wiring.account.snapshot().mode;
+        if mode != woken_with {
+            tracing::debug!("the account {:?} is {} by now, not {} as its folder was told", self.id(), mode.as_str(), woken_with.as_str());
+        }
+        if held.folder().wanted == mode {
+            return;
+        }
+        held.set_wanted(mode);
+        // A folder whose sync does not run only takes the mode: its next start applies it.
+        let Some(started) = held.folder().running() else { return };
+        let sending_holds = started.tasks.sending_holds();
+        let switched = match mode {
+            Mode::ReadOnly => access_mode_change::switch_to_read_only(&started.mount, sending_holds, &started.running_steps).await,
+            Mode::ReadWrite => access_mode_change::switch_to_read_write(&started.mount, sending_holds).await,
+        };
+        match switched {
+            Ok(()) => tracing::info!("the folder of the account {:?} is {} now", self.id(), mode.as_str()),
+            Err(why) => tracing::warn!("the folder of the account {:?} could not be switched to {}: {why}", self.id(), mode.as_str()),
+        }
     }
 
 }
@@ -72,7 +88,21 @@ pub struct AccountHolds {
 /// One function for the start (`StandingSendingHolds::is_signed_out`, `writes_refusal`)
 /// and for every later change ([`watch_account`]).
 pub fn decide_account_holds(snapshot: &AccountSnapshot, standing: Option<&WriteStanding>) -> AccountHolds {
-    todo!()
+    let is_signed_out = snapshot.state != SignInState::SignedIn;
+    let writes_refusal = match standing {
+        None => Some("config.toml cannot be read".to_owned()),
+        // A read-only account's folder is read-only, and held as such.
+        Some(WriteStanding { mode: Mode::ReadOnly, .. }) => None,
+        Some(WriteStanding { recorded_drive: None, .. }) => Some("config.toml records no drive for the account".to_owned()),
+        Some(WriteStanding { recorded_drive: Some(drive), .. }) if *drive != snapshot.live_drive => Some(format!(
+            "the account's token was last seen to reach drive {:?}, not drive {:?}, which config.toml records",
+            snapshot.live_drive,
+            drive.as_str()
+        )),
+        Some(_) if !konedrive_graph::oauth::grants_writes(&snapshot.granted_scopes) => Some("the account's sign-in does not allow changes".to_owned()),
+        Some(_) => None,
+    };
+    AccountHolds { is_signed_out, writes_refusal }
 }
 
 impl SyncService {
@@ -95,7 +125,44 @@ impl SyncService {
     ///
     /// Called by [`watch_account`] and by nobody else.
     pub(super) async fn follow_account(&self, snapshot: &AccountSnapshot) {
-        todo!()
+        // 1: the mode.
+        self.follow_mode(snapshot.mode).await;
+        // 2: what of the account holds the sending of a running sync. `config.toml` is read off the runtime.
+        let persist = self.wiring.persist.clone();
+        let standing = tokio::task::spawn_blocking(move || persist.store.write_standing(&persist.account)).await.ok().flatten();
+        let holds = decide_account_holds(snapshot, standing.as_ref());
+        let now = self.clock.now();
+        // The handles of the running sync, taken under the folder's lock and used without it.
+        let (signed_in_again, waits_for_drive) = {
+            let folder = self.folder.read().await;
+            let signed_in_again = folder.running().and_then(|started| {
+                let sending_holds = started.tasks.sending_holds();
+                let says_signed_out = sending_holds.find(now) == Some(SendingHold::SignedOut);
+                sending_holds.set_writes_refusal(holds.writes_refusal.clone());
+                if holds.is_signed_out {
+                    if !says_signed_out {
+                        started.tasks.hold_for_sign_out();
+                    }
+                    return None;
+                }
+                says_signed_out.then(|| (started.store.clone(), Arc::clone(sending_holds), started.tasks.poll()))
+            });
+            let waits_for_drive = matches!(folder.up().map(|up| &up.sync), Some(Sync::Stopped(Why::DriveNotKnown(_))));
+            (signed_in_again, waits_for_drive)
+        };
+        if let Some((store, sending_holds, poll)) = signed_in_again {
+            crate::sync_tasks::stop_order::release_after_sign_in(&store, &sending_holds, &poll).await;
+        }
+        // 3: a folder that waited for the account's drive, when one is named now.
+        if waits_for_drive && (!snapshot.live_drive.is_empty() || standing.is_some_and(|standing| standing.recorded_drive.is_some())) {
+            let mut stopped = self.change().await;
+            if matches!(stopped.folder().up().map(|up| &up.sync), Some(Sync::Stopped(Why::DriveNotKnown(_)))) && stopped.folder().standing == Standing::Active {
+                self.start_sync(&mut stopped).await;
+            } else {
+                // Another change came first: what it left is left, and a sync this one stopped runs again.
+                self.start_again(&mut stopped).await;
+            }
+        }
     }
 }
 
@@ -107,16 +174,25 @@ impl PendingUploads for SyncService {
     /// and forgets the refusals that fit. Nothing with no running sync: its start reads
     /// the quota itself.
     fn quota_read(&self, quota: &konedrive_graph::drive::DriveQuota) {
-        // TODO: `OneDriveSpace::apply_quota` of the running sync (`View::onedrive_space`), then `SyncPlanWake::wake(WakeCause::QuotaRead)` (`View::parts`).
-        todo!()
+        let view = self.view();
+        // Of a running sync alone: a start reads the quota itself.
+        let (Some(onedrive_space), Some(parts)) = (view.onedrive_space, view.parts) else { return };
+        onedrive_space.apply_quota(quota, self.clock.now());
+        parts.sync_plan_wake.wake(WakeCause::QuotaRead);
     }
 
     /// How many changes made here are unsent. A change saved a moment ago counts: the
     /// folder's mount writes each one before it answers the program that made it. 0 for
     /// an account with no folder and for a folder whose store is not open.
     async fn pending_uploads(&self) -> u64 {
-        // TODO: `ItemReader::count_unsent`, read through the folder's store (`Store::read_items`).
-        todo!()
+        let Some(store) = self.tree_store() else { return 0 };
+        match store.read_items(|reader| reader.count_unsent()).await {
+            Ok(unsent) => unsent.count,
+            Err(error) => {
+                tracing::warn!("what is unsent could not be counted: {error}");
+                0
+            }
+        }
     }
 
     /// The account switches to read-only now (forced, or with nothing unsent): the
@@ -132,8 +208,26 @@ impl PendingUploads for SyncService {
     /// not run there is nothing to hold: only `wanted` changes, and the next start
     /// applies it before its first plan.
     async fn hold_unsent_changes(&self) -> u64 {
-        // TODO: `sync_tasks::access_mode_change::switch_to_read_only(mount, sending_holds, running_steps)`, then `ItemReader::count_unsent`.
-        todo!()
+        let store = {
+            let mut held = self.hold_folder().await;
+            held.set_wanted(Mode::ReadOnly);
+            // For a folder whose sync does not run there is nothing to hold: its next start applies the mode.
+            if let Some(started) = held.folder().running() {
+                if let Err(why) = access_mode_change::switch_to_read_only(&started.mount, started.tasks.sending_holds(), &started.running_steps).await {
+                    tracing::warn!("the folder of the account {:?} holds what is unsent, but its mount could not be switched to read-only: {why}", self.id());
+                }
+            }
+            held.folder().store()
+        };
+        // Counted after the switch: what stays here unsent.
+        let Some(store) = store else { return 0 };
+        match store.read_items(|reader| reader.count_unsent()).await {
+            Ok(unsent) => unsent.count,
+            Err(error) => {
+                tracing::warn!("what stays unsent could not be counted: {error}");
+                0
+            }
+        }
     }
 }
 

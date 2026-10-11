@@ -1,11 +1,9 @@
 //! "Always keep on this device": pins put on and taken off. A pin is a row of the folder's
 //! tree store, kept by its mount, which downloads what a pin keeps.
-// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
-#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::path::{Path, PathBuf};
 
-use crate::mount::ItemMount;
+use crate::mount::{ItemMount, PinHolder};
 use crate::account_folder::{SyncError, SyncService};
 
 /// Why a free-up or unpin of `path`, which `by` pins, is refused: the path refused and what
@@ -35,18 +33,24 @@ impl SyncService {
     /// (`NotAllowed`). `Files` asks every account whose folder a call's paths are in first,
     /// so that a call that spans accounts is refused as a whole or not at all.
     pub async fn check_unpinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
-        // TODO: `ItemFilesInterface::find_path_status` (the mount's `item_files_interface`) for each path:
-        // `ItemPathStatus::pin_holder` is `PinHolder::DirectoryAbove { path }` for one a folder above pins, and
-        // the refusal names that path.
-        todo!()
+        let mount = self.require_mount()?;
+        for path in paths {
+            if let PinHolder::DirectoryAbove { path: by } = mount.files_interface().find_path_status(path).await?.pin_holder {
+                return Err(SyncError::NotAllowed(refusal(path, &by)));
+            }
+        }
+        Ok(())
     }
 
     /// What `Pin` checks of every path before it pins any, on its own: each path is an item
     /// of the folder. `Files` asks every account first, as for
     /// [`check_unpinnable`](Self::check_unpinnable).
     pub async fn check_pinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
-        // TODO: `ItemFilesInterface::find_path_status` (the mount's `item_files_interface`) for each path.
-        todo!()
+        let mount = self.require_mount()?;
+        for path in paths {
+            mount.files_interface().find_path_status(path).await?;
+        }
+        Ok(())
     }
 
     /// `Unpin(paths)`, unchecking "Always keep on this device": each path's own pin comes
@@ -61,17 +65,38 @@ impl SyncService {
     /// Puts each path's own pin on, or takes it off; how many changed. A path a folder
     /// above it pins is left as it is.
     async fn set_pins(&self, paths: &[PathBuf], pinned: bool) -> Result<u32, SyncError> {
-        // TODO: `ItemFilesInterface::find_path_status` (a path whose `pin_holder` is a directory above is left
-        // as it is) and `set_pin`, which answers whether the path's own pin changed: those are counted. Then
-        // `show_pins`.
-        todo!()
+        let mount = self.require_mount()?;
+        let mut changed = 0;
+        let mut refused = None;
+        for path in paths {
+            // A path a folder above it pins is left as it is.
+            let set = match mount.files_interface().find_path_status(path).await {
+                Ok(status) if matches!(status.pin_holder, PinHolder::DirectoryAbove { .. }) => continue,
+                Ok(_) => mount.files_interface().set_pin(path, pinned).await,
+                Err(refusal) => Err(refusal),
+            };
+            match set {
+                Ok(true) => changed += 1,
+                Ok(false) => {}
+                Err(refusal) => {
+                    refused = Some(refusal);
+                    break;
+                }
+            }
+        }
+        // Also when a path was refused: the pins changed before it stay changed, and `PinnedCount` says so.
+        self.show_pins(&mount).await;
+        match refused {
+            Some(refusal) => Err(refusal.into()),
+            None => Ok(changed),
+        }
     }
 
     /// `PinnedCount`, as the mount has it: written into the published state. Called after
     /// a start of the folder's sync and after every change of a pin made through the bus;
     /// what a listing changes of the pins is published by the plan's task with its round.
     pub(super) async fn show_pins(&self, mount: &ItemMount) {
-        // TODO: `ItemFilesInterface::count_pins` (the mount's `item_files_interface`).
-        todo!()
+        let count = u32::try_from(mount.files_interface().count_pins().await).unwrap_or(u32::MAX);
+        self.state.update_if_changed(|s| s.local.pinned_count = count);
     }
 }

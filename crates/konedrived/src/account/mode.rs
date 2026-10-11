@@ -219,24 +219,48 @@ impl AccountService {
     /// plan). The account's mode does not change. The ONE keeper of the wish is the
     /// account: it holds the token the switch gives up. Called by
     /// [`switch_to_read_only`](Self::switch_to_read_only) under `session`.
-    // TODO: `read_only_wanted = true` under the account in `config.toml` (the name is decided) is not in `config::Account` yet: the field is added with its reading of older files (`config/model.rs`, `config/migrate.rs`) when this is filled.
-    #[allow(unused_variables)]
     async fn keep_read_only_wish(&self, unsent: u64) -> Result<(), ModeError> {
-        todo!()
+        self.config
+            .update_account(&self.id, |account| {
+                account.read_only_wanted = true;
+                Ok::<_, ConfigError>(())
+            })
+            .map_err(|e| ModeError::Failed(format!("cannot save the configuration: {e}")))?;
+        // Worked out again first: a note that says more than the wish stays, and the wish is said with the count just read.
+        self.recompute_mode();
+        self.state.update(|s| {
+            if matches!(s.mode_note, Some(ModeNote::SwitchingToReadOnly { .. })) {
+                s.set_mode_note(Some(ModeNote::SwitchingToReadOnly { unsent }));
+            }
+        });
+        tracing::info!("the account {:?} switches to read-only once its {unsent} unsent change(s) are sent", self.id);
+        Ok(())
     }
 
     /// Whether the account keeps a wish for read-only (`read_only_wanted` in `config.toml`,
     /// read now). Called by [`set_mode`](Self::set_mode) to read-write, which then only
     /// takes the wish back.
     fn keeps_read_only_wish(&self) -> bool {
-        todo!()
+        self.config.current().and_then(|config| config.account(&self.id).map(|account| account.read_only_wanted)).unwrap_or(false)
     }
 
     /// Takes the wish for read-only back: `read_only_wanted` off `config.toml`, the note
     /// gone. The account is read-write as it was; nothing else changes. Nothing for an
     /// account that keeps no wish. Called by [`set_mode`](Self::set_mode) to read-write.
     async fn take_read_only_wish_back(&self) -> Result<(), ModeError> {
-        todo!()
+        if !self.keeps_read_only_wish() {
+            return Ok(());
+        }
+        self.config
+            .update_account(&self.id, |account| {
+                account.read_only_wanted = false;
+                Ok::<_, ConfigError>(())
+            })
+            .map_err(|e| ModeError::Failed(format!("cannot save the configuration: {e}")))?;
+        // The note goes with the wish.
+        self.recompute_mode();
+        tracing::info!("the account {:?} stays read-write: the wish for read-only is taken back", self.id);
+        Ok(())
     }
 
     /// The folder's plan counted nothing unsent (`FolderAccount::tell_unsent_count(0)`): an
@@ -246,9 +270,14 @@ impl AccountService {
     /// answers how many are unsent at that moment), then the token. A change made here between the plan's
     /// reading and the hold stays here unsent, under the hold, as after a forced switch:
     /// the switch is not put off again for it. Nothing for an account with no wish.
-    #[allow(dead_code)]
     pub(crate) async fn switch_to_read_only_when_sent(&self) {
-        todo!()
+        if !self.keeps_read_only_wish() {
+            return;
+        }
+        // As a forced switch, and in its order: what came to be unsent since the plan's count stays here under the hold.
+        if let Err(error) = self.switch_to_read_only(true).await {
+            tracing::warn!("the account {:?} could not switch to read-only though nothing is unsent; its wish stands: {error:?}", self.id);
+        }
     }
 
     /// [`set_mode`](Self::set_mode) to read-only.
@@ -284,6 +313,8 @@ impl AccountService {
         self.config
             .update_account(&self.id, |account| {
                 account.mode = Mode::ReadOnly;
+                // The wish is forgotten with the switch it asked for.
+                account.read_only_wanted = false;
                 Ok::<_, ConfigError>(())
             })
             .map_err(|e| ModeError::Failed(format!("cannot save the configuration: {e}")))?;
@@ -385,7 +416,10 @@ pub enum ReadOnlySwitch {
 
 /// Whether a switch to read-only asked with `unsent` changes unsent is made now. Pure:
 /// `SwitchNow` with nothing unsent and whenever `is_forced`; else `KeepWish`.
-#[allow(unused_variables)]
 pub fn decide_read_only_switch(unsent: u64, is_forced: bool) -> ReadOnlySwitch {
-    todo!()
+    if is_forced || unsent == 0 {
+        ReadOnlySwitch::SwitchNow { unsent }
+    } else {
+        ReadOnlySwitch::KeepWish { unsent }
+    }
 }

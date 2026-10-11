@@ -1,24 +1,30 @@
-// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
-#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 use std::path::Path;
-use std::sync::Arc;
 
 use crate::account_folder::SyncService;
 use crate::account_folder::SyncError;
 use crate::status::activity;
+use crate::upload_queue;
 
 impl SyncService {
     /// `Skipped()`: every item not in the folder whose own folder is, as a
     /// full path and a reason.
     ///
-    /// The store is the running sync's, read with the folder's state held for reading, so
-    /// a Forget waits for a read under way rather than remove the files
-    /// under it. The lock goes into the blocking task with the store's clone,
-    /// so it is held as long as the clone is, even when this call is dropped
-    /// part-way.
+    /// The store is the folder's as last published (`View::parts`), read on its reading
+    /// connection: a Forget waits, with a bound, until every clone of the store is let go
+    /// of before it removes the files, this read's among them. Empty for an account with
+    /// no folder and for a folder that keeps no open store.
     pub async fn skipped(&self) -> Result<Vec<(String, String, String, String)>, SyncError> {
-        // TODO: `upload_queue::read_items_not_shown`, in a read of the folder's store (`View::parts`: `Store::read_items`), over `PublishedPlan::list_answers` — empty with no plan published yet.
-        todo!()
+        let Some(record) = self.record() else { return Ok(Vec::new()) };
+        let Some(parts) = self.view().parts else { return Ok(Vec::new()) };
+        // The answers of the last plan, taken before the read; none with no plan published yet.
+        let answers = parts.published_plan.list_answers();
+        let folder = record.root.path;
+        let not_shown = parts
+            .store
+            .read_items(move |items| upload_queue::read_items_not_shown(items, &answers, &folder))
+            .await
+            .map_err(|e| SyncError::Store(e.to_string()))?;
+        Ok(not_shown.into_iter().map(|row| (row.path, row.reason, row.waits, row.here)).collect())
     }
 
     /// `ItemsListed`, `ItemsPlaced`, `SkippedCount`, for the VM suite's listing of a real
@@ -73,8 +79,14 @@ impl SyncService {
     /// `NotSignedIn` with no drive or no token, `Unreachable` when OneDrive
     /// does not answer.
     pub async fn web_url(&self, path: &Path) -> Result<String, SyncError> {
-        // TODO: `ItemFilesInterface::find_path_status` (the mount's `item_files_interface`): `ItemPathStatus::onedrive_item` is what OneDrive is asked by.
-        todo!()
+        // Never opened: an open through the mount would download the file.
+        let status = match self.require_mount()?.files_interface().find_path_status(path).await {
+            Ok(status) => status,
+            Err(crate::mount::FilesRefusal::NotInOneDrive) => return Err(SyncError::NotInOneDrive(path.display().to_string())),
+            Err(refused) => return Err(refused.into()),
+        };
+        let drive = self.drive().ok_or(SyncError::NotSignedIn)?;
+        page_of(drive.item(status.onedrive_item.item_id.as_str()).await, &path.display().to_string())
     }
 
     /// `Files.WebUrl` of the account's folder itself: the address of the page

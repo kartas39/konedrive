@@ -1,6 +1,4 @@
 //! `Hydrate`: a file downloaded now, by the folder's mount.
-// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
-#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
 use std::path::Path;
 use std::sync::Arc;
@@ -30,7 +28,6 @@ impl SyncService {
     /// through the mount would start, asked for by name. A file that is downloaded already is
     /// left as it is.
     pub async fn hydrate_now(&self, path: &Path) -> Result<(), SyncError> {
-        // TODO: `ItemFilesInterface::download` (the mount's `item_files_interface`).
-        todo!()
+        Ok(self.require_mount()?.files_interface().download(path).await?)
     }
 }

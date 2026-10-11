@@ -20,7 +20,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use super::{SyncError, SyncService};
-use crate::conditions::running::{Clock, Conditions, HoldSettings};
+use crate::conditions::running::{Clock, Conditions, HoldSettings, Stop};
 
 /// How often at most a timed pause is looked at by the clock, in seconds: a sleep counts
 /// only the time the machine is awake, so a suspend would stretch a longer one.
@@ -151,6 +151,18 @@ impl Shared {
     }
 }
 
+/// What stops the account's background work, as the sending of a folder's sync is held by it
+/// (`SendingHolds::set_paused`, `StandingSendingHolds::paused_until`): the user's pause with its
+/// end, or until resumed; the automatic hold (metered, battery) until the owner says it ended,
+/// by no time; `None` when neither stops it. Both read `SendingHold::Paused`. Pure.
+// test: a_pause_until_resumed_and_a_hold_have_no_end_and_a_timed_pause_has_its_own
+pub(super) fn decide_paused_until(stop: Option<Stop>) -> Option<Option<i64>> {
+    match stop? {
+        Stop::Paused(0) | Stop::Held(_) => Some(None),
+        Stop::Paused(until) => Some(Some(until)),
+    }
+}
+
 impl SyncService {
     /// `Pause(seconds)`: nothing is uploaded, and OneDrive is not asked for
     /// changes, until `seconds` have passed — or until `Resume()` when 0.
@@ -223,13 +235,16 @@ impl SyncService {
             paused
         });
         if changed {
-            // TODO: over the handles of the view (this is not async): `SendingHolds::set_paused` of
-            // `View::sending_holds`, which wakes the plan — `Some(until)` for the user's pause, `Some(None)` for
-            // the automatic hold (metered, battery), `None` when neither stops the account's work: both read
-            // `SendingHold::Paused`, as today both read `paused` — and the listing asked for a cycle
-            // (`View::poll`, `refresh`): the poller looks at the pause itself only at its interval, and after an
-            // untimed pause nothing else wakes it.
-            todo!()
+            // Over the handles of the view: this is not async and holds no lock of the folder. The plan is woken by the
+            // hold; the listing is asked for a cycle, since the poller looks at the pause itself only at its interval,
+            // and after an untimed pause nothing else wakes it.
+            let view = self.view();
+            if let Some(sending_holds) = &view.sending_holds {
+                sending_holds.set_paused(decide_paused_until(self.running.stop()));
+            }
+            if let Some(poll) = &view.poll {
+                poll.refresh();
+            }
         }
     }
 

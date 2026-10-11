@@ -1,20 +1,22 @@
 //! A OneDrive folder's sync started ([`SyncService::start_sync`]) and asked for a cycle
 //! (`Refresh()`, the network back). How it starts and stops is `crate::sync_tasks`'.
-// The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
-#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 
-use konedrive_graph::drive::DriveClient;
-use konedrive_tree::Store;
-use tokio::sync::{watch, Notify};
-use tokio_util::sync::CancellationToken;
+use konedrive_tree::StoreOrigin;
 
-use crate::account::state::SignInState;
-use crate::config::Mode;
-use crate::desktop::thumbs;
-use crate::account_folder::folder::{Down, Is, Record, Standing, Stopped, Sync, Why};
-use crate::account_folder::{SyncError, SyncPaths, SyncService};
+use crate::account_folder::folder::{Down, Is, Standing, Stopped, Sync, SyncChange, TakeDownTry, Why};
+use crate::account_folder::mode::decide_account_holds;
+use crate::account_folder::pause::decide_paused_until;
+use crate::account_folder::take_down::decide_retry_wait;
+use crate::account_folder::{SyncError, SyncService};
+use crate::config::DriveId;
+use crate::listing::listing_cycle::DriveRecord;
+use crate::onedrive_steps::content_upload::Limits;
+use crate::sync_parts::lease::Lease;
+use crate::sync_parts::sync_plan_wake::WakeCause;
+use crate::sync_plan_task::plan_input::PlanSettings;
+use crate::sync_tasks::start_order::{start_folder_sync, FolderStartInput, StandingSendingHolds, StartRefusal};
 
 impl SyncService {
     /// Starts the sync of the folder that is up now; nothing for a folder that is not up. Inside a change of the
@@ -24,39 +26,144 @@ impl SyncService {
     /// The start itself is `sync_tasks::start_order::start_folder_sync`'s, stage by stage; what
     /// it answers is put into the state, from where only a change takes it out.
     pub(super) async fn start_sync(&self, stopped: &mut Stopped<'_>) {
-        // TODO: `sync_tasks::start_order::start_folder_sync`, in a task of its own, its answer
-        // (`StartedFolder`) kept as `Sync::Running`. Its input: `kept` is `Kept::parts`, taken whole;
-        // `settings` is `PlanSettings::of(self.machine_name())`; `standing_holds` what stops the account's work now
-        // (`Running::stop`: the user's pause with its end, the automatic hold as paused until resumed) and
-        // `mode::decide_account_holds` of the account's snapshot read now; `take_down_report` is
-        // `self.take_down_report()`; `unsent_count_report` tells the account
-        // (`FolderAccount::tell_unsent_count`); `lease` is `Lease::on(&self.folder)`.
-        // A `RefusedStart` goes to `cannot_start` — `StartRefusal::DriveNotKnown` as `Why::DriveNotKnown`,
-        // which the watcher of the account starts again; a start that is a try after a take-down
-        // (`Up::take_down_try`) stays `Why::TakenDown`, as `retry_after_take_down` says — and the parts it
-        // gives back into `Kept::parts`. What a rebuild of the store lost (`StartedFolder::store_origin`,
-        // `RefusedStart::rebuild_loss`) is read here, once, and said (`describe_rebuild_loss`).
-        // After a start: the desktop told the mount came (`stopped.read_again()`, in either access mode),
-        // and `PinnedCount` shown (`show_pins`).
-        todo!()
+        debug_assert!(stopped.folder().running().is_none(), "a sync runs inside a change");
+        // What a start reads of the folder is what it is now.
+        stopped.publish();
+        let Some(up) = stopped.folder().up() else { return };
+        let (root, source, tree_lock) = (up.record.root.clone(), up.record.kept.source.clone(), Arc::clone(&up.record.kept.tree_lock));
+        let wanted = stopped.folder().wanted;
+        let (Some(me), Some(crate::account_folder::OneDrive { drive, paths }), Some(source)) = (self.me.upgrade(), self.wiring.onedrive.clone(), source) else {
+            let why = format!("{} shows OneDrive, but no drive is configured; it is not kept in step", root.path.display());
+            return self.refuse_start(stopped, StartRefusal::Mount(why), &root);
+        };
+        // What stands of the account now: its sign-in and whether it may write, by the function the watcher of the
+        // account sets them by afterwards; `config.toml` is read off the runtime.
+        let snapshot = self.wiring.account.snapshot();
+        let persist = self.wiring.persist.clone();
+        let standing = tokio::task::spawn_blocking(move || persist.store.write_standing(&persist.account)).await.ok().flatten();
+        let account_holds = decide_account_holds(&snapshot, standing.as_ref());
+        let standing_holds = StandingSendingHolds {
+            paused_until: decide_paused_until(self.running.stop()),
+            is_signed_out: account_holds.is_signed_out,
+            writes_refusal: account_holds.writes_refusal,
+        };
+        let persist = self.wiring.persist.clone();
+        let recorded_drive = persist.store.account(&persist.account).and_then(|account| account.drive_id);
+        let drive_record = DriveRecord { store: persist.store, account: persist.account, recorded: recorded_drive.clone().map(|drive| drive.into_string()) };
+        let (clock, account) = (Arc::clone(&self.wiring.clock), Arc::clone(&self.wiring.account));
+        // The parts the stopped sync kept, whole: the start has them, or gives them back.
+        let kept = stopped.folder_mut().record_mut().and_then(|record| record.kept.parts.take());
+        let is_mount_kept = kept.is_some();
+        let input = FolderStartInput {
+            root: root.clone(),
+            tree_db: paths.tree_db,
+            drive,
+            recorded_drive,
+            // TODO: check that the drive the account's token was last seen to reach is the one meant by "the one the account's profile says" (`FolderStartInput::account_drive`), and fix if needed.
+            account_drive: DriveId::new(snapshot.live_drive.clone()),
+            drive_record: Some(drive_record),
+            neighbours: Some(self.neighbours()),
+            source,
+            report: self.report.clone(),
+            pool: Arc::clone(&self.pool),
+            split_download_share: Arc::clone(&self.parts),
+            download_after: self.wiring.transfers.download_after,
+            tree_lock,
+            lease: Lease::on(&self.folder),
+            ignore: Arc::clone(&self.ignore),
+            state: self.state.clone(),
+            quota: self.quota(),
+            limits: Limits::default(),
+            settings: PlanSettings::of(self.machine_name()),
+            schedule: self.wiring.schedule.clone(),
+            running: Arc::clone(&self.running),
+            thumbnail_cache: paths.thumbnails,
+            standing_holds,
+            clock: Arc::new(move || clock.now()),
+            wanted,
+            take_down_report: me.take_down_report(),
+            unsent_count_report: Arc::new(move |unsent| account.tell_unsent_count(unsent)),
+            kept,
+        };
+        // In a task of its own: a start is never cut between two of its stages.
+        let start = async move {
+            match start_folder_sync(input).await {
+                Ok(started) => SyncChange::Started(Box::new(started)),
+                Err(refused) => SyncChange::Refused(refused),
+            }
+        };
+        let started = match self.sync_change.run(start).await {
+            Some(SyncChange::Started(started)) => started,
+            Some(SyncChange::Refused(refused)) => {
+                if let Some(said) = refused.rebuild_loss.as_ref().and_then(Self::describe_rebuild_loss) {
+                    tracing::warn!("{}: {said}", root.path.display());
+                }
+                if let Some(record) = stopped.folder_mut().record_mut() {
+                    record.kept.parts = refused.kept;
+                }
+                return self.refuse_start(stopped, refused.refusal, &root);
+            }
+            // A stop answers no start; and a start that panicked answers nothing.
+            Some(SyncChange::Stopped(_)) | None => {
+                let why = "the start failed inside konedrive".to_owned();
+                return self.refuse_start(stopped, StartRefusal::Mount(why), &root);
+            }
+        };
+        if let StoreOrigin::MadeEmpty { loss: Some(loss) } = &started.store_origin {
+            if let Some(said) = Self::describe_rebuild_loss(loss) {
+                tracing::warn!("{}: {said}", root.path.display());
+            }
+        }
+        let mount = Arc::clone(&started.mount);
+        // The pause as it is now, set again: one that began or ended while the start ran reached no sync.
+        started.tasks.sending_holds().set_paused(decide_paused_until(self.running.stop()));
+        match stopped.folder_mut().sync_mut() {
+            Some(sync) => *sync = Sync::Running(started),
+            // Nothing is up to run it: the start's caller looked a moment ago, under this lock.
+            None => return,
+        }
+        // The readers reach the sync from here on.
+        stopped.publish();
+        if !is_mount_kept {
+            // The mount came with this start: the folder's space is measured in the directory under it, and a file
+            // manager that showed the folder reads it again, in either access mode.
+            self.report.space.measure_at(Some(mount.backing_directory().resolve_root_path()));
+            self.report.space.kick();
+            stopped.read_again();
+        }
+        self.show_pins(&mount).await;
+        // `Paused` as the account has it, and a timer for a pause that ends.
+        self.show_pause();
     }
 
     /// What the user is told once after a start whose store was rebuilt and lost
     /// something (`RebuildLoss`: pins, unsent changes that are not on disk, open upload
     /// sessions): `None` when nothing was lost. Pure.
     // TODO: where it is said beside the journal — an event of the activity log, the folder's `LastError` — and in which words is the owner's to say; until then the journal alone.
-    #[allow(unused_variables)]
     fn describe_rebuild_loss(loss: &konedrive_tree::RebuildLoss) -> Option<String> {
-        todo!()
+        let lost: Vec<String> = [
+            (loss.pins, "pin(s)"),
+            (loss.unsent_changes_not_on_disk, "change(s) that were not sent to OneDrive and are not on disk"),
+            (loss.open_upload_sessions, "upload(s) that were under way"),
+        ]
+        .into_iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, what)| format!("{count} {what}"))
+        .collect();
+        // TODO: wording
+        (!lost.is_empty()).then(|| format!("konedrive's records of this folder were of an older version and were made anew; lost with them: {}", lost.join(", ")))
     }
 
-    /// Why a OneDrive folder is not kept in step, said as blocking trouble:
-    /// nothing retries it on its own; a `Refresh()` does, as
-    /// does bringing the folder up again.
-    fn cannot_start(&self, stopped: &mut Stopped<'_>, why: String) {
-        tracing::error!("{why}");
-        if let Some(sync) = stopped.folder_mut().sync_mut() {
-            *sync = Sync::Stopped(Why::CannotStart(why));
+    /// A start of the folder at `root` was refused: why its sync does not run, written into the state
+    /// ([`decide_refused_sync`]) and published as blocking trouble. The try the start was made as is over.
+    fn refuse_start(&self, stopped: &mut Stopped<'_>, refusal: StartRefusal, root: &crate::folder::root::SyncRoot) {
+        let now = self.clock.now();
+        if let Some(up) = stopped.folder_mut().up_mut() {
+            let why = decide_refused_sync(&up.sync, up.take_down_try.take(), &refusal, &root.path, now);
+            if let Why::CannotStart(said) | Why::DriveNotKnown(said) = &why {
+                tracing::error!("{said}");
+            }
+            up.sync = Sync::Stopped(why);
         }
         stopped.publish();
     }
@@ -84,14 +191,39 @@ impl SyncService {
     /// back that does not wait for the next start. When that fails too, and for a folder
     /// that only waits (for a `source` that can be read), the refusal is `NotUp`, with why.
     pub async fn refresh(&self) -> Result<(), SyncError> {
-        // TODO: `SyncTasks::refresh` (`sync_tasks::stop_order`: `WakeCause::RefreshAsked` and a cycle) while a
-        // sync runs, with `refresh_quota`; a folder that is down or whose sync does not run — it could not
-        // start, or a fault took its mount down (`Why::TakenDown`: tried at once, whatever its next try) — is
-        // started through `refresh_in`, inside a change. The user's try of a taken-down folder is a try like the
-        // owner's own but for the count: `Up::take_down_try` is written with the attempt as it was (not counted
-        // up) and the time of this start, so that the count is not lost when this start is taken down again;
-        // refused, the folder stays `Why::TakenDown` with the cause, the count and its next try as they were.
-        todo!()
+        if self.view().down.is_none() {
+            self.require_record()?;
+            // A sync that runs is asked, and nothing is stopped for it: every next try is due, and a cycle now.
+            let is_asked = {
+                let folder = self.folder.read().await;
+                folder.running().map(|started| started.tasks.refresh()).is_some()
+            };
+            if is_asked {
+                self.refresh_quota().await;
+                return Ok(());
+            }
+        }
+        {
+            let mut stopped = self.change().await;
+            // The user's try of a folder a fault took down: a try like the owner's own, but for the count.
+            let now = self.clock.now();
+            if let Some(up) = stopped.folder_mut().up_mut() {
+                if let Sync::Stopped(Why::TakenDown { attempt, .. }) = &up.sync {
+                    up.take_down_try = Some(TakeDownTry { attempt: *attempt, started_at: now });
+                }
+            }
+            let refreshed = self.refresh_in(&mut stopped).await;
+            if refreshed.is_err() {
+                // A refusal leaves the folder as it was, its sync included.
+                self.start_again(&mut stopped).await;
+            }
+            refreshed?;
+        }
+        if self.running().is_some() {
+            self.refresh_quota().await;
+            return Ok(());
+        }
+        Err(self.sync_not_running())
     }
 
     /// [`refresh`](Self::refresh), inside its change: the folder looked at again (a Forget
@@ -132,26 +264,77 @@ impl SyncService {
     /// ends a full OneDrive and lets the files that fit now go. A quota that cannot be read
     /// changes nothing.
     async fn refresh_quota(&self) {
-        // TODO: `DriveClient::quota`, then `OneDriveSpace::apply_quota(quota, now)` of the running sync (who reads the
-        // quota applies it; it writes the account's figures too), then the plan's task woken (`WakeCause::QuotaRead`).
-        todo!()
+        let Some(drive) = self.drive() else { return };
+        let view = self.view();
+        // Of a running sync alone: a start reads the quota itself.
+        let (Some(onedrive_space), Some(parts)) = (view.onedrive_space, view.parts) else { return };
+        match drive.quota().await {
+            Ok(quota) => {
+                onedrive_space.apply_quota(&quota, self.clock.now());
+                parts.sync_plan_wake.wake(WakeCause::QuotaRead);
+            }
+            Err(e) => tracing::warn!("cannot read the OneDrive quota: {e}"),
+        }
     }
 
     /// A cycle now, if a OneDrive folder is syncing (the network came back). A read-write
     /// folder's outbox waits for that cycle (`docs/design/writes.md` §9).
     pub fn refresh_now(&self) {
-        // TODO: what `SyncTasks::wake_for_network` does, over the handles of the view (this is not async and holds no
-        // lock of the folder): `View::poll` (`wake_live`, `refresh`) and the plan's wake (`View::parts`,
-        // `WakeCause::SendingHoldChanged`).
-        todo!()
+        if self.nudge() {
+            if let Some(parts) = self.view().parts {
+                parts.sync_plan_wake.wake(WakeCause::SendingHoldChanged);
+            }
+        }
     }
 
     /// [`refresh_now`](Self::refresh_now); whether a sync was running to
     /// nudge.
     pub(super) fn nudge(&self) -> bool {
-        // TODO: as `refresh_now`, over `View::poll`; whether a sync was running (`View::poll` is some).
-        todo!()
+        match self.view().poll {
+            Some(poll) => {
+                // The notification socket too: tried again at once when the network came back.
+                poll.wake_live();
+                poll.refresh();
+                true
+            }
+            None => false,
+        }
     }
+}
 
+/// Why the sync of the folder at `folder` does not run after a start that was refused with
+/// `refusal` at `now`, by what its sync was before the start (`before`) and the try the start
+/// was made as (`take_down_try`). Pure.
+///
+/// - A folder a fault took down stays `Why::TakenDown`, with its cause, whatever the refusal:
+///   `Why::CannotStart` is tried again by nothing. The owner's own try (its attempt is one more
+///   than the starts tried before) is counted, and the next is due after the wait of that
+///   count; the user's try (`Refresh()`: the attempt as it was) changes neither the count nor
+///   the time of the next try.
+/// - `StartRefusal::DriveNotKnown` is `Why::DriveNotKnown`, which the watcher of the account
+///   starts again.
+/// - Any other refusal is `Why::CannotStart`, with the sentence.
+// test: a_refused_try_after_a_take_down_keeps_the_cause_and_counts_the_try
+// test: a_refused_refresh_of_a_taken_down_folder_leaves_its_count_and_its_next_try
+// test: a_start_refused_for_no_drive_waits_for_the_account
+fn decide_refused_sync(before: &Sync, take_down_try: Option<TakeDownTry>, refusal: &StartRefusal, folder: &std::path::Path, now: i64) -> Why {
+    if let Sync::Stopped(Why::TakenDown { cause, attempt, next_try_at }) = before {
+        return match take_down_try {
+            Some(tried) if tried.attempt > *attempt => {
+                let wait = decide_retry_wait(tried.attempt).as_secs() as i64;
+                Why::TakenDown { cause: cause.clone(), attempt: tried.attempt, next_try_at: Some(now.saturating_add(wait)) }
+            }
+            _ => Why::TakenDown { cause: cause.clone(), attempt: *attempt, next_try_at: *next_try_at },
+        };
+    }
+    // TODO: wording
+    match refusal {
+        StartRefusal::DriveNotKnown => Why::DriveNotKnown(format!(
+            "{} is not kept in step yet: which OneDrive drive the account has is not known until it is signed in",
+            folder.display()
+        )),
+        StartRefusal::Store(why) => Why::CannotStart(format!("{} is not kept in step: {why}", folder.display())),
+        StartRefusal::Mount(why) => Why::CannotStart(format!("{} is not kept in step: {why}", folder.display())),
+    }
 }
 
