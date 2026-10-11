@@ -182,8 +182,8 @@ impl FileDownloader {
             None => Arc::new(self.backing_directory.make_unnamed_file().map_err(io_errno)?),
         };
         let tracked = match class {
-            Class::Open => Tracked::opening(Arc::clone(&self.source), self.report.transfers.clone(), self.shown_path(rel)),
-            _ => Tracked::new(Arc::clone(&self.source), self.report.transfers.clone(), self.shown_path(rel)),
+            Class::Open => Tracked::opening(self.source.as_ref(), self.report.transfers.clone(), self.shown_path(rel)),
+            _ => Tracked::new(self.source.as_ref(), self.report.transfers.clone(), self.shown_path(rel)),
         };
         // What of the download is on disk in order, for the reads that come meanwhile.
         let written_up_to = self.download_states.begin_writing(&row.id, Arc::clone(&file));

@@ -39,8 +39,10 @@
 //! answer on, not from its asking: it is not announced as being downloaded at its start,
 //! and where its first answer states another content again, its end is no news
 //! ([`decide_end_news`]) — no activity event, no count of the space, no announcement.
-//! The first time a content is found to be another one, everything is told. (`Transfers`
-//! shows its entry from the fetch on, as for every download: `hydration::tracked`.)
+//! The first time a content is found to be another one, everything is told. `Transfers`
+//! shows a download from the first answer its source accepts on (`hydration::tracked`,
+//! which fetches through `download_source`): one that ends at an answer of another
+//! content, the first time or again, and one OneDrive did not answer, has no entry.
 //!
 //! **An item OneDrive does not have** (`DownloadRefusal::ItemGone`: the source's "no such
 //! item"), and an answer that tells neither a size nor a version, state no other content:
@@ -424,7 +426,8 @@ impl ItemDownloader {
     /// Fetches the content of `file` into a file that has no name — the unfinished file
     /// of an earlier try, gone on from its checkpoint, or a new one —, in the pool's slot
     /// ([`acquire_slot`](Self::acquire_slot)), through a source that lets through no
-    /// answer of another content (`download_source`); checks it is the content asked
+    /// answer of another content (`download_source`) and, over it, the one that shows
+    /// the download in `Transfers` from its first answer on; checks it is the content asked
     /// for; gives it the content's time and the marks of a whole copy; syncs it, with no
     /// lock held; and lands it as one job of the write-operation thread.
     async fn fetch_and_land(self: &Arc<Self>, file: &ItemToDownload, asker: &DownloadAsker, run: &DownloadRun, unfinished_file: Option<Arc<File>>, shown_path: &str) -> DownloadEnd {
@@ -442,21 +445,23 @@ impl ItemDownloader {
                 Err(error) => return Ok(fail(error)),
             },
         };
-        let tracked = match class {
-            Class::Open => Tracked::opening(Arc::clone(&self.source), self.report.transfers.clone(), shown_path),
-            _ => Tracked::new(Arc::clone(&self.source), self.report.transfers.clone(), shown_path),
-        };
         // What of the download is on disk in order, for the reads that come meanwhile:
         // raised by the source alone, and only for answers of the asked content. The
         // source also tells the states of the first such answer.
         let written_up_to = self.download_states.begin_writing(run, Arc::clone(&staged));
-        let source = DownloadSource::new(&tracked, file.content.clone(), written_up_to, &self.download_states, run);
+        let source = DownloadSource::new(self.source.as_ref(), file.content.clone(), written_up_to, &self.download_states, run);
+        // Shown as a transfer from the first answer that source lets through: a download
+        // that ends before one was never a transfer.
+        let tracked = match class {
+            Class::Open => Tracked::opening(&source, self.report.transfers.clone(), shown_path),
+            _ => Tracked::new(&source, self.report.transfers.clone(), shown_path),
+        };
         // A large file that nothing waits to open (a pinned one) goes in parallel parts,
         // the slot held here being its first stream's.
         let split = (class != Class::Open && Size::of(size) == Size::Large).then(|| Split::new(Arc::clone(&self.pool), Arc::clone(&self.split_download_share)));
-        let downloaded = download_staged(&staged, file.onedrive_item.item_id.as_str(), size, &source, split.as_ref()).await;
-        let refusal = source.find_refusal();
+        let downloaded = download_staged(&staged, file.onedrive_item.item_id.as_str(), size, &tracked, split.as_ref()).await;
         drop(tracked);
+        let refusal = source.find_refusal();
         let downloaded = match downloaded {
             Ok(downloaded) => downloaded,
             Err(errno) => return decide_download_failure(errno, refusal),

@@ -927,10 +927,12 @@ fn a_content_onedrive_keeps_stating_another_one_for_is_told_once() {
     let count_events = |kind: EventKind| report.activity.recent(100).expect("the activity kept in memory").iter().filter(|event| event.kind == kind).count();
     let count_announcements = || fixture.inotify_bridge.list_queued().iter().flatten().filter(|announcement| matches!(announcement, ItemAnnouncement::ContentChanged { item: announced, .. } if *announced == item)).count();
     let announced_before = count_announcements();
+    let transfers = report.transfers.subscribe();
 
     // The first time the content is found to be another one: everything is told.
     assert_eq!(hear(ask(&downloader, &shown, DownloadAsker::Read)), Err(libc::ESTALE));
     assert_eq!((count_events(EventKind::Failed), count_announcements() - announced_before), (1, 2));
+    assert!(!transfers.has_changed().unwrap(), "no answer was accepted: nothing was transferred, and nothing shown as a transfer");
 
     // Each read asks OneDrive anew, which states the same: nothing changed to be told.
     for _read in 0..3 {
@@ -938,10 +940,12 @@ fn a_content_onedrive_keeps_stating_another_one_for_is_told_once() {
     }
     assert!(fixture.download_states.is_another_content(&key_of(&shown)));
     assert_eq!((count_events(EventKind::Failed), count_announcements() - announced_before), (1, 2), "the failure and the announcements of the first download only");
+    assert!(!transfers.has_changed().unwrap(), "no entry of `Transfers`, not even for the time of the asking");
 
     // OneDrive states the asked content again: the download is told as any is, from its
     // first answer on.
     fixture.serve_content(item, b"the report");
     assert_eq!(hear(ask(&downloader, &shown, DownloadAsker::Read)), Ok(()));
     assert_eq!((count_events(EventKind::Failed), count_events(EventKind::Downloaded), count_announcements() - announced_before), (1, 1, 3));
+    assert!(transfers.has_changed().unwrap(), "a download OneDrive answers with the asked content is shown");
 }

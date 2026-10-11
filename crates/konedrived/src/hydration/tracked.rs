@@ -2,7 +2,7 @@
 
 use std::io;
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::task::{Context, Poll};
 
 use async_trait::async_trait;
@@ -13,12 +13,19 @@ use crate::status::transfers::{TransferEntry, TransferHandle, Transfers};
 
 /// A [`ContentSource`] whose downloads show in [`Transfers`] as `path`.
 ///
-/// The entry is added at the first fetch — a fill that finds nothing to do
-/// never fetches, and never shows — and moves on as the bytes are read. It
-/// goes when this is dropped: the caller keeps it for exactly as long as
-/// the download it is for.
-pub struct Tracked {
-    source: Arc<dyn ContentSource>,
+/// The entry is added at the first answer of the source it fetches through, not at
+/// the asking: a download is a transfer once its source gave it something to
+/// transfer. One whose source answers nothing — it is offline, signed out, held
+/// back, or lets no answer through (`fuse::item_downloader::download_source`, for
+/// an answer of another content than the asked one) — never has an entry, not even
+/// for the time of the asking. The entry moves on as the bytes are read, and goes
+/// when this is dropped: the caller keeps it for exactly as long as the download it
+/// is for.
+///
+/// It is the outermost source of a download: whatever decides which answers a
+/// download may use is below it.
+pub struct Tracked<'a> {
+    source: &'a dyn ContentSource,
     transfers: Transfers,
     path: String,
     /// A file being opened, or `Hydrate` (the pool's `Class::Open`).
@@ -26,14 +33,14 @@ pub struct Tracked {
     entry: OnceLock<TransferEntry>,
 }
 
-impl Tracked {
-    pub fn new(source: Arc<dyn ContentSource>, transfers: Transfers, path: impl Into<String>) -> Self {
+impl<'a> Tracked<'a> {
+    pub fn new(source: &'a dyn ContentSource, transfers: Transfers, path: impl Into<String>) -> Self {
         Self { source, transfers, path: path.into(), open: false, entry: OnceLock::new() }
     }
 
     /// As [`new`](Self::new), for a file being opened or `Hydrate`: its entry says so, and
     /// `LargeFiles` leaves it out.
-    pub fn opening(source: Arc<dyn ContentSource>, transfers: Transfers, path: impl Into<String>) -> Self {
+    pub fn opening(source: &'a dyn ContentSource, transfers: Transfers, path: impl Into<String>) -> Self {
         Self { open: true, ..Self::new(source, transfers, path) }
     }
 
@@ -44,10 +51,10 @@ impl Tracked {
 }
 
 #[async_trait]
-impl ContentSource for Tracked {
+impl ContentSource for Tracked<'_> {
     async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
-        let entry = self.entry.get_or_init(|| self.transfers.start_as(self.path.clone(), 0, self.open));
         let Fetched { served_from, size, mtime, version, stream } = self.source.fetch(item_id, from, end).await?;
+        let entry = self.entry.get_or_init(|| self.transfers.start_as(self.path.clone(), 0, self.open));
         // An answer that tells no size leaves the entry's total as it is: 0, "not known
         // yet", for a first answer. Nothing is counted against a size nobody said.
         let Some(total) = size else { return Ok(Fetched { served_from, size, mtime, version, stream }) };
@@ -68,6 +75,15 @@ impl ContentSource for Tracked {
         if let Some(entry) = self.entry.get() {
             entry.progress(done, size);
         }
+    }
+
+    fn reject_written(&self) {
+        // What is shown as downloaded counts no more either; and the source below is
+        // told, which may keep a mark of its own.
+        if let Some(entry) = self.entry.get() {
+            entry.progress(0, entry.total());
+        }
+        self.source.reject_written();
     }
 }
 
@@ -94,3 +110,6 @@ impl AsyncRead for Counting {
         polled
     }
 }
+
+#[cfg(test)]
+mod tests;
