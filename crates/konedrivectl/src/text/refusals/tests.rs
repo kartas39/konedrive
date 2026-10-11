@@ -42,11 +42,11 @@ fn an_upload_queue_command_is_told_to_register_only_when_there_is_no_folder() {
     for action in [SyncAction::UploadQueue, SyncAction::Pause, SyncAction::Refresh] {
         let none = told(action, "org.konedrive.Error.NoRoot", "no sync root is registered");
         assert!(none.contains("no sync folder is registered") && none.contains("sync register"), "{none}");
-        let waiting = told(action, "org.konedrive.Error.NotUp", "the folder is not up: it waits for the konedrive helper");
+        let waiting = told(action, "org.konedrive.Error.NotUp", "the folder is not up: its mount could not be served");
         assert_eq!(
             waiting,
-            "the sync folder (/home/u/OneDrive) is not up, so the command could not go ahead: it waits for the konedrive \
-             helper. `konedrivectl --account Test sync status` shows its state; `konedrivectl --account Test sync forget` \
+            "the sync folder (/home/u/OneDrive) is not up, so the command could not go ahead: its mount could not be \
+             served. `konedrivectl --account Test sync status` shows its state; `konedrivectl --account Test sync forget` \
              takes the folder away, and leaves its files as they are"
         );
     }

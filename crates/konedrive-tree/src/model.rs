@@ -1,7 +1,6 @@
-//! What the tree holds: a row of `onedrive_items` and `staging`, a delta entry, the
-//! words the store keeps for a kind and a placement, and the one place a
-//! row is read from SQLite and written to it. And an item as `items` holds it: its ids,
-//! its versions, and the sync state they give.
+//! What the tree holds: an item as `items` holds it — its ids, its versions, and the sync
+//! state they give —, an entry of OneDrive's delta, and the words the store keeps for a
+//! kind, a placement and whether a content is on disk.
 
 use std::ffi::OsString;
 

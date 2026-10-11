@@ -154,10 +154,9 @@ pub struct LocalStatus {
 /// The upload queue as the plan's task last published it (`upload_queue::publish_queue_status`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UploadQueueStatus {
-    /// What keeps the upload queue's changes from going: the write gate
-    /// closed under a read-write folder, OneDrive's throttle of its uploads, a folder the
-    /// plan's task cannot open, or a read-only
-    /// folder whose sync holds its cycles while changes wait. `None` otherwise.
+    /// What keeps the upload queue's changes from going: the account may not write
+    /// though its folder is read-write, or OneDrive throttles its uploads. `None`
+    /// otherwise.
     pub note: Option<UploadQueueNote>,
     /// `PendingCount`, `PendingBytes`, `BlockedCount`.
     pub pending_count: u32,
@@ -229,67 +228,23 @@ pub enum TroubleKind {
 
 /// What keeps the folder's changes from going. ONE writer: the plan's task, which writes
 /// it with every plan it publishes, from the hold that is shown (`SyncPlanTask::publish_round`:
-/// `SendingHold::WritesNotAllowed` is `GateClosed`, `SendingHold::Throttled` is `Throttled`),
+/// `SendingHold::WritesNotAllowed` and `SendingHold::Throttled`, each as the note of its name),
 /// and takes it off when the sync stops (`upload_queue::publish_stopped_queue`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UploadQueueNote {
-    /// The write gate is closed under a read-write folder: why.
-    GateClosed(String),
-    /// A read-only folder holds changes waiting to upload, so its cycles wait: how many.
-    HeldBack(usize),
-    /// A read-only folder whose waiting changes cannot be read.
-    Unreadable,
+    /// The account may not write though its folder is read-write: why.
+    WritesNotAllowed(String),
     /// OneDrive asked the account's uploads to wait: until when (Unix seconds).
     Throttled(i64),
-    /// The plan's task cannot open the folder, which is still there: the error.
-    FolderClosed(String),
 }
 
-/// A throttle shorter than this many seconds is not said ([`UploadQueueNote::after_worker`]).
-pub const THROTTLE_SAID: i64 = 5;
-
 impl UploadQueueNote {
-    /// What the write gate makes of the note `shown`, the gate being closed for `refusal`
-    /// or open: the note to show instead, or `None` when nothing changes. The gate says
-    /// why it is closed over whatever is shown, and takes back only its own note.
-    pub fn after_gate(shown: &Option<Self>, refusal: Option<&str>) -> Option<Option<Self>> {
-        let note = refusal.map(|why| Self::GateClosed(why.to_owned()));
-        let own = matches!(shown, Some(Self::GateClosed(_)));
-        (*shown != note && (refusal.is_some() || own)).then_some(note)
-    }
-
-    /// What the plan's task's state makes of the note `shown` at `now`: its folder
-    /// cannot be opened (`folder`, the error), OneDrive asked its uploads to wait until
-    /// `until`, or neither. The note to show instead, or `None` when nothing changes.
-    ///
-    /// - The worker's notes are said only where nothing else is, and the worker takes back
-    ///   only its own: the gate's and the poller's stay.
-    /// - The folder's note stands over the throttle's.
-    /// - A throttle is said only when it begins [`THROTTLE_SAID`] seconds or more before its
-    ///   end: a shorter wait is over before anyone could read of it. Once said, it stays
-    ///   until the wait is over.
-    pub fn after_worker(shown: &Option<Self>, folder: Option<&str>, until: Option<i64>, now: i64) -> Option<Option<Self>> {
-        let own = matches!(shown, None | Some(Self::Throttled(_) | Self::FolderClosed(_)));
-        let throttle = until.map(Self::Throttled).filter(|note| shown.as_ref() == Some(note) || until.is_some_and(|at| at - now >= THROTTLE_SAID));
-        let note = folder.map(|error| Self::FolderClosed(error.to_owned())).or(throttle);
-        (own && *shown != note).then_some(note)
-    }
-
     /// The note as `LastError` says it.
     pub fn text(&self) -> String {
         match self {
             // The minute the wait is over in, never one already past when it ends.
             Self::Throttled(until) => format!("OneDrive asked to slow down; uploads continue at {}", clock(until.div_euclid(60) * 60 + if until.rem_euclid(60) > 0 { 60 } else { 0 })),
-            Self::FolderClosed(error) => format!("the folder cannot be opened ({error}); uploads wait"),
-            Self::GateClosed(why) => format!("nothing is uploaded: {why}"),
-            Self::HeldBack(n) => format!(
-                "{n} change(s) made here wait to be uploaded, so the folder is not kept in step with \
-                 OneDrive: they go once the account is read-write again, or are dropped by a forced \
-                 switch to read-only"
-            ),
-            Self::Unreadable => {
-                "the changes waiting to be uploaded cannot be read, so the folder is not kept in step with OneDrive".to_owned()
-            }
+            Self::WritesNotAllowed(why) => format!("nothing is uploaded: {why}"),
         }
     }
 }

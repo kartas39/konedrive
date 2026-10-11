@@ -93,7 +93,7 @@ pub fn cache_of(dir: &Path, svc: &AccountService) -> PathBuf {
 
 /// The daemon as `main` starts it (`accounts::start`), on a private bus: its files in
 /// `dir`, Microsoft at `endpoints`, `wallet` for the Secret Service, neither Baloo nor
-/// thumbnails, and local folders only (`Options::drive` gives none). No helper supervisor runs.
+/// thumbnails, and local folders only (`Options::drive` gives none).
 pub async fn start_daemon(
     bus: &konedrive_dbus::testing::TestBus,
     dir: &Path,
@@ -113,8 +113,7 @@ pub async fn start_daemon(
     start_daemon_with(bus, dir, options).await
 }
 
-/// [`start_daemon`] with `options` of the test's own. The hub's helper socket is a path in
-/// `dir` where nothing listens, so no startup looks at a helper running on the machine.
+/// [`start_daemon`] with `options` of the test's own.
 pub async fn start_daemon_with(
     bus: &konedrive_dbus::testing::TestBus,
     dir: &Path,

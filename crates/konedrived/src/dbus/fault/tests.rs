@@ -24,7 +24,7 @@ fn every_refusal_of_the_folder_goes_out_under_its_name() {
         SyncError::InvalidArgs("\"a/b\": a pattern names one name".into()),
         SyncError::Config("cannot record the sync folder in config.toml".into()),
         SyncError::Store("the database is locked".into()),
-        SyncError::not_up("it waits for the helper"),
+        SyncError::not_up("its mount could not be served"),
         SyncError::HeldBack("this account is held back: its label repeats".into()),
         SyncError::Removing,
         SyncError::Stopping,

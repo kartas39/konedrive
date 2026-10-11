@@ -81,7 +81,7 @@ async fn main() {
         record_mode(Mode::ReadWrite);
     }
     let mode = persist.store.account(&persist.account).map_or(Mode::ReadOnly, |account| account.mode);
-    // What the write gate asks of a read-write account, besides `config.toml`: a sign-in that
+    // What a read-write account needs to be allowed to write, besides `config.toml`: a sign-in that
     // allows changes, last seen to reach the drive recorded.
     let account = StateHandle::new(AccountSnapshot {
         state: SignInState::SignedIn,

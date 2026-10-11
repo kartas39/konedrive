@@ -146,7 +146,7 @@ pub(crate) fn export_fault(error: ModeError) -> Fault {
 }
 
 /// How `Accounts` refuses: under the folder's names for what an account's folder refused
-/// (`NoHelper`, …) and `NoAccount`, and under the bus's own `InvalidArgs` and `Failed` for a
+/// (`NoRoot`, …) and `NoAccount`, and under the bus's own `InvalidArgs` and `Failed` for a
 /// label, a client id or `config.toml`.
 impl From<ManagerError> for Fault {
     fn from(error: ManagerError) -> Self {

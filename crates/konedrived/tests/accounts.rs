@@ -1,7 +1,7 @@
 //! The multiple-accounts daemon over a private test bus: the
 //! manager at `/org/konedrive/Accounts` — `Accounts`, `Files` and the `ObjectManager` —
-//! and the accounts below it, started as `main` starts them (`accounts::start`). A fake
-//! helper speaks the wire protocol; nothing is intercepted for real.
+//! and the accounts below it, started as `main` starts them (`accounts::start`). No
+//! folder is mounted.
 
 mod common;
 

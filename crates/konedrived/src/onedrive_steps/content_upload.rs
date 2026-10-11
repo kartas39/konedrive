@@ -151,7 +151,7 @@ pub fn decide_upload_start(memory: &ItemMemory, size: u64) -> UploadStart {
 
 /// Whether an upload stops before its next fragment, and as what. Pure. While content is
 /// held (`SendingHolds::is_held(StepClass::Content, now)`: a pause, a stop, the sign-out,
-/// the write gate, a throttle): `StepOutcome::NotRun(StepObstacle::SendingStopped)`. For a
+/// writes that are not allowed, a throttle): `StepOutcome::NotRun(StepObstacle::SendingStopped)`. For a
 /// full OneDrive (`OneDriveSpace::is_full`), when nothing holds:
 /// `StepOutcome::Refused(StepRefusal::NoSpace { free_space: None })`, which the settlement
 /// writes nothing for. Either way the session is kept. Today's `stop_between_fragments`

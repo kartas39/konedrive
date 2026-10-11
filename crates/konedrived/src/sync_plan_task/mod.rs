@@ -951,7 +951,7 @@ impl SyncPlanTask {
 
         let note = match hold {
             Some(SendingHold::Throttled { until }) => Some(UploadQueueNote::Throttled(*until)),
-            Some(SendingHold::WritesNotAllowed { reason }) => Some(UploadQueueNote::GateClosed(reason.clone())),
+            Some(SendingHold::WritesNotAllowed { reason }) => Some(UploadQueueNote::WritesNotAllowed(reason.clone())),
             Some(SendingHold::Stopping | SendingHold::SignedOut | SendingHold::FolderReadOnly | SendingHold::Paused { .. } | SendingHold::FirstListingNotEnded) | None => None,
         };
         let counts = round.item_counts;

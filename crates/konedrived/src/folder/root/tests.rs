@@ -131,10 +131,8 @@ async fn a_value_that_is_not_one_of_our_root_ids_does_not_waive_the_empty_check(
 }
 
 /// The other half of H90: a value that is not an id of ours names no
-/// registration the helper could be holding, so "never
-/// overwrite an existing id" does not apply to it — a real one is minted
-/// over the top rather than the junk being offered to the helper as this
-/// root's name.
+/// registration, so "never overwrite an existing id" does not apply to it — a real one
+/// is minted over the top rather than the junk being kept as this root's id.
 #[tokio::test]
 async fn a_bogus_root_id_is_replaced_by_a_real_one() {
     let dir = tempfile::tempdir().unwrap();
@@ -144,7 +142,7 @@ async fn a_bogus_root_id_is_replaced_by_a_real_one() {
 
     // Spelled out rather than asked of `looks_like_a_root_id`, which is
     // the function under test: it would agree with itself.
-    assert_ne!(root.root_id, "x", "the junk value was offered to the helper as this root");
+    assert_ne!(root.root_id, "x", "the junk value was kept as this root's id");
     assert_eq!(root.root_id.len(), 36, "{}", root.root_id);
     let fields: Vec<&str> = root.root_id.split('-').collect();
     assert_eq!(fields.iter().map(|f| f.len()).collect::<Vec<_>>(), vec![8, 4, 4, 4, 12]);

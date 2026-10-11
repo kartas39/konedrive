@@ -112,8 +112,8 @@ fn carries_a_drive(path: &str) -> bool {
 
 /// `Some(detail)` when the folder's state is `error` after the call just made: `LastError`
 /// is the detail. Every command that changes something checks this after its own call went
-/// through: any of them can run while the folder is unhealthy already (a helper that
-/// dropped, a recovery that could not finish), and that must show in the command's exit
+/// through: any of them can run while the folder is unhealthy already (a mount a fault
+/// took down, a start that failed), and that must show in the command's exit
 /// status though the thing it asked for was done.
 pub(super) async fn folder_trouble(proxy: &FolderProxies<'_>) -> anyhow::Result<Option<String>> {
     if proxy.folder.state().await? == "error" {

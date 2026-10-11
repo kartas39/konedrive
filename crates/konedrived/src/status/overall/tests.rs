@@ -226,9 +226,9 @@ fn trouble_that_does_not_stop_the_folder_is_a_warning_that_says_it() {
     // `LastError` joins them.
     let all = with(|s| {
         s.cycle.sync_trouble = other(said, false);
-        s.upload_queue.note = Some(UploadQueueNote::Unreadable);
+        s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()));
     });
-    assert_eq!(all, about(Reason::Trouble, &format!("{said}. {}", UploadQueueNote::Unreadable.text())));
+    assert_eq!(all, about(Reason::Trouble, &format!("{said}. {}", UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()).text())));
     assert_eq!(Reason::Trouble.state(), State::Warning);
 }
 
@@ -242,7 +242,7 @@ fn the_first_rule_that_holds_decides() {
         (Reason::Blocked, |s| s.upload_queue.blocked_count = 1),
         (Reason::Paused, |s| s.pause.paused_until = Some(0)),
         (Reason::HeldBack, |s| s.pause.held_back = "metered".into()),
-        (Reason::Trouble, |s| s.upload_queue.note = Some(UploadQueueNote::Unreadable)),
+        (Reason::Trouble, |s| s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()))),
         (Reason::Transferring, |s| s.upload_queue.pending_count = 1),
         (Reason::UpToDate, |_| {}),
     ];
@@ -275,9 +275,9 @@ fn the_first_rule_that_holds_decides() {
 fn a_pause_and_trouble() {
     let paused = with(|s| {
         s.pause.paused_until = Some(0);
-        s.upload_queue.note = Some(UploadQueueNote::Unreadable);
+        s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()));
     });
-    assert_eq!(paused, about(Reason::Paused, &UploadQueueNote::Unreadable.text()));
+    assert_eq!(paused, about(Reason::Paused, &UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()).text()));
     let stopped = with(|s| {
         s.pause.paused_until = Some(0);
         s.cycle.sync_trouble = other("signed out", true);
@@ -289,18 +289,18 @@ fn a_pause_and_trouble() {
 fn unreachable_with_other_trouble_is_a_warning() {
     let both = with(|s| {
         s.cycle.sync_trouble = unreachable("cannot reach OneDrive (timed out); trying again");
-        s.upload_queue.note = Some(UploadQueueNote::Unreadable);
+        s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()));
     });
-    assert_eq!(both, about(Reason::Trouble, &format!("cannot reach OneDrive (timed out); trying again. {}", UploadQueueNote::Unreadable.text())));
+    assert_eq!(both, about(Reason::Trouble, &format!("cannot reach OneDrive (timed out); trying again. {}", UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()).text())));
 }
 
 /// The sentence of the trouble is the folder's alone: it is there under every reason.
 #[test]
 fn the_sentences_are_published_under_every_reason() {
     let mut s = healthy();
-    s.upload_queue.note = Some(UploadQueueNote::Unreadable);
+    s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()));
     s.local.conflict_count = 1;
-    let said = |reason| about(reason, &UploadQueueNote::Unreadable.text());
+    let said = |reason| about(reason, &UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()).text());
     assert_eq!(of(&s), said(Reason::Conflicts));
     assert_eq!(overall(SignInState::SignedOut, &s, 0), said(Reason::SignedOut));
 
@@ -316,13 +316,13 @@ fn the_sentences_are_published_under_every_reason() {
 fn no_trouble_is_published_while_listing_or_starting() {
     let listing = with(|s| {
         s.cycle.listing = true;
-        s.upload_queue.note = Some(UploadQueueNote::Unreadable);
+        s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()));
         s.local.conflict_count = 1;
     });
     assert_eq!(listing, plain(Reason::Conflicts));
     let starting = with(|s| {
         s.folder.root_state = RootState::Waiting;
-        s.upload_queue.note = Some(UploadQueueNote::Unreadable);
+        s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()));
     });
     assert_eq!(starting, plain(Reason::Starting));
 }

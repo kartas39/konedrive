@@ -395,7 +395,7 @@ impl SyncService {
 
 impl Drop for SyncService {
     /// The view lets go of the running sync's handles: a part of that sync reads the view
-    /// (the write gate), so left there they would keep each other, and the tree store,
+    /// (what holds its sending), so left there they would keep each other, and the tree store,
     /// alive after the service. The sync itself goes with the folder's state, which tells
     /// its parts to stop. The totals' task holds the published state, and would count for
     /// nobody.

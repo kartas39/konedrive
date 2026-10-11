@@ -109,8 +109,8 @@ pub enum Reason {
     /// The upload session ended under the upload twice in one run: in
     /// backoff.
     SessionEnded,
-    /// The write gate closed between two fragments: `not allowed now:
-    /// <why>`. Waiting until it opens; the session is kept.
+    /// Sending is not allowed now: `not allowed now: <why>` (the folder is read-only).
+    /// Waiting until it is; an upload session is kept.
     NotAllowed(Option<String>),
     /// What a blocked row with no reason is listed under.
     Blocked,

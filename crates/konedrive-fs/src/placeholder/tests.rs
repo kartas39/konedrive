@@ -28,7 +28,7 @@ fn state_round_trips_and_unmanaged_files_have_none() {
     assert_eq!(read_state(&file).unwrap(), Some(State::Hydrated));
 }
 
-/// The distinction the helper's "never allow zeros" rule turns on: a file
+/// A distinction that must not be lost: a file
 /// with no state attribute at all is not ours and is none of our business,
 /// but a file whose state attribute we cannot make sense of is a managed
 /// file in an unknown condition, and the two must not report the same way.

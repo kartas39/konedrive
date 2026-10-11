@@ -95,8 +95,8 @@ pub struct SyncTasks {
 }
 
 impl SyncTasks {
-    /// What holds this folder's sending: the pause, the sign-out and the write gate set
-    /// their causes through it.
+    /// What holds this folder's sending: the pause, the sign-out and why the account may not
+    /// write are set through it.
     pub fn sending_holds(&self) -> &Arc<SendingHolds> {
         &self.sending_holds
     }
