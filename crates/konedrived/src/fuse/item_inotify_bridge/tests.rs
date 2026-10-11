@@ -181,24 +181,72 @@ fn the_thread_is_started_once_told_by_its_id_and_ended_by_the_stop() {
     assert!(never_started.thread.lock().unwrap().is_none() && never_started.thread_id.get().is_none());
 }
 
+/// An inotify watch of one directory: what the kernel told a watcher of it, in order.
+struct DirectoryWatch(std::os::fd::OwnedFd);
+
+impl DirectoryWatch {
+    fn of(directory: &std::path::Path) -> Self {
+        use std::os::fd::FromRawFd;
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::CString::new(directory.as_os_str().as_bytes()).unwrap();
+        // SAFETY: plain system calls; the descriptor is owned from here on.
+        unsafe {
+            let descriptor = libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC);
+            assert!(descriptor >= 0 && libc::inotify_add_watch(descriptor, path.as_ptr(), libc::IN_CREATE | libc::IN_DELETE | libc::IN_ATTRIB) >= 0, "the directory is watched");
+            DirectoryWatch(std::os::fd::OwnedFd::from_raw_fd(descriptor))
+        }
+    }
+
+    /// The events told so far and not taken yet: what happened, and to which name.
+    fn take_events(&self) -> Vec<(&'static str, String)> {
+        use std::os::fd::AsRawFd;
+        let (mut events, mut buffer) = (Vec::new(), [0u8; 4096]);
+        loop {
+            // SAFETY: a read into a buffer this function owns.
+            let read = unsafe { libc::read(self.0.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len()) };
+            if read <= 0 {
+                return events;
+            }
+            let (mut at, header) = (0, std::mem::size_of::<libc::inotify_event>());
+            while at + header <= read as usize {
+                // SAFETY: the kernel wrote a whole event at `at`; read unaligned.
+                let event: libc::inotify_event = unsafe { std::ptr::read_unaligned(buffer.as_ptr().add(at).cast()) };
+                let name = &buffer[at + header..at + header + event.len as usize];
+                let name = String::from_utf8_lossy(name.split(|byte| *byte == 0).next().unwrap_or_default()).into_owned();
+                let what = [(libc::IN_CREATE, "made"), (libc::IN_DELETE, "removed"), (libc::IN_ATTRIB, "touched")].into_iter().find(|(mask, _)| event.mask & mask != 0).map_or("other", |(_, what)| what);
+                events.push((what, name));
+                at += header + event.len as usize;
+            }
+        }
+    }
+}
+
 #[test]
 fn an_announcement_is_performed_once() {
     let fixture = ItemFixture::new();
     let first = fixture.show_onedrive_file("first.txt", b"hello").local_item_id;
     let second = fixture.show_onedrive_file("second.txt", b"hello").local_item_id;
     let (bridge, watched) = start_bridge(&fixture);
-    let at = |path: &str| watched.path().join(path);
-    bridge.announce(vec![ItemAnnouncement::Appeared { item: first, place: place_in(LocalItemId::ROOT, "first.txt") }]);
-    wait_until("the first name appears", || at("first.txt").exists());
-    // Taken away by hand: an announcement performed a second time would make it again.
-    fs::remove_file(at("first.txt")).unwrap();
-    bridge.announce(vec![ItemAnnouncement::Appeared { item: second, place: place_in(LocalItemId::ROOT, "second.txt") }]);
-    wait_until("the second name appears", || at("second.txt").exists());
+    let watch = DirectoryWatch::of(watched.path());
+    let in_root = |name: &str| place_in(LocalItemId::ROOT, name);
+    // One change whose announcements undo each other: performed a second time, it would
+    // be told a second time. Then the one to wait for.
+    bridge.announce(vec![
+        ItemAnnouncement::Appeared { item: first, place: in_root("first.txt") },
+        ItemAnnouncement::ContentChanged { item: first, place: in_root("first.txt") },
+        ItemAnnouncement::Vanished { item: first, former_place: in_root("first.txt"), kind: ItemKind::File },
+    ]);
+    bridge.announce(vec![ItemAnnouncement::Appeared { item: second, place: in_root("second.txt") }]);
+    wait_until("the last name appears", || watched.path().join("second.txt").exists());
     wait_until("nothing is in progress", || bridge.find_in_progress().is_none());
-    assert!(!at("first.txt").exists(), "the first was performed once");
-    assert!(bridge.queued.lock().unwrap().is_empty());
-    assert_eq!(fs::read_dir(watched.path()).unwrap().count(), 1);
     bridge.stop();
+    // What a watcher of the directory was told: each change once, in the order queued.
+    // (The kernel folds two equal events in a row into one: a touch made twice at once
+    // would not be seen here; a change performed again is.)
+    let told = watch.take_events();
+    let expected = [("made", "first.txt"), ("touched", "first.txt"), ("removed", "first.txt"), ("made", "second.txt")];
+    assert_eq!(told, expected.map(|(what, name)| (what, name.to_owned())));
+    assert!(bridge.queued.lock().unwrap().is_empty());
 }
 
 #[test]

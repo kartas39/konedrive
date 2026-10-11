@@ -151,7 +151,9 @@ impl ItemKernelRequests {
     /// lookup. For the inotify bridge's own thread (`ItemInotifyBridge::is_own_thread` of
     /// `thread_id`) first `item_announcements::find_announced_name` with
     /// `ItemInotifyBridge::find_in_progress`; else, and for any other name,
-    /// `ItemLookup::find_entry`: one row by parent and name.
+    /// `ItemLookup::find_entry`: one row by parent and name. A name that is vanishing is
+    /// answered with `ItemLookup::describe_vanishing` (no row shows it there any more) and
+    /// no lifetime; one that is appearing, `ENOENT`.
     pub(super) fn answer_lookup(&self, directory: LocalItemId, name: &OsStr, thread_id: u32) -> Result<ShownEntry, Errno> {
         todo!()
     }
