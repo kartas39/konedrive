@@ -63,7 +63,7 @@ pub(super) struct ItemFreeUp {
 impl ItemFreeUp {
     /// Made by the mount's build.
     pub(super) fn new(place_changes: Arc<PlaceChanges>, store: Store, item_handles: Arc<ItemHandles>, download_states: Arc<ItemDownloadStates>, running_steps: Arc<RunningSteps>) -> Self {
-        todo!()
+        Self { place_changes, store, item_handles, download_states, running_steps }
     }
 
     /// Frees the copy of the file `item`: one job of the store reads the row, its pin and

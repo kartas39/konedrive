@@ -92,7 +92,7 @@ pub struct NameHolders {
 
 impl NameHolders {
     pub fn new(graph: GraphAccess, session_cancellations: SessionCancellations) -> Self {
-        todo!()
+        Self { graph, session_cancellations }
     }
 
     /// After a 409 on `SendNewFile`: reads the holder (`child`, `G/mod.rs:228`), whether a

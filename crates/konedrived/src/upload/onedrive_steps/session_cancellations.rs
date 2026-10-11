@@ -31,7 +31,7 @@ pub struct SessionCancellations {
 
 impl SessionCancellations {
     pub fn new(graph: GraphAccess) -> Self {
-        todo!()
+        Self { graph }
     }
 
     /// Cancels the session at `address` (`cancel_upload`, `G/upload.rs:270`) and, when it

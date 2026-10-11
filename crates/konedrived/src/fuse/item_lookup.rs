@@ -104,7 +104,7 @@ impl ItemLookup {
         published_plan: Arc<PublishedPlan>,
         mount_started_at: i64,
     ) -> Self {
-        todo!()
+        Self { read_connections, place_changes, item_handles, download_states, access_mode_switch, upload_rules, running_steps, published_plan, mount_started_at }
     }
 
     /// The row of `node`, as the folder shows it or not. Calls `ItemReader::find_item` on

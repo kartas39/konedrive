@@ -139,7 +139,7 @@ impl FolderSteps {
         mount_take_down: Arc<MountTakeDown>,
         folder: PathBuf,
     ) -> Self {
-        todo!()
+        Self { place_changes, store, write_operation_thread, upload_rules, item_handles, inotify_bridge, downloader, download_states, range_fetcher, mount_take_down, folder }
     }
 
     /// Runs `step` and answers what came of it: total over the cases. A `ShowItem` goes

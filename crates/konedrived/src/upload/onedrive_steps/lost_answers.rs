@@ -34,7 +34,7 @@ pub struct LostAnswers {
 
 impl LostAnswers {
     pub fn new(graph: GraphAccess) -> Self {
-        todo!()
+        Self { graph }
     }
 
     /// After a 409 on `MakeDirectory`: the directory OneDrive has under `name` in

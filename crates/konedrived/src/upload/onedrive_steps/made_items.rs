@@ -70,7 +70,7 @@ pub struct MadeItems {
 
 impl MadeItems {
     pub fn new(graph: GraphAccess) -> Self {
-        todo!()
+        Self { graph }
     }
 
     /// After `RowsChanged` on `MakeDirectory` or `SendNewFile`: reads the row,

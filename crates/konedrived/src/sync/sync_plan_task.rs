@@ -175,7 +175,7 @@ pub fn decide_next_wake(plan: &SyncPlan, hold_end: Option<i64>, next_quota_read:
 impl SyncPlanTask {
     /// Made by the folder's start (`sync_tasks::start_order::start_sync_tasks`).
     pub fn new(parts: SyncPlanTaskParts) -> Arc<Self> {
-        todo!()
+        Arc::new(SyncPlanTask { parts, logged_since_listing_ended: AtomicUsize::new(0) })
     }
 
     /// Runs the loop until `stop`, then ends its steps as the module's doc says, and

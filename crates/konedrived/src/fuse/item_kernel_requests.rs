@@ -145,7 +145,7 @@ impl ItemKernelRequests {
         free_up: Arc<ItemFreeUp>,
         runtime: tokio::runtime::Handle,
     ) -> Self {
-        todo!()
+        Self { lookup, read_connections, place_changes, item_handles, write_operations, write_operation_thread, inotify_bridge, downloader, download_states, range_fetcher, free_up, runtime }
     }
 
     /// lookup. For the inotify bridge's own thread (`ItemInotifyBridge::is_own_thread` of

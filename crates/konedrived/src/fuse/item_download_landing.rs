@@ -87,7 +87,7 @@ pub(super) struct ItemDownloadLanding {
 impl ItemDownloadLanding {
     /// Made by the mount's build, with the folder's running steps.
     pub(super) fn new(place_changes: Arc<PlaceChanges>, store: Store, running_steps: Arc<RunningSteps>) -> Self {
-        todo!()
+        Self { place_changes, store, running_steps }
     }
 
     /// Lands the unnamed file `file`, whole, checked and synced, as the copy of the item

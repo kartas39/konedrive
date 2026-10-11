@@ -120,7 +120,7 @@ impl OneDriveSteps {
     /// with the parts it made before.
     #[allow(clippy::too_many_arguments)]
     pub fn new(graph: GraphAccess, tree_lock: Arc<tokio::sync::Mutex<()>>, content_files: Arc<ItemContentFiles>, content_upload: ContentUpload, name_holders: NameHolders, lost_answers: LostAnswers, made_items: MadeItems, running_steps: Arc<RunningSteps>) -> Self {
-        todo!()
+        Self { graph, tree_lock, content_files, content_upload, name_holders, lost_answers, made_items, running_steps }
     }
 
     /// Runs `step` and answers what came of it. Called by the plan's task, which runs one

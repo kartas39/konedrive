@@ -47,7 +47,7 @@ pub struct RowSteps {
 impl RowSteps {
     /// Made by the folder's start (`sync_tasks::start_order::start_sync_tasks`).
     pub fn new(store: Store, tree_lock: Arc<tokio::sync::Mutex<()>>, content_files: Arc<ItemContentFiles>, ignore: SharedIgnore, running_steps: Arc<RunningSteps>) -> Self {
-        todo!()
+        Self { store, tree_lock, content_files, ignore, running_steps }
     }
 
     /// Runs `step` and answers what came of it. Called by the plan's task, at once and

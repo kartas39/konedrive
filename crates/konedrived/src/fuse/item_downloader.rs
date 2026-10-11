@@ -118,7 +118,7 @@ impl ItemDownloader {
         folder: PathBuf,
         runtime: tokio::runtime::Handle,
     ) -> Self {
-        todo!()
+        Self { backing_directory, download_states, download_landing, inotify_bridge, write_operation_thread, source, pool, split_download_share, report, folder, runtime }
     }
 
     /// Downloads `file` for `asker` unless a download of the same item and content runs

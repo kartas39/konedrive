@@ -117,7 +117,8 @@ impl ListingCycle {
     /// Made by the folder's start (`sync::sync_tasks::start_order::start_sync_tasks`) and
     /// given to its poller (`listing_poller::ListingPoller::start`).
     pub fn new(setup: ListingCycleSetup) -> Arc<Self> {
-        todo!()
+        let ListingCycleSetup { drive, store, sync_plan_wake, state, drive_record, neighbours, report, after_listing } = setup;
+        Arc::new(ListingCycle { drive, store, sync_plan_wake, state, drive_record, neighbours, report, after_listing, turn: tokio::sync::Mutex::new(()) })
     }
 
     /// One cycle, from the check of the account to the listing's end or the first

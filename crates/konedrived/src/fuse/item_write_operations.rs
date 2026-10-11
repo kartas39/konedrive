@@ -119,7 +119,7 @@ impl ItemWriteOperations {
         sync_plan_wake: Arc<SyncPlanWake>,
         mount_take_down: Arc<MountTakeDown>,
     ) -> Self {
-        todo!()
+        Self { place_changes, store, item_handles, download_states, upload_rules, access_mode_switch, running_steps, sync_plan_wake, mount_take_down }
     }
 
     /// Runs `write` as one job of the store's thread and wakes the plan; when the store

@@ -77,7 +77,7 @@ pub struct ItemContentFiles {
 impl ItemContentFiles {
     /// Made by the mount's build.
     pub(super) fn new(place_changes: Arc<PlaceChanges>, store: Store, item_handles: Arc<ItemHandles>) -> Self {
-        todo!()
+        Self { place_changes, store, item_handles }
     }
 
     /// Opens the local content of the file `item` was planned as: through

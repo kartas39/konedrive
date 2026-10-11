@@ -37,6 +37,12 @@ pub struct ListingPollHandle {
     /// cycle, and its store, alive after the poller.
     cycle: std::sync::Weak<ListingCycle>,
     live: Option<Arc<tokio::sync::Notify>>,
+    /// How many cycles this handle was asked for, in a handle made by
+    /// [`for_tests`](Self::for_tests): raised by [`refresh`](Self::refresh) and
+    /// [`refresh_after_full_listing_request`](Self::refresh_after_full_listing_request)
+    /// before they wake the poller. `None` in every handle a poller gave.
+    #[cfg(test)]
+    asked_cycle_count: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 impl ListingPollHandle {
@@ -45,18 +51,23 @@ impl ListingPollHandle {
     /// place of a poller.
     #[cfg(test)]
     pub(crate) fn for_tests() -> (Self, Arc<std::sync::atomic::AtomicUsize>) {
-        todo!()
+        let asked_cycle_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let handle = ListingPollHandle { refresh: Arc::new(tokio::sync::Notify::new()), cancel: CancellationToken::new(), cycle: std::sync::Weak::new(), live: None, asked_cycle_count: Some(Arc::clone(&asked_cycle_count)) };
+        (handle, asked_cycle_count)
     }
 
     /// A cycle now: the changes since the delta link. Called by the plan's task after a
-    /// refusal that asks for a cycle, by `Refresh()` and by the sign-in.
+    /// refusal that asks for a cycle, by `Refresh()` and by the sign-in. In a test build
+    /// it first raises `asked_cycle_count` where the handle has one: the count of a
+    /// handle made by `for_tests` is of these calls.
     pub fn refresh(&self) {
         todo!()
     }
 
     /// A cycle now, after the store was asked for a full listing by the caller
     /// (`ItemStore::request_full_listing`): the cycle begins it by the store's request,
-    /// the handle only wakes.
+    /// the handle only wakes. Counted in `asked_cycle_count` as [`refresh`](Self::refresh)
+    /// is.
     pub fn refresh_after_full_listing_request(&self) {
         todo!()
     }

@@ -69,7 +69,7 @@ impl ItemFilesInterface {
         write_operation_thread: Arc<WriteOperationThread>,
         sync_plan_wake: Arc<SyncPlanWake>,
     ) -> Self {
-        todo!()
+        Self { folder, store, download_states, downloader, free_up, item_handles, write_operation_thread, sync_plan_wake }
     }
 
     /// The status of `path`, a full path: the item by `ItemReader::find_item_by_path` on

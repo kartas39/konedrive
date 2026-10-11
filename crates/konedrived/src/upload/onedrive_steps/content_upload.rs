@@ -123,7 +123,7 @@ pub struct ContentUpload {
 
 impl ContentUpload {
     pub fn new(graph: GraphAccess, lost_answers: LostAnswers, sending_holds: Arc<SendingHolds>, onedrive_space: Arc<OneDriveSpace>, running_steps: Arc<RunningSteps>, limits: Limits) -> Self {
-        todo!()
+        Self { graph, lost_answers, sending_holds, onedrive_space, running_steps, limits }
     }
 
     /// Sends the content of `file` to `target` and answers the item OneDrive made of it,
