@@ -92,3 +92,46 @@ pub(super) async fn wait_for_folder(service: &SyncService, mut is_reached: impl 
         published.changed().await.expect("the service lives");
     }
 }
+
+/// A service whose drive is `drive` and whose store is `fixture`'s, on a clock the test
+/// moves: a start of its folder over the parts a stopped sync kept is a real one — stages 5
+/// to 7, over the fixture's mount, built and not served — and mounts nothing.
+pub(super) fn make_service_with_drive(fixture: &ItemFixture, drive: konedrive_graph::drive::DriveClient) -> (Arc<SyncService>, Arc<ManualClock>) {
+    let clock = ManualClock::at(START);
+    let paths = super::SyncPaths { tree_db: fixture.store_path.clone(), thumbnails: None };
+    let service = wiring().clock(&clock).onedrive(drive, paths).build();
+    // The list the kept mount was built with, by its content: the service's own is another value.
+    *crate::panic::write(&service.ignore) = crate::panic::read(&fixture.ignore).clone();
+    (service, clock)
+}
+
+/// Puts the folder of `service` up over `fixture` with its sync RUNNING, read-write: a real
+/// start over the fixture's parts (`sync_tasks::tests::start_over_kept_parts`), with the
+/// service's own lease, state and take-down report, put into the folder's state and
+/// published as a start of the owner's leaves it. The test ends it with
+/// [`end_running_sync`] before the fixture goes.
+pub(super) async fn stage_running_sync(service: &Arc<SyncService>, fixture: &ItemFixture, drive: konedrive_graph::drive::DriveClient) {
+    let mut input = crate::sync_tasks::tests::make_start_input(fixture, drive);
+    input.lease = crate::sync_parts::lease::Lease::on(&service.folder);
+    input.state = service.state.clone();
+    input.take_down_report = service.take_down_report();
+    let started = crate::sync_tasks::tests::start_over_kept_parts(fixture, input).await;
+    let mut folder = service.folder.write().await;
+    let kept = Kept { source: Some(fixture.content_source()), tree_lock: Arc::clone(&fixture.tree_lock), parts: None };
+    let record = Record { root: SyncRoot { path: fixture.folder(), root_id: "root-id".into() }, baloo: false, kept };
+    folder.wanted = crate::config::Mode::ReadWrite;
+    folder.is = Is::Up(Up { record, sync: Sync::Running(Box::new(started)), take_down_try: None });
+    service.publish(&folder, |_| {});
+}
+
+/// The end of a scene with a folder staged by [`stage_running_sync`]: its sync is stopped
+/// through the owner's own door, and what the folder keeps is let go of where a thread may
+/// be joined.
+pub(super) async fn end_running_sync(service: &SyncService) {
+    let kept = {
+        let mut stopped = service.change().await;
+        stopped.folder_mut().record_mut().and_then(|record| record.kept.parts.take())
+    };
+    service.view.send_replace(View::default());
+    tokio::task::spawn_blocking(move || drop(kept)).await.expect("the parts are dropped");
+}

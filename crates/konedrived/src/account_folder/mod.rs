@@ -25,6 +25,8 @@ pub mod wiring;
 /// Test code: a folder put into a state by hand.
 #[cfg(test)]
 mod staged_folder;
+#[cfg(test)]
+mod tests;
 
 use std::sync::Arc;
 
