@@ -40,6 +40,16 @@ pub enum WakeCause {
     /// What holds all sending changed: the pause, the sign-in, the network, the access
     /// mode, the list of ignored names.
     SendingHoldChanged,
+    /// A request whose answer was never committed was settled by reading OneDrive
+    /// (`onedrive_steps::lost_answers`): its item and the directory it was sent into are
+    /// busy no more, and its answer may be written. The task makes a plan, and nothing
+    /// else.
+    RequestRecordSettled,
+    /// The next try of what is left to clean in OneDrive — a cancel, a removal of an
+    /// item an upload left, the reading of a request record — is due at another time
+    /// than the task's timer was set with. The task makes a plan, which sets its timer
+    /// (`sync_plan_task::decide_next_wake`), and nothing else.
+    NextCleaningTryChanged,
 }
 
 /// The wake of one folder's plan.

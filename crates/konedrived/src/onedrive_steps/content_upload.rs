@@ -792,7 +792,7 @@ impl ContentUpload {
                 if let (Some(onedrive_content), Some(local_content)) = contents {
                     let upload = OwnUploadContent { onedrive_content, local_content };
                     match decide_own_upload_follow_up(&upload) {
-                        // TODO: contract — the plan is not told the fact kept here: nothing of `sync_plan_task/plan_input.rs` or `SyncPlanInput` reads `own_upload_contents`, so the listing that brings what this upload left reads as "changed on both sides" and a conflict copy is made where the content is to be sent again.
+                        // The fact is the plan's to read (`own_upload_contents`, the plan's input of that name): with it the listing that brings what this upload left is no change of OneDrive's, and the content is sent again with no conflict copy.
                         OwnUploadFollowUp::SendAgain | OwnUploadFollowUp::TakeAsOneDrivesChange => {
                             self.graph.store.call(move |store| store.item_store().remember_own_upload_content(id, &upload)).await.map_err(fail_store)?;
                         }

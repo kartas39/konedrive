@@ -634,8 +634,8 @@ async fn read_quota_before_first_plan(drive: &DriveClient, space: &OneDriveSpace
 fn start_sync_tasks(input: &FolderStartInput, store: &Store, mount: &Arc<ItemMount>, sync_plan_wake: &Arc<SyncPlanWake>, running_steps: &Arc<RunningSteps>, published_plan: &Arc<PublishedPlan>, sending_holds: &Arc<crate::sync_parts::sending_holds::SendingHolds>, onedrive_space: &Arc<OneDriveSpace>, drive_id: &DriveId) -> SyncTasks {
     let stop = CancellationToken::new();
     let graph = GraphAccess { drive: input.drive.clone(), drive_id: drive_id.clone(), store: store.clone(), clock: Arc::clone(&input.clock) };
-    let session_cancellations = SessionCancellations::new(graph.clone());
-    let lost_answers = LostAnswers::new(graph.clone(), Arc::clone(sending_holds));
+    let lost_answers = LostAnswers::new(graph.clone(), Arc::clone(&input.tree_lock));
+    let session_cancellations = SessionCancellations::new(graph.clone(), lost_answers.clone(), Arc::clone(running_steps));
     let made_items = MadeItems::new(graph.clone());
     let name_holders = NameHolders::new(graph.clone(), session_cancellations.clone());
     let content_upload = ContentUpload::new(graph.clone(), lost_answers.clone(), Arc::clone(sending_holds), Arc::clone(onedrive_space), Arc::clone(running_steps), input.limits.clone());

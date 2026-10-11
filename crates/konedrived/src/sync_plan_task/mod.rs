@@ -222,6 +222,10 @@ pub struct SyncPlanTask {
     /// The counts of the queue as the task last read and published them: what the tick's
     /// round, which reads no count, publishes the bytes of the uploads with.
     queue_counts: std::sync::Mutex<crate::upload_queue::QueueCounts>,
+    /// When the soonest next try of what the cleaning task could not get through is due,
+    /// Unix seconds (`CancellationRound::next_try_at` of its last rounds); none when
+    /// nothing waits. Written by that task when it ends, read for the timer.
+    next_cleaning_try: std::sync::Mutex<Option<i64>>,
 }
 
 /// A step that ended, as its task hands it to the loop.
@@ -303,18 +307,21 @@ pub fn decide_progress_tick(running: &[RunningStep], now: i64) -> Option<i64> {
 
 /// When the task wakes by itself next, Unix seconds: the soonest of the plan's waits
 /// until a time, the end of what holds all sending when it has one
-/// (`SendingHolds::find_end`), and the quota's next read; `None` when nothing is due.
+/// (`SendingHolds::find_end`), the quota's next read, and the next try of what is left to
+/// clean in OneDrive (`next_cleaning_try`: a cancel, a removal, a request record that
+/// could not be read) while it is still to come — one that is due is asked by the round
+/// that is being made; `None` when nothing is due.
 /// Never sooner than a second from `now`. Pure. Today's `Engine::next_due`
 /// (`upload/engine.rs:480`).
-pub fn decide_next_wake(plan: &SyncPlan, hold_end: Option<i64>, next_quota_read: Option<i64>, now: i64) -> Option<i64> {
+pub fn decide_next_wake(plan: &SyncPlan, hold_end: Option<i64>, next_quota_read: Option<i64>, next_cleaning_try: Option<i64>, now: i64) -> Option<i64> {
     let waits = plan.waits.iter().filter_map(|wait| if let WaitReason::Time { until, .. } = wait.reason { Some(until) } else { None });
-    waits.chain(hold_end).chain(next_quota_read).min().map(|soonest| soonest.max(now.saturating_add(1)))
+    waits.chain(hold_end).chain(next_quota_read).chain(next_cleaning_try.filter(|at| *at > now)).min().map(|soonest| soonest.max(now.saturating_add(1)))
 }
 
 impl SyncPlanTask {
     /// Made by the folder's start (`sync_tasks::start_order::start_sync_tasks`).
     pub fn new(parts: SyncPlanTaskParts) -> Arc<Self> {
-        Arc::new(SyncPlanTask { parts, logged_since_listing_ended: AtomicUsize::new(0), local_step_tries: std::sync::Mutex::new(LocalStepTries::default()), ended_steps: std::sync::Mutex::default(), told_faults: std::sync::Mutex::default(), full_listings_asked: std::sync::Mutex::default(), plan_count: AtomicU64::new(0), quota_read_failed_at: std::sync::Mutex::new(None), session_cancellations_task: std::sync::Mutex::new(None), queue_counts: std::sync::Mutex::default() })
+        Arc::new(SyncPlanTask { parts, logged_since_listing_ended: AtomicUsize::new(0), local_step_tries: std::sync::Mutex::new(LocalStepTries::default()), ended_steps: std::sync::Mutex::default(), told_faults: std::sync::Mutex::default(), full_listings_asked: std::sync::Mutex::default(), plan_count: AtomicU64::new(0), quota_read_failed_at: std::sync::Mutex::new(None), session_cancellations_task: std::sync::Mutex::new(None), queue_counts: std::sync::Mutex::default(), next_cleaning_try: std::sync::Mutex::new(None) })
     }
 
     /// Runs the loop until `stop`, then ends its steps as the module's doc says, and
@@ -355,7 +362,8 @@ impl SyncPlanTask {
                             // A read of the quota that was due and failed is tried again after a wait, not at once.
                             // The steps the last plan left are replaced by this plan's.
                             let next_quota_read = parts.onedrive_space.find_next_read().map(|at| if at > now { at } else { now.saturating_add(READ_RETRY_WAIT) });
-                            next_wake = decide_next_wake(&round.plan, parts.sending_holds.find_end(now), next_quota_read, now);
+                            let next_cleaning_try = *crate::panic::lock(&self.next_cleaning_try);
+                            next_wake = decide_next_wake(&round.plan, parts.sending_holds.find_end(now), next_quota_read, next_cleaning_try, now);
                             steps_left_to_start = self.start_steps(round.plan.steps, now);
                             memories = round.memories;
                         }
@@ -481,8 +489,8 @@ impl SyncPlanTask {
     /// Cancels the upload sessions left to cancel, removes the items uploads left with
     /// other content and settles the requests whose answer was never committed
     /// (`SessionCancellations::cancel_sessions`, `remove_mismatched_items`,
-    /// `settle_request_records`; a record settled wakes the plan as a written page of a
-    /// listing does: what OneDrive has was written, or an item is busy no more),
+    /// `settle_request_records`; a record settled wakes the plan,
+    /// `WakeCause::RequestRecordSettled`),
     /// as a task of its own, one at a time: the loop waits for none of these requests.
     /// It asks one of each at a time, and goes on until both lists are empty, `stop` came,
     /// sending is held, or a round got nothing through: what is left then is asked for
@@ -498,6 +506,8 @@ impl SyncPlanTask {
         let (task, stop) = (Arc::clone(self), stop.clone());
         *kept_task = Some(tokio::spawn(async move {
             let cancellations = &task.parts.session_cancellations;
+            // The next try of each kind, as its last round answered it.
+            let mut next_tries: [Option<i64>; 3] = [None; 3];
             while !stop.is_cancelled() && !is_held(&task) {
                 let read = |items: &konedrive_tree::ItemReader<'_>| Ok((!items.list_upload_session_cancellations(1)?.is_empty(), !items.list_mismatched_item_removals(1)?.is_empty(), !items.list_request_records(1)?.is_empty()));
                 let (has_cancellation, has_removal, has_request_record) = match task.parts.store.read_items(read).await {
@@ -508,16 +518,34 @@ impl SyncPlanTask {
                     }
                 };
                 // One of each at a time, so that the stop is heard between two requests. What failed waits for its next try and is passed over by `SessionCancellations`, which keeps the tries: a round that gets nothing through ends this task, and a later plan starts it again.
-                let is_cancelled = has_cancellation && cancellations.cancel_sessions(1).await.done_count > 0;
-                let is_removed = has_removal && !stop.is_cancelled() && cancellations.remove_mismatched_items(1).await.done_count > 0;
+                let mut ask = async |is_asked: bool, kind: usize| {
+                    if !is_asked || stop.is_cancelled() {
+                        return false;
+                    }
+                    let round = match kind {
+                        0 => cancellations.cancel_sessions(1).await,
+                        1 => cancellations.remove_mismatched_items(1).await,
+                        _ => cancellations.settle_request_records(1).await,
+                    };
+                    next_tries[kind] = round.next_try_at;
+                    round.done_count > 0
+                };
+                let is_cancelled = ask(has_cancellation, 0).await;
+                let is_removed = ask(has_removal, 1).await;
                 // A request whose answer was never committed is settled by reading OneDrive: its item and its destination are busy to the plan until then, so the plan is made again once one is.
-                let is_settled = has_request_record && !stop.is_cancelled() && cancellations.settle_request_records(1).await.done_count > 0;
+                let is_settled = ask(has_request_record, 2).await;
                 if is_settled {
-                    task.parts.sync_plan_wake.wake(WakeCause::ListingPageWritten);
+                    task.parts.sync_plan_wake.wake(WakeCause::RequestRecordSettled);
                 }
                 if !is_cancelled && !is_removed && !is_settled {
                     break;
                 }
+            }
+            // What could not be got through is tried again at its time: the timer takes it with the next plan, which is made now when the time is another than it was set with.
+            let next_cleaning_try = next_tries.into_iter().flatten().min();
+            let is_changed = std::mem::replace(&mut *crate::panic::lock(&task.next_cleaning_try), next_cleaning_try) != next_cleaning_try;
+            if is_changed && next_cleaning_try.is_some() {
+                task.parts.sync_plan_wake.wake(WakeCause::NextCleaningTryChanged);
             }
         }));
     }

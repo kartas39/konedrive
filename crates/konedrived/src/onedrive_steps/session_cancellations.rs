@@ -310,10 +310,10 @@ impl SessionCancellations {
     /// over, as one whose next try is not due is; one that cannot be read now waits
     /// ([`decide_next_cancellation_try`], not before a time OneDrive named). While a
     /// record stands, its item and its destination are busy to the plan: the caller wakes
-    /// the plan when `done_count` is not 0. Called by the plan's task as
+    /// the plan when `done_count` is not 0 (`WakeCause::RequestRecordSettled`), and its
+    /// timer takes `next_try_at` (`sync_plan_task::decide_next_wake`). Called by the plan's task as
     /// [`cancel_sessions`](Self::cancel_sessions) is, which is after the first listing of
     /// a start ended.
-    // TODO: contract — the timer of the plan's task (`sync_plan_task/mod.rs`, `decide_next_wake`) does not take `CancellationRound::next_try_at`: a record that could not be read is asked again only when the task makes a plan for another cause (the network back, a listing, a local change), and its item is busy until then.
     pub async fn settle_request_records(&self, limit: usize) -> CancellationRound {
         let is_record = |thing: &CleanedThing| matches!(thing, CleanedThing::RequestRecord(_));
         let mut round = CancellationRound::default();
