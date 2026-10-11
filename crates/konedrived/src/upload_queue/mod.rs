@@ -747,8 +747,8 @@ pub fn read_unsent_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemI
 /// The path of each of `entries`, relative to the root, by item: its local path
 /// (`ItemReader::find_path`), or for an item with no local version the path of its synced
 /// place (`ItemReader::find_synced_path`, MISSING-6.d). An entry that has neither has no
-/// path here, and neither has one whose synced path the store refuses to tell (said once
-/// in the journal): any other error of the store fails the read. Called inside the `Store::read_items` that read the entries, for those of
+/// path here, and neither has one whose synced path the store refuses to tell: any other
+/// error of the store fails the read. Called inside the `Store::read_items` that read the entries, for those of
 /// them a list of files names.
 pub fn read_entry_paths(items: &ItemReader<'_>, entries: &[&UnsentEntry]) -> Result<BTreeMap<LocalItemId, PathBuf>, TreeError> {
     let mut paths = BTreeMap::new();
@@ -761,7 +761,7 @@ pub fn read_entry_paths(items: &ItemReader<'_>, entries: &[&UnsentEntry]) -> Res
                 // One row whose synced places end at no directory the folder shows: that
                 // entry has no path and is left out; the answer of the bus stands.
                 Err(TreeError::Refused(refusal)) => {
-                    tracing::warn!("an unsent removal is left out of what the queue lists: {refusal}");
+                    tracing::debug!("an unsent removal is left out of what the queue lists: {refusal}");
                     None
                 }
                 found => found?,
