@@ -44,6 +44,29 @@ download_cut_off_gives_no_wrong_bytes() {
     check_state big.bin hydrated
 }
 
+# A download asked for by name whose every try OneDrive ends after the first half: it fails,
+# keeps what it has with the place it is checked up to, and the next asking goes on from
+# there. (A file that is read, as `cat` reads it, is not cut by these answers: its reads ask
+# for ranges, which the first half answers rightly.)
+download_cut_off_keeps_what_it_has_and_goes_on_from_there() {
+    begin_folder
+    seed_random X R big.bin 41943040
+    register_folder read-only
+    # As many as the download tries before it gives up.
+    onedrive cut X 20971520 3 > /dev/null
+    check_holds "the download fails" "$(daemon hydrate "$F/big.bin")" "refused"
+    check "the file is not shown as downloaded" "$(state_of big.bin)" online-only
+    local left
+    left=$(daemon staged)
+    check_holds "the first half is kept, unfinished" "$left" "[(20971520, Some("
+    check "OneDrive was asked three times" "$(onedrive count GET dl/X)" 3
+    check "asked again, the download ends" "$(daemon hydrate "$F/big.bin")" downloaded
+    check "with one more request" "$(onedrive count GET dl/X)" 4
+    check "nothing is left unfinished" "$(daemon staged)" "[]"
+    check "the file is whole" "$(is_seed big.bin X && echo equal)" equal
+    check_state big.bin hydrated
+}
+
 # OneDrive changes the file while its first version is still being downloaded: what the
 # folder shows afterwards is the version OneDrive holds now.
 file_changed_in_onedrive_during_its_download_is_read_as_it_is_now() {
@@ -165,6 +188,7 @@ file_reads() {
     ip link set lo up
     for name in \
         download_cut_off_gives_no_wrong_bytes \
+        download_cut_off_keeps_what_it_has_and_goes_on_from_there \
         file_changed_in_onedrive_during_its_download_is_read_as_it_is_now \
         download_in_flight_when_the_folder_is_forgotten_leaves_no_wrong_bytes \
         free_up_while_a_reader_holds_the_file_gives_it_no_wrong_bytes \

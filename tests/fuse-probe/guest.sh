@@ -61,10 +61,14 @@ service() {
     $U env RUST_LOG=info "$bin/fuse-service" $st < $st/in > $W/logs/svc.out 2>> $W/logs/svc.err &
     svc=$!
     exec 8> $st/in
+    # The answers come in the order of the commands: a command's answer is the next `done` line, also when
+    # the same command was sent before.
     ask() {
+        local before
+        before=$(grep -c '^done ' $W/logs/svc.out)
         echo "$*" >&8
-        for _ in $(seq 150); do
-            if grep -qF "done $*:" $W/logs/svc.out; then grep -F "done $*:" $W/logs/svc.out | tail -1 | sed "s/^done [^:]*: *//"; return; fi
+        for _ in $(seq 600); do
+            if [ "$(grep -c '^done ' $W/logs/svc.out)" -gt "$before" ]; then grep '^done ' $W/logs/svc.out | sed -n "$((before + 1))p" | sed "s/^done [^:]*: *//"; return; fi
             sleep 0.1
         done
         echo "NO ANSWER"
@@ -144,11 +148,10 @@ print([n for n in ('root', 'drive', 'item-id') if has(n)], 'listed:', os.listxat
     echo "-- a download cut off, and continued"
     head -c 41943040 /dev/urandom > $src/large; chown 1000:1000 $src/large
     ask file L R large.bin $src/large > /dev/null; ask refresh > /dev/null; sleep 1
-    ask cut L 20971520 6 > /dev/null
-    echo "first read: $($U cat $f/large.bin 2>&1 > /dev/null | sed 's/.*: //'); what it left (size, checkpoint): $(ask staged)"
-    echo "downloads asked of the cloud so far: $(ask count GET dl/L)"; ask cut L 0 0 > /dev/null
-    for _ in 1 2 3 4 5 6; do $U cat $f/large.bin > /dev/null 2>&1 && break; done
-    echo "a later read equal to the cloud's: $($U cmp $f/large.bin $src/large && echo yes); left: $(ask staged); downloads asked of the cloud: $(ask count GET dl/L)"
+    # Every try of the download ends after the first half; a file that is read is not cut so, its reads ask for ranges.
+    ask cut L 20971520 3 > /dev/null
+    echo "downloaded by name: $(ask hydrate $f/large.bin); what it left (size, checkpoint): $(ask staged); downloads asked of the cloud: $(ask count GET dl/L)"
+    echo "asked again: $(ask hydrate $f/large.bin); equal to the cloud's: $($U cmp $f/large.bin $src/large && echo yes); left: $(ask staged); downloads asked of the cloud: $(ask count GET dl/L)"
     echo "-- a large pinned file, in parts"
     head -c 314572800 /dev/urandom > $src/huge; chown 1000:1000 $src/huge
     ask folder K R keep > /dev/null; ask file H K huge.bin $src/huge > /dev/null; ask refresh > /dev/null; sleep 1
