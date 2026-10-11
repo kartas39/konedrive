@@ -197,7 +197,7 @@ fn skip_spelled(skip: &LocalSkip) -> (&'static str, bool) {
 /// stored where it has no sentence yet. A reworded key fails here.
 #[test]
 fn every_reason_is_stored_under_its_spelling_and_is_worded() {
-    assert_eq!((Reason::ALL.len(), LocalSkip::ALL.len()), (48, 11));
+    assert_eq!((Reason::ALL.len(), LocalSkip::ALL.len()), (50, 11));
     let mut seen = std::collections::BTreeSet::new();
     for reason in Reason::ALL {
         let (spelling, worded) = spelled(&reason);
