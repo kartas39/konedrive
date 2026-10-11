@@ -17,7 +17,7 @@
 //!
 //! **Tested without the rest**, over a store in memory:
 // test: the_unsent_and_the_changed_in_onedrive_are_read_bounded
-// test: the_pinned_to_download_are_read_with_every_plan
+// test: the_pinned_to_download_are_read_while_the_reader_is_asked_and_not_otherwise
 // test: an_item_is_given_with_the_directories_above_it_on_every_side
 // test: an_item_that_differs_is_given_with_the_holders_of_its_name_its_copy_names_and_its_temporary_name
 // test: a_directory_removed_here_is_given_with_all_onedrive_has_in_it_and_their_count
@@ -110,7 +110,23 @@ pub struct DaemonFacts {
     /// failed, as they are when the round begins: a copy. The plan's reading voids those
     /// whose rows changed or went, and tells the plan the rest.
     pub local_step_tries: LocalStepTries,
+    /// Whether the reading asks the reader of pinned files, which scans all below the
+    /// pinned directories (`MissingPinnedFiles::is_reader_asked`: a pinned file may be
+    /// missing its content). When not, no pinned file is given for its download alone:
+    /// the last reading that asked found none.
+    pub is_pinned_files_reader_asked: bool,
     pub settings: PlanSettings,
+}
+
+/// What a plan's reading answers of the pinned files that are only to be downloaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinnedFilesReading {
+    /// The reader was not asked (`DaemonFacts::is_pinned_files_reader_asked`).
+    NotAsked,
+    /// Asked, and no pinned file is missing its content.
+    NoneMissing,
+    /// Asked, and some are: they were given to the plan.
+    SomeMissing,
 }
 
 /// The rows a plan is given, by id, with those of them whose relatives are still to be
@@ -216,6 +232,9 @@ pub struct PlannedRound {
     /// what a kept wish for read-only waits for to be 0. NOT the count a Forget warns
     /// with (`SyncService::count_unsent`), which is of every unsent change.
     pub unsent_to_send_count: u64,
+    /// What the reading answered of the pinned files: what the task ends its asking by
+    /// (`MissingPinnedFiles::note_reading`).
+    pub pinned_files_reading: PinnedFilesReading,
 }
 
 /// Where the wait of `item` ends, as `waits` say it: the item that waits for no other item
@@ -339,8 +358,8 @@ pub fn plan_next_steps(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Pl
     let items_read_at_once = facts.settings.items_read_at_once.max(1);
     let mut window = ReadWindow { unsent: items_read_at_once, of_each_other_kind: items_read_at_once };
     loop {
-        let read = read_differing_items(items, window)?;
-        let is_all_read = read.is_all_read;
+        let read = read_differing_items(items, window, facts.is_pinned_files_reader_asked)?;
+        let (is_all_read, pinned_files_reading) = (read.is_all_read, read.pinned_files_reading);
         let mut given = GivenItems::default();
         given.give(read.rows);
         let mut input = folder_input.clone();
@@ -385,7 +404,7 @@ pub fn plan_next_steps(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Pl
         }
         {
             let unsent_to_send_count = unsent_count.saturating_sub(count_unsent_not_to_send(&input, &plan, &given.memories));
-            return Ok(PlannedRound { input, plan, memories: given.memories, local_step_tries, is_all_read, item_counts, unsent_to_send_count });
+            return Ok(PlannedRound { input, plan, memories: given.memories, local_step_tries, is_all_read, item_counts, unsent_to_send_count, pinned_files_reading });
         }
     }
 }
@@ -400,26 +419,33 @@ pub struct DifferingItemsRead {
     pub is_unsent_read_whole: bool,
     /// Whether every kind was read whole.
     pub is_all_read: bool,
+    pub pinned_files_reading: PinnedFilesReading,
 }
 
 /// The first `window.unsent` of what is unsent (`list_unsent`, the oldest first), and the
 /// first `window.of_each_other_kind` of each of: what
 /// OneDrive changed (`list_changed_in_onedrive`), the shown items that cannot be shown any
-/// more (`list_shown_items_that_cannot_be_shown`, by its index), and the pinned files that
-/// are only to be downloaded (`list_pinned_files_to_download`: with every plan, as a plan
-/// that left them out would drop the downloads the last one planned and never plan those
-/// of a file a listing just showed); and whether each was read whole.
-pub fn read_differing_items(items: &ItemReader<'_>, window: ReadWindow) -> Result<DifferingItemsRead, TreeError> {
+/// more (`list_shown_items_that_cannot_be_shown`, by its index), and — when
+/// `is_pinned_files_reader_asked` — the pinned files that are only to be downloaded
+/// (`list_pinned_files_to_download`, which scans all below the pinned directories: asked
+/// with every plan while a pinned file may be missing its content, as a plan that left
+/// them out would drop the downloads the last one planned, and not at all once a reading
+/// found none); and whether each was read whole.
+pub fn read_differing_items(items: &ItemReader<'_>, window: ReadWindow, is_pinned_files_reader_asked: bool) -> Result<DifferingItemsRead, TreeError> {
     let read_at_once = window.of_each_other_kind;
     let unsent = items.list_unsent(None, window.unsent)?;
     let changed = items.list_changed_in_onedrive(None, read_at_once)?;
     let cannot_be_shown = items.list_shown_items_that_cannot_be_shown(None, read_at_once)?;
-    // TODO: this reader scans all below the pinned directories with every plan, and every finished download makes a plan: N pinned downloads ending one by one are N scans (the review's S-c). A flag "no pinned file is missing its content", kept by the task and cleared by a pin, a listing's page and a content taken off the disk, would bound it; check the cost on a large pinned tree and fix if needed.
-    let pinned = items.list_pinned_files_to_download(None, read_at_once)?;
+    let pinned = if is_pinned_files_reader_asked { items.list_pinned_files_to_download(None, read_at_once)? } else { Vec::new() };
+    let pinned_files_reading = match (is_pinned_files_reader_asked, pinned.is_empty()) {
+        (false, _) => PinnedFilesReading::NotAsked,
+        (true, true) => PinnedFilesReading::NoneMissing,
+        (true, false) => PinnedFilesReading::SomeMissing,
+    };
     let is_unsent_read_whole = unsent.len() < window.unsent;
     let is_all_read = is_unsent_read_whole && [changed.len(), cannot_be_shown.len(), pinned.len()].iter().all(|read| *read < read_at_once);
     let unsent_ids = unsent.iter().map(|item| item.local_item_id).collect();
-    Ok(DifferingItemsRead { rows: unsent.into_iter().chain(changed).chain(cannot_be_shown).chain(pinned).collect(), unsent: unsent_ids, is_unsent_read_whole, is_all_read })
+    Ok(DifferingItemsRead { rows: unsent.into_iter().chain(changed).chain(cannot_be_shown).chain(pinned).collect(), unsent: unsent_ids, is_unsent_read_whole, is_all_read, pinned_files_reading })
 }
 
 /// Gives, with every row of `given` that was not closed yet, what `SyncPlanInput` says

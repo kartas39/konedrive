@@ -14,6 +14,7 @@ fn facts() -> DaemonFacts {
         now: START_TIME + 1_000,
         left_by_start_up_check: BTreeSet::new(),
         local_step_tries: LocalStepTries::default(),
+        is_pinned_files_reader_asked: true,
         settings: PlanSettings { computer_name: "here".into(), largest_file_size: 1 << 30, quiet_time: 0, items_read_at_once: 100 },
     }
 }
@@ -106,4 +107,22 @@ fn unsent_items_that_wait_for_the_user_do_not_hold_the_window_while_another_step
     assert!(matches!(step_of(listed.local_item_id), Some(SyncStep::Folder(_))), "the step that kept the window from being widened: {:?}", round.plan);
     assert!(matches!(step_of(newer.local_item_id), Some(SyncStep::OneDrive(_))), "the newer unsent item is planned past those that wait for the user: {:?}", round.plan);
     assert_eq!(count_unsent_waiting_for_user(&refused.iter().map(|item| item.local_item_id).chain([newer.local_item_id]).collect::<Vec<_>>(), &round.plan), 3);
+}
+
+#[test]
+fn the_pinned_to_download_are_read_while_the_reader_is_asked_and_not_otherwise() {
+    let fixture = ItemFixture::new();
+    assert_eq!(plan(&fixture, facts()).pinned_files_reading, PinnedFilesReading::NoneMissing, "no pin");
+    let pinned = fixture.show_onedrive_file("pinned.txt", b"theirs");
+    let id = pinned.local_item_id;
+    let onedrive_id = pinned.onedrive_item.as_ref().expect("bound").item_id.as_str().to_owned();
+    fixture.write_rows(move |store| store.set_pin(&onedrive_id, true));
+
+    let asked = plan(&fixture, facts());
+    assert_eq!(asked.pinned_files_reading, PinnedFilesReading::SomeMissing);
+    assert!(asked.plan.steps.iter().any(|step| matches!(step, SyncStep::Folder(konedrive_tree::FolderStep::DownloadContent { item }) if item.local_item_id == id)), "{:?}", asked.plan);
+
+    let not_asked = plan(&fixture, DaemonFacts { is_pinned_files_reader_asked: false, ..facts() });
+    assert_eq!(not_asked.pinned_files_reading, PinnedFilesReading::NotAsked);
+    assert_eq!(not_asked.plan.steps, Vec::new(), "the file agrees on everything, and nothing else gives it to a plan");
 }

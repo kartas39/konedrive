@@ -37,8 +37,9 @@
 //! (`FolderSteps::run_show_items`), and the outcomes that are ready together are settled
 //! in one job of the store. A first listing of N items is then some plans per page and a
 //! few jobs, not N of each. The one reader that scans (`list_pinned_files_to_download`)
-//! is asked with every plan: a plan that left the pinned files out would drop the
-//! downloads the last one planned.
+//! is asked with every plan while a pinned file may be missing its content — a plan that
+//! left the pinned files out would drop the downloads the last one planned — and not at
+//! all once a reading found none ([`MissingPinnedFiles`]).
 //!
 //! **How many steps run at once** (one per item): of the rows, all at once, in the plan's
 //! order; towards the folder, as they come — each is one job of the write-operation
@@ -104,6 +105,8 @@ use crate::sync_parts::sending_holds::{SendingHold, SendingHolds};
 
 /// The failed tries of the steps towards the folder and of the rows, kept for the run.
 pub mod local_step_tries;
+/// Whether a pinned file may be missing its content.
+pub mod missing_pinned_files;
 /// What a plan is made from: read from the store, closed, described.
 pub mod plan_input;
 /// The steps of the rows alone.
@@ -116,6 +119,7 @@ pub mod step_runners;
 pub mod step_settlement;
 
 use local_step_tries::{LocalStep, LocalStepTries};
+use missing_pinned_files::MissingPinnedFiles;
 use plan_input::{DaemonFacts, PlanSettings, PlannedRound};
 use step_choice::StepLimits;
 use step_runners::{RunningFuture, StepRunners};
@@ -205,6 +209,9 @@ pub struct SyncPlanTask {
     /// (`step_settlement::change_local_step_tries`); and at a refresh
     /// (`WakeCause::RefreshAsked`, `LocalStepTries::clear_next_tries`).
     local_step_tries: std::sync::Mutex<LocalStepTries>,
+    /// Whether a pinned file may be missing its content: while it may, a plan's reading
+    /// scans all below the pinned directories. Changed by the loop alone.
+    missing_pinned_files: MissingPinnedFiles,
     /// The steps that ended and are not settled yet, each with what came of it: put by
     /// the task of a step, taken by the loop.
     ended_steps: std::sync::Mutex<Vec<EndedStep>>,
@@ -326,7 +333,7 @@ pub fn decide_next_wake(plan: &SyncPlan, hold_end: Option<i64>, next_quota_read:
 impl SyncPlanTask {
     /// Made by the folder's start (`sync_tasks::start_order::start_sync_tasks`).
     pub fn new(parts: SyncPlanTaskParts) -> Arc<Self> {
-        Arc::new(SyncPlanTask { parts, logged_since_listing_ended: AtomicUsize::new(0), local_step_tries: std::sync::Mutex::new(LocalStepTries::default()), ended_steps: std::sync::Mutex::default(), told_faults: std::sync::Mutex::default(), full_listings_asked: std::sync::Mutex::default(), plan_count: AtomicU64::new(0), quota_read_failed_at: std::sync::Mutex::new(None), session_cancellations_task: std::sync::Mutex::new(None), queue_counts: std::sync::Mutex::default(), next_cleaning_try: std::sync::Mutex::new(None) })
+        Arc::new(SyncPlanTask { parts, logged_since_listing_ended: AtomicUsize::new(0), local_step_tries: std::sync::Mutex::new(LocalStepTries::default()), missing_pinned_files: MissingPinnedFiles::new(), ended_steps: std::sync::Mutex::default(), told_faults: std::sync::Mutex::default(), full_listings_asked: std::sync::Mutex::default(), plan_count: AtomicU64::new(0), quota_read_failed_at: std::sync::Mutex::new(None), session_cancellations_task: std::sync::Mutex::new(None), queue_counts: std::sync::Mutex::default(), next_cleaning_try: std::sync::Mutex::new(None) })
     }
 
     /// Runs the loop until `stop`, then ends its steps as the module's doc says, and
@@ -357,6 +364,7 @@ impl SyncPlanTask {
                         old_openings_forgotten_at = now;
                     }
                     self.apply_wake_causes(&causes, &stop).await;
+                    self.missing_pinned_files.note_wake_causes(&causes);
                     match self.make_plan(self.gather_daemon_facts()).await {
                         Ok(round) => {
                             self.plan_count.fetch_add(1, Ordering::SeqCst);
@@ -660,6 +668,7 @@ impl SyncPlanTask {
             now: (parts.clock)(),
             left_by_start_up_check: parts.start_check.held_items.clone(),
             local_step_tries: crate::panic::lock(&self.local_step_tries).clone(),
+            is_pinned_files_reader_asked: self.missing_pinned_files.is_reader_asked(),
             settings: parts.settings.clone(),
         }
     }
@@ -671,6 +680,7 @@ impl SyncPlanTask {
     async fn make_plan(&self, facts: DaemonFacts) -> Result<PlannedRound, konedrive_tree::TreeError> {
         let round = self.parts.store.read_items(move |items| plan_input::plan_next_steps(items, &facts)).await?;
         *crate::panic::lock(&self.local_step_tries) = round.local_step_tries.clone();
+        self.missing_pinned_files.note_reading(round.pinned_files_reading);
         Ok(round)
     }
 
@@ -818,6 +828,7 @@ impl SyncPlanTask {
         let ended: Vec<(SyncStep, StepOutcome)> = ended.into_iter().map(|ended| (ended.step, ended.outcome)).collect();
         let parts = &self.parts;
         let now = (parts.clock)();
+        self.missing_pinned_files.note_ended_steps(&ended);
         // The tries the store keeps, of the steps whose tries are its own: read now, whatever the last plan was given.
         let kept_by_store: Vec<(LocalItemId, Option<u64>)> = ended
             .iter()
