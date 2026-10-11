@@ -111,8 +111,8 @@ impl ItemWriteOperations {
     /// [`remove`](Self::remove), on the write-operation thread, after the decision and
     /// before the errno is answered; a failure of it is a warning and changes no answer.
     fn tell_directory_not_removable(&self, directory: LocalItemId) {
-        // Once per directory in a run of the mount: a program that tries again is not told again.
-        if !crate::panic::lock(&self.directories_told_not_removable).insert(directory) {
+        // Once per directory in a run of the mount: a program that tries again is not told again. Asked here and kept only once the event was handed over (this thread alone tells, so no second telling comes between): a telling that failed is tried at the next `rmdir`.
+        if crate::panic::lock(&self.directories_told_not_removable).contains(&directory) {
             return;
         }
         let path = match self.store.call_blocking(move |store| store.item_store().reader().find_path(directory)) {
@@ -125,6 +125,7 @@ impl ItemWriteOperations {
         };
         let event = crate::status::activity::event(konedrive_tree::ActivityKind::NotRemovedHere, self.folder.join(path).display().to_string(), "");
         self.report.activity.record_blocking(vec![event]);
+        crate::panic::lock(&self.directories_told_not_removable).insert(directory);
     }
 
     /// What [`decide_remove`] decides from, read in one job of the store through the
@@ -173,7 +174,8 @@ impl ItemWriteOperations {
         let case = self.read_remove_case(directory, name, asked_kind)?;
         let decision = decide_remove(&case);
         // An errno says nothing of why: a directory that holds what cannot be shown here is said to the user.
-        if let (Err(_), true, ItemsNeverShown::CannotBeShown, Some(directory)) = (&decision, case.is_empty, case.onedrive_items_never_shown, &case.item) {
+        // Of an `rmdir` alone: an `unlink` of such a directory is refused as any directory's (`EISDIR`), and that says why.
+        if let (Err(_), ItemKind::Directory, true, ItemsNeverShown::CannotBeShown, Some(directory)) = (&decision, case.asked_kind, case.is_empty, case.onedrive_items_never_shown, &case.item) {
             self.tell_directory_not_removable(directory.local_item_id);
         }
         let removed = match decision? {

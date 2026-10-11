@@ -490,9 +490,13 @@ impl SyncMark {
 
 /// The sync mark of `item`, a file or a directory the folder shows: `None` for an item
 /// that agrees (`unsent_since` is none) or is left here (`is_ignored`, or the plan's
-/// answer leaves it out by a rule); `Uploading` while a step runs for it; `Blocked` when
-/// the plan's answer is a wait for the user or a fault; else `Pending` — a wait for a
-/// time, another item or a listing among it, and an item the last plan was not given.
+/// answer leaves it out by a rule); `Uploading` while a step runs for it; `Blocked` by
+/// the one rule the queue's word goes by too
+/// (`sync_parts::published_plan::decide_is_shown_blocked`: a refusal for good the step
+/// memory keeps, or a wait for the user that neither is held, nor waits for space, nor
+/// goes up by itself); else `Pending` — a wait for a time, another item or a listing
+/// among it, an item the check at start left, one the plan is at fault about (the
+/// owner's decision: neither is called blocked), and an item the last plan was not given.
 /// Pure. The mount answers the attribute; nothing is written on disk, and design §8's
 /// marks stay two (the map's MISSING-2.j). Since nothing is written, a change of the
 /// mark reaches whoever watches the folder only when it is announced

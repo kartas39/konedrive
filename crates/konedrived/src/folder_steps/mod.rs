@@ -250,7 +250,8 @@ impl FolderSteps {
     /// as blocked. Never waits for the kernel: the bridge's queue takes them. The pin's
     /// change is announced by who sets it (`ItemFilesInterface::set_pin`).
     pub fn announce_marks_changed(&self, items: Vec<LocalItemId>) {
-        if items.is_empty() {
+        // After a take-down was asked the folder is on its way down: nobody is told of marks.
+        if items.is_empty() || self.mount_take_down.is_asked() {
             return;
         }
         let read = move |rows: &konedrive_tree::ItemReader<'_>| {
@@ -266,9 +267,10 @@ impl FolderSteps {
         // Each item is a change of its own to the bridge: none is held up by another's.
         let announce = |inotify_bridge: &ItemInotifyBridge, announcements: Result<Vec<ItemAnnouncement>, TreeError>| match announcements {
             Ok(announcements) => announcements.into_iter().for_each(|announcement| inotify_bridge.announce(vec![announcement])),
-            Err(error) => tracing::warn!("cannot read the places of the items whose sync mark changed: {error}"),
+            // Not a warning: the read of a task nobody waits for fails in an ordinary stop, when the store is closed under it.
+            Err(error) => tracing::debug!("cannot read the places of the items whose sync mark changed: {error}"),
         };
-        // The caller, the plan's loop, waits neither for the read nor for the kernel: the read is a task of its own on the store's reading connection.
+        // The caller, the plan's loop, waits neither for the read nor for the kernel: the read is a task of its own on the store's reading connection, kept and awaited by nobody. It may so run after the folder's sync stopped: it writes nothing, a store that is closed by then fails its read, and the bridge takes no announcement after its stop (`ItemInotifyBridge::announce`).
         match tokio::runtime::Handle::try_current() {
             Ok(runtime) => {
                 let (store, inotify_bridge) = (self.store.clone(), Arc::clone(&self.inotify_bridge));

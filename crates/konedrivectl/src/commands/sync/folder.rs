@@ -206,11 +206,13 @@ async fn ignore(chosen: &Chosen, proxy: &FolderProxies<'_>, action: IgnoreCmd) -
 /// 0, says "N changes were not sent to OneDrive and will stay only on this computer" and
 /// asks whether to go on; with `is_asking_skipped` — the command's `--yes` — it says it
 /// and goes on unasked, as a script needs. Whether the caller goes on; `true` at once for
-/// 0. A count that cannot be read is said, and asked about too. Input that ends with no
-/// answer is a no.
+/// 0. A count that cannot be read is said, and asked about too. The question is asked of
+/// a terminal alone: with an input that is none (a script, a pipe, a loop that reads a
+/// list) nothing is read from it and the command fails, naming `--yes`; so does an input
+/// that ends with no answer.
 // TODO: wording
 pub(crate) async fn warn_of_unsent_changes(proxy: &FolderProxies<'_>, is_asking_skipped: bool) -> anyhow::Result<bool> {
-    use std::io::Write as _;
+    use std::io::{IsTerminal as _, Write as _};
     let warning = match proxy.queue.unsent_count().await {
         Ok(0) => return Ok(true),
         Ok(1) => "1 change was not sent to OneDrive and will stay only on this computer.".to_owned(),
@@ -221,12 +223,18 @@ pub(crate) async fn warn_of_unsent_changes(proxy: &FolderProxies<'_>, is_asking_
     if is_asking_skipped {
         return Ok(true);
     }
+    if !std::io::stdin().is_terminal() {
+        bail!("Nothing was changed: there is no terminal to ask on. Pass --yes to go on without being asked.");
+    }
     eprint!("Go on? [y/N] ");
     std::io::stderr().flush().context("cannot write the question")?;
     let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer).context("cannot read the answer")?;
+    if std::io::stdin().read_line(&mut answer).context("cannot read the answer")? == 0 {
+        bail!("Nothing was changed: the question was not answered. Pass --yes to go on without being asked.");
+    }
     let goes_on = matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
     if !goes_on {
+        // TODO: a "no" ends the command with exit code 0, like one that had nothing to do: whether a command the user declined is to exit with another code is the owner's to say; check and fix if needed.
         eprintln!("Nothing was changed.");
     }
     Ok(goes_on)

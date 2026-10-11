@@ -635,10 +635,10 @@ fn the_sync_mark_per_case() {
     for answer in [None, Some(&planned), Some(&user), Some(&time), Some(&fault)] {
         assert_eq!(decide_sync_mark(&unsent, false, true, answer, false), Some(SyncMark::Uploading));
     }
-    // Blocked: a wait for the user, or a fault of the plan.
+    // Blocked: a wait for the user.
     assert_eq!(decide_sync_mark(&unsent, false, false, Some(&user), false), Some(SyncMark::Blocked));
-    assert_eq!(decide_sync_mark(&unsent, false, false, Some(&fault), false), Some(SyncMark::Blocked));
-    // Pending: everything else, an item the last plan was not given among it.
+    // Pending: everything else, a fault of the plan and an item the last plan was not given among it.
+    assert_eq!(decide_sync_mark(&unsent, false, false, Some(&fault), false), Some(SyncMark::Pending));
     let other_waits = [WaitReason::AnotherItem(LocalItemId::new(8)), WaitReason::ItemNotGiven(LocalItemId::new(8)), WaitReason::RunningStep, WaitReason::StartUpCheck, WaitReason::Listing, WaitReason::ItemsInDirectoryNotGiven(LocalItemId::new(8))];
     for answer in [None, Some(planned), Some(time)].into_iter().chain(other_waits.into_iter().map(|wait| Some(ItemAnswer::Waiting(wait)))) {
         assert_eq!(decide_sync_mark(&unsent, false, false, answer.as_ref(), false), Some(SyncMark::Pending), "{answer:?}");

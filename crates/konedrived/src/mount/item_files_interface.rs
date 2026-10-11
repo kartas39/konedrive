@@ -291,8 +291,10 @@ impl ItemFilesInterface {
     /// `is_own_pin_taken_off`, what it would decide once the item's own pin is off, as
     /// `Files.FreeUp` takes it off first: a pin of a directory above still holds then.
     /// Changes nothing. What `Dehydrate`, `FreeUp`'s check and `Files.Menu` say as a
-    /// refusal or offer. For a directory: the decision of the directory's own row
-    /// (pinned or not), its files are decided each by itself when the free-up runs.
+    /// refusal or offer. For a directory: `LeavePinned` or `NothingToFree`, by the pin
+    /// that holds for its own row and nothing else; its files are decided each by itself
+    /// when the free-up runs. For a file that is not on disk: `NothingToFree`, whatever
+    /// keeps it, as the free-up answers it (`item_free_up::find_copy_on_disk`).
     pub async fn decide_free_up(&self, path: &Path, is_own_pin_taken_off: bool) -> Result<FreeUpDecision, FilesRefusal> {
         let relative = path.strip_prefix(&self.folder).map(Path::to_owned).map_err(|_| FilesRefusal::OutsideFolder)?;
         // The row and whose pin holds for it, of one moment.
@@ -310,9 +312,18 @@ impl ItemFilesInterface {
             // A directory above holds it, whatever the item's own pin is.
             Some(_) => true,
         };
-        // As the free-up reads it (`ItemFreeUp::write_not_on_disk`): a file a step runs for is left as one that is being downloaded is.
-        let is_downloading_or_sent = self.download_states.is_downloading(id) || self.running_steps.has_running_step(id);
-        Ok(super::item_free_up::decide_item_free_up(&item, is_pinned, is_downloading_or_sent, self.item_handles.is_open_for_writing(id)))
+        Ok(match (item.kind, super::item_free_up::find_copy_on_disk(&item)) {
+            // A directory has no copy of its own, and nothing that runs for its row keeps the files below it: the free-up decides each of them by itself.
+            (ItemKind::Directory, _) if is_pinned => FreeUpDecision::LeavePinned,
+            (ItemKind::Directory, _) => FreeUpDecision::NothingToFree,
+            // As the free-up answers it before its decision (`ItemFreeUp::write_not_on_disk`): what is not on disk takes no space, whatever keeps it.
+            (ItemKind::File, None) => FreeUpDecision::NothingToFree,
+            (ItemKind::File, Some(_)) => {
+                // As the free-up reads it: a file a step runs for is left as one that is being downloaded is.
+                let is_downloading_or_sent = self.download_states.is_downloading(id) || self.running_steps.has_running_step(id);
+                super::item_free_up::decide_item_free_up(&item, is_pinned, is_downloading_or_sent, self.item_handles.is_open_for_writing(id))
+            }
+        })
     }
 
     /// The files whose whole download began and has not landed: a download that runs now,

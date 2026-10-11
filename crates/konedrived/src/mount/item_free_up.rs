@@ -62,6 +62,18 @@ pub(super) fn decide_item_free_up(item: &Item, is_pinned: bool, is_downloading_o
     }
 }
 
+/// The copy of the file `item` that a free-up can ask about at all: the content the
+/// folder shows and the place it shows it at, when the row is a file's and says the
+/// content is on disk. `None` for a directory, which has no copy of its own, and for a
+/// file that is not on disk: what is not on disk takes no space, whatever keeps it. Pure.
+/// What the free-up and the answer of what it would decide
+/// (`ItemFilesInterface::decide_free_up`) both ask before the decision.
+pub(super) fn find_copy_on_disk(item: &Item) -> Option<(ContentVersion, ItemPlace)> {
+    let local = item.local.as_ref()?;
+    let is_on_disk = item.kind == ItemKind::File && item.content_presence == ContentPresence::OnDisk;
+    local.content.clone().zip(local.place.clone()).filter(|_| is_on_disk)
+}
+
 /// Whether `item` is a clean copy by its row: a file whose content the row says is on
 /// disk, is the one the two sides agree on, and that no writer began to change. Its
 /// content then. Pure.
@@ -143,8 +155,7 @@ impl ItemFreeUp {
         });
         let Some((is_pinned, row, path)) = read.map_err(fail)? else { return Err(FreedCopy::Left(FreeUpDecision::NothingToFree)) };
         // What is not on disk takes no space, whatever keeps it.
-        let shown = row.local.as_ref().and_then(|local| local.content.clone().zip(local.place.clone())).filter(|_| row.kind == ItemKind::File && row.content_presence == ContentPresence::OnDisk);
-        let Some((content, place)) = shown else { return Err(FreedCopy::Left(FreeUpDecision::NothingToFree)) };
+        let Some((content, place)) = find_copy_on_disk(&row) else { return Err(FreedCopy::Left(FreeUpDecision::NothingToFree)) };
         let is_downloading_or_sent = self.download_states.is_downloading(item) || self.running_steps.has_running_step(item);
         match decide_item_free_up(&row, is_pinned, is_downloading_or_sent, self.item_handles.is_open_for_writing(item)) {
             FreeUpDecision::Free => {}

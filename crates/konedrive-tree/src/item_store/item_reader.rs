@@ -372,16 +372,29 @@ impl ItemReader<'_> {
             ItemKind::Directory.as_str(),
             LocalItemId::ROOT.as_i64()
         );
-        let ids = {
-            let mut statement = self.conn().prepare_cached(&sql)?;
-            let ids = statement.query_map(params![after.map_or(0, LocalItemId::as_i64), limit as i64], |row| row.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?;
-            ids
-        };
-        let mut directories = Vec::with_capacity(ids.len());
-        for id in ids.into_iter().map(LocalItemId::new) {
-            // A row with a local place whose directories above do not show it has no path: it is passed over.
-            if let Some(path) = find_path(self.conn(), id)? {
-                directories.push((id, path));
+        let mut directories = Vec::new();
+        let mut after = after;
+        // A row with a local place whose directories above do not show it has no path, and is passed over: the ids are read on, a bounded number at a time, until `limit` directories have a path or no id is left.
+        while directories.len() < limit {
+            let ids = {
+                let mut statement = self.conn().prepare_cached(&sql)?;
+                let ids = statement.query_map(params![after.map_or(0, LocalItemId::as_i64), limit as i64], |row| row.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?;
+                ids
+            };
+            let Some(last) = ids.last() else { break };
+            after = Some(LocalItemId::new(*last));
+            let is_last_read = ids.len() < limit;
+            for id in ids.into_iter().map(LocalItemId::new) {
+                // Never more than `limit`: the caller goes on after the last one answered.
+                if directories.len() == limit {
+                    break;
+                }
+                if let Some(path) = find_path(self.conn(), id)? {
+                    directories.push((id, path));
+                }
+            }
+            if is_last_read {
+                break;
             }
         }
         Ok(directories)

@@ -68,9 +68,12 @@ pub struct OneDriveSpace {
     /// The account's one quota, which this reads and adjusts and keeps no copy of.
     quota: Quota,
     is_full: std::sync::atomic::AtomicBool,
-    /// Whether a quota that says something of the space was applied here since the
-    /// folder's start: before that the account's figures are not this folder's to go by.
-    is_quota_applied: std::sync::atomic::AtomicBool,
+    /// Whether the quota applied here last said what is left (`DriveQuota::remaining`);
+    /// `None` until a quota that says something of the space was applied here: before
+    /// that the account's figures are not this folder's to go by. One that gave a state
+    /// and no `remaining` leaves the account's figure at what an earlier read said, which
+    /// is not what this read said: nothing is taken to be free by it.
+    is_remaining_applied: std::sync::Mutex<Option<bool>>,
     /// Unix seconds of the next read while full or while a file waits as too big.
     next_read_at: std::sync::Mutex<Option<i64>>,
 }
@@ -80,7 +83,7 @@ impl OneDriveSpace {
     /// full, and when the quota is read next.
     fn decide_change(&self, quota: &DriveQuota, is_full: bool, now: i64) -> SpaceChange {
         let was_full = self.is_full.swap(is_full, std::sync::atomic::Ordering::SeqCst);
-        self.is_quota_applied.store(true, std::sync::atomic::Ordering::SeqCst);
+        *crate::panic::lock(&self.is_remaining_applied) = Some(quota.remaining.is_some());
         let mut next_read_at = crate::panic::lock(&self.next_read_at);
         if is_full || next_read_at.is_some() {
             *next_read_at = Some(now + QUOTA_READ_INTERVAL);
@@ -101,7 +104,7 @@ impl OneDriveSpace {
 
     /// Not full, nothing read yet. Made by the folder's start, with the account's quota.
     pub fn new(quota: Quota) -> Self {
-        OneDriveSpace { quota, is_full: std::sync::atomic::AtomicBool::new(false), is_quota_applied: std::sync::atomic::AtomicBool::new(false), next_read_at: std::sync::Mutex::new(None) }
+        OneDriveSpace { quota, is_full: std::sync::atomic::AtomicBool::new(false), is_remaining_applied: std::sync::Mutex::new(None), next_read_at: std::sync::Mutex::new(None) }
     }
 
     /// Whether OneDrive is full. Called by the plan's task for `is_onedrive_full`, and by
@@ -190,18 +193,23 @@ impl OneDriveSpace {
 
     /// How many bytes OneDrive has free, as the last quota applied here said
     /// ([`apply_quota`](Self::apply_quota), [`refuse_for_space`](Self::refuse_for_space)),
-    /// less what was uploaded since (`Quota::uploaded`); `None` while OneDrive is full,
+    /// less what was uploaded since (`Quota::uploaded`), and 0 when that quota gave a
+    /// state and no `remaining`, as its `HasSpace.free_space`; `None` while OneDrive is full,
     /// and before any quota that says something of the space was applied. What the plan's
     /// task forgets the fitting refusals for lack of space by after
     /// `WakeCause::QuotaRead`: the one who read the quota applied it and gave the task no
     /// figures.
     pub fn find_free_space(&self) -> Option<u64> {
-        if self.is_full() || !self.is_quota_applied.load(std::sync::atomic::Ordering::SeqCst) {
+        if self.is_full() {
             return None;
         }
-        // The account's figures are the last read's less what went up since; one that gave a state and no `remaining` left them at what was read before, 0 when nothing was.
-        let figures = self.quota.state().get().quota;
-        (figures.read_at > 0).then_some(figures.remaining)
+        match *crate::panic::lock(&self.is_remaining_applied) {
+            None => None,
+            // As `SpaceChange::HasSpace::free_space` of that quota: nothing that waits is taken to fit.
+            Some(false) => Some(0),
+            // The account's figure is that read's, less what went up since.
+            Some(true) => Some(self.quota.state().get().quota.remaining),
+        }
     }
 
     /// When the quota is to be read next by itself, Unix seconds: every 30 minutes while
