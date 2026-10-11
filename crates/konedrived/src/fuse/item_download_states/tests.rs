@@ -199,19 +199,6 @@ fn the_bytes_read_as_ranges_reach_the_threshold_once_and_are_forgotten_with_the_
     assert!(download_states.is_downloading(item));
 }
 
-#[test]
-fn the_waiters_are_failed_when_the_mount_stops() {
-    let download_states = download_states();
-    let ((first, first_told), (second, second_told)) = (oneshot::channel(), oneshot::channel());
-    let (run, _) = start_as(&download_states, &key(5, "c1"), DownloadAsker::Read, Some(first)).unwrap();
-    start_as(&download_states, &key(6, "c1"), plan_pin(), Some(second)).unwrap();
-    download_states.fail_waiters();
-    assert_eq!((first_told.blocking_recv(), second_told.blocking_recv()), (Ok(Err(libc::EIO)), Ok(Err(libc::EIO))));
-    assert!(download_states.is_downloading(LocalItemId::new(5)), "a download that still runs ends as any other, with nobody waiting");
-    download_states.finish(&run, Ok(()));
-    assert!(!download_states.is_downloading(LocalItemId::new(5)));
-}
-
 /// Decided by who asked, not by who still listens: the plan's waiter is heard here.
 #[tokio::test]
 async fn a_download_only_the_plan_asked_for_is_aborted_by_its_cancel_and_keeps_its_unfinished_file() {

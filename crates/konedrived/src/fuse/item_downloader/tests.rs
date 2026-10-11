@@ -378,6 +378,13 @@ fn the_file_is_synced_before_the_landing_job_is_queued() {
     wait_until("the landing's job is queued", || fixture.write_operation_thread.count_queued_jobs() == 1);
     let running = fixture.download_states.find_running_download(&key_of(&shown)).expect("the download runs until its landing answered");
     assert_eq!(running.file.metadata().expect("its file").len(), 10, "the whole content is in the file");
+    // The time and the marks are on it before its sync, which covers them: a copy that has
+    // its name after a power loss has them too.
+    let mark_of = |mark: &str| xattr::FileExt::get_xattr(&*running.file, mark).expect("the marks are read").map(|value| String::from_utf8_lossy(&value).into_owned());
+    assert_eq!(mark_of(konedrive_fs::placeholder::XATTR_ITEM_ID).as_deref(), Some("report.txt"), "marked before the landing's job runs");
+    assert_eq!(mark_of(konedrive_fs::placeholder::XATTR_CTAG), Some(format!("c-{}", crate::fake_onedrive::qx(b"the report"))));
+    assert!(mark_of(konedrive_fs::placeholder::XATTR_STATE).is_some(), "the whole-copy state");
+    assert_eq!(running.file.metadata().expect("its file").mtime(), crate::fuse::item_fixture::ONEDRIVE_MTIME, "the content's time");
     assert_eq!(fixture.read_disk_file("report.txt"), None, "the file has no name yet");
     assert_eq!(presence_of(&fixture, &shown), ContentPresence::NotOnDisk);
 

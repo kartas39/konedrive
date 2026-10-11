@@ -23,7 +23,7 @@
 // test: every_waiter_is_answered_when_the_download_ends_however_it_ends
 // test: a_failed_download_keeps_its_unfinished_file_for_the_next_asking_of_that_content
 // test: the_bytes_read_as_ranges_reach_the_threshold_once_and_are_forgotten_with_the_item
-// test: the_waiters_are_failed_when_the_mount_stops
+// test: every_download_is_aborted_and_its_waiters_answered_when_the_mount_stops
 // test: a_download_only_the_plan_asked_for_is_aborted_by_its_cancel_and_keeps_its_unfinished_file
 // test: a_download_anything_but_the_plan_asked_for_is_not_aborted_by_the_plans_cancel
 // test: an_end_told_by_an_older_download_of_the_key_changes_nothing_of_the_newer
@@ -468,21 +468,6 @@ impl ItemDownloadStates {
         match crate::panic::lock(&self.states).by_key.get(key) {
             Some(State::Running { waiters, .. }) => waiters.len(),
             _ => 0,
-        }
-    }
-
-    /// Every waiter gets `EIO`: the mount stops.
-    pub(super) fn fail_waiters(&self) {
-        let waiters: Vec<Waiter> = {
-            let mut states = crate::panic::lock(&self.states);
-            let running = states.by_key.values_mut().filter_map(|state| match state {
-                State::Running { waiters, .. } => Some(std::mem::take(waiters)),
-                State::Failed { .. } | State::AnotherContent => None,
-            });
-            running.flatten().collect()
-        };
-        for waiter in waiters {
-            let _ = waiter.send(Err(libc::EIO));
         }
     }
 }
