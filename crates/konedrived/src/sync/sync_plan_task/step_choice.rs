@@ -15,7 +15,7 @@
 
 use std::collections::BTreeSet;
 
-use konedrive_tree::SyncStep;
+use konedrive_tree::{FolderStep, LocalItemId, OneDriveStep, RowStep, SyncStep};
 
 use crate::folder::running_steps::{RunningStep, StepClass};
 
@@ -48,7 +48,13 @@ pub struct StartChoice {
 /// (`MakeDirectory`, `SendNewFile`, `SendMove`), as `RunningSteps` is told it.
 /// Pure.
 pub fn describe_running_step(step: &SyncStep) -> RunningStep {
-    todo!()
+    let (other_items, destination) = match step {
+        SyncStep::OneDrive(OneDriveStep::MakeDirectory { parent, .. } | OneDriveStep::SendNewFile { parent, .. } | OneDriveStep::SendMove { parent, .. }) => (Vec::new(), Some(parent.clone())),
+        SyncStep::OneDrive(OneDriveStep::SendDirectoryRemoval { below, .. }) => (below.iter().map(|row| row.local_item_id).collect(), None),
+        SyncStep::Row(RowStep::MergeItems { onedrive, .. }) => (vec![onedrive.local_item_id], None),
+        SyncStep::OneDrive(_) | SyncStep::Folder(_) | SyncStep::Row(_) => (Vec::new(), None),
+    };
+    RunningStep { class: decide_step_class(step), item: step.local_item_id(), other_items, destination, sent: 0, total: 0 }
 }
 
 /// The steps of `planned` to start now, in the plan's order: none one of whose rows has a
@@ -56,10 +62,46 @@ pub fn describe_running_step(step: &SyncStep) -> RunningStep {
 /// of a class in `held_classes` (`SendingHolds::list_held_classes`: every cause that
 /// holds, not the one shown alone). Pure.
 pub fn decide_steps_to_start(planned: Vec<SyncStep>, running: &[RunningStep], limits: &StepLimits, held_classes: &BTreeSet<StepClass>) -> StartChoice {
-    todo!()
+    let mut rows_with_running_step: BTreeSet<LocalItemId> = running.iter().flat_map(|step| std::iter::once(step.item).chain(step.other_items.iter().copied())).collect();
+    let count_running = |class: StepClass| running.iter().filter(|step| step.class == class).count();
+    let mut content_count = count_running(StepClass::Content);
+    let mut metadata_count = count_running(StepClass::Metadata);
+    let mut download_count = count_running(StepClass::Download);
+    let mut choice = StartChoice::default();
+    for step in planned {
+        let described = describe_running_step(&step);
+        let rows: Vec<LocalItemId> = std::iter::once(described.item).chain(described.other_items.iter().copied()).collect();
+        let slot = match described.class {
+            StepClass::Content => Some((&mut content_count, limits.content)),
+            StepClass::Metadata => Some((&mut metadata_count, limits.metadata)),
+            StepClass::Download => Some((&mut download_count, limits.download)),
+            StepClass::Folder | StepClass::Row => None,
+        };
+        let is_limit_reached = slot.as_ref().is_some_and(|(count, limit)| **count >= *limit);
+        if held_classes.contains(&described.class) || is_limit_reached || rows.iter().any(|row| rows_with_running_step.contains(row)) {
+            choice.left.push(step);
+            continue;
+        }
+        if let Some((count, _)) = slot {
+            *count += 1;
+        }
+        rows_with_running_step.extend(rows);
+        if matches!(step, SyncStep::Folder(FolderStep::ShowItem { .. })) {
+            choice.show_steps.push(step);
+        } else {
+            choice.steps.push(step);
+        }
+    }
+    choice
 }
 
 /// The class of a step, for `decide_steps_to_start` and the published answers. Pure.
 pub fn decide_step_class(step: &SyncStep) -> StepClass {
-    todo!()
+    match step {
+        SyncStep::OneDrive(OneDriveStep::SendNewFile { .. } | OneDriveStep::SendContent { .. }) => StepClass::Content,
+        SyncStep::OneDrive(_) => StepClass::Metadata,
+        SyncStep::Folder(FolderStep::DownloadContent { .. }) => StepClass::Download,
+        SyncStep::Folder(_) => StepClass::Folder,
+        SyncStep::Row(_) => StepClass::Row,
+    }
 }

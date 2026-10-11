@@ -14,7 +14,7 @@
 // test: the_memory_of_an_item_is_of_the_same_moment_as_its_row
 #![allow(dead_code, unused_variables)]
 
-use super::ItemReader;
+use super::{step_memory, ItemReader};
 use crate::model::{ItemPlace, LocalItemId, OneDriveItemReference};
 use konedrive_reason::Reason;
 
@@ -24,72 +24,72 @@ impl ItemReader<'_> {
     /// As `StepMemory::find_item_memory`: everything remembered of `item` that its row
     /// still says.
     pub fn find_item_memory(&self, item: LocalItemId) -> Result<ItemMemory, TreeError> {
-        todo!()
+        step_memory::find_item_memory(self.conn(), item)
     }
 
     /// As `StepMemory::list_timed_waits`.
     pub fn list_timed_waits(&self, limit: usize) -> Result<Vec<TimedWait>, TreeError> {
-        todo!()
+        step_memory::list_timed_waits(self.conn(), limit)
     }
 
     /// As `StepMemory::list_refusal_reasons`: the items OneDrive refuses for good, of
     /// `reason` or of any.
     pub fn list_refusal_reasons(&self, reason: Option<&Reason>, after: Option<LocalItemId>, limit: usize) -> Result<Vec<ItemRefusalReason>, TreeError> {
-        todo!()
+        step_memory::list_refusal_reasons(self.conn(), reason, after, limit)
     }
 
     /// As `StepMemory::count_refusal_reasons`: `BlockedCount`'s part of the step memory.
     pub fn count_refusal_reasons(&self, reason: Option<&Reason>) -> Result<u64, TreeError> {
-        todo!()
+        step_memory::count_refusal_reasons(self.conn(), reason)
     }
 
     /// As `StepMemory::list_space_refusal_reasons`.
     pub fn list_space_refusal_reasons(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<ItemRefusalReason>, TreeError> {
-        todo!()
+        step_memory::list_space_refusal_reasons(self.conn(), after, limit)
     }
 
     /// As `StepMemory::count_space_refusals`: `TooBigCount`.
     pub fn count_space_refusals(&self) -> Result<u64, TreeError> {
-        todo!()
+        step_memory::count_space_refusals(self.conn())
     }
 
     /// As `StepMemory::list_items_with_confirmed_removal`: the plan's
     /// `items_with_confirmed_removal`, those of items the plan was not given among them.
     pub fn list_items_with_confirmed_removal(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<LocalItemId>, TreeError> {
-        todo!()
+        step_memory::list_items_with_confirmed_removal(self.conn(), after, limit)
     }
 
     /// As `StepMemory::list_taken_names`.
     pub fn list_taken_names(&self, directory: LocalItemId) -> Result<Vec<ItemTakenName>, TreeError> {
-        todo!()
+        step_memory::list_taken_names(self.conn(), directory)
     }
 
     /// As `StepMemory::list_empty_file_sessions`.
     pub fn list_empty_file_sessions(&self, place: &ItemPlace) -> Result<Vec<EmptyFileSession>, TreeError> {
-        todo!()
+        step_memory::list_empty_file_sessions(self.conn(), place)
     }
 
     /// As `StepMemory::list_opening_windows`.
     pub fn list_opening_windows(&self, place: &ItemPlace) -> Result<Vec<OpeningWindow>, TreeError> {
-        todo!()
+        step_memory::list_opening_windows(self.conn(), place)
     }
 
     /// As `StepMemory::list_upload_session_cancellations`.
     pub fn list_upload_session_cancellations(&self, limit: usize) -> Result<Vec<UploadSessionAddress>, TreeError> {
-        todo!()
+        step_memory::list_upload_session_cancellations(self.conn(), limit)
     }
 
     /// As `StepMemory::list_mismatched_item_removals`: the items uploads left with other
     /// content whose removal is still to be asked, each with its drive; never an item the
     /// folder has.
     pub fn list_mismatched_item_removals(&self, limit: usize) -> Result<Vec<MismatchedItem>, TreeError> {
-        todo!()
+        step_memory::list_mismatched_item_removals(self.conn(), limit)
     }
 
     /// As `StepMemory::find_mismatched_item`: whether the item `onedrive_item` of OneDrive
     /// is one an upload of this folder left with other content, and of which file. What the
     /// plan's input is built with for an item a listing brought.
     pub fn find_mismatched_item(&self, onedrive_item: &OneDriveItemReference) -> Result<Option<MismatchedItemUpload>, TreeError> {
-        todo!()
+        step_memory::find_mismatched_item(self.conn(), onedrive_item)
     }
 }

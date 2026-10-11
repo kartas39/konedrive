@@ -17,7 +17,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use konedrive_tree::{ItemVersions, SyncStep};
+use konedrive_tree::{FolderStep, ItemVersions, SyncStep};
 
 use super::row_steps::RowSteps;
 use crate::folder::step_outcome::StepOutcome;
@@ -47,6 +47,29 @@ impl StepRunners {
     /// taken here: an upload's by `OneDriveSteps`' content upload, a download's by the
     /// downloader. Made by the folder's start (`sync_tasks::start_order`).
     pub fn of_runners(folder_steps: Arc<FolderSteps>, onedrive_steps: Arc<OneDriveSteps>, row_steps: Arc<RowSteps>, lease: Lease) -> Self {
-        todo!()
+        let for_show_steps = (Arc::clone(&folder_steps), lease.clone());
+        StepRunners {
+            run_step: Arc::new(move |step| {
+                let (folder_steps, onedrive_steps, row_steps, lease) = (Arc::clone(&folder_steps), Arc::clone(&onedrive_steps), Arc::clone(&row_steps), lease.clone());
+                Box::pin(async move {
+                    match step {
+                        SyncStep::Row(step) => row_steps.run(step).await,
+                        SyncStep::OneDrive(step) => onedrive_steps.run(step).await,
+                        SyncStep::Folder(FolderStep::DownloadContent { item }) => folder_steps.run_download_content(item).await,
+                        SyncStep::Folder(step) => {
+                            let _held = lease.hold().await;
+                            folder_steps.run(step).await
+                        }
+                    }
+                })
+            }),
+            run_show_steps: Arc::new(move |items| {
+                let (folder_steps, lease) = (Arc::clone(&for_show_steps.0), for_show_steps.1.clone());
+                Box::pin(async move {
+                    let _held = lease.hold().await;
+                    folder_steps.run_show_items(items).await
+                })
+            }),
+        }
     }
 }

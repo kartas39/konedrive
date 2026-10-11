@@ -51,11 +51,12 @@
 // test: a_step_towards_the_folder_that_is_written_forgets_the_tasks_tries_of_it
 #![allow(dead_code, unused_variables)]
 
-use konedrive_tree::{Reason, FullListingCause, LocalItemId, Refusal, SpaceRefusal, StepFact, SyncStep, TakenName, TreeError, TreeStore};
+use konedrive_tree::{ActivityKind, ActivityRow, FactStanding, FailedTryStanding, FullListingCause, ItemVersions, LocalItemId, OneDriveStep, Reason, Refusal, RefusedVersion, SpaceRefusal, StepFact, SyncStep, TakenName, TreeError, TreeStore};
 
-use super::local_step_tries::LocalStepTries;
-use crate::folder::step_outcome::{StepEvent, StepOutcome};
+use super::local_step_tries::{LocalStep, LocalStepTries};
+use crate::folder::step_outcome::{RowsChangedFollowUp, StepEvent, StepFailure, StepObstacle, StepOutcome, StepRefusal};
 use crate::upload::sending_holds::SendingHold;
+use crate::upload::{BACKOFF_FIRST, BACKOFF_MAX};
 
 /// One write of the step memory, as its operations are named. A fact of a local change
 /// that is not sent — a failed try, a refusal, a refusal for lack of space, a taken name —
@@ -106,15 +107,45 @@ pub enum CycleRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepSettlement {
     pub item: LocalItemId,
+    /// The stamp of the unsent change a step towards OneDrive was planned for
+    /// (`ItemVersions::unsent_since`): what the store keeps each write of `memory` under.
+    /// None for a step towards the folder or of the rows, which writes none.
+    pub unsent_since: Option<u64>,
     pub memory: Vec<MemoryWrite>,
     /// What the task's own tries of the step become.
     pub local_step_tries: LocalStepTriesChange,
     pub cycle: CycleRequest,
-    /// What holds all sending from now on, when the outcome says so.
+    /// What holds all sending from now on, when the outcome says so. For a throttle
+    /// OneDrive named no time for, `until` is `now`: the end is chosen by `SendingHolds`,
+    /// which the task gives the outcome's own `retry_after`.
     pub hold: Option<SendingHold>,
     /// Whether a step towards OneDrive went through (`SendingHolds::pass`).
     pub went_through: bool,
     pub events: Vec<StepEvent>,
+}
+
+/// Whether an event of this kind says what OneDrive changed: what the cap per listing is
+/// of.
+fn is_onedrive_change(kind: ActivityKind) -> bool {
+    matches!(kind, ActivityKind::Added | ActivityKind::Updated | ActivityKind::Removed | ActivityKind::Moved)
+}
+
+/// The versions of the item `step` is of.
+fn find_item_versions(step: &SyncStep) -> &ItemVersions {
+    match step {
+        SyncStep::OneDrive(step) => step.item(),
+        SyncStep::Folder(step) => step.item(),
+        SyncStep::Row(step) => step.item(),
+    }
+}
+
+/// What OneDrive refused for good of `step`: the removal for a removal, the local version
+/// that was sent for any other.
+fn find_refused_version(step: &SyncStep) -> RefusedVersion {
+    match (step, find_item_versions(step).local.clone()) {
+        (SyncStep::OneDrive(OneDriveStep::SendFileRemoval { .. } | OneDriveStep::SendDirectoryRemoval { .. }), _) | (_, None) => RefusedVersion::Removal,
+        (_, Some(local)) => RefusedVersion::Shown(local),
+    }
 }
 
 /// The events of `events` that go to the activity log, when `logged_since_listing_ended`
@@ -126,14 +157,26 @@ pub struct StepSettlement {
 // a removed directory is one event because its children's `RemoveItem` steps answer
 // none. Pure, and can change without touching a signature.
 pub fn decide_events_to_log(events: &[StepEvent], logged_since_listing_ended: usize) -> Vec<StepEvent> {
-    todo!()
+    let mut left = crate::status::activity::PER_KIND.saturating_sub(logged_since_listing_ended);
+    let mut logged = Vec::new();
+    for event in events {
+        if is_onedrive_change(event.kind) {
+            if left == 0 {
+                continue;
+            }
+            left -= 1;
+        }
+        logged.push(event.clone());
+    }
+    logged
 }
 
 /// When the next try of a step that failed `count` times is due, Unix seconds: a second
 /// after the first failure, doubling to an hour (`upload/engine.rs:108`, `backoff_after`).
 /// Pure.
 pub fn decide_next_try(count: u32, now: i64) -> i64 {
-    todo!()
+    let wait = BACKOFF_FIRST.as_secs().saturating_mul(1u64 << count.saturating_sub(1).min(20));
+    now.saturating_add(wait.min(BACKOFF_MAX.as_secs()) as i64)
 }
 
 /// What follows `step` ended as `outcome`: the table of the module's doc. `tries` is how
@@ -142,7 +185,84 @@ pub fn decide_next_try(count: u32, now: i64) -> i64 {
 /// which is of the stamp the step was planned from, or not answered); for a step towards
 /// the folder or of the rows, `LocalStepTries::count_tries` of the step. Pure.
 pub fn decide_step_settlement(step: &SyncStep, outcome: &StepOutcome, tries: u32, now: i64) -> StepSettlement {
-    todo!()
+    let is_towards_onedrive = matches!(step, SyncStep::OneDrive(_));
+    let mut settlement = StepSettlement {
+        item: step.local_item_id(),
+        unsent_since: match step {
+            SyncStep::OneDrive(step) => step.item().unsent_since,
+            SyncStep::Folder(_) | SyncStep::Row(_) => None,
+        },
+        memory: Vec::new(),
+        local_step_tries: LocalStepTriesChange::Nothing,
+        cycle: CycleRequest::None,
+        hold: None,
+        went_through: false,
+        events: Vec::new(),
+    };
+    let next_try_at = Some(decide_next_try(tries.saturating_add(1), now));
+    let count_failed_try = |settlement: &mut StepSettlement, reason: Reason| {
+        if is_towards_onedrive {
+            settlement.memory.push(MemoryWrite::FailedTry { reason, next_try_at });
+        } else {
+            settlement.local_step_tries = LocalStepTriesChange::FailedTry { reason, next_try_at };
+        }
+    };
+    match outcome {
+        StepOutcome::Written { events } => {
+            settlement.events = events.clone();
+            if is_towards_onedrive {
+                settlement.went_through = true;
+            } else {
+                settlement.local_step_tries = LocalStepTriesChange::Forgotten;
+            }
+        }
+        StepOutcome::RowsChanged(RowsChangedFollowUp::Nothing | RowsChangedFollowUp::MadeItemRemoved(_)) => {}
+        StepOutcome::RowsChanged(RowsChangedFollowUp::CycleWanted | RowsChangedFollowUp::MadeItemLeft(_)) => settlement.cycle = CycleRequest::Changes,
+        StepOutcome::Refused(refusal) => match refusal {
+            StepRefusal::NameTaken { place, holder_name } => {
+                settlement.memory.push(MemoryWrite::TakenName(TakenName { place: place.clone(), holder_name: holder_name.clone() }));
+                settlement.cycle = CycleRequest::Changes;
+            }
+            StepRefusal::NameHeldByUploadSession => count_failed_try(&mut settlement, Reason::NameHeld),
+            StepRefusal::ItemChanged => {
+                count_failed_try(&mut settlement, Reason::ChangedAgain);
+                settlement.cycle = CycleRequest::Changes;
+            }
+            StepRefusal::ItemGone => {
+                count_failed_try(&mut settlement, Reason::NotFound);
+                settlement.cycle = CycleRequest::Changes;
+            }
+            StepRefusal::DirectoryGone => {
+                count_failed_try(&mut settlement, Reason::Parent);
+                settlement.cycle = CycleRequest::Changes;
+            }
+            StepRefusal::ContentMismatch => {
+                count_failed_try(&mut settlement, Reason::Hash);
+                settlement.cycle = CycleRequest::Changes;
+            }
+            StepRefusal::NoSpace { free_space: Some(free_space) } => {
+                let content = find_item_versions(step).local.as_ref().and_then(|local| local.content.clone());
+                settlement.memory.extend(content.map(|content| MemoryWrite::SpaceRefusal(SpaceRefusal { content, free_space: *free_space })));
+            }
+            StepRefusal::NoSpace { free_space: None } => {}
+            StepRefusal::Throttled { retry_after } => {
+                let wait = retry_after.map_or(0, |wait| i64::try_from(wait.as_secs()).unwrap_or(i64::MAX));
+                settlement.hold = Some(SendingHold::Throttled { until: now.saturating_add(wait) });
+            }
+            StepRefusal::SignedOut => settlement.hold = Some(SendingHold::SignedOut),
+            StepRefusal::Forbidden => settlement.memory.push(MemoryWrite::Refusal(Refusal { reason: Reason::Forbidden, version: find_refused_version(step) })),
+            StepRefusal::RefusedForGood { message } => settlement.memory.push(MemoryWrite::Refusal(Refusal { reason: Reason::Refused(Some(message.clone())), version: find_refused_version(step) })),
+            StepRefusal::Locked => count_failed_try(&mut settlement, Reason::Locked),
+            StepRefusal::UploadSessionGone => count_failed_try(&mut settlement, Reason::SessionEnded),
+            StepRefusal::Transient { .. } => count_failed_try(&mut settlement, Reason::Network),
+        },
+        StepOutcome::NotRun(StepObstacle::OpenForWriting | StepObstacle::SendingStopped) => {}
+        StepOutcome::NotRun(StepObstacle::ContentChanged) => count_failed_try(&mut settlement, Reason::Changed),
+        StepOutcome::NotRun(StepObstacle::BackingFileMissing | StepObstacle::PlaceHeldOnDisk { .. }) => count_failed_try(&mut settlement, Reason::LocalIo),
+        StepOutcome::Failed(StepFailure::UndoFailed { .. }) => {}
+        StepOutcome::Failed(_) => count_failed_try(&mut settlement, Reason::Failed),
+    }
+    settlement
 }
 
 /// Applies what the settlements of `ended` say of the task's own tries, each to the step
@@ -150,15 +270,65 @@ pub fn decide_step_settlement(step: &SyncStep, outcome: &StepOutcome, tries: u32
 /// forgotten. No store, no clock. Called by `SyncPlanTask::settle_steps`, under the lock
 /// of the task's tries.
 pub fn change_local_step_tries(tries: &mut LocalStepTries, ended: &[(SyncStep, StepSettlement)]) {
-    todo!()
+    for (step, settlement) in ended {
+        let Some(local_step) = LocalStep::of(step) else { continue };
+        match &settlement.local_step_tries {
+            LocalStepTriesChange::Nothing => {}
+            LocalStepTriesChange::FailedTry { reason, next_try_at } => {
+                tries.remember_failed_try(&local_step, reason.clone(), *next_try_at);
+            }
+            LocalStepTriesChange::Forgotten => tries.forget_tries(&local_step),
+        }
+    }
 }
 
 /// Writes what `settlements` say of the step memory, and their events to the activity
 /// log (`TreeStore::add_activity`, with the folder's path before each, capped by
 /// [`decide_events_to_log`]), in ONE job of the store's thread; how many events were
-/// logged. A fact the row does not say any more is not written
+/// of what OneDrive changed were logged. `now` is the time the events are logged with. A
+/// refusal for good is logged here, once per reason, with the item's path as the rows
+/// say it now. A fact the row does not say any more is not written
 /// (`FactStanding::VersionGone`): the item changed since, and the next plan decides.
 /// Called by `SyncPlanTask::settle_steps`.
-pub fn write_step_settlements(store: &mut TreeStore, settlements: &[StepSettlement], folder: &std::path::Path, logged_since_listing_ended: usize) -> Result<usize, TreeError> {
-    todo!()
+pub fn write_step_settlements(store: &mut TreeStore, settlements: &[StepSettlement], folder: &std::path::Path, logged_since_listing_ended: usize, now: i64) -> Result<usize, TreeError> {
+    let mut events = Vec::new();
+    let mut logged_count = 0;
+    for settlement in settlements {
+        let (item, unsent_since) = (settlement.item, settlement.unsent_since);
+        for write in &settlement.memory {
+            match write {
+                MemoryWrite::FailedTry { reason, next_try_at } => {
+                    // A try that was not counted is of another unsent change by now: the next plan decides.
+                    let _: FailedTryStanding = store.step_memory().remember_failed_try(item, unsent_since, reason, *next_try_at)?;
+                }
+                MemoryWrite::Refusal(refusal) => {
+                    // The event, once per reason: not for a refusal the item is kept with already.
+                    let is_kept_already = store.step_memory().find_item_memory(item)?.refusal.is_some_and(|kept| kept.reason == refusal.reason);
+                    let standing = store.step_memory().remember_refusal(item, unsent_since, refusal)?;
+                    if standing == FactStanding::StillSaid && !is_kept_already {
+                        let path = store.read_items(|items| items.find_path(item))?.unwrap_or_default();
+                        events.push(ActivityRow { at: now, kind: ActivityKind::UploadFailed, path: folder.join(path).to_string_lossy().into_owned(), detail: refusal.reason.to_string() });
+                    }
+                }
+                MemoryWrite::SpaceRefusal(space_refusal) => {
+                    let _: FactStanding = store.step_memory().remember_space_refusal(item, unsent_since, space_refusal)?;
+                }
+                MemoryWrite::TakenName(taken_name) => {
+                    let _: FactStanding = store.step_memory().remember_taken_name(item, unsent_since, taken_name)?;
+                }
+                MemoryWrite::Forget(fact) => store.step_memory().forget_fact(item, *fact)?,
+            }
+        }
+        for event in decide_events_to_log(&settlement.events, logged_since_listing_ended + logged_count) {
+            if is_onedrive_change(event.kind) {
+                logged_count += 1;
+            }
+            let detail = event.former_path.as_ref().map(|former_path| format!("from {}", folder.join(former_path).display())).unwrap_or_default();
+            events.push(ActivityRow { at: now, kind: event.kind, path: folder.join(&event.path).to_string_lossy().into_owned(), detail });
+        }
+    }
+    if !events.is_empty() {
+        store.add_activity(&events)?;
+    }
+    Ok(logged_count)
 }
