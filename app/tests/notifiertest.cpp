@@ -155,19 +155,6 @@ private Q_SLOTS:
         QCOMPARE(m_sink.sent.first().event, QStringLiteral("downloadFailed"));
     }
 
-    /// "Your changed version of X was moved to Y", with "Show in Folder" on the moved file.
-    void aConflictNotifiesWithWhereTheFileWent()
-    {
-        start();
-        const QString rescued = QStringLiteral("/home/u/.local/share/konedrive/rescued/20260924T101500/doc.odt");
-        report(QStringLiteral("conflict"), QStringLiteral("doc.odt"), rescued);
-        QCOMPARE(m_sink.sent.size(), 1);
-        const Notice &notice = m_sink.sent.first();
-        QCOMPARE(notice.event, QStringLiteral("conflict"));
-        QCOMPARE(notice.text, QStringLiteral("Your changed version of doc.odt was moved to ") + rescued);
-        QCOMPARE(notice.showPath, rescued);
-    }
-
     /// A file changed on both sides keeps a copy beside it: its own words,
     /// and "Show in Folder" on the copy.
     void aCopyNotifiesThatBothAreKept()
@@ -214,7 +201,7 @@ private Q_SLOTS:
     }
 
     /// M3: past the cap, the daemon's own "and N more" conflict event (path
-    /// = the root) is a count, not a rescued path.
+    /// = the root) is a count, not a copy's path.
     void aCappedConflictSummaryCountsRatherThanNamingAPath()
     {
         start();
@@ -226,7 +213,7 @@ private Q_SLOTS:
         QCOMPARE(m_sink.sent.size(), 1);
         const Notice &notice = m_sink.sent.first();
         QCOMPARE(notice.event, QStringLiteral("conflict"));
-        QCOMPARE(notice.text, QStringLiteral("7 more of your changed files were moved out of the way."));
+        QCOMPARE(notice.text, QStringLiteral("7 more files changed here and in OneDrive; both versions are kept."));
         QCOMPARE(notice.showPath, QString());
     }
 

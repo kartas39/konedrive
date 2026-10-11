@@ -98,9 +98,9 @@ private Q_SLOTS:
 
         ConflictModel conflicts;
         conflicts.setConflicts({{2, root + QStringLiteral("/Report.docx"), root + QStringLiteral("/Report-fedora.docx"), QStringLiteral("copy")},
-                                {1, root + QStringLiteral("/a.txt"), QStringLiteral("/home/u/.local/share/konedrive/rescued/1/a.txt"), QStringLiteral("rescued")}});
-        QVERIFY(at(conflicts, 0, ConflictModel::IsCopyRole).toBool());
-        QVERIFY(!at(conflicts, 1, ConflictModel::IsCopyRole).toBool());
+                                {1, root + QStringLiteral("/a.txt"), root + QStringLiteral("/a-fedora.txt"), QStringLiteral("copy")}});
+        QCOMPARE(at(conflicts, 0, ConflictModel::CopyNameRole).toString(), QStringLiteral("Report-fedora.docx"));
+        QCOMPARE(at(conflicts, 1, ConflictModel::CopyRole).toString(), root + QStringLiteral("/a-fedora.txt"));
     }
 
     /// Live events go on top; past 50 rows the oldest is removed.
@@ -140,9 +140,9 @@ private Q_SLOTS:
         QCOMPARE(at(model, 0, ActivityModel::NameRole).toString(), QStringLiteral("n70"));
     }
 
-    /// Conflicts are kept by the path the file was moved to, newest first: a
+    /// Conflicts are kept by the path of the copy, newest first: a
     /// refresh inserts what is new and removes what went, each in one step.
-    void conflictsInsertAndRemoveByRescuedPath()
+    void conflictsInsertAndRemoveByTheCopysPath()
     {
         ConflictModel model;
         QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
@@ -152,10 +152,10 @@ private Q_SLOTS:
 
         model.setConflicts({{100, QStringLiteral("/d/a.txt"), QStringLiteral("/r/1/a.txt")}, {300, QStringLiteral("/d/c.txt"), QStringLiteral("/r/3/c.txt")}});
         QCOMPARE(model.count(), 2);
-        QCOMPARE(at(model, 0, ConflictModel::RescuedRole).toString(), QStringLiteral("/r/3/c.txt"));
+        QCOMPARE(at(model, 0, ConflictModel::CopyRole).toString(), QStringLiteral("/r/3/c.txt"));
         QCOMPARE(at(model, 0, ConflictModel::NameRole).toString(), QStringLiteral("c.txt"));
         QCOMPARE(at(model, 0, ConflictModel::OriginalFolderRole).toString(), QStringLiteral("/d"));
-        QCOMPARE(at(model, 0, ConflictModel::RescuedFolderRole).toString(), QStringLiteral("/r/3"));
+        QCOMPARE(at(model, 0, ConflictModel::CopyFolderRole).toString(), QStringLiteral("/r/3"));
 
         inserted.clear();
         model.setConflicts({{200, QStringLiteral("/d/b.txt"), QStringLiteral("/r/2/b.txt")},
@@ -183,7 +183,7 @@ private Q_SLOTS:
         ConflictModel model;
         QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
         const auto conflict = [](int i) {
-            return KonedriveConflict{i, QStringLiteral("/d/%1.txt").arg(i), QStringLiteral("/r/%1.txt").arg(i), QStringLiteral("rescued")};
+            return KonedriveConflict{i, QStringLiteral("/d/%1.txt").arg(i), QStringLiteral("/r/%1.txt").arg(i), QStringLiteral("copy")};
         };
         KonedriveConflictList all;
         for (int i = 0; i < 5000; ++i) {
@@ -231,7 +231,7 @@ private Q_SLOTS:
         all[all.size() - 3].time = 4998;
         model.setConflicts(all);
         QCOMPARE(reset.count(), 1);
-        QCOMPARE(at(model, 4, ConflictModel::RescuedRole).toString(), QStringLiteral("/r/6000.txt"));
+        QCOMPARE(at(model, 4, ConflictModel::CopyRole).toString(), QStringLiteral("/r/6000.txt"));
         QCOMPARE(changed.count(), 0);
     }
 
@@ -249,8 +249,8 @@ private Q_SLOTS:
         QCOMPARE(model.count(), 1);
         model.setConflicts({b, a, b});
         QCOMPARE(model.count(), 2);
-        QCOMPARE(at(model, 0, ConflictModel::RescuedRole).toString(), b.rescued);
-        QCOMPARE(at(model, 1, ConflictModel::RescuedRole).toString(), a.rescued);
+        QCOMPARE(at(model, 0, ConflictModel::CopyRole).toString(), b.copy);
+        QCOMPARE(at(model, 1, ConflictModel::CopyRole).toString(), a.copy);
     }
 
     /// Which failures are which (notifications): the kind says

@@ -30,11 +30,6 @@ FormCard.FormCardPage {
     readonly property bool uploading: uploadingOn && sync !== null && sync.writable
     /// Read-only was asked for while changes were unsent: the account sends them first.
     readonly property bool switchingToReadOnly: account !== null && account.switchingToReadOnly
-    // A no-interception folder is one Free Up Space warning; a folder that
-    // shows OneDrive but whose helper is not connected (including a legacy
-    // folder still waiting to switch, which publishes RootState "error", not
-    // "no-interception") is the same warning by a different RootState.
-    readonly property bool freeUpUnsafe: (sync !== null && sync.rootState === "no-interception") || Daemon.helperState !== "connected"
     readonly property var window: QQC2.ApplicationWindow.window
 
     objectName: "statusPage"
@@ -86,44 +81,6 @@ FormCard.FormCardPage {
             text: i18nc("@action:button", "Cancel")
             icon.name: "dialog-cancel"
             onClicked: Accounts.cancelAdd()
-        }
-    }
-
-    // The helper serves every account: nothing keeps a folder in step, and
-    // nothing downloads on open, while this is anything but "connected"
-    // (dbus/org.konedrive.Accounts.xml).
-    FormCard.FormCard {
-        objectName: "helperCard"
-        Layout.topMargin: Kirigami.Units.largeSpacing
-        visible: Daemon.serviceAvailable && Daemon.helperTrouble && !page.noAccount
-
-        FormCard.FormTextDelegate {
-            text: i18n("The helper is not available")
-            description: i18n("Files are not kept in step, and nothing downloads when it is opened.")
-            leading: Kirigami.Icon {
-                source: "dialog-warning"
-                implicitWidth: Kirigami.Units.iconSizes.medium
-                implicitHeight: Kirigami.Units.iconSizes.medium
-            }
-        }
-        FormCard.AbstractFormDelegate {
-            visible: Daemon.helperInstruction.length > 0
-            background: null
-            contentItem: TextEdit {
-                text: Daemon.helperInstruction
-                wrapMode: Text.Wrap
-                textFormat: TextEdit.PlainText
-                readOnly: true
-                selectByMouse: true
-                color: Kirigami.Theme.textColor
-                font: Kirigami.Theme.defaultFont
-            }
-        }
-        FormCard.FormButtonDelegate {
-            objectName: "helperCheckAgain"
-            text: i18nc("@action:button", "Check Again")
-            icon.name: "view-refresh"
-            onClicked: Daemon.retry()
         }
     }
 
@@ -231,18 +188,12 @@ FormCard.FormCardPage {
         }
         FormCard.FormTextDelegate {
             text: i18n("On this computer: %1", Qt.locale().formattedDataSize(page.sync ? page.sync.localBytes : 0))
-            // Without a connected helper, nothing fills a placeholder on
-            // open, so freeing a file up would leave it reading as zeros
-            // until it is explicitly hydrated again — Free Up Space stays
-            // off there.
-            description: page.freeUpUnsafe
-                ? i18n("This folder has no helper connected: a freed file would read as empty until downloaded again with Dolphin or konedrivectl sync hydrate, so Free Up Space is off here.")
-                : i18n("Files you have opened stay downloaded until you free up their space.")
+            description: i18n("Files you have opened stay downloaded until you free up their space.")
             trailing: QQC2.Button {
                 objectName: "freeUpButton"
                 text: i18nc("@action:button", "Free Up Space…")
                 icon.name: "edit-clear"
-                enabled: page.sync !== null && !page.sync.freeingUp && !page.freeUpUnsafe
+                enabled: page.sync !== null && !page.sync.freeingUp
                 onClicked: freeUpDialog.open()
             }
         }
@@ -465,11 +416,6 @@ FormCard.FormCardPage {
                 }
             }
         }
-        FormCard.FormTextDelegate {
-            visible: page.sync !== null && page.sync.rootState === "no-interception"
-            text: i18n("Files download only when you ask")
-            description: i18n("%1 items. Download them from Dolphin, or with konedrivectl sync hydrate.", page.sync ? page.sync.itemsPlaced : 0)
-        }
         FormCard.FormButtonDelegate {
             visible: page.sync !== null && page.sync.rootSource === "onedrive" && page.sync.skippedCount > 0
             text: page.sync ? i18np("%1 item is not in the folder", "%1 items are not in the folder", page.sync.skippedCount) : ""
@@ -494,12 +440,7 @@ FormCard.FormCardPage {
 
         onAboutToShow: item = Current.item
         title: i18nc("@title:window", "Free Up Space?")
-        // Without a connected helper this promise is false (nothing fills a
-        // placeholder on open), which is why the button that opens this
-        // dialog is off in that case — the honest text stays here too.
-        subtitle: page.freeUpUnsafe
-            ? i18n("This folder has no helper connected: a freed file would read as empty until you download it again with Dolphin or konedrivectl sync hydrate, not automatically when you open it.")
-            : i18n("Every downloaded file in the folder that is not open right now becomes online-only again. Nothing is deleted from OneDrive; a file downloads again when you open it.")
+        subtitle: i18n("Every downloaded file in the folder that is not open right now becomes online-only again. Nothing is deleted from OneDrive; a file downloads again when you open it.")
         standardButtons: Kirigami.Dialog.NoButton
         customFooterActions: [
             Kirigami.Action {

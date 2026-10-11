@@ -114,7 +114,6 @@ void DaemonController::applyProperties(const QVariantMap &p)
         }
     };
     text("ClientId", m_clientId);
-    text("HelperState", m_helperState);
     text("LastError", m_lastError);
     text("OnBattery", m_onBattery);
     if (const auto it = p.constFind(QLatin1String("PauseOnMetered")); it != p.constEnd()) {
@@ -226,7 +225,6 @@ void DaemonController::remove(const QString &path)
     m_removing = path;
     m_removeFailedPath.clear();
     m_removeError.clear();
-    m_removeNeedsHelper = false;
     Q_EMIT removeChanged();
 
     // Never refused for what is unsent: the page's question warns with the account's
@@ -240,32 +238,9 @@ void DaemonController::remove(const QString &path)
         if (w->isError()) {
             m_removeFailedPath = path;
             m_removeError = w->error().message();
-            m_removeNeedsHelper = w->error().name() == QLatin1String("org.konedrive.Error.NoHelper");
         }
         Q_EMIT removeChanged();
     });
-}
-
-bool DaemonController::helperTrouble() const
-{
-    return !m_helperState.isEmpty() && m_helperState != QLatin1String("connected");
-}
-
-QString DaemonController::helperInstruction() const
-{
-    if (m_helperState == QLatin1String("not-installed")) {
-        return i18n("Install the helper: sudo scripts/install-helper.sh (see README)");
-    }
-    if (m_helperState == QLatin1String("stopped")) {
-        return i18n("sudo systemctl start konedrive-helper");
-    }
-    if (m_helperState == QLatin1String("failed")) {
-        return i18n("systemctl status konedrive-helper shows why");
-    }
-    if (m_helperState == QLatin1String("unknown")) {
-        return i18n("The daemon cannot reach the helper.");
-    }
-    return QString();
 }
 
 QString DaemonController::versionLine() const

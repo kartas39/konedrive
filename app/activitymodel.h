@@ -20,12 +20,6 @@ enum class ActivityFailure {
 /// DiskFull; `upload-failed` is Upload. Every other kind is None.
 ActivityFailure classifyFailure(const QString &kind, const QString &detail);
 
-/// Whether a conflict's other file is a copy kept beside the original (a file
-/// changed on both sides, `docs/design/writes.md` §7) rather than a local version moved
-/// out of the folder (a rescue, which goes to its own directory). Conflicts()
-/// and the `conflict` event carry no kind, so the folder tells them apart.
-bool isConflictCopy(const QString &original, const QString &other);
-
 /// The window's "Recent" list: ActivityLog.Recent() plus every ActivityLog.Added
 /// since, newest first, at most Capacity rows.
 class ActivityModel : public QAbstractListModel

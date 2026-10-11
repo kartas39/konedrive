@@ -83,7 +83,7 @@ FormCard.FormCardPage {
 
         FormCard.FormPlaceholderMessageDelegate {
             text: i18n("Nothing is kept back")
-            explanation: i18n("Changes made here that cannot be uploaded — a name OneDrive refuses, a full OneDrive — and what is never uploaded, such as symbolic links, are listed here with the reason.")
+            explanation: i18n("Changes made here that cannot be uploaded — a name OneDrive refuses, a full OneDrive — are listed here with the reason.")
             icon.name: "cloud-upload"
         }
     }

@@ -44,12 +44,12 @@ inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveA
     return argument;
 }
 
-/// One entry of Conflicts(): (unix time, original full path, full path of the kept version,
-/// how it was kept: "rescued", moved out of the way, or "copy", kept beside the original).
+/// One entry of Conflicts(): (unix time, original full path, full path of the copy kept
+/// beside it, how it was kept: always "copy").
 struct KonedriveConflict {
     qint64 time = 0;
     QString original;
-    QString rescued;
+    QString copy;
     QString kind;
 };
 using KonedriveConflictList = QList<KonedriveConflict>;
@@ -58,7 +58,7 @@ Q_DECLARE_METATYPE(KonedriveConflict)
 inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveConflict &conflict)
 {
     argument.beginStructure();
-    argument << conflict.time << conflict.original << conflict.rescued << conflict.kind;
+    argument << conflict.time << conflict.original << conflict.copy << conflict.kind;
     argument.endStructure();
     return argument;
 }
@@ -66,7 +66,7 @@ inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveConflic
 inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveConflict &conflict)
 {
     argument.beginStructure();
-    argument >> conflict.time >> conflict.original >> conflict.rescued >> conflict.kind;
+    argument >> conflict.time >> conflict.original >> conflict.copy >> conflict.kind;
     argument.endStructure();
     return argument;
 }

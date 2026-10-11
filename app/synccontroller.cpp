@@ -204,7 +204,6 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         text("Trouble", m_trouble);
         text("NotUpdated", m_notUpdated);
         number("ItemsListed", m_itemsListed);
-        number("ItemsPlaced", m_itemsPlaced);
         number("SkippedCount", m_skippedCount);
         number("LocalBytes", m_localBytes);
         time("LastChecked", m_lastChecked);
@@ -350,30 +349,18 @@ void SyncController::setActionError(const QString &message)
     Q_EMIT actionErrorChanged();
 }
 
-void SyncController::setPendingFolder(const QString &folder)
-{
-    if (m_pendingFolder == folder) {
-        return;
-    }
-    m_pendingFolder = folder;
-    Q_EMIT pendingFolderChanged();
-}
-
 void SyncController::call(const QDBusPendingCall &pending,
                           std::function<void(const QDBusPendingCall &)> onSuccess,
-                          std::function<bool(const QDBusError &)> onError,
                           bool resetError)
 {
     if (resetError) {
         setActionError(QString());
     }
     auto *watcher = new QDBusPendingCallWatcher(pending, this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, onSuccess, onError](QDBusPendingCallWatcher *w) {
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, onSuccess](QDBusPendingCallWatcher *w) {
         w->deleteLater();
         if (w->isError()) {
-            if (!onError || !onError(w->error())) {
-                setActionError(w->error().message());
-            }
+            setActionError(w->error().message());
             return;
         }
         if (onSuccess) {
@@ -403,36 +390,7 @@ void SyncController::chooseFolder(const QUrl &folder)
     // proxy (whose timeout is shared with every other call on m_folder).
     auto message = QDBusMessage::createMethodCall(ServiceName, m_path, FolderInterface, QStringLiteral("Register"));
     message << path;
-    call(
-        m_bus.asyncCall(message, std::numeric_limits<int>::max()),
-        [this](const QDBusPendingCall &) {
-            // A no-op the first time (pendingFolder is already empty); on a
-            // retry that now succeeds, this is what closes the prompt.
-            setPendingFolder(QString());
-        },
-        [this, path](const QDBusError &error) {
-            if (error.name() == QLatin1String("org.konedrive.Error.NoHelper")) {
-                setPendingFolder(path);
-                return true;
-            }
-            return false;
-        });
-}
-
-void SyncController::retryRegistration()
-{
-    if (m_pendingFolder.isEmpty()) {
-        return;
-    }
-    // Retries Register(path); on the same NoHelper refusal, pendingFolder
-    // simply stays as it was (I3: the window never falls back to
-    // RegisterWithoutInterception on its own).
-    chooseFolder(QUrl::fromLocalFile(m_pendingFolder));
-}
-
-void SyncController::cancelPending()
-{
-    setPendingFolder(QString());
+    call(m_bus.asyncCall(message, std::numeric_limits<int>::max()));
 }
 
 void SyncController::forget()
@@ -479,7 +437,6 @@ void SyncController::loadSkipped()
             }
             Q_EMIT skippedChanged();
         },
-        {},
         false);
 }
 
@@ -527,9 +484,9 @@ void SyncController::loadConflicts()
     });
 }
 
-void SyncController::dismissConflict(const QString &rescuedPath)
+void SyncController::dismissConflict(const QString &copyPath)
 {
-    call(m_conflictsIface->Dismiss(rescuedPath), [this](const QDBusPendingCall &) {
+    call(m_conflictsIface->Dismiss(copyPath), [this](const QDBusPendingCall &) {
         loadConflicts();
     });
 }

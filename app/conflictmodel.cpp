@@ -30,16 +30,14 @@ QVariant ConflictModel::data(const QModelIndex &index, int role) const
         return row.time;
     case OriginalRole:
         return row.original;
-    case RescuedRole:
-        return row.rescued;
+    case CopyRole:
+        return row.copy;
     case OriginalFolderRole:
         return QFileInfo(row.original).path();
-    case RescuedFolderRole:
-        return QFileInfo(row.rescued).path();
-    case IsCopyRole:
-        return row.kind == QLatin1String("copy");
-    case RescuedNameRole:
-        return QFileInfo(row.rescued).fileName();
+    case CopyFolderRole:
+        return QFileInfo(row.copy).path();
+    case CopyNameRole:
+        return QFileInfo(row.copy).fileName();
     }
     return {};
 }
@@ -49,12 +47,11 @@ QHash<int, QByteArray> ConflictModel::roleNames() const
     return {
         {TimeRole, "time"},
         {OriginalRole, "original"},
-        {RescuedRole, "rescued"},
+        {CopyRole, "copy"},
         {NameRole, "name"},
         {OriginalFolderRole, "originalFolder"},
-        {RescuedFolderRole, "rescuedFolder"},
-        {IsCopyRole, "isCopy"},
-        {RescuedNameRole, "rescuedName"},
+        {CopyFolderRole, "copyFolder"},
+        {CopyNameRole, "copyName"},
     };
 }
 
@@ -71,8 +68,8 @@ void ConflictModel::setConflicts(const KonedriveConflictList &conflicts)
         return a.time > b.time;
     });
     for (const KonedriveConflict &conflict : std::as_const(sorted)) {
-        if (!keys.contains(conflict.rescued)) {
-            keys.insert(conflict.rescued);
+        if (!keys.contains(conflict.copy)) {
+            keys.insert(conflict.copy);
             wanted << conflict;
         }
     }
@@ -90,11 +87,11 @@ void ConflictModel::setConflicts(const KonedriveConflictList &conflicts)
     // reset.
     QHash<QString, int> oldRow;
     for (int row = 0; row < count(); ++row) {
-        oldRow.insert(m_rows.at(row).rescued, row);
+        oldRow.insert(m_rows.at(row).copy, row);
     }
     QSet<QString> newKeys;
     for (const KonedriveConflict &conflict : std::as_const(wanted)) {
-        newKeys.insert(conflict.rescued);
+        newKeys.insert(conflict.copy);
     }
     // One run of rows [first, first + length) in `rows` for which `in` holds, or none.
     const auto run = [](const KonedriveConflictList &rows, auto in, int &first, int &length) {
@@ -117,10 +114,10 @@ void ConflictModel::setConflicts(const KonedriveConflictList &conflicts)
     int insertFirst = 0;
     int insertCount = 0;
     const auto went = [&newKeys](const KonedriveConflict &row) {
-        return !newKeys.contains(row.rescued);
+        return !newKeys.contains(row.copy);
     };
     const auto isNew = [&oldRow](const KonedriveConflict &row) {
-        return !oldRow.contains(row.rescued);
+        return !oldRow.contains(row.copy);
     };
     bool oneDiff = run(m_rows, went, removeFirst, removeCount) && run(wanted, isNew, insertFirst, insertCount);
     // The rows kept must be in the same order on both sides.
@@ -128,7 +125,7 @@ void ConflictModel::setConflicts(const KonedriveConflictList &conflicts)
     int lastChanged = -1;
     int keptOld = 0;
     for (int row = 0; oneDiff && row < wanted.size(); ++row) {
-        const auto it = oldRow.constFind(wanted.at(row).rescued);
+        const auto it = oldRow.constFind(wanted.at(row).copy);
         if (it == oldRow.constEnd()) {
             continue;
         }

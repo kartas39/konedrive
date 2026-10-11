@@ -38,21 +38,6 @@ QString scanReasonText(const QString &reason)
     if (reason == QLatin1String("start")) {
         return i18nc("@info why the local files are checked", "as syncing started");
     }
-    if (reason == QLatin1String("read-write")) {
-        return i18nc("@info why the local files are checked", "after the switch to read-write");
-    }
-    if (reason == QLatin1String("helper-back")) {
-        return i18nc("@info why the local files are checked", "after the helper came back");
-    }
-    if (reason == QLatin1String("overflow")) {
-        return i18nc("@info why the local files are checked", "after too many changes at once");
-    }
-    if (reason == QLatin1String("ignore-list")) {
-        return i18nc("@info why the local files are checked", "after the ignore list changed");
-    }
-    if (reason == QLatin1String("periodic")) {
-        return i18nc("@info why the local files are checked", "as part of the folder cannot be watched");
-    }
     return reason;
 }
 }
@@ -181,7 +166,7 @@ void AccountStatus::update()
         text = i18n("No OneDrive folder yet");
     } else if (reason == QLatin1String("starting")) {
         // A folder that is recorded and not up yet, with nothing known to be wrong: it is
-        // being brought up, or waits for the helper to connect (the start of a session).
+        // being brought up (the start of a session).
         text = i18n("Starting…");
     } else if (reason == QLatin1String("stopped")) {
         // Folder.Trouble is then everything the folder stopped on, shown as it is.
@@ -224,7 +209,7 @@ void AccountStatus::update()
 
         // Why the account needs attention, where the line does not say it: by the reason.
         if (reason == QLatin1String("conflicts")) {
-            attention = i18np("1 changed file was moved out of the way", "%1 changed files were moved out of the way", m_sync->conflictCount());
+            attention = i18np("1 file changed here and in OneDrive: both versions are kept", "%1 files changed here and in OneDrive: both versions are kept", m_sync->conflictCount());
         } else if (reason == QLatin1String("quota-full")) {
             attention = i18np("OneDrive is full: 1 file waits for space", "OneDrive is full: %1 files wait for space", m_sync->spaceWaitingCount());
         } else if (reason == QLatin1String("too-big")) {
@@ -233,8 +218,6 @@ void AccountStatus::update()
             attention = i18np("1 change cannot be uploaded", "%1 changes cannot be uploaded", m_sync->blockedCount());
         } else if (reason == QLatin1String("not-updated")) {
             attention = m_sync->notUpdated();
-        } else if (reason == QLatin1String("helper-unavailable")) {
-            attention = i18n("The konedrive helper is not available: files are not kept in step, and nothing downloads when it is opened.");
         }
     }
 

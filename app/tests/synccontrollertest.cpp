@@ -177,35 +177,17 @@ private Q_SLOTS:
         QVERIFY(m_fake->calls.contains(QStringLiteral("Register:/home/u/OneDrive")));
     }
 
-    /// Without the helper the window asks before registering a folder whose
-    /// placeholders nothing fills on open. The
-    /// window never registers a folder
-    /// without interception — an unhydrated file would read as zeros for
-    /// good. The prompt's only way forward is "Try Again", which retries
-    /// RegisterRoot.
-    void withoutTheHelperTheUserWaitsOrRetries()
+    /// A folder the daemon refuses is not registered, and the refusal is said.
+    void aRefusedFolderIsAnActionError()
     {
         startFake();
-        m_fake->helperMissing = true;
+        m_fake->registerRefused = QStringLiteral("/home/u/OneDrive is not empty");
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         controller.chooseFolder(QUrl::fromLocalFile(QStringLiteral("/home/u/OneDrive")));
-        QTRY_COMPARE(controller.pendingFolder(), QStringLiteral("/home/u/OneDrive"));
+        QTRY_COMPARE(controller.actionError(), QStringLiteral("/home/u/OneDrive is not empty"));
+        QCOMPARE(controller.rootPath(), QString());
         QCOMPARE(m_fake->calls.count(QStringLiteral("Register:/home/u/OneDrive")), 1);
-
-        // Retrying while the helper is still missing changes nothing.
-        controller.retryRegistration();
-        QTRY_COMPARE(m_fake->calls.count(QStringLiteral("Register:/home/u/OneDrive")), 2);
-        QCOMPARE(controller.pendingFolder(), QStringLiteral("/home/u/OneDrive"));
-
-        // The helper connects while the prompt is up; "Try Again" retries
-        // RegisterRoot and this time it takes.
-        m_fake->helperMissing = false;
-        controller.retryRegistration();
-        QTRY_COMPARE(controller.pendingFolder(), QString());
-        QCOMPARE(controller.rootState(), QStringLiteral("listing"));
-        QCOMPARE(m_fake->calls.count(QStringLiteral("Register:/home/u/OneDrive")), 3);
-        QVERIFY(!m_fake->calls.contains(QStringLiteral("RegisterWithoutInterception:/home/u/OneDrive")));
     }
 
     void listsWhatIsSkippedWithWhy()
@@ -249,7 +231,7 @@ private Q_SLOTS:
         startFake();
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
-        controller.dismissConflict(QStringLiteral("/no/such/rescue"));
+        controller.dismissConflict(QStringLiteral("/no/such/copy"));
         QTRY_VERIFY(!controller.actionError().isEmpty());
         controller.loadSkipped();
         QTRY_COMPARE(controller.skipped().size(), 1);
@@ -367,15 +349,15 @@ private Q_SLOTS:
     void dismissingAConflictRefreshesTheList()
     {
         startFake();
-        m_fake->conflictList = {{200, QStringLiteral("/home/u/OneDrive/doc.odt"), QStringLiteral("/home/u/.local/share/konedrive/rescued/2/doc.odt")},
-                                {100, QStringLiteral("/home/u/OneDrive/a.txt"), QStringLiteral("/home/u/.local/share/konedrive/rescued/1/a.txt")}};
+        m_fake->conflictList = {{200, QStringLiteral("/home/u/OneDrive/doc.odt"), QStringLiteral("/home/u/OneDrive/doc-fedora.odt")},
+                                {100, QStringLiteral("/home/u/OneDrive/a.txt"), QStringLiteral("/home/u/OneDrive/a-fedora.txt")}};
         m_fake->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(2)}});
         SyncController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.conflicts()->count(), 2);
 
-        controller.dismissConflict(QStringLiteral("/home/u/.local/share/konedrive/rescued/2/doc.odt"));
+        controller.dismissConflict(QStringLiteral("/home/u/OneDrive/doc-fedora.odt"));
         QTRY_COMPARE(controller.conflicts()->count(), 1);
-        QVERIFY(m_fake->calls.contains(QStringLiteral("Dismiss:/home/u/.local/share/konedrive/rescued/2/doc.odt")));
+        QVERIFY(m_fake->calls.contains(QStringLiteral("Dismiss:/home/u/OneDrive/doc-fedora.odt")));
         QCOMPARE(text(controller.conflicts(), 0, ConflictModel::OriginalRole), QStringLiteral("/home/u/OneDrive/a.txt"));
         QCOMPARE(controller.actionError(), QString());
     }

@@ -23,11 +23,6 @@ ActivityFailure classifyFailure(const QString &kind, const QString &detail)
     return update ? ActivityFailure::Update : ActivityFailure::Download;
 }
 
-bool isConflictCopy(const QString &original, const QString &other)
-{
-    return !original.isEmpty() && !other.isEmpty() && QFileInfo(original).path() == QFileInfo(other).path();
-}
-
 ActivityModel::ActivityModel(QObject *parent)
     : QAbstractListModel(parent)
 {
@@ -68,8 +63,8 @@ QString ActivityModel::describe(const QString &kind, const QString &detail)
         return i18nc("@info activity", "Cannot be removed here");
     }
     if (kind == QLatin1String("conflict")) {
-        // A rescue; a copy (TextRole, isConflictCopy) has its own words.
-        return i18nc("@info activity", "Your changed version was moved");
+        // A file changed on both sides: the detail is the copy kept beside it.
+        return i18nc("@info activity", "Changed on both sides: both versions kept");
     }
     if (kind == QLatin1String("uploaded")) {
         return i18nc("@info activity", "Uploaded");
@@ -121,9 +116,6 @@ QVariant ActivityModel::data(const QModelIndex &index, int role) const
     case DetailRole:
         return row.detail;
     case TextRole:
-        if (row.kind == QLatin1String("conflict") && isConflictCopy(row.path, row.detail)) {
-            return i18nc("@info activity", "Changed on both sides: both versions kept");
-        }
         return describe(row.kind, row.detail);
     case DetailTextRole:
         if (row.kind == QLatin1String("cloud-moved") && !row.detail.isEmpty()) {
@@ -136,10 +128,10 @@ QVariant ActivityModel::data(const QModelIndex &index, int role) const
         }
         return row.kind == QLatin1String("upload-failed") ? uploadReasonText(row.detail) : row.detail;
     case IconRole:
-        if (row.kind == QLatin1String("conflict") && isConflictCopy(row.path, row.detail)) {
+        if (row.kind == QLatin1String("conflict")) {
             return QStringLiteral("document-duplicate");
         }
-        if (row.kind == QLatin1String("failed") || row.kind == QLatin1String("update-failed") || row.kind == QLatin1String("conflict")
+        if (row.kind == QLatin1String("failed") || row.kind == QLatin1String("update-failed")
             || row.kind == QLatin1String("upload-failed") || row.kind == QLatin1String("not-removed-here")) {
             return QStringLiteral("dialog-warning");
         }

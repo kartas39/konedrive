@@ -27,7 +27,7 @@ class QTimer;
 
 /// Presents one account's folder (at /org/konedrive/Accounts/<id>) to QML: its
 /// org.konedrive.Folder, Transfers, UploadQueue, Conflicts, LocalScan and
-/// ActivityLog. The helper, which serves every account, is DaemonController's.
+/// ActivityLog.
 /// Never blocks the GUI thread.
 class SyncController : public QObject
 {
@@ -47,11 +47,9 @@ class SyncController : public QObject
     /// Folder.NotUpdated: the failed-update note, or empty.
     Q_PROPERTY(QString notUpdated READ notUpdated NOTIFY syncChanged)
     Q_PROPERTY(qulonglong itemsListed READ itemsListed NOTIFY syncChanged)
-    Q_PROPERTY(qulonglong itemsPlaced READ itemsPlaced NOTIFY syncChanged)
     Q_PROPERTY(qulonglong skippedCount READ skippedCount NOTIFY syncChanged)
     Q_PROPERTY(QVariantList skipped READ skipped NOTIFY skippedChanged)
     Q_PROPERTY(QString actionError READ actionError NOTIFY actionErrorChanged)
-    Q_PROPERTY(QString pendingFolder READ pendingFolder NOTIFY pendingFolderChanged)
     /// Unix seconds of the last successful check with OneDrive; 0 = never.
     Q_PROPERTY(qlonglong lastChecked READ lastChecked NOTIFY syncChanged)
     /// Bytes the folder's files take on this disk.
@@ -182,11 +180,9 @@ public:
     QString trouble() const { return m_trouble; }
     QString notUpdated() const { return m_notUpdated; }
     qulonglong itemsListed() const { return m_itemsListed; }
-    qulonglong itemsPlaced() const { return m_itemsPlaced; }
     qulonglong skippedCount() const { return m_skippedCount; }
     QVariantList skipped() const { return m_skipped; }
     QString actionError() const { return m_actionError; }
-    QString pendingFolder() const { return m_pendingFolder; }
     qlonglong lastChecked() const { return m_lastChecked; }
     qulonglong localBytes() const { return m_localBytes; }
     uint conflictCount() const { return m_conflictCount; }
@@ -251,14 +247,8 @@ public:
     QVariantMap notUploadedFiles() const { return m_notUploadedFiles; }
     int perFileCap() const { return PerFileCap; }
 
-    /// Folder.Register; a NoHelper refusal is kept as `pendingFolder` for the
-    /// window to prompt about — never registered without interception, since
-    /// an unhydrated file then reads as zeros for good (no-interception stays
-    /// a daemon/CLI-only mode; docs/design/decisions.md).
+    /// Folder.Register; a refusal is actionError.
     Q_INVOKABLE void chooseFolder(const QUrl &folder);
-    /// "Try Again" on the NoHelper prompt: retries Register(pendingFolder).
-    Q_INVOKABLE void retryRegistration();
-    Q_INVOKABLE void cancelPending();
     Q_INVOKABLE void forget();
     /// Asks UploadQueue.UnsentCount(): how many changes made here are not sent to
     /// OneDrive, which a Forget or the account's removal leaves only on this computer.
@@ -273,7 +263,7 @@ public:
     /// Conflicts.List() into `conflicts`.
     Q_INVOKABLE void loadConflicts();
     /// Conflicts.Dismiss, then List() again.
-    Q_INVOKABLE void dismissConflict(const QString &rescuedPath);
+    Q_INVOKABLE void dismissConflict(const QString &copyPath);
     /// FreeUpSpace; the outcome lands in `freeUpResult`.
     Q_INVOKABLE void freeUpSpace();
     Q_INVOKABLE void clearFreeUpResult();
@@ -318,7 +308,6 @@ Q_SIGNALS:
     void syncChanged();
     void skippedChanged();
     void actionErrorChanged();
-    void pendingFolderChanged();
     void freeUpResultChanged();
     void notUploadedChanged();
     void historyChanged();
@@ -336,13 +325,11 @@ private:
     void applyProperties(const QString &interfaceName, const QVariantMap &properties);
     void setServiceAvailable(bool available);
     void setActionError(const QString &message);
-    void setPendingFolder(const QString &folder);
     /// `resetError` false (loadSkipped, an incidental background reload) means
     /// this call never clears an actionError already showing (M7): only a
     /// user-started action gets to wipe out the previous one.
     void call(const QDBusPendingCall &pending,
               std::function<void(const QDBusPendingCall &)> onSuccess = {},
-              std::function<bool(const QDBusError &)> onError = {},
               bool resetError = true);
     /// A call the user did not ask for (a list refresh): its failure is not shown.
     void quietly(const QDBusPendingCall &pending, std::function<void(const QDBusPendingCall &)> onSuccess);
@@ -366,11 +353,9 @@ private:
     QString m_trouble;
     QString m_notUpdated;
     qulonglong m_itemsListed = 0;
-    qulonglong m_itemsPlaced = 0;
     qulonglong m_skippedCount = 0;
     QVariantList m_skipped;
     QString m_actionError;
-    QString m_pendingFolder;
     qlonglong m_lastChecked = 0;
     qulonglong m_localBytes = 0;
     uint m_conflictCount = 0;

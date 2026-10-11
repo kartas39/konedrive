@@ -25,8 +25,8 @@ Comment=A file changed in OneDrive could not be updated on this computer
 Action=Popup
 
 [Event/conflict]
-Name=Changed version moved
-Comment=Your changed version of a file was moved out of the way
+Name=Changed on both sides
+Comment=A file changed here and in OneDrive: both versions are kept
 Action=Popup
 
 [Event/uploadFailed]

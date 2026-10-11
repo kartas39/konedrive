@@ -491,7 +491,7 @@ public Q_SLOTS:
     KonedriveConflictList List();
     /// Removes the row and answers; it does not emit Count, so a
     /// test sees whether the window asks again on its own.
-    void Dismiss(const QString &rescued, const QDBusMessage &message);
+    void Dismiss(const QString &copy, const QDBusMessage &message);
 };
 
 class FakeLocalScan : public FakeFolderInterface
@@ -616,7 +616,8 @@ public:
     FakeActivityLog *activityLog;
 
     QStringList calls;
-    bool helperMissing = false;
+    /// Register is refused NotEmpty with these words, when not empty.
+    QString registerRefused;
     /// Hold these calls unanswered (until releaseActivity/finishFreeUp; Refresh for ever).
     bool holdActivity = false;
     bool holdFreeUp = false;
@@ -662,9 +663,9 @@ inline void FakeFolderInterface::set(const QVariantMap &changes)
 inline void FakeFolder::Register(const QString &path, const QDBusMessage &message)
 {
     m_sync->calls << QStringLiteral("Register:") + path;
-    if (m_sync->helperMissing) {
+    if (!m_sync->registerRefused.isEmpty()) {
         message.setDelayedReply(true);
-        m_sync->bus.send(message.createErrorReply(QStringLiteral("org.konedrive.Error.NoHelper"), QStringLiteral("the konedrive helper is not connected")));
+        m_sync->bus.send(message.createErrorReply(QStringLiteral("org.konedrive.Error.NotEmpty"), m_sync->registerRefused));
         return;
     }
     set({{QStringLiteral("Path"), path}, {QStringLiteral("State"), QStringLiteral("listing")}, {QStringLiteral("Source"), QStringLiteral("onedrive")}});
@@ -781,16 +782,16 @@ inline KonedriveConflictList FakeConflicts::List()
     return m_sync->conflictList;
 }
 
-inline void FakeConflicts::Dismiss(const QString &rescued, const QDBusMessage &message)
+inline void FakeConflicts::Dismiss(const QString &copy, const QDBusMessage &message)
 {
-    m_sync->calls << QStringLiteral("Dismiss:") + rescued;
+    m_sync->calls << QStringLiteral("Dismiss:") + copy;
     const auto before = m_sync->conflictList.size();
-    m_sync->conflictList.removeIf([&rescued](const KonedriveConflict &c) {
-        return c.rescued == rescued;
+    m_sync->conflictList.removeIf([&copy](const KonedriveConflict &c) {
+        return c.copy == copy;
     });
     if (m_sync->conflictList.size() == before) {
         message.setDelayedReply(true);
-        m_sync->bus.send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("no conflict at ") + rescued));
+        m_sync->bus.send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("no conflict at ") + copy));
     }
 }
 
@@ -837,7 +838,6 @@ class FakeAccounts : public QDBusAbstractAdaptor
     Q_CLASSINFO("D-Bus Interface", "org.konedrive.Accounts")
     Q_PROPERTY(QList<QDBusObjectPath> List READ accounts)
     Q_PROPERTY(QString ClientId READ clientId)
-    Q_PROPERTY(QString HelperState READ helperState)
     Q_PROPERTY(QString LastError READ lastError)
     Q_PROPERTY(bool PauseOnMetered READ pauseOnMetered)
     Q_PROPERTY(QString OnBattery READ onBattery)
@@ -849,7 +849,6 @@ public:
 
     QList<QDBusObjectPath> accounts() const;
     QString clientId() const { return m_properties.value(QStringLiteral("ClientId")).toString(); }
-    QString helperState() const { return m_properties.value(QStringLiteral("HelperState")).toString(); }
     QString lastError() const { return m_properties.value(QStringLiteral("LastError")).toString(); }
     bool pauseOnMetered() const { return m_properties.value(QStringLiteral("PauseOnMetered")).toBool(); }
     QString onBattery() const { return m_properties.value(QStringLiteral("OnBattery")).toString(); }
@@ -873,7 +872,7 @@ public:
     }
 
     QStringList calls;
-    /// Remove refuses NoHelper, as it does for an intercepted folder with no helper.
+    /// Remove is refused Failed, as when config.toml cannot be written.
     bool refuseRemove = false;
     /// SignIn is refused Failed with this message, when it is not empty.
     QString refuseSignIn;
@@ -920,7 +919,6 @@ private:
     FakeDaemon *m_daemon;
     QVariantMap m_properties{
         {QStringLiteral("ClientId"), QString()},
-        {QStringLiteral("HelperState"), QStringLiteral("connected")},
         {QStringLiteral("LastError"), QString()},
         {QStringLiteral("PauseOnMetered"), true},
         {QStringLiteral("OnBattery"), QStringLiteral("power-saver")},
@@ -1129,7 +1127,7 @@ inline void FakeAccounts::Remove(const QDBusObjectPath &account, const QDBusMess
     calls << QStringLiteral("Remove:") + account.path();
     if (refuseRemove) {
         message.setDelayedReply(true);
-        fake::bus().send(message.createErrorReply(QStringLiteral("org.konedrive.Error.NoHelper"), QStringLiteral("the konedrive helper is not connected")));
+        fake::bus().send(message.createErrorReply(QStringLiteral("org.konedrive.Error.Failed"), QStringLiteral("config.toml cannot be written")));
         return;
     }
     if (!m_daemon->removeAccount(account.path())) {

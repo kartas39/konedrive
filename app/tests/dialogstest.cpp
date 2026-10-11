@@ -571,7 +571,7 @@ private Q_SLOTS:
                                 {QStringLiteral("State"), QStringLiteral("ready")},
                                 {QStringLiteral("Source"), QStringLiteral("onedrive")}});
         fake.sync->scan->set({{QStringLiteral("State"), QStringLiteral("running")},
-                              {QStringLiteral("Reason"), QStringLiteral("read-write")},
+                              {QStringLiteral("Reason"), QStringLiteral("start")},
                               {QStringLiteral("Started"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 125)},
                               {QStringLiteral("Directories"), QVariant::fromValue<qulonglong>(12)},
                               {QStringLiteral("Files"), QVariant::fromValue<qulonglong>(345)},
@@ -610,7 +610,7 @@ private Q_SLOTS:
         QVERIFY(line);
         QTRY_VERIFY(line->isVisible());
         QCOMPARE(line->property("text").toString(),
-                 QStringLiteral("Checking local files: 12 folders and 345 files, of about 500 — started 2 min ago, after the switch to read-write"));
+                 QStringLiteral("Checking local files: 12 folders and 345 files, of about 500 — started 2 min ago, as syncing started"));
 
         fake.sync->scan->set({{QStringLiteral("State"), QStringLiteral("idle")},
                               {QStringLiteral("Finished"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 300)},

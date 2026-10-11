@@ -22,7 +22,6 @@ FormCard.FormCardPage {
     readonly property bool signingIn: available && account !== null && account.state === "signing-in"
     readonly property bool signedIn: available && account !== null && account.state === "signed-in"
     readonly property bool hasFolder: available && sync !== null && sync.rootPath.length > 0
-    readonly property bool pending: available && sync !== null && sync.pendingFolder.length > 0
     /// A folder that shows OneDrive: the one kind anything is uploaded from.
     readonly property bool oneDrive: hasFolder && sync.rootSource === "onedrive"
     readonly property string accountError: account ? (account.actionError.length > 0 ? account.actionError : account.lastError) : ""
@@ -77,8 +76,7 @@ FormCard.FormCardPage {
         text: page.sync ? page.sync.actionError : ""
         visible: page.available && text.length > 0
     }
-    // A Remove of this account that was refused; one refused for want of
-    // the helper says what to do, and can be tried again.
+    // A Remove of this account that was refused.
     Kirigami.InlineMessage {
         objectName: "removeError"
         Layout.fillWidth: true
@@ -86,22 +84,8 @@ FormCard.FormCardPage {
         Layout.leftMargin: Kirigami.Units.largeSpacing
         Layout.rightMargin: Kirigami.Units.largeSpacing
         type: Kirigami.MessageType.Error
-        text: {
-            if (Daemon.removeNeedsHelper) {
-                return i18n("The account was not removed: its folder can be forgotten only through the konedrive helper, which is not available. %1", Daemon.helperInstruction);
-            }
-            return i18n("The account was not removed: %1", Daemon.removeError);
-        }
+        text: i18n("The account was not removed: %1", Daemon.removeError)
         visible: page.available && page.account !== null && Daemon.removeFailedPath === page.account.path
-        actions: [
-            Kirigami.Action {
-                text: i18nc("@action:button", "Try Again")
-                icon.name: "view-refresh"
-                visible: Daemon.removeNeedsHelper
-                enabled: Daemon.removing.length === 0
-                onTriggered: Accounts.removeAccount(page.account.path)
-            }
-        ]
     }
 
     // Daemon not reachable
@@ -402,61 +386,23 @@ FormCard.FormCardPage {
     // The OneDrive folder: asked for once signed in; a folder already there
     // shows whatever the sign-in.
     FormCard.FormHeader {
-        visible: page.signedIn || page.hasFolder || page.pending
+        visible: page.signedIn || page.hasFolder
         title: i18nc("@title:group", "OneDrive Folder")
     }
     FormCard.FormCard {
-        visible: page.signedIn || page.hasFolder || page.pending
+        visible: page.signedIn || page.hasFolder
 
         FormCard.FormTextDelegate {
-            visible: page.signedIn && !page.hasFolder && !page.pending
+            visible: page.signedIn && !page.hasFolder
             text: i18n("No folder yet")
             description: i18n("Choose an empty folder. Your OneDrive appears in it; files download when you open them.")
         }
         FormCard.FormButtonDelegate {
             objectName: "chooseFolder"
-            visible: page.signedIn && !page.hasFolder && !page.pending
+            visible: page.signedIn && !page.hasFolder
             text: i18nc("@action:button", "Choose Folder…")
             icon.name: "folder-open"
             onClicked: folderDialog.openFor(Current.item)
-        }
-
-        // RegisterRoot refused NoHelper: the window never registers a folder
-        // without interception (I3) — an unhydrated file would read as zeros
-        // for good. Try Again retries RegisterRoot; Cancel gives up on it.
-        FormCard.FormTextDelegate {
-            visible: page.pending
-            text: {
-                switch (Daemon.helperState) {
-                case "stopped":
-                    return i18n("The konedrive helper is not running");
-                case "failed":
-                    return i18n("The konedrive helper failed");
-                case "unknown":
-                    return i18n("The konedrive helper is not connected yet");
-                default:
-                    return i18n("The konedrive helper is not installed");
-                }
-            }
-            description: i18n("Without it, nothing downloads a file when a program opens it, so KOneDrive will not add this folder yet.")
-        }
-        FormCard.FormTextDelegate {
-            visible: page.pending && Daemon.helperInstruction.length > 0
-            text: Daemon.helperInstruction
-            textItem.textFormat: Text.PlainText
-            textItem.wrapMode: Text.Wrap
-        }
-        FormCard.FormButtonDelegate {
-            visible: page.pending
-            text: i18nc("@action:button", "Try Again")
-            icon.name: "view-refresh"
-            onClicked: page.sync.retryRegistration()
-        }
-        FormCard.FormButtonDelegate {
-            visible: page.pending
-            text: i18nc("@action:button", "Cancel")
-            icon.name: "dialog-cancel"
-            onClicked: page.sync.cancelPending()
         }
 
         FormCard.FormTextDelegate {

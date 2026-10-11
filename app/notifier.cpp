@@ -122,24 +122,16 @@ void Notifier::onActivity(qint64, const QString &kind, const QString &path, cons
     if (kind == QLatin1String("conflict")) {
         // M3: past 50 conflicts in one cycle, the daemon adds one more
         // `conflict` event whose path is the root and whose detail is
-        // "and N more" — a count, not a rescued path. "Show in Folder" has
+        // "and N more" — a count, not a copy's path. "Show in Folder" has
         // no single file to point at, so this one has none.
         if (path == m_sync->rootPath()) {
             if (const auto match = cappedMore.match(detail); match.hasMatch()) {
-                post({QStringLiteral("conflict"), i18nc("@title notification", "Your changed version was moved"), QString(), {}}, match.captured(1).toInt());
+                post({QStringLiteral("conflict"), copyTitle(), QString(), {}}, match.captured(1).toInt());
                 return;
             }
         }
-        // A copy kept beside the file (a file changed on both sides).
-        if (isConflictCopy(path, detail)) {
-            post({QStringLiteral("conflict"), copyTitle(), i18n("%1 changed here and in OneDrive. Both are kept: your version as %2.", name, fileName(detail)), detail});
-            return;
-        }
-        // The daemon's detail is where the local version went.
-        post({QStringLiteral("conflict"),
-              i18nc("@title notification", "Your changed version was moved"),
-              i18n("Your changed version of %1 was moved to %2", name, detail),
-              detail});
+        // A file changed on both sides: the daemon's detail is the copy kept beside it.
+        post({QStringLiteral("conflict"), copyTitle(), i18n("%1 changed here and in OneDrive. Both are kept: your version as %2.", name, fileName(detail)), detail});
         return;
     }
     switch (classifyFailure(kind, detail)) {
@@ -266,11 +258,9 @@ Notice Notifier::summary(const Window &window) const
         notice.text = i18np("1 more file could not be downloaded.", "%1 more files could not be downloaded.", n);
     } else if (notice.event == QLatin1String("updateFailed")) {
         notice.text = i18np("1 more file changed in OneDrive could not be updated here.", "%1 more files changed in OneDrive could not be updated here.", n);
-    } else if (notice.event == QLatin1String("conflict") && window.last.title.startsWith(copyTitle())) {
-        notice.text = i18np("1 more file changed here and in OneDrive; both versions are kept.", "%1 more files changed here and in OneDrive; both versions are kept.", n);
     } else if (notice.event == QLatin1String("conflict")) {
-        // "Show in Folder" stays on the last one moved.
-        notice.text = i18np("1 more of your changed files was moved out of the way.", "%1 more of your changed files were moved out of the way.", n);
+        // "Show in Folder" stays on the last copy kept.
+        notice.text = i18np("1 more file changed here and in OneDrive; both versions are kept.", "%1 more files changed here and in OneDrive; both versions are kept.", n);
     } else if (notice.event == QLatin1String("notRemovedHere")) {
         notice.text = i18np("1 more folder cannot be removed here.", "%1 more folders cannot be removed here.", n);
     } else if (notice.event == QLatin1String("uploadFailed")) {

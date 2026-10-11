@@ -5,9 +5,8 @@ import org.kde.kirigami as Kirigami
 import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
-/// Local versions the sync moved out of the way: where each was, where it is
-/// now, when; "Show in Folder" and "Dismiss". A file changed on both sides
-/// keeps a copy beside it instead: "Show Both" and "Dismiss". The model holds
+/// Files changed here and in OneDrive: each keeps a copy of your version beside
+/// it; where, under which name, when; "Show Both" and "Dismiss". The model holds
 /// the newest ConflictModel.Shown (200); a ListView builds only the rows in
 /// sight, and a line after them counts the rest. A ScrollablePage rather than
 /// a FormCardPage, whose one long column would build every row; the
@@ -81,13 +80,13 @@ Kirigami.ScrollablePage {
 
                 FormCard.FormPlaceholderMessageDelegate {
                     text: i18n("No conflicts")
-                    explanation: i18n("When a file you changed here also changes in OneDrive, your version is kept — moved out of the way, or as a copy beside it while uploading is on — and listed here.")
+                    explanation: i18n("When a file you changed here also changes in OneDrive, both versions are kept: OneDrive's under the file's name, yours as a copy beside it. They are listed here.")
                     icon.name: "document-duplicate"
                 }
             }
             FormCard.FormSectionText {
                 visible: page.conflicts !== null && page.conflicts.count > 0
-                text: i18n("These files changed in OneDrive while you had changed them here. Your version is kept where it says. Dismiss takes it off this list; the files stay.")
+                text: i18n("These files changed in OneDrive while you had changed them here. Your version is the copy beside each. Dismiss takes it off this list; the files stay.")
             }
         }
 
@@ -98,9 +97,8 @@ Kirigami.ScrollablePage {
             required property string name
             required property string original
             required property string originalFolder
-            required property string rescued
-            required property string rescuedName
-            required property bool isCopy
+            required property string copy
+            required property string copyName
             required property var time
 
             objectName: "conflictRow"
@@ -130,39 +128,31 @@ Kirigami.ScrollablePage {
                         }
                         QQC2.Label {
                             Layout.fillWidth: true
-                            text: row.isCopy ? i18n("In %1", row.originalFolder) : i18n("Was in %1", row.originalFolder)
+                            text: i18n("In %1", row.originalFolder)
                             elide: Text.ElideMiddle
                             opacity: 0.8
                         }
                         QQC2.Label {
                             Layout.fillWidth: true
-                            text: row.isCopy ? i18n("Changed here and in OneDrive: OneDrive's version keeps the name, yours is %1", row.rescuedName)
-                                             : i18n("Now at %1", row.rescued)
-                            wrapMode: row.isCopy ? Text.Wrap : Text.WrapAnywhere
+                            text: i18n("Changed here and in OneDrive: OneDrive's version keeps the name, yours is %1", row.copyName)
+                            wrapMode: Text.Wrap
                             opacity: 0.8
                         }
                         QQC2.Label {
                             Layout.fillWidth: true
-                            text: row.isCopy ? i18n("Kept %1", page.window.when(row.time)) : i18n("Moved %1", page.window.when(row.time))
+                            text: i18n("Kept %1", page.window.when(row.time))
                             opacity: 0.7
                         }
                         RowLayout {
                             QQC2.Button {
-                                visible: row.isCopy
                                 text: i18nc("@action:button", "Show Both")
                                 icon.name: "document-open-folder"
-                                onClicked: page.sync.showBoth(row.original, row.rescued)
-                            }
-                            QQC2.Button {
-                                visible: !row.isCopy
-                                text: i18nc("@action:button", "Show in Folder")
-                                icon.name: "document-open-folder"
-                                onClicked: page.sync.showInFolder(row.rescued)
+                                onClicked: page.sync.showBoth(row.original, row.copy)
                             }
                             QQC2.Button {
                                 text: i18nc("@action:button", "Dismiss")
                                 icon.name: "dialog-close"
-                                onClicked: page.sync.dismissConflict(row.rescued)
+                                onClicked: page.sync.dismissConflict(row.copy)
                             }
                         }
                     }

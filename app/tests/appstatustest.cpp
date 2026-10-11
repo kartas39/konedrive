@@ -262,7 +262,7 @@ private Q_SLOTS:
         decide("warning", "conflicts");
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
         QCOMPARE(m_status->text(), QStringLiteral("Paused · checked 20 s ago"));
-        QCOMPARE(m_status->attention(), QStringLiteral("1 changed file was moved out of the way"));
+        QCOMPARE(m_status->attention(), QStringLiteral("1 file changed here and in OneDrive: both versions are kept"));
 
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(0)}});
         m_daemon->sync->folder->Resume();
@@ -341,9 +341,9 @@ private Q_SLOTS:
         QTRY_COMPARE(m_status->text(), QStringLiteral("Starting…"));
         QCOMPARE(m_status->state(), QStringLiteral("syncing"));
         QVERIFY(m_status->attention().isEmpty());
-        decide("warning", "stopped", {{QStringLiteral("State"), QStringLiteral("error")}, {QStringLiteral("Trouble"), QStringLiteral("the konedrive helper is not running")}});
+        decide("warning", "stopped", {{QStringLiteral("State"), QStringLiteral("error")}, {QStringLiteral("Trouble"), QStringLiteral("the folder cannot be mounted")}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
-        QCOMPARE(m_status->text(), QStringLiteral("the konedrive helper is not running"));
+        QCOMPARE(m_status->text(), QStringLiteral("the folder cannot be mounted"));
     }
 
     void aConflictNeedsAttention()
@@ -356,7 +356,7 @@ private Q_SLOTS:
         decide("warning", "conflicts");
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
         QCOMPARE(m_status->iconName(), QStringLiteral("state-warning"));
-        QCOMPARE(m_status->attention(), QStringLiteral("1 changed file was moved out of the way"));
+        QCOMPARE(m_status->attention(), QStringLiteral("1 file changed here and in OneDrive: both versions are kept"));
         QCOMPARE(m_status->text(), QStringLiteral("Downloading 1 file · checked 20 s ago"));
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(0)}});
         decide("syncing", "transferring");
@@ -379,25 +379,6 @@ private Q_SLOTS:
         QTRY_VERIFY(m_status->attention() != note);
         decide("ok", "up-to-date", {{QStringLiteral("NotUpdated"), QString()}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
-        QVERIFY(m_status->attention().isEmpty());
-    }
-
-    /// The helper's trouble, when the daemon counts it against this account: a warning
-    /// that says so, while the line says what the folder does.
-    void theHelpersTroubleNeedsAttention()
-    {
-        startSynced();
-        decide("warning", "helper-unavailable");
-        QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
-        QVERIFY2(m_status->attention().contains(QStringLiteral("helper")), qPrintable(m_status->attention()));
-        QCOMPARE(m_status->text(), QStringLiteral("Up to date · checked 20 s ago"));
-
-        // The helper's state alone decides nothing here: the daemon says whose concern it is.
-        decide("ok", "up-to-date");
-        QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
-        m_daemon->manager->set({{QStringLiteral("HelperState"), QStringLiteral("stopped")}});
-        QTRY_VERIFY(m_manager->helperTrouble());
-        QCOMPARE(m_status->state(), QStringLiteral("ok"));
         QVERIFY(m_status->attention().isEmpty());
     }
 
@@ -555,7 +536,7 @@ private Q_SLOTS:
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(2)}});
         decide("warning", "conflicts");
         QTRY_COMPARE(tray.one()->item()->iconName(), QStringLiteral("state-warning"));
-        QCOMPARE(tray.one()->item()->toolTipSubTitle(), QStringLiteral("Up to date · checked 20 s ago\n2 changed files were moved out of the way"));
+        QCOMPARE(tray.one()->item()->toolTipSubTitle(), QStringLiteral("Up to date · checked 20 s ago\n2 files changed here and in OneDrive: both versions are kept"));
 
         m_daemon->account->set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
         decide("offline", "signed-out");
@@ -654,7 +635,7 @@ private Q_SLOTS:
         decide("warning", "conflicts");
         QTRY_COMPARE(tray.one()->item()->iconName(), QStringLiteral("state-warning"));
         QTRY_COMPARE(tray.one()->item()->toolTipSubTitle(),
-                     QStringLiteral("Personal — 2 changed files were moved out of the way\nFamily — Signed out of OneDrive"));
+                     QStringLiteral("Personal — 2 files changed here and in OneDrive: both versions are kept\nFamily — Signed out of OneDrive"));
         QCOMPARE(AppStatus::rank(QStringLiteral("warning")) < AppStatus::rank(QStringLiteral("offline")), true);
 
         // Renaming an account renames its line.
