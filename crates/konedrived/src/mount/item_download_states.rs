@@ -76,9 +76,9 @@ pub(super) const ANOTHER_CONTENTS_REMEMBERED: usize = 256;
 
 /// What a download is of.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) struct DownloadKey {
-    pub(super) item: LocalItemId,
-    pub(super) content: ContentVersion,
+pub(crate) struct DownloadKey {
+    pub(crate) item: LocalItemId,
+    pub(crate) content: ContentVersion,
 }
 
 /// Who asks for a download, with what only that asker has: the one place that says a
@@ -273,7 +273,7 @@ fn list_another_content_numbers(states: &HashMap<DownloadKey, State>) -> impl It
 }
 
 /// The download states of one mount.
-pub(super) struct ItemDownloadStates {
+pub(crate) struct ItemDownloadStates {
     states: std::sync::Mutex<States>,
     bytes_read_as_ranges: std::sync::Mutex<HashMap<LocalItemId, u64>>,
     /// `[transfers] download_after`.
@@ -511,7 +511,7 @@ impl ItemDownloadStates {
     /// ([`forget_item`](Self::forget_item)); a key beyond the latest
     /// [`ANOTHER_CONTENTS_REMEMBERED`] is remembered no more. Called by read, and by the
     /// downloader for what it tells of a download.
-    pub(super) fn is_another_content(&self, key: &DownloadKey) -> bool {
+    pub(crate) fn is_another_content(&self, key: &DownloadKey) -> bool {
         self.find_another_content(key).is_some()
     }
 
@@ -587,7 +587,7 @@ impl ItemDownloadStates {
     /// Nothing is kept of `item` any more: its row is gone, or it shows another content.
     /// Called by the steps towards the folder that remove an item or take OneDrive's
     /// content (what "the bytes-read count never forgetting a file" lacked: design §14).
-    pub(super) fn forget_item(&self, item: LocalItemId) {
+    pub(crate) fn forget_item(&self, item: LocalItemId) {
         // The unfinished files of every content of it, and what was remembered of each; a
         // download of it that runs is left to its landing, which finds the row changed.
         crate::panic::lock(&self.states).by_key.retain(|key, state| match state {

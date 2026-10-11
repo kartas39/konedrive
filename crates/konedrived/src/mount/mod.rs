@@ -29,7 +29,8 @@
 //!   [`item_download_landing`] lands it; [`item_free_up`] removes a downloaded copy.
 //! - Who else asks: [`item_files_interface`] answers the bus interface `Files`;
 //!   [`item_content_files`] gives a step towards OneDrive the local content;
-//!   [`folder_steps`] runs the sync plan's steps towards the folder; what a step changed is
+//!   `crate::folder_steps` runs the sync plan's steps towards the folder, made of the parts
+//!   [`ItemMount::folder_step_parts`] hands out; what a step changed is
 //!   told to whoever watches the folder by the [`item_inotify_bridge`]
 //!   ([`item_announcements`]).
 //! - The mount's end: [`mount_take_down`] is how a part says the mount must be taken down;
@@ -54,20 +55,6 @@ mod upload_rules;
 mod write_operation_thread;
 // The mount over the rows of `items`: no caller until the owner of a folder's state starts a
 // sync through `sync_tasks`.
-// TODO: the runner of the plan's steps towards the folder is to be built by the start of the
-// sync (`sync_tasks::start_order`) and to live in a directory of its own (`folder_steps/`,
-// after `mount` in the layer order). Moving its construction is not all it needs: it is made
-// of eleven parts of the mount — `PlaceChanges` and `PlaceChange`, `WriteOperationThread`,
-// `UploadRules`, `ItemInotifyBridge`, `ItemDownloader`, `ItemDownloadStates`,
-// `ItemRangeFetcher`, `MountTakeDown`, the landing's outcome, `item_announcements`,
-// `backing_directory::EntryKind` — every one of which is `pub(super)` to the mount today,
-// and its tests run over the mount's fixture by `super::` paths. So it needs: (1) those
-// parts, and the functions of them a step calls, made `pub(crate)` and handed out by
-// `ItemMount` (one accessor that answers them together); (2) `ItemMount` no longer
-// building or holding `FolderSteps` (`item_mount/build_order.rs`, `ItemMount::folder_steps`,
-// the fixture); (3) the tests moved with it. Check and fix if needed.
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
-mod folder_steps;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_announcements;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
@@ -114,7 +101,6 @@ pub(crate) mod item_fixture;
 
 pub use access_mode_switch::AccessModeSwitch;
 pub use backing_directory::{restore_write_bits, BackingDirectory};
-pub use folder_steps::FolderSteps;
 pub use item_announcements::ItemAnnouncement;
 pub use item_content_files::{ItemContentFiles, LocalContentFile};
 pub use item_files_interface::{DownloadedSpace, FilesRefusal, FreedSpace, ItemFilesInterface, ItemPathStatus, PinHolder};
@@ -125,3 +111,23 @@ pub use mount_take_down::{MountTakeDown, TakeDownCause, TakeDownReport};
 pub use stale_mount::unmount_stale_mount;
 pub use start_check::StartCheckFindings;
 pub use tidy_step::{list_directories, tidy_folder, tidy_served_folders};
+
+// What the runner of the plan's steps towards the folder (`crate::folder_steps`) is made of and
+// calls: the mount's parts are its own, and these names are all another directory sees of them.
+pub(crate) use backing_directory::EntryKind;
+pub(crate) use item_announcements::describe_move;
+pub(crate) use item_download_landing::ItemLandingOutcome;
+pub(crate) use item_download_states::ItemDownloadStates;
+pub(crate) use item_downloader::{DownloadRefusal, ItemDownloader, ItemToDownload};
+pub(crate) use item_inotify_bridge::ItemInotifyBridge;
+pub(crate) use item_mount::FolderStepParts;
+pub(crate) use item_range_fetcher::ItemRangeFetcher;
+pub(crate) use item_read_origin::RangeSource;
+pub(crate) use place_changes::{DirectoryMarks, PlaceChange, PlaceChanges, PlaceRefusal, PlaceUndo, RowPathStat};
+pub(crate) use upload_rules::UploadRules;
+pub(crate) use write_operation_thread::WriteOperationThread;
+// And what its tests make and ask beside the fixture.
+#[cfg(test)]
+pub(crate) use item_download_landing::ItemDownloadLanding;
+#[cfg(test)]
+pub(crate) use item_download_states::DownloadKey;

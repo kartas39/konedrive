@@ -9,6 +9,8 @@ pub mod content_source;
 pub mod local;
 pub mod sync_parts;
 pub mod mount;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+pub mod folder_steps;
 // The four below have no caller until the owner of a folder's state starts a sync through
 // `sync_tasks`.
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]

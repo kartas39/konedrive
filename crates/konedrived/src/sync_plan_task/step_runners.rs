@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::row_steps::RowSteps;
 use crate::sync_parts::step_outcome::{StepObstacle, StepOutcome};
-use crate::mount::FolderSteps;
+use crate::folder_steps::FolderSteps;
 use crate::sync_parts::lease::Lease;
 use crate::onedrive_steps::OneDriveSteps;
 

@@ -21,7 +21,8 @@
 //!    `RangeReaders` and `ItemRangeFetcher::new`;
 //!    `ItemDownloadLanding::new`; `ItemDownloader::new`;
 //! 6. `ItemFreeUp::new`; `ItemContentFiles::new`; `ItemLookup::new`;
-//!    `ItemWriteOperations::new`; `FolderSteps::new`; `ItemFilesInterface::new`;
+//!    `ItemWriteOperations::new`; the parts of the folder steps (`FolderStepParts`);
+//!    `ItemFilesInterface::new`;
 //! 7. `ItemKernelRequests::new`, which the switch's `Filesystem` is made over.
 //!
 //! Nothing here mounts: what is built answers a step, the `Files` interface and a write
@@ -34,7 +35,6 @@ use std::sync::{Arc, Mutex};
 
 use super::super::access_mode_switch::{AccessMode, AccessModeSwitch};
 use super::super::backing_directory::{remove_write_bits, BackingDirectory};
-use super::super::folder_steps::FolderSteps;
 use super::super::item_content_files::ItemContentFiles;
 use super::super::item_download_landing::ItemDownloadLanding;
 use super::super::item_download_states::ItemDownloadStates;
@@ -55,7 +55,7 @@ use super::super::stale_mount::unmount_stale_mount;
 use super::super::start_check::check_backing_directory_at_start;
 use super::super::upload_rules::UploadRules;
 use super::super::write_operation_thread::WriteOperationThread;
-use super::{ItemMount, ItemMountError, ItemMountSetup};
+use super::{FolderStepParts, ItemMount, ItemMountError, ItemMountSetup};
 
 /// The parts a stop of the mount reaches, in the order it stops them.
 pub(super) struct PartsToStop {
@@ -148,19 +148,19 @@ fn build_over(backing_directory: Arc<BackingDirectory>, setup: ItemMountSetup, r
         Arc::clone(&mount_take_down),
         report.clone(),
     ));
-    let folder_steps = Arc::new(FolderSteps::new(
-        Arc::clone(&place_changes),
-        store.clone(),
-        Arc::clone(&write_operation_thread),
-        Arc::clone(&upload_rules),
-        Arc::clone(&item_handles),
-        Arc::clone(&inotify_bridge),
-        Arc::clone(&downloader),
-        Arc::clone(&download_states),
-        Arc::clone(&range_fetcher),
+    let folder_step_parts = FolderStepParts {
+        place_changes: Arc::clone(&place_changes),
+        store: store.clone(),
+        write_operation_thread: Arc::clone(&write_operation_thread),
+        upload_rules: Arc::clone(&upload_rules),
+        item_handles: Arc::clone(&item_handles),
+        inotify_bridge: Arc::clone(&inotify_bridge),
+        downloader: Arc::clone(&downloader),
+        download_states: Arc::clone(&download_states),
+        range_fetcher: Arc::clone(&range_fetcher),
         mount_take_down,
-        folder.clone(),
-    ));
+        folder: folder.clone(),
+    };
     let files_interface = Arc::new(ItemFilesInterface::new(
         folder,
         store.clone(),
@@ -192,7 +192,7 @@ fn build_over(backing_directory: Arc<BackingDirectory>, setup: ItemMountSetup, r
     let mount = ItemMount {
         backing_directory,
         access_mode_switch,
-        folder_steps,
+        folder_step_parts,
         item_content_files,
         item_handles,
         files_interface,

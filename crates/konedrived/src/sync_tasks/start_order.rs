@@ -35,8 +35,9 @@
 //!    [`apply_wanted_access_mode`](super::access_mode_change::apply_wanted_access_mode):
 //!    the mount's access mode and the hold of a read-only folder, BEFORE any task plans;
 //! 6. `OneDriveSpace::new(input.quota)`, then [`read_quota_before_first_plan`];
-//! 7. [`start_sync_tasks`]: the listing's poller, the thumbnail filler, the plan's task.
-//!    In either access mode. Nothing is awaited in it.
+//! 7. [`start_sync_tasks`]: the runner of the steps towards the folder made of the mount's
+//!    parts ([`make_folder_steps`]), then the listing's poller, the thumbnail filler, the
+//!    plan's task. In either access mode. Nothing is awaited in it.
 //!
 //! **Two functions.** Stages 5 to 7 are [`start_sync_over_parts`], over the parts of a
 //! folder whether they were kept or made in this start, and whether the mount is served
@@ -89,7 +90,8 @@ use crate::sync_parts::published_plan::PublishedPlan;
 use crate::folder::root::SyncRoot;
 use crate::sync_parts::running_steps::RunningSteps;
 use crate::sync_parts::sync_plan_wake::SyncPlanWake;
-use crate::mount::{ItemMount, StartCheckFindings, TakeDownReport};
+use crate::folder_steps::FolderSteps;
+use crate::mount::{FolderStepParts, ItemMount, StartCheckFindings, TakeDownReport};
 use crate::content_source::source::{ContentSource, Share};
 use crate::local::SharedIgnore;
 use crate::sync_parts::lease::Lease;
@@ -384,9 +386,11 @@ async fn read_quota_before_first_plan(drive: &DriveClient, space: &OneDriveSpace
 /// `OneDriveSpace` (given, read before); `GraphAccess`;
 /// `SessionCancellations::new`, `LostAnswers::new`, `MadeItems::new`, `NameHolders::new`,
 /// `ContentUpload::new`; `OneDriveSteps::new` (with the tree lock and the mount's
-/// `item_content_files`); `RowSteps::new`; `StepRunners::of_runners` (the mount's
-/// `folder_steps`, the lease, the stop's token: a step towards the folder that waits for
-/// the lease when the stop comes ends as `NotRun(SendingStopped)`).
+/// `item_content_files`); `RowSteps::new`; the runner of the steps towards the folder
+/// ([`make_folder_steps`] over `mount.folder_step_parts()`: the mount holds the parts and
+/// not the runner, so every start makes one, which owns no state); `StepRunners::of_runners`
+/// (those folder steps, the lease, the stop's token: a step towards the folder that waits
+/// for the lease when the stop comes ends as `NotRun(SendingStopped)`).
 ///
 /// The tasks, in this order: `ListingCycle::new` (its `after_listing` a `Notify` made
 /// here, the thumbnail filler's nudge) and `ListingPoller::start` (a first cycle at once;
@@ -395,8 +399,8 @@ async fn read_quota_before_first_plan(drive: &DriveClient, space: &OneDriveSpace
 /// `SyncPlanTask::new` with the runners, the mount's `start_check_findings`, a
 /// `quota_reader` that asks `input.drive` for the quota (`DriveClient::quota`, `None`
 /// when it could not be read), the activity log (`input.report.activity`), the
-/// announcer of sync marks (`FolderSteps::announce_marks_changed` of the mount's
-/// `folder_steps`), the thumbnail filler's nudge as `after_folder_steps` (the same
+/// announcer of sync marks (`FolderSteps::announce_marks_changed` of the folder steps
+/// made above), the thumbnail filler's nudge as `after_folder_steps` (the same
 /// `Notify` the cycle was given) and `input.unsent_count_report`, and its loop spawned
 /// with the stop's token. No task watches the account: what its state holds is set and
 /// ended by the owner's watcher. The poller's handle is cloned for the plan's task and
@@ -405,5 +409,14 @@ async fn read_quota_before_first_plan(drive: &DriveClient, space: &OneDriveSpace
 /// (`SendingHold::FirstListingNotEnded`).
 #[allow(clippy::too_many_arguments)]
 fn start_sync_tasks(input: &FolderStartInput, store: &Store, mount: &Arc<ItemMount>, sync_plan_wake: &Arc<SyncPlanWake>, running_steps: &Arc<RunningSteps>, published_plan: &Arc<PublishedPlan>, sending_holds: &Arc<crate::sync_parts::sending_holds::SendingHolds>, onedrive_space: &Arc<OneDriveSpace>, drive_id: &DriveId) -> SyncTasks {
+    todo!()
+}
+
+/// The runner of the plan's steps towards the folder, made of the parts the mount hands out
+/// for it (`ItemMount::folder_step_parts`): `FolderSteps::new` with the eleven of `parts`, in
+/// the order of the struct's fields. Called by [`start_sync_tasks`] at every start, with a
+/// mount kept or built in this one alike: the runner owns no state, so a second one over the
+/// same parts is the first. Cannot fail.
+fn make_folder_steps(parts: FolderStepParts) -> Arc<FolderSteps> {
     todo!()
 }

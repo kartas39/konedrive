@@ -114,7 +114,7 @@ impl ItemHandles {
     /// writer's open is what writes `LocalVersionChange::OpenedForWriting`. Called by the
     /// write operations on the write-operation thread, under the tree lock, after the row
     /// was written (design §8: the row first).
-    pub(super) fn add_writer(&self, item: LocalItemId, backing_file: Arc<File>) -> (Fh, WriterRank) {
+    pub(crate) fn add_writer(&self, item: LocalItemId, backing_file: Arc<File>) -> (Fh, WriterRank) {
         let mut handles = crate::panic::lock(&self.handles);
         let rank = match handles.has_writer(item) {
             true => WriterRank::Later,
@@ -197,7 +197,7 @@ impl ItemHandles {
 
     /// Takes the writer `fh` out. Called by release of a writer after the row of its last
     /// close was written (or at once, when another handle still writes the item).
-    pub(super) fn remove_writer(&self, fh: Fh) {
+    pub(crate) fn remove_writer(&self, fh: Fh) {
         let mut handles = crate::panic::lock(&self.handles);
         let Some(OpenItemHandle::File(OpenItemFile::Writing { item, .. })) = handles.by_fh.get(&fh) else { return };
         let item = *item;
@@ -242,7 +242,7 @@ impl ItemHandles {
 /// The number the kernel is given for a file or directory a program opened, and names it by
 /// in every later request: the kernel's `fh`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct Fh(pub(super) u64);
+pub(crate) struct Fh(pub(crate) u64);
 
 impl Fh {
     /// The `fh` of a file that was made without being opened: no open file or directory
@@ -252,7 +252,7 @@ impl Fh {
 
 /// Where a writer stands among the handles that write its node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum WriterRank {
+pub(crate) enum WriterRank {
     /// No other handle writes the node: the writer the outbox is told of.
     First,
     /// Another handle writes the node already.

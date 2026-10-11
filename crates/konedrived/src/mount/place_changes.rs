@@ -125,7 +125,7 @@ pub(super) const CROSSED_TRIES: u32 = 3;
 
 /// How a change of the backing directory is taken back.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum PlaceUndo {
+pub(crate) enum PlaceUndo {
     /// Nothing was changed on disk.
     Nothing,
     /// An entry was made or linked: it is removed again, with the directories made above
@@ -148,7 +148,7 @@ pub(super) enum PlaceUndo {
 
 /// Why a change of the backing directory was not made.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum PlaceRefusal {
+pub(crate) enum PlaceRefusal {
     /// The place is held on disk by what the rows do not say (`EEXIST` to a program; a
     /// step ends `StepObstacle::PlaceHeldOnDisk`).
     PlaceHeld { path: PathBuf },
@@ -165,7 +165,7 @@ pub(super) enum PlaceRefusal {
 /// What a directory made above a place is marked with: the item id of its binding, for
 /// each directory of the path that has one, the outermost first
 /// (`ItemReader::find_path_with_marks`).
-pub(super) type DirectoryMarks = Vec<Option<OneDriveItemId>>;
+pub(crate) type DirectoryMarks = Vec<Option<OneDriveItemId>>;
 
 /// How a backing file is opened by a reader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,7 +188,7 @@ pub(super) enum OpenAtRowError {
 
 /// What one `stat` at a row's path answered, with the row where one was read.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum RowPathStat<T> {
+pub(crate) enum RowPathStat<T> {
     /// `find_path` answered none: no row, or one with no path.
     NoRow,
     /// A place change was under way, or began between the read and the stat, at both
@@ -226,7 +226,7 @@ pub(super) fn decide_open_trouble(error: &OpenAtRowError) -> StepTrouble {
 }
 
 /// The place changes of one mount.
-pub(super) struct PlaceChanges {
+pub(crate) struct PlaceChanges {
     backing_directory: Arc<BackingDirectory>,
     count: AtomicU64,
     /// Lock 3 of the order: held by `begin` while it raises the count, and by a reader
@@ -246,7 +246,7 @@ pub(super) struct PlaceChanges {
 
 /// One change of the backing directory's names, from before the disk is touched until its
 /// row is written or it is undone. Dropping it ends it.
-pub(super) struct PlaceChange<'a> {
+pub(crate) struct PlaceChange<'a> {
     place_changes: &'a PlaceChanges,
 }
 
@@ -278,7 +278,7 @@ impl PlaceChanges {
     /// person's entry under its aside name, and the check puts it back from the record of
     /// the change; cleaning first would delete it. What the check did not put back no row
     /// says and no record asks for.
-    pub(super) fn remove_aside_entries(&self) -> std::io::Result<usize> {
+    pub(crate) fn remove_aside_entries(&self) -> std::io::Result<usize> {
         let mut removed = 0;
         for entry in self.backing_directory.read_directory(Path::new(""))? {
             let name = entry?.file_name();
@@ -295,7 +295,7 @@ impl PlaceChanges {
     /// thread alone (asserted), under the tree lock, before the disk is touched — and by
     /// a content operation that makes a backing file, before its row is written; never
     /// while another is under way.
-    pub(super) fn begin(&self) -> PlaceChange<'_> {
+    pub(crate) fn begin(&self) -> PlaceChange<'_> {
         debug_assert_eq!(std::thread::current().id(), self.write_operation_thread_id, "a place change begins on the write-operation thread alone");
         let held = crate::panic::lock(&self.changes);
         debug_assert_eq!(self.count.load(Ordering::SeqCst) % 2, 0, "a place change begins while none is under way");
@@ -353,7 +353,7 @@ impl PlaceChanges {
     /// `RowPathStat::Crossed` — no facts, which the attributes are made without, from the
     /// row it gives back when one was read. `find_path` is not called while a change is
     /// under way. May be called on any thread.
-    pub(super) fn stat_at_row_path<T>(&self, mut find_path: impl FnMut() -> Result<Option<(PathBuf, T)>, TreeError>) -> Result<RowPathStat<T>, TreeError> {
+    pub(crate) fn stat_at_row_path<T>(&self, mut find_path: impl FnMut() -> Result<Option<(PathBuf, T)>, TreeError>) -> Result<RowPathStat<T>, TreeError> {
         let mut crossed_row = None;
         for _try in 0..2 {
             let count = self.count.load(Ordering::SeqCst);
@@ -379,7 +379,7 @@ impl PlaceChanges {
     /// aside. Outside every change: an aside name is no row's path, so no reader needs the
     /// count for it, and the unlink of a large file holds up no opener. A failure is
     /// logged and left for [`remove_aside_entries`](Self::remove_aside_entries).
-    pub(super) fn discard(&self, undo: PlaceUndo) {
+    pub(crate) fn discard(&self, undo: PlaceUndo) {
         let (PlaceUndo::Restore { set_aside, .. } | PlaceUndo::MoveBackAndRestore { set_aside, .. }) = undo else { return };
         if let Err(error) = self.remove_aside_entry(&set_aside) {
             tracing::warn!("cannot remove {} from the backing directory, which was set aside: {error}; it goes at the next start", set_aside.display());
@@ -615,7 +615,7 @@ impl PlaceChange<'_> {
     /// temporary name of an exchange is a `to` like any other. The marks are of the names
     /// of `to`, read as [`make_entry`](Self::make_entry) reads them; a moved directory is
     /// not marked again.
-    pub(super) fn move_entry(&self, from: &Path, to: &Path, directory_marks: &DirectoryMarks) -> Result<PlaceUndo, PlaceRefusal> {
+    pub(crate) fn move_entry(&self, from: &Path, to: &Path, directory_marks: &DirectoryMarks) -> Result<PlaceUndo, PlaceRefusal> {
         let place_changes = self.place_changes;
         let directories_made = place_changes.make_directories_above(to, directory_marks)?;
         match place_changes.rename_without_replacing(from, to) {
@@ -669,7 +669,7 @@ impl PlaceChange<'_> {
     /// discard leaves off (`Nothing` when it carried none). A later directory made at
     /// that name takes it ([`make_entry`](Self::make_entry)), and nothing in it is ever
     /// removed by the daemon.
-    pub(super) fn set_aside(&self, path: &Path, item: LocalItemId) -> Result<PlaceUndo, PlaceRefusal> {
+    pub(crate) fn set_aside(&self, path: &Path, item: LocalItemId) -> Result<PlaceUndo, PlaceRefusal> {
         let place_changes = self.place_changes;
         match place_changes.inspect_entry_to_set_aside(path).map_err(|error| to_refusal(&error, path))? {
             EntryToSetAside::Nothing => Ok(PlaceUndo::Nothing),
@@ -689,7 +689,7 @@ impl PlaceChange<'_> {
     /// Takes `undo` back. An error is the disk's: the caller asks for the mount's
     /// take-down (`MountTakeDown::ask`). Nothing is replaced by a move back either: what
     /// is in its way fails it.
-    pub(super) fn undo(&self, undo: PlaceUndo) -> std::io::Result<()> {
+    pub(crate) fn undo(&self, undo: PlaceUndo) -> std::io::Result<()> {
         let place_changes = self.place_changes;
         match undo {
             PlaceUndo::Nothing => Ok(()),
@@ -720,7 +720,7 @@ impl PlaceChange<'_> {
     /// The change ended: its row is written and the disk has what the row says, or it was
     /// undone. The count is even again, and who sleeps on `ended` is woken, under
     /// `changes`. The same as dropping it; written out where the end must be seen.
-    pub(super) fn end(self) {
+    pub(crate) fn end(self) {
         drop(self);
     }
 

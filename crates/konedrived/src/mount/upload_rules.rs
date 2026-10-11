@@ -30,7 +30,7 @@ pub(super) enum UploadDecision {
     Ignore,
 }
 
-pub(super) struct UploadRules {
+pub(crate) struct UploadRules {
     /// The account's ignore list: what is never uploaded.
     ignore: SharedIgnore,
 }
@@ -68,7 +68,7 @@ impl UploadRules {
     /// row of `items` keeps of its item's name (`is_name_ignored`). The directories above
     /// are the rows' to ask. A name that is not UTF-8 is matched as the list matches it.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(super) fn is_name_ignored(&self, name: &OsStr) -> bool {
+    pub(crate) fn is_name_ignored(&self, name: &OsStr) -> bool {
         crate::panic::read(&self.ignore).matches(name)
     }
 

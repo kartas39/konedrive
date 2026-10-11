@@ -59,7 +59,7 @@ impl KernelPageCache for fuser::Notifier {
 }
 
 /// The bridge of one mount.
-pub(super) struct ItemInotifyBridge {
+pub(crate) struct ItemInotifyBridge {
     /// The folder's path, which is the mount.
     folder: PathBuf,
     /// Given at the thread's start: the queue needs none.
@@ -193,7 +193,7 @@ impl ItemInotifyBridge {
     /// Queues the announcements of one change of the folder, to be performed together and
     /// in order. Called after the change's row was committed, never before: the bridge's
     /// requests are answered from the rows.
-    pub(super) fn announce(&self, announcements: Vec<ItemAnnouncement>) {
+    pub(crate) fn announce(&self, announcements: Vec<ItemAnnouncement>) {
         if announcements.is_empty() {
             return;
         }
@@ -211,7 +211,7 @@ impl ItemInotifyBridge {
     /// what announces — a step towards the folder, a download, a free-up — over a bridge
     /// whose thread was not started, which is the one way to see what they announced.
     #[cfg(test)]
-    pub(super) fn list_queued(&self) -> Vec<Vec<ItemAnnouncement>> {
+    pub(crate) fn list_queued(&self) -> Vec<Vec<ItemAnnouncement>> {
         crate::panic::lock(&self.queued).iter().cloned().collect()
     }
 

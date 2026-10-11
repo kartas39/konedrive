@@ -42,7 +42,7 @@ pub enum ItemAnnouncement {
 }
 
 /// The announcements of one step: a move is a vanishing and an appearing.
-pub(super) fn describe_move(item: LocalItemId, kind: ItemKind, former_place: ItemPlace, place: ItemPlace) -> Vec<ItemAnnouncement> {
+pub(crate) fn describe_move(item: LocalItemId, kind: ItemKind, former_place: ItemPlace, place: ItemPlace) -> Vec<ItemAnnouncement> {
     vec![ItemAnnouncement::Vanished { item, former_place, kind }, ItemAnnouncement::Appeared { item, place }]
 }
 

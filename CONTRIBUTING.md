@@ -67,7 +67,7 @@ These rules hold for every change:
    `x/tests/` by topic. Integration tests stay in `crates/*/tests/`.
 3. **Layers.** In `konedrived`, a directory of `crates/konedrived/src` uses only the
    directories before it in this order: `config/`, `account/`, `folder/`,
-   `conditions/`, `status/`, `content_source/`, `local/`, `sync_parts/`, `mount/`,
+   `conditions/`, `status/`, `content_source/`, `local/`, `sync_parts/`, `mount/`, `folder_steps/`,
    `onedrive_steps/`, `listing/`, `desktop/`, `upload_queue/`, `sync_plan_task/`, `sync_tasks/`,
    `account_folder/`, `daemon/`, `dbus/`. And `listing/` does not use `onedrive_steps/`. Test code is exempt. What a lower
    directory needs from a higher one, it asks through a trait the higher one implements.

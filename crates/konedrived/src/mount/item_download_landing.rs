@@ -87,7 +87,7 @@ impl LandingCondition {
 
 /// What became of a landing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum ItemLandingOutcome {
+pub(crate) enum ItemLandingOutcome {
     /// The file is the item's copy and the row says so: the place the row has, and its
     /// path relative to the folder, as they were when the row was written — what the
     /// landing is announced by and the activity log says.
@@ -150,7 +150,7 @@ struct LinkedFile {
 }
 
 /// The landing of one mount's downloads.
-pub(super) struct ItemDownloadLanding {
+pub(crate) struct ItemDownloadLanding {
     place_changes: Arc<PlaceChanges>,
     store: Store,
     /// Told when the landing of the plan's download begins to commit: from then on a
@@ -171,7 +171,7 @@ fn to_errno(error: &std::io::Error) -> i32 {
 impl ItemDownloadLanding {
     /// Made by the mount's build, with the folder's running steps and the mount's
     /// take-down.
-    pub(super) fn new(place_changes: Arc<PlaceChanges>, store: Store, running_steps: Arc<RunningSteps>, mount_take_down: Arc<MountTakeDown>) -> Self {
+    pub(crate) fn new(place_changes: Arc<PlaceChanges>, store: Store, running_steps: Arc<RunningSteps>, mount_take_down: Arc<MountTakeDown>) -> Self {
         Self {
             place_changes,
             store,

@@ -30,7 +30,7 @@ use tokio::sync::oneshot;
 /// One job, run on the thread.
 type Job = Box<dyn FnOnce() + Send>;
 
-pub(super) struct WriteOperationThread {
+pub(crate) struct WriteOperationThread {
     /// The jobs that wait for the thread, in the order they came; `None` once it is
     /// stopped.
     queued_jobs: Arc<Mutex<Option<VecDeque<Job>>>>,
@@ -112,7 +112,7 @@ impl WriteOperationThread {
     /// Has `job` run on the thread, after every job given before it; what it gives comes
     /// through what this returns, once it ran. A thread that is stopped drops the job, and
     /// the wait ends with an error.
-    pub(super) fn run_and_wait<T: Send + 'static>(&self, job: impl FnOnce() -> T + Send + 'static) -> oneshot::Receiver<T> {
+    pub(crate) fn run_and_wait<T: Send + 'static>(&self, job: impl FnOnce() -> T + Send + 'static) -> oneshot::Receiver<T> {
         let (done, waited) = oneshot::channel();
         self.run(move || drop(done.send(job())));
         waited
@@ -122,7 +122,7 @@ impl WriteOperationThread {
     /// waited is dropped, and no job runs on the thread again. Waits for the job in flight
     /// alone, which a write operation's disk and store take — never for the tree lock. Not
     /// to be called from a job.
-    pub(super) fn stop(&self) {
+    pub(crate) fn stop(&self) {
         let in_flight = crate::panic::lock(&self.job_in_flight);
         // With no job in flight, and none able to start: the queue goes.
         let dropped = self.take_queued_jobs();

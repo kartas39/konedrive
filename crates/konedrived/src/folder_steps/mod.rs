@@ -109,19 +109,7 @@ use konedrive_tree::{
     ActivityKind, ConflictKind, ConflictRow, ContentPresence, FolderStep, Item, ItemKind, ItemPlace, ItemVersions, LocalItemId, PlaceChangeRecord, PlaceChangeRecordId, StepCommitOutcome, Store, TreeError, TreeStore,
 };
 
-use super::backing_directory::EntryKind;
-use super::item_announcements::{describe_move, ItemAnnouncement};
-use super::item_download_landing::ItemLandingOutcome;
-use super::item_download_states::ItemDownloadStates;
-use super::item_downloader::{DownloadRefusal, ItemDownloader, ItemToDownload};
-use super::item_handles::ItemHandles;
-use super::item_inotify_bridge::ItemInotifyBridge;
-use super::item_range_fetcher::ItemRangeFetcher;
-use super::item_read_origin::RangeSource;
-use super::mount_take_down::{MountTakeDown, TakeDownCause};
-use super::place_changes::{DirectoryMarks, PlaceChange, PlaceChanges, PlaceRefusal, PlaceUndo, RowPathStat};
-use super::upload_rules::UploadRules;
-use super::write_operation_thread::WriteOperationThread;
+use crate::mount::{DirectoryMarks, DownloadRefusal, EntryKind, ItemAnnouncement, ItemDownloadStates, ItemDownloader, ItemHandles, ItemInotifyBridge, ItemLandingOutcome, ItemRangeFetcher, ItemToDownload, MountTakeDown, PlaceChange, PlaceChanges, PlaceRefusal, PlaceUndo, RangeSource, RowPathStat, TakeDownCause, UploadRules, WriteOperationThread, describe_move};
 use crate::folder::disk::make_aside_entry_name;
 use crate::sync_parts::step_outcome::{RowsChangedFollowUp, StepEvent, StepFailure, StepObstacle, StepOutcome, StepRefusal};
 
@@ -232,9 +220,10 @@ pub struct FolderSteps {
 }
 
 impl FolderSteps {
-    /// Made by the mount's build, after the downloader and the bridge.
+    /// Made by the start of the folder's sync (`sync_tasks::start_order`), of the parts the
+    /// mount hands out for it (`ItemMount::folder_step_parts`).
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn new(
+    pub(crate) fn new(
         place_changes: Arc<PlaceChanges>,
         store: Store,
         write_operation_thread: Arc<WriteOperationThread>,

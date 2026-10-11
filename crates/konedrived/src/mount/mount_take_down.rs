@@ -63,7 +63,7 @@ impl MountTakeDown {
 
     /// Asks for the take-down: the folder is read-only from this line on, and the owner is
     /// told, once. Called on the write-operation thread, which answers the program `EIO`.
-    pub(super) fn ask(&self, cause: TakeDownCause) {
+    pub(crate) fn ask(&self, cause: TakeDownCause) {
         // Read-only first, whoever asked first: no further change is taken from here on.
         self.access_mode_switch.switch_to_read_only();
         if !self.is_asked.swap(true, std::sync::atomic::Ordering::SeqCst) {

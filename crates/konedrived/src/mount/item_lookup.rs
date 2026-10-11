@@ -490,6 +490,10 @@ impl SyncMark {
 /// marks stay two (the map's MISSING-2.j). Since nothing is written, a change of the
 /// mark reaches whoever watches the folder only when it is announced
 /// (`FolderSteps::announce_marks_changed`, by the plan's task).
+///
+/// `is_ignored` is `ItemReader::is_ignored`: the row alone says only whether the item's
+/// OWN name is ignored, and the plan is not given an item that is left here, so it has
+/// no answer to tell one below an ignored directory by.
 // TODO: `Blocked` is to be answered by the one rule below both (`sync_parts::published_plan::decide_is_shown_blocked`, given the answer and whether the memory keeps a refusal for good, which `read_xattr_facts` reads with the row: `XattrFacts` gains that value): today this body answers it for every wait for the user and for a fault — a file open for writing, a wait for space, a read-only folder, an item being checked — and not for a refusal the memory keeps of an item the plan was not given. Fill with the tests of the rule.
 pub(super) fn decide_sync_mark(item: &Item, is_ignored: bool, has_running_step: bool, answer: Option<&ItemAnswer>) -> Option<SyncMark> {
     if item.local.is_none() || item.unsent_since.is_none() || is_ignored {

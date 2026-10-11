@@ -6,8 +6,7 @@ use konedrive_tree::{make_temporary_name, Change, Kind, ListingLink, OneDriveIte
 
 use super::*;
 use crate::sync_parts::running_steps::{RunningStep, StepClass};
-use crate::mount::item_download_landing::ItemDownloadLanding;
-use crate::mount::item_download_states::DownloadKey;
+use crate::mount::{DownloadKey, ItemDownloadLanding};
 use crate::mount::item_fixture::{DiskMarksRead, ItemFixture, ONEDRIVE_MTIME, ROOT_ONEDRIVE_ID};
 use crate::status::report::Report;
 

@@ -58,13 +58,13 @@ pub(super) fn decide_open_to_read(item: &Item) -> Result<OpenToRead, Errno> {
 
 /// What a range of a file that is not on disk is fetched by.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct RangeSource {
+pub(crate) struct RangeSource {
     /// The drive and the item: the content source is asked by both (the map's MISSING:
     /// today `ContentSource::read_range` takes an item id alone).
-    pub(super) onedrive_item: OneDriveItemReference,
+    pub(crate) onedrive_item: OneDriveItemReference,
     /// The content the range is a part of: its size is the end of the file, and its cTag
     /// tells a download or a range of another version.
-    pub(super) content: ContentVersion,
+    pub(crate) content: ContentVersion,
 }
 
 /// Where a read through a handle that was opened not on disk gets its bytes.

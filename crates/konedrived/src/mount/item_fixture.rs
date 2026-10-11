@@ -10,8 +10,9 @@
 //! `OneDriveSpace`, `MountTakeDown`, `ItemHandles`, `ReadConnections`, `PlaceChanges`,
 //! `ItemDownloadStates`, the bridge's queue, the range fetcher), never through another
 //! piece's unfinished part. What a piece outside `fuse` cannot make itself the fixture
-//! makes for it: a mount that is built and not served (`build_mount`: its `FolderSteps`,
-//! `ItemContentFiles`, `ItemFilesInterface` through the accessors), a content source and
+//! makes for it: a mount that is built and not served (`build_mount`: its
+//! `ItemContentFiles`, `ItemFilesInterface` and the parts of the folder steps through the
+//! accessors), a content source and
 //! a clock the test holds, a `GraphAccess` over the fake OneDrive, a poll handle that
 //! counts what it was asked, and a stand-in for the runners of steps.
 //!
@@ -206,18 +207,18 @@ pub(crate) struct ItemFixture {
     /// The account's ignore list ([`IGNORED_NAMES`]): the upload rules' and a built
     /// mount's.
     pub(crate) ignore: SharedIgnore,
-    pub(in crate::mount) backing_directory: Arc<BackingDirectory>,
-    pub(in crate::mount) upload_rules: Arc<UploadRules>,
+    pub(crate) backing_directory: Arc<BackingDirectory>,
+    pub(crate) upload_rules: Arc<UploadRules>,
     /// The access mode of the fixture's own leaves: read-write from the start (a built
     /// mount starts read-only, as every mount does).
     pub(in crate::mount) access_mode_switch: Arc<AccessModeSwitch>,
-    pub(in crate::mount) write_operation_thread: Arc<WriteOperationThread>,
-    pub(in crate::mount) place_changes: Arc<PlaceChanges>,
+    pub(crate) write_operation_thread: Arc<WriteOperationThread>,
+    pub(crate) place_changes: Arc<PlaceChanges>,
     pub(in crate::mount) read_connections: Arc<ReadConnections>,
-    pub(in crate::mount) download_states: Arc<ItemDownloadStates>,
+    pub(crate) download_states: Arc<ItemDownloadStates>,
     /// The bridge's queue; its thread is not started.
-    pub(in crate::mount) inotify_bridge: Arc<ItemInotifyBridge>,
-    pub(in crate::mount) range_fetcher: Arc<ItemRangeFetcher>,
+    pub(crate) inotify_bridge: Arc<ItemInotifyBridge>,
+    pub(crate) range_fetcher: Arc<ItemRangeFetcher>,
     pub(crate) item_handles: Arc<ItemHandles>,
     pub(crate) mount_take_down: Arc<MountTakeDown>,
     pub(crate) sync_plan_wake: Arc<SyncPlanWake>,

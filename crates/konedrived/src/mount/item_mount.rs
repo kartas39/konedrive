@@ -47,14 +47,19 @@ use konedrive_tree::{DriveId, Store, TreeError};
 
 use super::access_mode_switch::AccessModeSwitch;
 use super::backing_directory::{remove_write_bits, BackingDirectory};
-use super::folder_steps::FolderSteps;
 use super::item_content_files::ItemContentFiles;
+use super::item_download_states::ItemDownloadStates;
+use super::item_downloader::ItemDownloader;
 use super::item_files_interface::ItemFilesInterface;
 use super::item_handles::ItemHandles;
+use super::item_inotify_bridge::ItemInotifyBridge;
 use super::item_kernel_requests::ItemKernelRequests;
-use super::mount_take_down::TakeDownReport;
+use super::item_range_fetcher::ItemRangeFetcher;
+use super::mount_take_down::{MountTakeDown, TakeDownReport};
+use super::place_changes::PlaceChanges;
 use super::start_check::StartCheckFindings;
 use super::upload_rules::UploadRules;
+use super::write_operation_thread::WriteOperationThread;
 use crate::sync_parts::published_plan::PublishedPlan;
 use crate::folder::root::SyncRoot;
 use crate::sync_parts::running_steps::RunningSteps;
@@ -98,11 +103,32 @@ pub struct ItemMountSetup {
     pub clock: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 
+/// The parts of a mount that the runner of the plan's steps towards the folder is made of
+/// (`crate::folder_steps::FolderSteps::new`, which takes them in this order): handed out
+/// together by [`ItemMount::folder_step_parts`], and by nothing else.
+#[derive(Clone)]
+pub(crate) struct FolderStepParts {
+    pub(crate) place_changes: Arc<PlaceChanges>,
+    pub(crate) store: Store,
+    pub(crate) write_operation_thread: Arc<WriteOperationThread>,
+    pub(crate) upload_rules: Arc<UploadRules>,
+    pub(crate) item_handles: Arc<ItemHandles>,
+    pub(crate) inotify_bridge: Arc<ItemInotifyBridge>,
+    pub(crate) downloader: Arc<ItemDownloader>,
+    pub(crate) download_states: Arc<ItemDownloadStates>,
+    pub(crate) range_fetcher: Arc<ItemRangeFetcher>,
+    pub(crate) mount_take_down: Arc<MountTakeDown>,
+    /// The folder's path, which is the mount.
+    pub(crate) folder: PathBuf,
+}
+
 /// A folder's mount over the rows.
 pub struct ItemMount {
     backing_directory: Arc<BackingDirectory>,
     access_mode_switch: Arc<AccessModeSwitch>,
-    folder_steps: Arc<FolderSteps>,
+    /// What the runner of the steps towards the folder is made of: the mount holds the
+    /// parts, not the runner.
+    folder_step_parts: FolderStepParts,
     item_content_files: Arc<ItemContentFiles>,
     item_handles: Arc<ItemHandles>,
     files_interface: Arc<ItemFilesInterface>,
@@ -220,9 +246,10 @@ impl ItemMount {
         rewritten.await.map_err(|_| TreeError::Io(to_io_error("the mount is stopped: its write-operation thread runs no job")))?
     }
 
-    /// The runner of the steps towards the folder: the plan's task's.
-    pub fn folder_steps(&self) -> &Arc<FolderSteps> {
-        &self.folder_steps
+    /// The parts the runner of the steps towards the folder is made of: for the start of
+    /// the folder's sync (`sync_tasks::start_order`), which makes the runner.
+    pub(crate) fn folder_step_parts(&self) -> FolderStepParts {
+        self.folder_step_parts.clone()
     }
 
     /// The local contents: the steps towards OneDrive's and the row steps'.

@@ -20,15 +20,15 @@ use super::BackingDirectory;
 
 /// Whether an entry is a file or a directory. The mount holds nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::mount) enum EntryKind {
+pub(crate) enum EntryKind {
     File,
     Directory,
 }
 
 /// What the filesystem says of a file or directory of the backing directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::mount) struct DiskMetadata {
-    pub(in crate::mount) kind: EntryKind,
+pub(crate) struct DiskMetadata {
+    pub(crate) kind: EntryKind,
     pub(in crate::mount) size: u64,
     /// In units of 512 bytes, as `stat` counts them.
     pub(in crate::mount) blocks: u64,

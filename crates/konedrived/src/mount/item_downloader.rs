@@ -140,13 +140,13 @@ use download_source::DownloadSource;
 /// A file of OneDrive that is to be downloaded whole. Who asks, and for the plan the
 /// versions its step was planned from, is not said here: `DownloadAsker` says it, once.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ItemToDownload {
-    pub(super) item: LocalItemId,
+pub(crate) struct ItemToDownload {
+    pub(crate) item: LocalItemId,
     /// What the content source is asked by.
-    pub(super) onedrive_item: OneDriveItemReference,
+    pub(crate) onedrive_item: OneDriveItemReference,
     /// The content to download: the item's local content, which is OneDrive's while the
     /// file is not on disk.
-    pub(super) content: ContentVersion,
+    pub(crate) content: ContentVersion,
 }
 
 /// Why the content source did not give a file, by what the plan's task does about it.
@@ -304,7 +304,7 @@ impl Drop for RunningDownload {
 }
 
 /// The downloader of one mount.
-pub(super) struct ItemDownloader {
+pub(crate) struct ItemDownloader {
     backing_directory: Arc<BackingDirectory>,
     download_states: Arc<ItemDownloadStates>,
     download_landing: Arc<ItemDownloadLanding>,
@@ -322,7 +322,7 @@ pub(super) struct ItemDownloader {
 impl ItemDownloader {
     /// Made by the mount's build, after the landing and the bridge.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn new(
+    pub(crate) fn new(
         backing_directory: Arc<BackingDirectory>,
         download_states: Arc<ItemDownloadStates>,
         download_landing: Arc<ItemDownloadLanding>,
@@ -541,7 +541,7 @@ impl ItemDownloader {
     /// asking joined a download somebody else started, the answer is made of what the
     /// plan's waiter heard ([`decide_joined_end`]); a download that was aborted, and one
     /// asked for after the stop — the mount stops — is `DownloadRefusal::Transient`.
-    pub(super) async fn download_and_land(self: &Arc<Self>, file: ItemToDownload, planned_from: ItemVersions) -> Result<ItemLandingOutcome, DownloadRefusal> {
+    pub(crate) async fn download_and_land(self: &Arc<Self>, file: ItemToDownload, planned_from: ItemVersions) -> Result<ItemLandingOutcome, DownloadRefusal> {
         let ((waiter, heard), (answer, answered)) = (oneshot::channel(), oneshot::channel());
         self.start_or_join(file, DownloadAsker::PlanPin { planned_from }, Some(waiter), Some(answer));
         // The waiter is answered by the download's last act: awaited also where the typed
@@ -560,7 +560,7 @@ impl ItemDownloader {
     /// or `Files.Hydrate` asked for too goes on. Called when the task that awaits
     /// `download_and_land` is aborted (`RunningSteps::abort_requests`): by a guard that
     /// task holds.
-    pub(super) fn cancel(&self, item: LocalItemId, content: &ContentVersion) {
+    pub(crate) fn cancel(&self, item: LocalItemId, content: &ContentVersion) {
         self.download_states.abort_if_plan_alone_asked(&DownloadKey { item, content: content.clone() });
     }
 

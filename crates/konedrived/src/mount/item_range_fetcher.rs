@@ -75,7 +75,7 @@ pub(super) fn decide_is_another_content(answer: &RangeAnswerFacts, content: &Con
 }
 
 /// The range fetcher of one mount.
-pub(super) struct ItemRangeFetcher {
+pub(crate) struct ItemRangeFetcher {
     range_readers: Arc<RangeReaders>,
     source: Arc<dyn ContentSource>,
 }
@@ -143,7 +143,7 @@ impl ItemRangeFetcher {
     /// binding between range reads is dropped. Called by the steps towards the folder
     /// that take OneDrive's content or remove an item (today the cycle step, for every
     /// cycle: `cycle_step.rs:126`).
-    pub(super) fn forget_ranges(&self, source: &RangeSource) {
+    pub(crate) fn forget_ranges(&self, source: &RangeSource) {
         self.source.forget(source.onedrive_item.item_id.as_str());
     }
 }
