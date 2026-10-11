@@ -36,11 +36,6 @@ use crate::status::snapshot::LiveChanges;
 pub struct ListingPollHandle {
     refresh: Arc<tokio::sync::Notify>,
     cancel: CancellationToken,
-    /// Weak: a handle is held by parts the cycle itself reaches, and must not keep the
-    /// cycle, and its store, alive after the poller. Nothing asks the cycle through the
-    /// handle now that a full listing is asked for of the store.
-    #[allow(dead_code)]
-    cycle: std::sync::Weak<ListingCycle>,
     live: Option<Arc<tokio::sync::Notify>>,
     /// How many cycles this handle was asked for, in a handle made by
     /// [`for_tests`](Self::for_tests): raised by [`refresh`](Self::refresh) and
@@ -57,7 +52,7 @@ impl ListingPollHandle {
     #[cfg(test)]
     pub(crate) fn for_tests() -> (Self, Arc<std::sync::atomic::AtomicUsize>) {
         let asked_cycle_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let handle = ListingPollHandle { refresh: Arc::new(tokio::sync::Notify::new()), cancel: CancellationToken::new(), cycle: std::sync::Weak::new(), live: None, asked_cycle_count: Some(Arc::clone(&asked_cycle_count)) };
+        let handle = ListingPollHandle { refresh: Arc::new(tokio::sync::Notify::new()), cancel: CancellationToken::new(), live: None, asked_cycle_count: Some(Arc::clone(&asked_cycle_count)) };
         (handle, asked_cycle_count)
     }
 
@@ -114,7 +109,6 @@ impl ListingPoller {
         let handle = ListingPollHandle {
             refresh,
             cancel,
-            cycle: Arc::downgrade(&cycle),
             live: live.as_ref().map(Live::waker),
             #[cfg(test)]
             asked_cycle_count: None,

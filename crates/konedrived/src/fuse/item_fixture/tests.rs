@@ -351,3 +351,35 @@ fn the_stand_in_commits_a_step_towards_the_folder_with_nothing_on_disk() {
     assert_eq!(fixture.find_item(file.local_item_id).unwrap().content_presence, ContentPresence::OnDisk);
     assert_eq!(fixture.read_disk_file("a.txt"), None, "the stand-in touches no disk");
 }
+
+#[tokio::test]
+async fn the_fake_onedrive_answers_the_drive_the_fixtures_store_knows() {
+    let fixture = ItemFixture::new();
+    let fake_onedrive = fixture.start_fake_onedrive().await;
+
+    assert_eq!(fake_onedrive.client().drive_id().await.expect("the drive"), DRIVE_ID);
+    // The quota is the fake's own, and its reads are counted as the fake counts them.
+    fake_onedrive.with(|cloud| cloud.free = Some(7));
+    assert_eq!(fake_onedrive.client().quota().await.expect("the quota").remaining, Some(7));
+    assert_eq!(fake_onedrive.with(|cloud| cloud.quota_reads()), 2);
+}
+
+#[tokio::test]
+async fn the_stores_delta_link_is_the_fake_onedrives_and_a_listing_the_fixture_writes_leaves_it() {
+    let fixture = ItemFixture::new();
+    fixture.list_onedrive_file("before.txt", b"listed before the fake began");
+    let fake_onedrive = fixture.start_fake_onedrive().await;
+
+    let link = fixture.write_rows(|store| store.delta_link()).expect("a delta link");
+    assert_eq!(Some(link.as_str()), fake_onedrive.with(|cloud| cloud.delta_body())["@odata.deltaLink"].as_str());
+    assert_eq!(fixture.read_rows(|reader| reader.find_listing_under_way()), None);
+    // Asked from it, OneDrive says nothing changed: the fake holds what the rows say.
+    let konedrive_graph::drive::DeltaPage { items, .. } = fake_onedrive.client().delta(&konedrive_graph::drive::DeltaFrom::Link(link.clone())).await.expect("a page");
+    assert!(items.is_empty());
+
+    fixture.list_onedrive_file("after.txt", b"listed after");
+    fixture.list_onedrive_directory("after");
+    fixture.list_onedrive_move("after.txt", "after/moved.txt");
+    fixture.list_onedrive_removal("before.txt");
+    assert_eq!(fixture.write_rows(|store| store.delta_link()), Some(link));
+}

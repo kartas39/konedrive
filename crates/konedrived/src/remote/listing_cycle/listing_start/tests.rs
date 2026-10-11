@@ -55,16 +55,22 @@ fn a_full_listing_asked_for_wins_over_a_delta_link_and_not_over_one_under_way() 
 
 #[test]
 fn a_410_begins_a_full_listing() {
-    for origin in [PageLinkOrigin::KeptByStore, PageLinkOrigin::GivenInThisCycle] {
+    for origin in [PageLinkOrigin::KeptDeltaLink, PageLinkOrigin::KeptNextLink, PageLinkOrigin::GivenInThisCycle] {
         assert_eq!(decide_page_refusal(&DriveError::ResyncRequired, origin), AfterPageRefusal::BeginFullListing);
         assert_eq!(decide_page_refusal(&DriveError::ResyncUpload, origin), AfterPageRefusal::BeginFullListing);
     }
 }
 
 #[test]
-fn a_refused_link_the_store_kept_begins_a_full_listing() {
-    assert_eq!(decide_page_refusal(&DriveError::NotFound, PageLinkOrigin::KeptByStore), AfterPageRefusal::BeginFullListing);
-    assert_eq!(decide_page_refusal(&failed(), PageLinkOrigin::KeptByStore), AfterPageRefusal::BeginFullListing);
+fn a_refused_next_link_the_store_kept_begins_a_full_listing() {
+    assert_eq!(decide_page_refusal(&DriveError::NotFound, PageLinkOrigin::KeptNextLink), AfterPageRefusal::BeginFullListing);
+    assert_eq!(decide_page_refusal(&failed(), PageLinkOrigin::KeptNextLink), AfterPageRefusal::BeginFullListing);
+}
+
+#[test]
+fn a_refused_delta_link_fails_the_cycle() {
+    assert_eq!(decide_page_refusal(&DriveError::NotFound, PageLinkOrigin::KeptDeltaLink), AfterPageRefusal::FailCycle);
+    assert_eq!(decide_page_refusal(&failed(), PageLinkOrigin::KeptDeltaLink), AfterPageRefusal::FailCycle);
 }
 
 #[test]
@@ -75,7 +81,7 @@ fn a_refused_link_of_this_cycle_fails_the_cycle() {
 
 #[test]
 fn any_other_trouble_with_graph_fails_the_cycle() {
-    for origin in [PageLinkOrigin::KeptByStore, PageLinkOrigin::GivenInThisCycle] {
+    for origin in [PageLinkOrigin::KeptDeltaLink, PageLinkOrigin::KeptNextLink, PageLinkOrigin::GivenInThisCycle] {
         assert_eq!(decide_page_refusal(&DriveError::SignedOut, origin), AfterPageRefusal::FailCycle);
         assert_eq!(decide_page_refusal(&transient(), origin), AfterPageRefusal::FailCycle);
         assert_eq!(decide_page_refusal(&DriveError::UrlExpired, origin), AfterPageRefusal::FailCycle);

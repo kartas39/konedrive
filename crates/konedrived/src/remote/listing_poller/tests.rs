@@ -66,7 +66,7 @@ async fn a_refresh_runs_a_cycle_now() {
 #[tokio::test]
 async fn a_failed_cycle_is_tried_again_on_the_retry_schedule() {
     let folder = ListedFolder::start().await;
-    // The page is refused, and so is the full listing begun for it: the cycle fails.
+    // The delta link is refused once: the cycle fails, and the link is kept.
     folder.graph.with(|cloud| cloud.script("GET", "root/delta", wiremock::ResponseTemplate::new(400), 1));
     let poller = start(&folder, Schedule::polled(LONG, vec![Duration::from_millis(20)]));
 

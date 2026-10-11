@@ -24,12 +24,6 @@ pub(in crate::remote) struct ListedFolder {
     forgotten_request_count: std::sync::atomic::AtomicUsize,
 }
 
-/// The fake OneDrive answers `GET me/drive` with the drive `D`; the fixture's store is of
-/// [`DRIVE_ID`]. An answer mounted by hand wins over the fake's.
-pub(in crate::remote) async fn answer_the_fixtures_drive(graph: &FakeGraph) {
-    Mock::given(method("GET")).and(path("/me/drive")).respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": DRIVE_ID }))).mount(&graph.server).await;
-}
-
 pub(in crate::remote) fn make_cycle(store: &Store, graph: &FakeGraph, sync_plan_wake: &Arc<SyncPlanWake>, state: &SyncStateHandle) -> Arc<ListingCycle> {
     ListingCycle::new(ListingCycleSetup {
         drive: graph.client(),
@@ -44,30 +38,37 @@ pub(in crate::remote) fn make_cycle(store: &Store, graph: &FakeGraph, sync_plan_
 }
 
 impl ListedFolder {
-    /// The fixture as it is made — its root listed, the delta link `link-0` no OneDrive
-    /// gave — and a fake OneDrive with the files `a.txt` and `b.txt` and the directory
-    /// `docs` with `docs/c.txt`.
+    /// The fixture as it is made — its root listed, the delta link the fake's — and a
+    /// fake OneDrive that got, after that link, the files `a.txt` and `b.txt` and the
+    /// directory `docs` with `docs/c.txt`: the rows do not have them yet.
     pub(in crate::remote) async fn start() -> Self {
         let fixture = ItemFixture::new();
         let graph = fixture.start_fake_onedrive().await;
-        answer_the_fixtures_drive(&graph).await;
         graph.with(|cloud| {
             cloud.add_file("a.txt", "R", "a.txt", b"a");
             cloud.add_file("b.txt", "R", "b.txt", b"b");
             cloud.add(crate::fake_onedrive::FakeItem { id: "docs".into(), parent: Some("R".into()), name: "docs".into(), folder: true, content: Vec::new(), hash: None, size: 0, etag: "e-docs".into(), ctag: "c-docs".into(), mtime: 0 });
             cloud.add_file("docs!c.txt", "docs", "c.txt", b"c");
         });
+        Self::over(fixture, graph)
+    }
+
+    /// The same four items, listed into the rows before the fake OneDrive began: the rows
+    /// and OneDrive agree, and the store's delta link says nothing changed.
+    async fn start_listed() -> Self {
+        let fixture = ItemFixture::new();
+        fixture.list_onedrive_file("a.txt", b"a");
+        fixture.list_onedrive_file("b.txt", b"b");
+        fixture.list_onedrive_directory("docs");
+        fixture.list_onedrive_file("docs/c.txt", b"c");
+        let graph = fixture.start_fake_onedrive().await;
+        Self::over(fixture, graph)
+    }
+
+    fn over(fixture: ItemFixture, graph: FakeGraph) -> Self {
         let state = SyncStateHandle::new(SyncSnapshot::default());
         let cycle = make_cycle(&fixture.store, &graph, &fixture.sync_plan_wake, &state);
         ListedFolder { fixture, graph, state, cycle, forgotten_request_count: std::sync::atomic::AtomicUsize::new(0) }
-    }
-
-    /// [`start`](Self::start) after a first cycle: the store has the fake's own delta link.
-    async fn start_listed() -> Self {
-        let folder = Self::start().await;
-        folder.run().await.expect("the first cycle");
-        folder.forget_requests().await;
-        folder
     }
 
     async fn run(&self) -> Result<ListingCycleReport, CycleError> {
@@ -112,16 +113,9 @@ impl ListedFolder {
         self.page_items(items).into_iter().map(|item| classify(&serde_json::from_value(item).expect("an item"))).collect()
     }
 
-    /// The rows say OneDrive has `ghost.txt`, which it does not have, by a listing of
-    /// changes that ended with the delta link the store had.
+    /// The rows say OneDrive has `ghost.txt`, which it does not have.
     fn list_ghost(&self) {
-        let ghost = Change::Upsert(konedrive_tree::Row { id: "ghost.txt".into(), parent_id: Some("R".into()), name: "ghost.txt".into(), kind: konedrive_tree::Kind::File, size: 5, mtime: 0, etag: Some("e-ghost".into()), ctag: Some("c-ghost".into()), quickxor: None, mime: None, placement: konedrive_tree::Placement::Placed });
-        let written = self.fixture.write_rows(move |store| {
-            let link = store.delta_link()?.expect("a delta link");
-            let listing = store.item_store().begin_delta_listing()?;
-            store.item_store().write_listed_changes(listing.id, &[ghost], listing.began_at_count, &ListingLink::DeltaLink(link))
-        });
-        assert!(written.is_link_written());
+        self.fixture.list_onedrive_file("ghost.txt", b"ghost");
         assert_eq!(self.listed_name("ghost.txt").as_deref(), Some("ghost.txt"));
     }
 
@@ -453,6 +447,24 @@ async fn a_resume_link_onedrive_refuses_begins_a_full_listing() {
 }
 
 #[tokio::test]
+async fn a_delta_link_onedrive_refuses_fails_the_cycle_and_is_kept() {
+    let folder = ListedFolder::start_listed().await;
+    let link = folder.delta_link().expect("a delta link");
+    folder.graph.with(|cloud| cloud.rename("a.txt", "R", "a2.txt"));
+    folder.graph.with(|cloud| cloud.script("GET", "root/delta", gone(404, "itemNotFound"), 1));
+
+    let failed = folder.run().await;
+
+    assert!(matches!(failed, Err(CycleError::Offline(_))), "{failed:?}");
+    assert_eq!(folder.delta_link(), Some(link.clone()));
+    assert_eq!(folder.listing_under_way().map(|under_way| under_way.kind), Some(ListingKind::Delta));
+    assert_eq!(folder.requests().await, [format!("root/delta?{}", link.rsplit_once('=').expect("a token").1)]);
+
+    assert_eq!(folder.run().await.expect("the next cycle").kind, ListingKind::Delta);
+    assert_eq!(folder.listed_name("a.txt").as_deref(), Some("a2.txt"));
+}
+
+#[tokio::test]
 async fn a_next_link_of_this_cycle_that_onedrive_refuses_fails_the_cycle_and_is_resumed_from() {
     let folder = ListedFolder::start().await;
     folder.fixture.write_rows(|store| store.item_store().begin_full_listing());
@@ -493,7 +505,7 @@ async fn the_cycle_takes_no_tree_lock() {
 
     let report = tokio::time::timeout(Duration::from_secs(20), folder.run()).await.expect("the cycle does not wait for the lock").expect("the cycle");
 
-    assert_eq!(report.kind, ListingKind::Full);
+    assert_eq!(report.kind, ListingKind::Delta);
     assert_eq!(folder.listed_name("docs!c.txt").as_deref(), Some("c.txt"));
 }
 
@@ -570,8 +582,9 @@ async fn two_cycles_never_run_at_once() {
 #[tokio::test]
 async fn a_drive_that_is_not_the_folders_stops_the_cycle_before_anything_is_listed() {
     let fixture = ItemFixture::new();
-    // The fake's own answer: the drive `D`, which is not the store's.
     let graph = fixture.start_fake_onedrive().await;
+    // The token reaches another drive than the store's now.
+    Mock::given(method("GET")).and(path("/me/drive")).respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "another-drive" }))).with_priority(1).mount(&graph.server).await;
     let state = SyncStateHandle::new(SyncSnapshot::default());
     let cycle = make_cycle(&fixture.store, &graph, &fixture.sync_plan_wake, &state);
 

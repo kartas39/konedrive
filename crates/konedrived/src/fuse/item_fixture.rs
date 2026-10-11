@@ -147,6 +147,23 @@ impl MountLikeThread {
     }
 }
 
+/// The fake OneDrive's answer to `GET me/drive` with the fixture's drive in it: the
+/// fake's own says the drive `D`, which is not the store's.
+struct FixtureDriveAnswer {
+    cloud: Arc<Mutex<crate::fake_onedrive::Cloud>>,
+}
+
+impl wiremock::Respond for FixtureDriveAnswer {
+    fn respond(&self, _request: &wiremock::Request) -> wiremock::ResponseTemplate {
+        let mut cloud = crate::panic::lock(&self.cloud);
+        cloud.log.push(("GET".to_owned(), "me/drive".to_owned()));
+        wiremock::ResponseTemplate::new(200).set_body_json(match cloud.free {
+            Some(free) => serde_json::json!({ "id": DRIVE_ID, "quota": { "remaining": free, "state": if free == 0 { "exceeded" } else { "normal" } } }),
+            None => serde_json::json!({ "id": DRIVE_ID }),
+        })
+    }
+}
+
 /// Runs `job` on a thread of its own and waits for it: what waits for the store's thread
 /// (`Store::call_blocking`) must not do so on a thread of a runtime, and the caller may
 /// be one. A panic of the job is the caller's.
@@ -360,6 +377,12 @@ impl ItemFixture {
     /// what the rows say OneDrive has now, each file with the bytes the content source
     /// serves for it: for the steps towards OneDrive and the listing. Its `cloud` is the
     /// test's to look at and to script.
+    ///
+    /// `GET me/drive` answers the store's drive ([`DRIVE_ID`]) with the fake's own quota
+    /// (`cloud.free`), and is in `cloud.log`; what a test scripts, throttles or delays for
+    /// that one request is not applied to it. The store's delta link is the fake's from
+    /// here on, unless a listing is under way or the store has none: a listing cycle over
+    /// the fixture asks the changes made in `cloud` after this call.
     pub(crate) async fn start_fake_onedrive(&self) -> FakeGraph {
         let graph = FakeGraph::start().await;
         let items = self.store.call(|store| store.item_store().list_items()).await.expect("the rows");
@@ -389,6 +412,15 @@ impl ItemFixture {
                     id,
                 });
             }
+        });
+        wiremock::Mock::given(wiremock::matchers::method("GET")).and(wiremock::matchers::path("/me/drive")).respond_with(FixtureDriveAnswer { cloud: Arc::clone(&graph.cloud) }).mount(&graph.server).await;
+        let delta_link = graph.with(|cloud| cloud.delta_body())["@odata.deltaLink"].as_str().expect("the fake's delta link").to_owned();
+        self.write_rows(move |store| {
+            if store.delta_link()?.is_some() && store.item_store().find_listing_under_way()?.is_none() {
+                let listing = store.item_store().begin_delta_listing()?;
+                store.item_store().write_listed_changes(listing.id, &[], listing.began_at_count, &ListingLink::DeltaLink(delta_link))?;
+            }
+            Ok(())
         });
         graph
     }
@@ -527,10 +559,11 @@ impl ItemFixture {
     }
 
     /// A listing of changes that begins now, says `changes` in one page and ends: what a
-    /// cycle of the delta listing writes. Every change must be written whole.
+    /// cycle of the delta listing writes. Every change must be written whole. It ends
+    /// with the delta link the store had, which stays the store's.
     pub(crate) fn write_listing(&self, changes: Vec<Change>) {
-        let link = format!("link-{}", self.listed_version_count.fetch_add(1, Ordering::SeqCst) + 1);
         let listed = self.write_rows(move |store| {
+            let link = store.delta_link()?.unwrap_or_else(|| "link-0".to_owned());
             let listing = store.item_store().begin_delta_listing()?;
             store.item_store().write_listed_changes(listing.id, &changes, listing.began_at_count, &ListingLink::DeltaLink(link))
         });

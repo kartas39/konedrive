@@ -25,7 +25,8 @@
 //!    (`write_listed_changes`); while the answer names items to read again, each is read
 //!    (`DriveClient::item`) and the call repeated with the same link; the plan woken;
 //! 4. a refused link is decided ([`decide_page_refusal`]): 410 and a refused resume link
-//!    begin a full listing in the same cycle;
+//!    begin a full listing in the same cycle; a delta link refused otherwise fails the
+//!    cycle and is kept;
 //! 5. the page with the delta link ends the listing: counts, `last_checked`, the plan
 //!    woken with `ListingEnded`.
 //!
@@ -48,6 +49,7 @@
 // test: no_next_page_is_asked_before_the_link_was_written
 // test: a_410_begins_a_full_listing_in_the_same_cycle
 // test: a_resume_link_onedrive_refuses_begins_a_full_listing
+// test: a_delta_link_onedrive_refuses_fails_the_cycle_and_is_kept
 // test: a_next_link_of_this_cycle_that_onedrive_refuses_fails_the_cycle_and_is_resumed_from
 // test: a_cycle_cancelled_between_two_pages_leaves_the_link_of_the_last_page_written
 // test: the_plan_is_woken_after_every_page_and_when_the_listing_ends
@@ -337,11 +339,11 @@ impl ListingCycle {
                 };
                 Ok(match start {
                     ListingStart::GoOnWithFullListing { listing } => match listing.next_link.clone() {
-                        Some(next) => (listing, DeltaFrom::Link(next), PageLinkOrigin::KeptByStore),
+                        Some(next) => (listing, DeltaFrom::Link(next), PageLinkOrigin::KeptNextLink),
                         None => (listing, DeltaFrom::Start, PageLinkOrigin::GivenInThisCycle),
                     },
                     ListingStart::BeginFullListing => (store.item_store().begin_full_listing()?, DeltaFrom::Start, PageLinkOrigin::GivenInThisCycle),
-                    ListingStart::BeginDeltaListing { delta_link } => (store.item_store().begin_delta_listing()?, DeltaFrom::Link(delta_link), PageLinkOrigin::KeptByStore),
+                    ListingStart::BeginDeltaListing { delta_link } => (store.item_store().begin_delta_listing()?, DeltaFrom::Link(delta_link), PageLinkOrigin::KeptDeltaLink),
                 })
             })
             .await?;

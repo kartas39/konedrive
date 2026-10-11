@@ -9,7 +9,8 @@
 // test: a_delta_link_begins_a_listing_of_changes_whatever_listing_of_changes_was_under_way
 // test: a_full_listing_asked_for_wins_over_a_delta_link_and_not_over_one_under_way
 // test: a_410_begins_a_full_listing
-// test: a_refused_link_the_store_kept_begins_a_full_listing
+// test: a_refused_next_link_the_store_kept_begins_a_full_listing
+// test: a_refused_delta_link_fails_the_cycle
 // test: a_refused_link_of_this_cycle_fails_the_cycle
 // test: any_other_trouble_with_graph_fails_the_cycle
 
@@ -45,9 +46,10 @@ pub fn decide_listing_start(under_way: Option<&ListingUnderWay>, delta_link: Opt
 /// Where the link of a refused request came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageLinkOrigin {
-    /// The store kept it from an earlier cycle: the delta link, or the next link of a
-    /// listing that was stopped.
-    KeptByStore,
+    /// The delta link the store kept: where a listing of changes begins.
+    KeptDeltaLink,
+    /// The next link the store kept of a full listing that was stopped: where it goes on.
+    KeptNextLink,
     /// A page of this cycle gave it.
     GivenInThisCycle,
 }
@@ -63,12 +65,15 @@ pub enum AfterPageRefusal {
 }
 
 /// What `error` leads to. Pure: 410 (`ResyncRequired`, `ResyncUpload`) begins a full
-/// listing; a link the store kept that OneDrive will not go on with does too (today
-/// `fetch.rs:118-123`); a link this cycle was given and anything else fails the cycle.
+/// listing, whatever link it answers; so does the next link the store kept of a stopped
+/// full listing that OneDrive will not go on with (today `fetch.rs:118-123`). A delta
+/// link refused otherwise fails the cycle, as today (`fetch.rs:190-201`): the link is
+/// kept, and a whole drive is not listed again for one refused request. A link this
+/// cycle was given and anything else fail the cycle too.
 pub fn decide_page_refusal(error: &DriveError, origin: PageLinkOrigin) -> AfterPageRefusal {
     match (error, origin) {
         (DriveError::ResyncRequired | DriveError::ResyncUpload, _) => AfterPageRefusal::BeginFullListing,
-        (DriveError::NotFound | DriveError::Failed(_), PageLinkOrigin::KeptByStore) => AfterPageRefusal::BeginFullListing,
+        (DriveError::NotFound | DriveError::Failed(_), PageLinkOrigin::KeptNextLink) => AfterPageRefusal::BeginFullListing,
         _ => AfterPageRefusal::FailCycle,
     }
 }
