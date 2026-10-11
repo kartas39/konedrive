@@ -197,13 +197,13 @@ impl SyncService {
     pub async fn refresh(&self) -> Result<(), SyncError> {
         if self.view().down.is_none() {
             self.require_record()?;
-            // A sync that runs is asked, and nothing is stopped for it: every next try is due, and a cycle now.
+            // A sync that runs is asked, and nothing is stopped for it: every next try is due, the quota is read, and a cycle now.
+            // The quota is read by the plan's task alone, for the refresh it is woken with (`SyncTasks::refresh`): one read.
             let is_asked = {
                 let folder = self.folder.read().await;
                 folder.running().map(|started| started.tasks.refresh()).is_some()
             };
             if is_asked {
-                self.refresh_quota().await;
                 return Ok(());
             }
         }
@@ -223,8 +223,8 @@ impl SyncService {
             }
             refreshed?;
         }
+        // The sync this refresh started read the quota before its first plan: nothing is read again.
         if self.running().is_some() {
-            self.refresh_quota().await;
             return Ok(());
         }
         Err(self.sync_not_running())
@@ -261,24 +261,6 @@ impl SyncService {
             self.start_sync(stopped).await;
         }
         Ok(())
-    }
-
-    /// `Refresh()`'s part for the quota: read now, one request, into the account's
-    /// one quota (`Account.QuotaRemaining`, `QuotaState`, …), and handed to the outbox, which
-    /// ends a full OneDrive and lets the files that fit now go. A quota that cannot be read
-    /// changes nothing.
-    async fn refresh_quota(&self) {
-        let Some(drive) = self.drive() else { return };
-        let view = self.view();
-        // Of a running sync alone: a start reads the quota itself.
-        let (Some(onedrive_space), Some(parts)) = (view.onedrive_space, view.parts) else { return };
-        match drive.quota().await {
-            Ok(quota) => {
-                onedrive_space.apply_quota(&quota, self.clock.now());
-                parts.sync_plan_wake.wake(WakeCause::QuotaRead);
-            }
-            Err(e) => tracing::warn!("cannot read the OneDrive quota: {e}"),
-        }
     }
 
     /// A cycle now, if a OneDrive folder is syncing (the network came back). A read-write

@@ -20,6 +20,7 @@
 // test: a_507_with_space_left_is_the_files_own_refusal_and_not_a_full_onedrive
 // test: a_507_with_no_space_left_makes_onedrive_full
 // test: a_quota_read_with_space_again_ends_full_and_says_how_much_is_free
+// test: a_refresh_reads_the_quota_and_a_due_read_waits_after_one_that_failed
 #![allow(dead_code, unused_variables)]
 
 use konedrive_graph::drive::{DriveClient, DriveQuota};
@@ -78,6 +79,18 @@ pub struct OneDriveSpace {
     next_read_at: std::sync::Mutex<Option<i64>>,
 }
 
+/// Whether the plan's task reads the quota before the plan it is about to make, at `now`.
+/// A refresh the user asked for reads it, whatever was read before: the task is the one
+/// reader of a running sync's quota, so a refresh is one read. Else it is read when its
+/// next read is due (`OneDriveSpace::find_next_read`: while OneDrive is full, or a file
+/// waits as too big) — and not within `retry_wait` seconds of a read that failed or said
+/// nothing of the space (`last_failed_read_at`). Pure.
+pub fn decide_is_quota_read(is_refresh_asked: bool, next_read_at: Option<i64>, last_failed_read_at: Option<i64>, retry_wait: i64, now: i64) -> bool {
+    let is_read_due = next_read_at.is_some_and(|at| at <= now);
+    let is_retry_due = last_failed_read_at.is_none_or(|failed_at| now.saturating_sub(failed_at) >= retry_wait);
+    is_refresh_asked || (is_read_due && is_retry_due)
+}
+
 impl OneDriveSpace {
     /// What `quota`, which says something of the space, changes: whether OneDrive is
     /// full, and when the quota is read next.
@@ -114,10 +127,11 @@ impl OneDriveSpace {
     }
 
     /// A quota was read, by this folder or by the account: what it changed. Called by
-    /// WHOEVER read the quota, with what it read: the plan's task for its own due read,
+    /// WHOEVER read the quota, with what it read: the plan's task for its own read (one
+    /// that is due, and the one of a refresh the user asked for: [`decide_is_quota_read`]),
     /// the folder's start (`sync_tasks::start_order::read_quota_before_first_plan`), and
-    /// the owner of the folder's state for the account's read (`PendingUploads::quota_read`)
-    /// and the user's refresh. A caller that is not the plan's task then wakes it
+    /// the owner of the folder's state for the account's read
+    /// (`PendingUploads::quota_read`). A caller that is not the plan's task then wakes it
     /// (`WakeCause::QuotaRead`); the task asks nothing of OneDrive on that cause: it takes
     /// what is free from here ([`find_free_space`](Self::find_free_space)), calls
     /// `StepMemory::forget_fitting_space_refusals` with it and makes the plan again.

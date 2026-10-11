@@ -79,6 +79,7 @@
 // test: a_stop_aborts_the_requests_and_settles_the_steps_towards_the_folder_before_the_loop_returns
 // test: a_hash_that_runs_at_a_stop_is_aborted_and_writes_nothing
 // test: the_plans_read_waits_for_no_job_of_the_stores_writer
+// test: a_refresh_reads_the_quota_once_and_a_quota_read_by_another_is_not_read_again
 // test: rows_changed_at_random_on_both_sides_converge_through_the_task
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -150,10 +151,11 @@ pub struct SyncPlanTaskParts {
     /// Unix seconds: the account's clock.
     pub clock: Arc<dyn Fn() -> i64 + Send + Sync>,
     /// Reads the account's quota from OneDrive (`DriveClient::quota`); `None` when it
-    /// could not be read. Asked only when the quota's next read is due
-    /// (`OneDriveSpace::find_next_read`), and what it answers is applied by the task
-    /// (`OneDriveSpace::apply_quota`). On `WakeCause::QuotaRead` it is NOT asked: another
-    /// read the quota and applied it.
+    /// could not be read. Asked when the quota's next read is due
+    /// (`OneDriveSpace::find_next_read`) and for a refresh the user asked for
+    /// (`WakeCause::RefreshAsked`: the ONE read of a refresh, nobody else reads for it),
+    /// and what it answers is applied by the task (`OneDriveSpace::apply_quota`). On
+    /// `WakeCause::QuotaRead` it is NOT asked: another read the quota and applied it.
     pub quota_reader: Arc<dyn Fn() -> RunningFuture<Option<DriveQuota>> + Send + Sync>,
     /// The folder's activity log: every event the settlement of a step wrote into the
     /// store is announced through it (`Activity::announce`: `ActivityLog.Added`), and
@@ -445,8 +447,9 @@ impl SyncPlanTask {
     }
 
     /// Applies what a wake's causes ask before the plan is made: a read of the quota that
-    /// is due (`quota_reader`, `OneDriveSpace::apply_quota`, then
-    /// `StepMemory::forget_fitting_space_refusals`; one that failed, or said nothing of
+    /// is due, or that a refresh asks for (`onedrive_space::decide_is_quota_read`;
+    /// `quota_reader`, `OneDriveSpace::apply_quota`, then
+    /// `StepMemory::forget_fitting_space_refusals`; a due one that failed, or said nothing of
     /// the space, is not asked again before `READ_RETRY_WAIT` passed); a refresh (`WakeCause::RefreshAsked`:
     /// `StepMemory::clear_next_tries`, and `LocalStepTries::clear_next_tries` of the
     /// task's own); a listing ended (`SendingHolds::set_listing_ended`, the count of
@@ -465,9 +468,9 @@ impl SyncPlanTask {
                 }
             }
         }
-        let is_quota_read_due = parts.onedrive_space.find_next_read().is_some_and(|at| at <= now);
-        let is_retry_due = crate::panic::lock(&self.quota_read_failed_at).is_none_or(|failed_at| now.saturating_sub(failed_at) >= READ_RETRY_WAIT);
-        if is_quota_read_due && is_retry_due {
+        let is_refresh_asked = causes.contains(&WakeCause::RefreshAsked);
+        let last_failed_read_at = *crate::panic::lock(&self.quota_read_failed_at);
+        if crate::sync_parts::onedrive_space::decide_is_quota_read(is_refresh_asked, parts.onedrive_space.find_next_read(), last_failed_read_at, READ_RETRY_WAIT, now) {
             let change = (parts.quota_reader)().await.map(|quota| parts.onedrive_space.apply_quota(&quota, now));
             // A read that says nothing of the space leaves the read due, as one that failed: neither is asked again at once.
             let is_space_known = change.is_some_and(|change| change != SpaceChange::NotKnown);
@@ -478,7 +481,7 @@ impl SyncPlanTask {
                 }
             }
         }
-        if causes.contains(&WakeCause::RefreshAsked) {
+        if is_refresh_asked {
             if let Err(error) = parts.store.call(|store| store.step_memory().clear_next_tries()).await {
                 tracing::warn!("cannot make the next tries due: {error}");
             }

@@ -25,6 +25,8 @@ struct TaskFixture {
     unsent_counts: Arc<Mutex<Vec<u64>>>,
     last_unsent_count: tokio::sync::watch::Sender<Option<u64>>,
     after_folder_steps: Arc<tokio::sync::Notify>,
+    /// How often the task asked its reader of the quota.
+    quota_read_count: Arc<AtomicUsize>,
     /// Kept for as long as the task: the fake OneDrive the cancellations of sessions ask.
     _fake_onedrive: crate::fake_onedrive::FakeGraph,
 }
@@ -47,6 +49,7 @@ impl TaskFixture {
             })
         };
         let last_unsent_count = tokio::sync::watch::Sender::new(None);
+        let quota_read_count = Arc::new(AtomicUsize::new(0));
         let unsent_count_report = {
             let (unsent_counts, last_unsent_count) = (Arc::clone(&unsent_counts), last_unsent_count.clone());
             Arc::new(move |unsent| {
@@ -70,13 +73,19 @@ impl TaskFixture {
             start_check: StartCheckFindings { held_items: BTreeSet::new(), has_unread_part: false, unresolved_path_count: 0, bound_by_mark_count: 0 },
             folder: fixture.folder(),
             clock: fixture.clock(),
-            quota_reader: Arc::new(|| Box::pin(async { None })),
+            quota_reader: {
+                let quota_read_count = Arc::clone(&quota_read_count);
+                Arc::new(move || {
+                    quota_read_count.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async { None })
+                })
+            },
             activity: Arc::new(Activity::new(state.clone())),
             marks_announcer,
             after_folder_steps: Some(Arc::clone(&after_folder_steps)),
             unsent_count_report,
         });
-        TaskFixture { fixture, task, state, marks_calls, unsent_counts, last_unsent_count, after_folder_steps, _fake_onedrive: fake_onedrive }
+        TaskFixture { fixture, task, state, marks_calls, unsent_counts, last_unsent_count, after_folder_steps, quota_read_count, _fake_onedrive: fake_onedrive }
     }
 
     fn outbox(&self) -> OutboxStatus {
@@ -221,4 +230,18 @@ fn what_a_settlement_wrote_is_announced_and_the_conflicts_counted_again_unless_t
     fixture.sending_holds.set_stopping();
     run.block_on(task.announce_settled_steps(&[], &[conflict.clone()]));
     assert_eq!((announced.try_recv().ok(), conflict_count()), (Some(conflict), 1));
+}
+
+/// `Folder.Refresh()` on a running sync: the task it wakes is the one that reads the quota,
+/// once; a quota somebody else read and applied is not read again.
+#[test]
+fn a_refresh_reads_the_quota_once_and_a_quota_read_by_another_is_not_read_again() {
+    let task_fixture = TaskFixture::new();
+    let (task, stop) = (Arc::clone(&task_fixture.task), CancellationToken::new());
+    task_fixture.fixture.runtime().block_on(async {
+        task.apply_wake_causes(&[WakeCause::QuotaRead, WakeCause::StepFinished].into(), &stop).await;
+        assert_eq!(task_fixture.quota_read_count.load(Ordering::SeqCst), 0);
+        task.apply_wake_causes(&[WakeCause::RefreshAsked].into(), &stop).await;
+        assert_eq!(task_fixture.quota_read_count.load(Ordering::SeqCst), 1);
+    });
 }

@@ -50,7 +50,7 @@ fn a_change_stops_the_running_sync_keeps_its_parts_and_starts_it_again_over_them
 }
 
 /// `Refresh()` of a folder whose sync runs asks that sync, and stops nothing: the listing
-/// is asked for a cycle and the quota is read once more.
+/// is asked for a cycle and the quota is read once, by the plan's task.
 #[test]
 fn a_refresh_asks_the_running_sync_and_stops_nothing() {
     let fixture = ItemFixture::new();
@@ -66,9 +66,11 @@ fn a_refresh_asks_the_running_sync_and_stops_nothing() {
         service.refresh().await.expect("a sync runs");
         assert!(!stop.is_cancelled(), "the sync was not stopped for it");
         assert!(service.running().is_some());
-        // By the owner here; the plan's task may read it once more for the same refresh.
-        assert!(graph.with(|cloud| cloud.quota_reads()) > quota_reads, "the quota was read for the refresh");
+        // By the plan's task, which the refresh woke: the one reader of a running sync's quota.
+        wait_until("the quota read for the refresh", || graph.with(|cloud| cloud.quota_reads()) > quota_reads).await;
         wait_until("the cycle the refresh asked for", || graph.with(|cloud| cloud.count("GET", "delta")) > cycles).await;
+        // `GET me/drive` is also what the cycle the refresh asked for looks at the drive with: one of the task, one of the cycle, and none of the owner.
+        assert!(graph.with(|cloud| cloud.quota_reads()) <= quota_reads + 2, "the quota is read once for one refresh");
         end_running_sync(&service).await;
     });
 }

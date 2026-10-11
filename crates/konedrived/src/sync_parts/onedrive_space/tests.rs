@@ -176,3 +176,15 @@ async fn what_is_free_after_a_507_is_what_the_read_it_made_said() {
     assert_eq!(space.refuse_for_space(&drive, 3 * GIBIBYTE, NOW).await, StepRefusal::NoSpace { free_space: None });
     assert_eq!(space.find_free_space(), None);
 }
+
+#[test]
+fn a_refresh_reads_the_quota_and_a_due_read_waits_after_one_that_failed() {
+    let (retry_wait, now) = (60, 1_000);
+    assert!(!decide_is_quota_read(false, None, None, retry_wait, now), "never full: nothing is due");
+    assert!(decide_is_quota_read(true, None, None, retry_wait, now), "a refresh reads it");
+    assert!(decide_is_quota_read(true, Some(now + 500), Some(now - 1), retry_wait, now), "a refresh reads it whatever was read before");
+    assert!(!decide_is_quota_read(false, Some(now + 1), None, retry_wait, now), "the next read is still to come");
+    assert!(decide_is_quota_read(false, Some(now), None, retry_wait, now), "the next read is due");
+    assert!(!decide_is_quota_read(false, Some(now - 10), Some(now - 59), retry_wait, now), "a due read that failed is not asked again at once");
+    assert!(decide_is_quota_read(false, Some(now - 10), Some(now - 60), retry_wait, now));
+}
