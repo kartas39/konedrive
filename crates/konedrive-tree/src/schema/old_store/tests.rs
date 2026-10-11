@@ -152,10 +152,12 @@ fn a_rebuild_counts_what_it_loses_before_the_file_goes() {
     let event = |path: &str| ActivityRow { at: 1, kind: ActivityKind::Uploaded, path: path.into(), detail: String::new() };
     store.add_activity(&[event("a"), event("b"), event("c")]).unwrap();
     store.add_conflicts(&[ConflictRow { at: 1, original: "/f".into(), rescued: "/f (copy)".into(), kind: ConflictKind::Copy }]).unwrap();
-    // What today's tables hold of what is unsent and of sessions.
+    // What the tables of an older version hold of what is unsent and of sessions: a store of today's version has neither table.
     store
         .bench_sql(
-            "INSERT INTO outbox (kind, rel, state) VALUES ('delete', 'gone', 'pending'), ('move', 'no-object', 'pending'), ('create', 'new', 'pending');
+            "CREATE TABLE outbox (kind TEXT, rel TEXT, state TEXT, handle BLOB);
+             CREATE TABLE upload_sessions (url TEXT, parent TEXT, name TEXT, opened INTEGER);
+             INSERT INTO outbox (kind, rel, state) VALUES ('delete', 'gone', 'pending'), ('move', 'no-object', 'pending'), ('create', 'new', 'pending');
              INSERT INTO outbox (kind, rel, state, handle) VALUES ('move', 'has-object', 'pending', x'01');
              INSERT INTO upload_sessions (url, parent, name, opened) VALUES ('https://session/1', 'R', 'new', 1);",
         )

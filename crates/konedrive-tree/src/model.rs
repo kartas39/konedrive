@@ -12,10 +12,6 @@ pub(crate) const PLACED: &str = "placed";
 /// [`SkipReason`]'s word follows.
 const SKIPPED: &str = "skipped:";
 
-/// SQL for "the row whose placement is `column` is skipped".
-pub(crate) fn skipped(column: &str) -> String {
-    format!("substr({column}, 1, {}) = '{SKIPPED}'", SKIPPED.len())
-}
 /// A row's `kind`, as stored.
 pub(crate) const FILE: &str = "file";
 /// An item's kind in `items`, as stored: a file is [`FILE`].
@@ -118,8 +114,7 @@ impl Placement {
     /// What a stored placement says. Anything that does not begin as a
     /// skipped one reads as placed — a word that cannot be read never
     /// takes an object out of the folder — and a skip with a reason nobody
-    /// knows as [`SkipReason::Unsupported`]. SQL reads it the same way
-    /// ([`skipped`]).
+    /// knows as [`SkipReason::Unsupported`].
     pub(crate) fn decode(value: &str) -> Self {
         match value.strip_prefix(SKIPPED) {
             None => Placement::Placed,

@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use crate::conflicts::ConflictKind;
 use crate::step_memory::schema as step_memory_schema;
 use crate::item_store::{own_upload_contents_schema, place_change_records_schema, thumbnail_marks_schema, unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, IMAGE_OR_VIDEO, LEFT_HERE, NOT_PLACED, SHOWN_AGAINST_PLACEMENT};
-use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK, PLACED};
+use crate::model::{ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK, PLACED};
 use crate::{meta, TreeError, TreeStore};
 
 /// What becomes of a store an older version of the daemon left.
@@ -25,17 +25,11 @@ pub use old_store::{decide_old_store, list_old_store_upload_sessions, OldStoreDe
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "22";
+pub const SCHEMA_VERSION: &str = "23";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with.
 ///
-
-// TODO: check which tables of what went the switch drops (`onedrive_items`, `staging`,
-// `staging_gone`, `deferred`, `outbox`, `outbox_gone`, `local_skipped` and their indexes are
-// still made, and nothing reads them), with the schema's version, and fix if needed.
-/// The rows the partial index `outbox_frees` holds.
-const OUTBOX_FREES: &str = "base_parent IS NOT NULL AND base_name IS NOT NULL AND (base_parent IS NOT target_parent OR base_name IS NOT target_name)";
 
 /// - `items`: one row per item, keyed by its local item id ([`crate::item_store`]).
 ///   `AUTOINCREMENT`: an id is never handed out twice, so the kernel's node id of an item
@@ -101,8 +95,7 @@ const OUTBOX_FREES: &str = "base_parent IS NOT NULL AND base_name IS NOT NULL AN
 ///   a directory's row is written before what is in it). A row is not deleted while another
 ///   names it as its local, its OneDrive or its synced parent, and row 1 never (the trigger
 ///   `items_parent_kept`, asked per row: what is in a directory is deleted before the
-///   directory). An outbox row may name an item whose row is gone: the
-///   removal of a file that was never sent leaves the rows that undo what was sent of it.
+///   directory).
 /// - `step_memory`, `upload_session_openings`, `upload_session_cancellations`,
 ///   `mismatched_item_removals`: what the steps remember beyond the versions, and the
 ///   trigger `step_memory_item_gone` that takes it with an item's row
@@ -123,51 +116,7 @@ const OUTBOX_FREES: &str = "base_parent IS NOT NULL AND base_name IS NOT NULL AN
 /// - `meta` keeps, beside what is named above, `full_listing_requested` while a full
 ///   listing was asked for and has not begun, and `sending_read_only_since`, the stamp of
 ///   the folder's switch to read-only.
-/// - `onedrive_items`, `staging`: the tree and the tree a cycle builds. `local_seq`
-///   is the outbox commit that last wrote the row
-///   (`docs/design/writes.md` §5). `staging_gone`: what a delta removes
-///   while it is staged.
-/// - `deferred`, `outbox_gone`: what a read-write cycle keeps between
-///   cycles (the reconcile, which went). `deferred.waits`: what keeps an item
-///   that is to leave the folder, as the last cycle found it.
-/// - `outbox`, `local_skipped`: the write phase (the outbox, which went).
-///   `AUTOINCREMENT`: a `seq` is never handed out twice, so a row removed
-///   at commit can never be mistaken for a new one by a worker still
-///   holding it. `handle` is the file handle of the local object a row is
-///   about, which is what the object is. `local_item_id` is the row of `items` it is
-///   about. The content being sent is `snapshot_size`,
-///   `snapshot_mtime` (whole seconds) and `snapshot_mtime_nsec`, and
-///   `snapshot_change_count`, the change count the local content of the row's item had
-///   then (null where the snapshot was taken with no item's row at hand).
-/// - `upload_sessions`: the upload sessions opened and not yet completed,
-///   cancelled or found gone, with the place a new file's
-///   session holds in OneDrive with its empty placeholder until then. A row
-///   points at its session (`session_url`); one no row points at any more
-///   was given up, and is cancelled
-///   (by the upload engine, which went).
-/// - `upload_openings`: the place a new file's session is about to take,
-///   recorded before the request that opens it, so that a stop
-///   before its URL is persisted still knows the placeholder it may have
-///   left. One per row (`at` its first time, `last` the latest attempt
-///   whose outcome is not known); the URL replaces it. `upload_openings_left`: a record
-///   whose row left, or moved to another place, kept until a
-///   `409` there resolves it, or for a week.
-/// - `onedrive_items_skipped` asks whether a row is placed as every query and the
-///   decoder do ([`skipped`]), so that a query uses it.
-/// - The indexes keep a cycle and the outbox's lookups from reading a whole
-///   table.
 fn schema() -> String {
-    let tree = |table: &str| {
-        format!(
-            "CREATE TABLE {table} (
-                 id TEXT PRIMARY KEY, parent_id TEXT, name TEXT NOT NULL, kind TEXT NOT NULL,
-                 size INTEGER NOT NULL DEFAULT 0, mtime INTEGER NOT NULL DEFAULT 0,
-                 etag TEXT, ctag TEXT, quickxor TEXT, mime TEXT,
-                 placement TEXT NOT NULL, thumb_key TEXT,
-                 local_seq INTEGER NOT NULL DEFAULT 0);
-             CREATE INDEX {table}_parent ON {table}(parent_id);"
-        )
-    };
     // Whether a row being written names, on that side, a parent that is no directory's row.
     let no_parent_directory = |side: &str| {
         format!(
@@ -248,11 +197,6 @@ fn schema() -> String {
          {own_upload_contents}
          {thumbnail_marks}
          CREATE TABLE pins (id TEXT PRIMARY KEY);
-         {onedrive_items}
-         {staging}
-         CREATE TABLE staging_gone (id TEXT PRIMARY KEY);
-         CREATE INDEX onedrive_items_seq ON onedrive_items(local_seq);
-         CREATE INDEX onedrive_items_skipped ON onedrive_items(id) WHERE {skipped};
          CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
          INSERT INTO meta (key, value) VALUES ('{last_unsent_since}', '0');
          CREATE TRIGGER items_unsent_since_insert AFTER INSERT ON items
@@ -267,44 +211,7 @@ fn schema() -> String {
          CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
                                 path TEXT NOT NULL, detail TEXT NOT NULL);
          CREATE TABLE conflicts (rescued TEXT PRIMARY KEY, at INTEGER NOT NULL, original TEXT NOT NULL,
-                                 kind TEXT NOT NULL DEFAULT '{rescued}');
-         CREATE TABLE deferred (
-             id TEXT PRIMARY KEY, seq INTEGER NOT NULL, gone INTEGER NOT NULL,
-             parent_id TEXT, name TEXT, kind TEXT, size INTEGER, mtime INTEGER, etag TEXT, ctag TEXT,
-             quickxor TEXT, mime TEXT, placement TEXT, waits TEXT);
-         CREATE TABLE outbox_gone (id TEXT PRIMARY KEY, local_seq INTEGER NOT NULL);
-         CREATE TABLE outbox (
-             seq INTEGER PRIMARY KEY AUTOINCREMENT,
-             kind TEXT NOT NULL,
-             item_id TEXT,
-             rel TEXT NOT NULL,
-             base_etag TEXT, base_ctag TEXT, base_parent TEXT, base_name TEXT,
-             target_parent TEXT, target_name TEXT,
-             state TEXT NOT NULL,
-             reason TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_try INTEGER,
-             snapshot_size INTEGER, snapshot_mtime INTEGER, snapshot_mtime_nsec INTEGER, snapshot_change_count INTEGER,
-             session_url TEXT, session_expires INTEGER, session_next INTEGER,
-             handle BLOB,
-             confirmed INTEGER NOT NULL DEFAULT 0,
-             size INTEGER,
-             bad_item TEXT, bad_item_ctag TEXT, bad_item_etag TEXT,
-             local_item_id INTEGER);
-         CREATE INDEX outbox_item ON outbox(item_id);
-         CREATE INDEX outbox_local_item ON outbox(local_item_id) WHERE local_item_id IS NOT NULL;
-         CREATE INDEX outbox_handle ON outbox(handle);
-         CREATE INDEX outbox_rel ON outbox(rel);
-         CREATE INDEX outbox_due ON outbox(state, next_try, seq);
-         CREATE INDEX outbox_target_parent ON outbox(target_parent);
-         CREATE INDEX outbox_kind ON outbox(kind);
-         CREATE INDEX outbox_frees ON outbox(seq) WHERE {frees};
-         CREATE INDEX outbox_session ON outbox(session_url) WHERE session_url IS NOT NULL;
-         CREATE TABLE local_skipped (rel TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL, size INTEGER);
-         CREATE TABLE upload_sessions (url TEXT PRIMARY KEY, parent TEXT, name TEXT, opened INTEGER NOT NULL);
-         CREATE INDEX upload_sessions_parent ON upload_sessions(parent);
-         CREATE TABLE upload_openings (seq INTEGER PRIMARY KEY, parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL, last INTEGER);
-         CREATE INDEX upload_openings_parent ON upload_openings(parent);
-         CREATE TABLE upload_openings_left (parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL, last INTEGER NOT NULL, left_at INTEGER NOT NULL);
-         CREATE INDEX upload_openings_left_parent ON upload_openings_left(parent);",
+                                 kind TEXT NOT NULL DEFAULT '{rescued}');",
         step_memory = step_memory_schema(),
         place_change_records = place_change_records_schema(),
         own_upload_contents = own_upload_contents_schema(),
@@ -332,11 +239,7 @@ fn schema() -> String {
         directory = ItemKind::Directory.as_str(),
         on_disk = ON_DISK,
         not_on_disk = NOT_ON_DISK,
-        onedrive_items = tree("onedrive_items"),
-        staging = tree("staging"),
         rescued = ConflictKind::Rescued.as_str(),
-        frees = OUTBOX_FREES,
-        skipped = skipped("placement"),
     )
 }
 
