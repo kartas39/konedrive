@@ -19,8 +19,9 @@
 //! | `Refused(NameHeldByUploadSession)` | `remember_failed_try(NameHeld, next)` | — |
 //! | `Refused(ItemChanged \| ItemGone \| DirectoryGone)` | `remember_failed_try(reason, next)` | a cycle asked for |
 //! | `Refused(ContentMismatch)` | `remember_failed_try(Hash, next)` | a cycle asked for |
-//! | `Refused(NoSpace { free_space: Some })` | `remember_space_refusal` | — |
-//! | `Refused(NoSpace { free_space: None })` | — | OneDrive is full (`OneDriveSpace` said so already) |
+//! | `Refused(NoSpace { free_space: Some })`, of content | `remember_space_refusal` | — |
+//! | `Refused(NoSpace { free_space: None })`, of content | — | OneDrive is full (`OneDriveSpace` said so already) |
+//! | `Refused(NoSpace)`, of a step that sends no content | `remember_failed_try(Quota, next)` | — (no refusal for lack of space is kept: it is a content's) |
 //! | `Refused(Throttled)` | — (no try counted) | all sending held until the time |
 //! | `Refused(SignedOut)` | — (no try counted) | all sending held until the sign-in |
 //! | `Refused(Forbidden \| RefusedForGood)` | `remember_refusal`, with `RefusedVersion::Shown` of the local version sent, or `Removal` for a removal | the event, once per reason |
@@ -30,7 +31,8 @@
 //! | `Failed(UndoFailed)` | — | the mount's take-down was asked for by the runner |
 //! | `Failed(Store)` | `remember_failed_try(Store, next)` | the journal |
 //! | `Failed(Disk)` | `remember_failed_try(LocalIo, next)` | the journal |
-//! | `Failed(AnswerUnreadable \| RunnerPanicked)` | `remember_failed_try(Failed, next)` | the journal |
+//! | `Failed(AnswerUnreadable)` | `remember_failed_try(Failed, next)` | the journal |
+//! | `Failed(RunnerPanicked)` | `remember_failed_try(Failed, next)` | the journal; towards OneDrive a cycle asked for |
 //!
 //! **Whose the failed tries are.** `remember_failed_try` in the table is two things, by
 //! the direction of the step. A step towards OneDrive: the store's
@@ -241,6 +243,8 @@ pub fn decide_step_settlement(step: &SyncStep, outcome: &StepOutcome, tries: u32
                 count_failed_try(&mut settlement, Reason::Hash);
                 settlement.cycle = CycleRequest::Changes;
             }
+            // A step that sends no content waits and is tried again: a refusal for lack of space is a content's.
+            StepRefusal::NoSpace { .. } if !matches!(step, SyncStep::OneDrive(OneDriveStep::SendNewFile { .. } | OneDriveStep::SendContent { .. })) => count_failed_try(&mut settlement, Reason::Quota),
             StepRefusal::NoSpace { free_space: Some(free_space) } => {
                 let content = find_item_versions(step).local.as_ref().and_then(|local| local.content.clone());
                 settlement.memory.extend(content.map(|content| MemoryWrite::SpaceRefusal(SpaceRefusal { content, free_space: *free_space })));
@@ -263,7 +267,14 @@ pub fn decide_step_settlement(step: &SyncStep, outcome: &StepOutcome, tries: u32
         StepOutcome::Failed(StepFailure::UndoFailed { .. }) => {}
         StepOutcome::Failed(StepFailure::Store { .. }) => count_failed_try(&mut settlement, Reason::Store),
         StepOutcome::Failed(StepFailure::Disk { .. }) => count_failed_try(&mut settlement, Reason::LocalIo),
-        StepOutcome::Failed(StepFailure::AnswerUnreadable { .. } | StepFailure::RunnerPanicked { .. }) => count_failed_try(&mut settlement, Reason::Failed),
+        StepOutcome::Failed(StepFailure::AnswerUnreadable { .. }) => count_failed_try(&mut settlement, Reason::Failed),
+        StepOutcome::Failed(StepFailure::RunnerPanicked { .. }) => {
+            count_failed_try(&mut settlement, Reason::Failed);
+            // Whether the request of a step towards OneDrive left is not known.
+            if is_towards_onedrive {
+                settlement.cycle = CycleRequest::Changes;
+            }
+        }
     }
     settlement
 }

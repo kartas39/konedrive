@@ -46,8 +46,9 @@ pub fn to_graph_name(name: &OsStr) -> Result<&str, StepRefusal> {
 /// What a request about `item` is guarded with: the eTag of the OneDrive version it was
 /// planned from, else the cTag of the content the two sides agreed on (an edit made on a
 /// download whose eTag is not known: `upload/steps/shared.rs:198-221`, `Guard`). `None`
-/// for an item with neither: its guarded step is answered `StepFailure::AnswerUnreadable`
-/// and a full listing mends the row. Pure.
+/// for an item with neither: its guarded step is answered `StepFailure::AnswerUnreadable`,
+/// which counts a try and asks for nothing: the step waits, and is planned with a guard
+/// once a listing that names the item wrote its eTag. Pure.
 pub fn decide_guard(item: &ItemVersions) -> Option<RequestGuard> {
     todo!()
 }

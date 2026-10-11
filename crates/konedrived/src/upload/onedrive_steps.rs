@@ -32,7 +32,8 @@
 //!    ever show — the empty file of an upload session, and its own earlier request whose
 //!    answer was lost (`name_holders`, `lost_answers`) — and otherwise decide nothing. A
 //!    507 of a step that sends no content is `OneDriveSpace::refuse_for_space` with a
-//!    size of 0. An answer that says nothing certain (`RefusedRequest::AnswerLost`, and
+//!    size of 0; its settlement counts a failed try (`Reason::Quota`) and keeps no
+//!    refusal for lack of space, which is a content's: the step waits and is tried again. An answer that says nothing certain (`RefusedRequest::AnswerLost`, and
 //!    an answer of success that cannot be read) does NOT end the step: it reads what
 //!    became of the request (`LostAnswers::settle_lost_answer`) and goes on as the fate
 //!    says — `WentThrough`: the commit; `DidNotGoThrough`:
@@ -181,9 +182,12 @@ impl OneDriveSteps {
     /// Request: today's `mkdir` (`upload/steps/meta.rs:19`), which calls `create_folder`
     /// (`G/write.rs:120`). Answer: the made `driveItem` as a `ConfirmedItem`. 409: one
     /// read of the place (`LostAnswers::read_request_outcome` with
-    /// `SentRequest::MakeDirectory`; `meta.rs:33-36`): a directory there that no row is
-    /// bound to is this step's own earlier request, and is adopted (`WentThrough`);
-    /// another item is `StepRefusal::NameTaken` with the name it has there (`NameHeld`);
+    /// `SentRequest::MakeDirectory`; `meta.rs:33-36`): an EMPTY directory there that no
+    /// row is bound to is this step's own earlier request, and is adopted (`WentThrough`);
+    /// another item — a directory with something in it too: another client's, whose
+    /// content no row knows — is `StepRefusal::NameTaken` with the name it has there
+    /// (`NameHeld`) and the place the step memory names (the directory of the place of
+    /// `item.local`, under `name`);
     /// nothing there by now is `StepRefusal::Transient`. 404: `DirectoryGone`.
     /// Commit: `commit_make_directory(item, parent, name, made)`; then, with no lock,
     /// `ItemContentFiles::mark_made_directory`. Step memory before the request: a
@@ -272,7 +276,8 @@ impl OneDriveSteps {
     /// item is read once (`LostAnswers::read_request_outcome` with
     /// `SentRequest::SendMove`): there already under the place
     /// sent is this step's own earlier request and is adopted (`meta.rs:100-104`);
-    /// anything else is `ItemChanged`. 404: `ItemGone`.
+    /// anything else is `ItemChanged`. 404: `ItemGone`, also when it is the directory
+    /// sent into that is gone, which Graph answers alike: both ask for a cycle.
     /// Commit: `commit_send_move(item, parent, name, moved)`, which forgets the tries and
     /// the temporary name when the confirmed place is the one it led to.
     /// `RowsChanged` — also when the directory sent into has no OneDrive version any

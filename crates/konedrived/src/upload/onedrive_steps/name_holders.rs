@@ -22,6 +22,7 @@
 // test: the_empty_file_of_a_session_nothing_goes_on_with_is_cancelled
 // test: an_empty_unlisted_file_made_within_an_opening_window_is_this_folders_and_is_removed
 // test: an_empty_unlisted_file_made_outside_every_window_is_waited_for
+// test: an_empty_unlisted_file_made_outside_every_window_is_adopted_by_a_step_that_sends_an_empty_file
 // test: a_file_with_the_hash_sent_that_no_row_is_bound_to_is_adopted
 // test: any_other_holder_is_another_item_with_its_name_as_onedrive_spells_it
 #![allow(dead_code, unused_variables)]
@@ -78,12 +79,17 @@ pub enum NameHolder {
     /// about to open a session there (the clock's slack: 5 minutes, `content.rs:30`):
     /// provably this folder's own, removed, then the request sent again.
     OwnEmptyFile(OneDriveItemReference),
-    /// An empty file no listing told of, of nobody known: the step waits for it. Never
-    /// copied, never removed.
-    UnknownEmptyFile,
     /// A file no row is bound to that holds the content sent: this step's own earlier
-    /// upload, adopted.
+    /// upload, adopted. Before `UnknownEmptyFile` on purpose: an empty file is sent by
+    /// one request with no opening kept, so the replay of one whose answer was lost finds
+    /// an empty file no listing told of, and adopts it as today's worker does
+    /// (`upload/steps/shared.rs:300`); after the cases above, so that an empty file a
+    /// session or an opening of this folder explains is never adopted — a cancel of that
+    /// session would take the item.
     OwnEarlierUpload(ConfirmedItem),
+    /// An empty file no listing told of, of nobody known, where the content sent is not
+    /// empty: the step waits for it. Never copied, never removed.
+    UnknownEmptyFile,
     /// Another item, spelt so by OneDrive.
     AnotherItem { holder_name: OsString },
 }

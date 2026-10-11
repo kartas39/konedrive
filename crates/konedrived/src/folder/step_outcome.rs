@@ -131,8 +131,10 @@ pub enum StepFailure {
     /// went through. Answered by the plan's task for a step whose task ended so
     /// (`sync::sync_plan_task::decide_outcome_of_ended_task`), never by a runner. Settled
     /// as a failed try for `Reason::Failed`, so that the step ends, waits and is tried
-    /// again, and said in the journal; whether the step's request left is not known, and
-    /// its next try finds out as after a stop (`upload::onedrive_steps::lost_answers`).
+    /// again, and said in the journal. Whether the request of a step towards OneDrive
+    /// left is not known, and nothing holds the sending for it: its settlement asks for a
+    /// listing cycle, and its next try finds out by the replay's own reads at a 409, a
+    /// 412 or a 404 (`upload::onedrive_steps::lost_answers`).
     RunnerPanicked { detail: String },
 }
 

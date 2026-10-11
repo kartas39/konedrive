@@ -21,10 +21,12 @@
 //! that request may have left; with the address
 //! `remember_upload_session(item, item.unsent_since, session)` BEFORE the first byte —
 //! `Abandoned` means the row went or
-//! the bytes changed, the cancel is queued already, and nothing is sent; after each
-//! fragment `advance_upload_session` — `Abandoned` stops, and so does `OfAnotherItem`
-//! (the address is another item's session: nothing was queued, the step named the wrong
-//! item, which is a fault said in the journal); a session given up (the content
+//! the bytes changed, the cancel is queued already, nothing is sent, and the step
+//! answers `StepOutcome::NotRun(StepObstacle::ContentChanged)`; after each
+//! fragment `advance_upload_session` — `Abandoned` stops with the same outcome, and
+//! `OfAnotherItem` (the address is another item's session: nothing was queued, the step
+//! named the wrong item, which is a fault said in the journal) stops as
+//! `StepOutcome::Failed(StepFailure::Store)`; a session given up (the content
 //! changed between fragments, a fragment refused for good): `abandon_upload_session`; a
 //! session found gone:
 //! `forget_ended_upload_session(item, &address)`, which forgets the session the item's
@@ -34,7 +36,8 @@
 //! **The pool's slot** is taken here, not by the plan's task, which only counts
 //! (`step_choice::StepLimits`): `DriveClient::pool`, `Class::Upload`, by the content's size
 //! (`Size::of`), before the first request of [`ContentUpload::send_content`] and held to
-//! its end.
+//! its end — but let go before `LostAnswers::settle_lost_answer` is called, which waits
+//! with no slot and takes one for each of its reads.
 //!
 //! **Tested without the rest**, against the fixture's fake OneDrive (reference:
 //! `upload/tests/sessions.rs`, `interrupted_sessions.rs`, `candidates.rs:65-156`):
@@ -155,7 +158,7 @@ pub enum OwnUploadFollowUp {
 }
 
 /// What is done about `upload`. Written as today's worker does it: `SendAgain`.
-// TODO: the owner's, after design §13's measurement on OneDrive for Business: `SendAgain` or `TakeAsOneDrivesChange`. Either way the fact is kept (`ItemStore::remember_own_upload_content`) and a listing cycle asked for, so that the row has OneDrive's version and eTag; and with `SendAgain` the plan must be told the fact to not make a conflict copy against this folder's own upload — an input of the plan that does not exist yet.
+// TODO: the owner's, after design §13's measurement on OneDrive for Business: `SendAgain` or `TakeAsOneDrivesChange`. Either way the fact is kept (`ItemStore::remember_own_upload_content`) and a listing cycle asked for, so that the row has OneDrive's version and eTag; and with `SendAgain` the plan must be told the fact to not make a conflict copy against this folder's own upload — an input of the plan that does not exist yet. The same measurement decides a NEW file: where OneDrive rewrites what it is sent, a new file is uploaded, found with another hash, removed and refused at every try, for ever (`check_sent_content`); say what a new file's mismatch is then.
 pub fn decide_own_upload_follow_up(upload: &OwnUploadContent) -> OwnUploadFollowUp {
     todo!()
 }
@@ -217,7 +220,8 @@ impl ContentUpload {
     /// (`LostAnswers::read_request_outcome` with `SentRequest::SendContent`): the hash
     /// sent, there already, is this step's own earlier upload and is answered as sent
     /// (`upload/content.rs:400-403`), anything else is `StepRefusal::ItemChanged`; a 404
-    /// is `ItemGone` for an existing item and `DirectoryGone` for a new file; a gone
+    /// is `ItemGone` for an existing item and `DirectoryGone` for a new file; a 409 of
+    /// an existing item, which names no place, is `ItemChanged`; a gone
     /// session by [`follow_gone_session`](Self::follow_gone_session); an answer lost to
     /// `upload_empty` by `LostAnswers::settle_lost_answer`; an answer lost to the opening
     /// or to a fragment is `StepRefusal::Transient`, with the opening or the session
@@ -249,8 +253,8 @@ impl ContentUpload {
     /// What ends it otherwise: a read that says the file changed or is open for writing
     /// (`StepTrouble`) — the session is given up for a changed file, kept for a writer,
     /// and the trouble is the outcome; a fragment refused 409, 412 or 404 gives the
-    /// session up, and is `Err(NameExists)` for a new file's 409 and the refusal's outcome
-    /// otherwise; a session that expects bytes at or past the file's end is given up and
+    /// session up, and is `Err(NameExists)` for a new file's 409, `ItemChanged` for an
+    /// existing item's 409, and the refusal's outcome otherwise; a session that expects bytes at or past the file's end is given up and
     /// is `StepFailure::AnswerUnreadable`; an answer that takes nothing (OneDrive still
     /// expects the same offset) is `StepRefusal::Transient`, the session kept; a session
     /// answered gone: [`follow_gone_session`](Self::follow_gone_session); any other

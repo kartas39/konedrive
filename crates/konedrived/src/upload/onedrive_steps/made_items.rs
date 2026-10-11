@@ -72,7 +72,9 @@ impl MadeItems {
     /// After `RowsChanged` on `MakeDirectory` or `SendNewFile`: reads the row,
     /// [`decide_made_item_fate`], and removes what was made (`delete_item`,
     /// `G/write.rs:140`, guarded by the eTag of the answer; `delete_folder`, `:153`, for
-    /// a directory) or asks for a cycle. Called with NO lock held: the tree lock of the
+    /// a directory: unguarded, and it takes only what this step made — a directory is
+    /// adopted as the step's own only when it is empty, `lost_answers`) or asks for a
+    /// cycle. Called with NO lock held: the tree lock of the
     /// commit was let go. Answers `MadeItemRemoved` for an item removed or found gone,
     /// `MadeItemLeft` for a removal OneDrive did not carry out (a 412: another changed it
     /// since; any failure), `CycleWanted` for a row that is still there. Today:
