@@ -1,7 +1,7 @@
 # Contributing
 
-Thanks for looking at KOneDrive. This is a young, alpha-stage project (read-only phase — see
-the README), so expect things to move. A few practical notes before you send a change.
+Thanks for looking at KOneDrive. This is a young, alpha-stage project (see the README), so expect
+things to move. A few practical notes before you send a change.
 
 ## Building
 
@@ -36,20 +36,28 @@ cmake -S app -B build/app -DBUILD_TESTING=ON && cmake --build build/app && ctest
 cmake -S dolphin -B build/dolphin -DBUILD_TESTING=ON && cmake --build build/dolphin && ctest --test-dir build/dolphin --output-on-failure
 ```
 
-**The VM suite** — a folder is a FUSE mount, and nothing is mounted on the host: the tests that
-need a mounted folder run inside a `virtme-ng` VM:
+**The VM suite** — a sync folder is a FUSE mount, and nothing is mounted on the host: the tests
+that need a mounted folder run inside a `virtme-ng` VM, on ext4, over the fake OneDrive. Run it
+when a change touches the mount, the steps, the listing or the tasks of a folder's sync:
 
 ```
-tests/fuse-probe/run.sh           # the daemon's service and konedrivectl over a mounted folder, on ext4
+tests/fuse-probe/run.sh                                 # every default group
+tests/fuse-probe/run.sh file_reads                      # one group
+ONLY="<scenario>" tests/fuse-probe/run.sh file_writes   # one scenario
+tests/fuse-probe/run.sh kio_trash                       # by name only: needs Qt 6 and KF 6 development packages
 ```
+
+The groups are `service`, `mounted_folder`, `file_writes`, `file_reads`, `daemon_restarts` and
+`cli`. The host needs `vng` (virtme-ng), QEMU and `/dev/kvm`, and no `sudo`:
+[`docs/developing.md`](docs/developing.md), "The VM suite".
 
 **What runs by itself.** A pull request into `dev` runs the daemon's unit tests, the window's and
 the Dolphin plugins' tests and the structure checks. A release runs no test of the code:
 `docs/releasing.md`, "Where the tests run".
 
-Root is never used outside that VM. If a change needs anything privileged to exercise or debug
-(mounting a filesystem), do it inside `virtme-ng`, not on your own machine — see
-`tests/fuse-probe/run.sh` for how the suite boots one.
+Nothing of KOneDrive needs root, and no test uses it on the host. If a change needs anything
+privileged to exercise or debug (mounting a filesystem), do it inside `virtme-ng`, not on your own
+machine — see `tests/fuse-probe/run.sh` for how the suite boots one.
 
 ## The structure of the code
 

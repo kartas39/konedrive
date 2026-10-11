@@ -18,6 +18,15 @@ These are what `app/CMakeLists.txt` and `dolphin/CMakeLists.txt` look for.
 
 A stable Rust toolchain (edition 2021), CMake 3.24+ and Extra CMake Modules are needed.
 
+## What it needs to run
+
+- **FUSE 3**: the daemon serves each sync folder as a FUSE mount, put on and taken off with
+  `fusermount3` (the `fuse3` package). Nothing runs as root.
+- **KDE Plasma 6 and Qt 6.8 or later.**
+- **KDE Frameworks 6.21 or later.** The build asks for 6.8, but with KIO before 6.21 "Move to
+  Trash" in a sync folder copies the file into the home trash, which downloads it
+  ([kio-behavior.md](kio-behavior.md), D; limitations log K34).
+
 ## Building the RPM packages
 
 Build the packages as yourself, never as root. `rpm-build` and the build
@@ -132,8 +141,6 @@ by their D-Bus error names (`org.konedrive.Error.ModifiedLocally`,
 
 ## Tests
 
-Tests:
-
 ```
 cargo test --workspace
 cmake -S app -B build/app -DBUILD_TESTING=ON && cmake --build build/app && ctest --test-dir build/app --output-on-failure
@@ -145,12 +152,40 @@ The Secret Service test touches your real KWallet (under a test-only attribute) 
 cargo test -p konedrived secret_service_round_trip -- --ignored
 ```
 
-A folder is a FUSE mount, and nothing is mounted on the host: the tests that need a mounted
-folder run inside a `virtme-ng` VM, which the host boots without root:
+### The VM suite
+
+A sync folder is a FUSE mount, and nothing is mounted on the host: the tests that need a mounted
+folder run inside a `virtme-ng` VM, on an ext4 disk of its own, over the fake OneDrive.
 
 ```
-tests/fuse-probe/run.sh           # the daemon's service and konedrivectl over a mounted folder, on ext4
+tests/fuse-probe/run.sh                           # every default group
+tests/fuse-probe/run.sh file_reads                # one group, or several
+ONLY="<scenario>" tests/fuse-probe/run.sh file_writes     # one scenario of a group
+tests/fuse-probe/run.sh kio_trash                 # by name only
 ```
+
+- **The groups**: `service` (the daemon's service command by command; it prints lines for a
+  person and checks nothing), `mounted_folder`, `file_writes`, `file_reads` and
+  `daemon_restarts` (scenarios with checks, a file each in `tests/fuse-probe/`), and `cli`
+  (`konedrivectl`'s tests of a mounted folder, `crates/konedrivectl/tests/sync_cli`).
+- **`kio_trash`** runs by name only: it builds `tests/kio/trash_probe.cpp`, which needs the Qt 6
+  and KDE Frameworks 6 development packages on the host, and the guest runs it with the host's
+  libraries.
+- **One scenario**: `ONLY` names the scenarios to run, of the groups asked for.
+- **Reading a failure**: `SERVICE_LOG=debug EVIDENCE_LOG_LINES=400` set the level of the daemon's
+  log and how much of it a failed scenario prints.
+- **The result**: the run fails when a scenario fails that `tests/fuse-probe/expected-to-fail.txt`
+  does not name, or when the guest does not reach its end.
+- **What the host needs**: `vng` (virtme-ng), QEMU and `/dev/kvm` (your user in the group `kvm`).
+  No `sudo`. `run.sh` builds the suite's programs in release mode into `tests/fuse-probe/target/`
+  and makes the guest's disk there, `disk.img`, 24 GiB; `VM_MEMORY` sets the guest's memory (8G
+  unless said).
+
+A trial of this tree's daemon on your own machine, beside an installed one and with a
+configuration and a state of its own: `tests/fuse-probe/try-on-host.sh start | restart | stop |
+status`. Register a new, empty folder with it, never the installed daemon's.
+
+### The test account
 
 Uploads are checked against a real account only on a separate test account, by hand, with
 `konedrive-write-test` (`tests/write-account/`): it refuses to start unless the drive is the test
