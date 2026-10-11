@@ -55,6 +55,8 @@
 // test: a_planned_step_is_ready
 // test: a_wait_until_a_time_is_retry_when_a_failed_try_is_remembered_and_waiting_otherwise
 // test: a_wait_for_the_user_is_blocked_with_its_reason
+// test: an_item_refused_for_good_is_blocked_whatever_its_reasons_group
+// test: an_item_with_a_stamp_and_no_kind_is_no_entry_and_stays_pending
 // test: a_wait_for_the_user_whose_reason_ends_by_itself_is_waiting
 // test: a_wait_for_space_is_ready_with_its_reason
 // test: a_removal_the_mass_removal_guard_holds_is_held
@@ -116,6 +118,10 @@ impl UnsentKind {
 /// `Update` (also when the place differs too: one entry, as today); a local place that is
 /// not the synced one, `Move`. `None` for an item with no stamp `unsent_since`, and for
 /// one none of these holds for. Pure. MISSING-6.c.
+///
+/// An item with a stamp for which this answers `None` is no entry, for every function
+/// below: it is in no list, no summary and none of the counts made from the answers, and
+/// it stays in `pending`, where the store's sum counted it.
 pub fn decide_unsent_kind(item: &Item) -> Option<UnsentKind> {
     todo!()
 }
@@ -172,11 +178,14 @@ pub struct UnsentEntry {
 /// (`ItemAnswer::Excluded`), which is no entry at all. Pure. The first that holds:
 ///
 /// - `held`: the answer is `WaitReason::User(Reason::MassDelete)`;
-/// - `blocked`: the answer is `WaitReason::User(reason)` with a reason that neither waits
-///   for space (`Reason::waits_for_space`) nor is of the group `waiting`
-///   (`Reason::group`); or `WaitReason::StartUpCheck`; or `ItemAnswer::Fault`; or the
-///   item was not given to the last plan and the memory keeps a refusal for good of it
-///   (`ItemMemory::refusal`);
+/// - `blocked`: the memory keeps a refusal for good of it (`entry.memory.refusal`), given
+///   to the last plan or not, and whatever the group of its reason — this comes before
+///   the rule of the group: OneDrive's `NotAllowed` is of the group `waiting`, and the
+///   plan answers it with the same `WaitReason::User(NotAllowed(..))` as a read-only
+///   folder's wait, which the memory alone tells apart; or the answer is
+///   `WaitReason::User(reason)` with a reason that neither waits for space
+///   (`Reason::waits_for_space`) nor is of the group `waiting` (`Reason::group`); or
+///   `WaitReason::StartUpCheck`; or `ItemAnswer::Fault`;
 /// - `paused`: `sending.hold` is `SendingHold::Paused`, whatever else the entry would say,
 ///   a running step among it — as today;
 /// - `running`: a step runs for it (`entry.running`);
@@ -190,20 +199,23 @@ pub struct UnsentEntry {
 /// - `ready`: a planned step of any class; a wait for the user whose reason waits for
 ///   space (`WaitingForSpace`, `TooBig`), which is kept back and stays in its place, as
 ///   today; and an item the last plan was not given.
-pub fn decide_queue_state(kind: UnsentKind, entry: &UnsentEntry, sending: &QueueConditions) -> Option<QueueState> {
+pub fn decide_queue_state(entry: &UnsentEntry, sending: &QueueConditions) -> Option<QueueState> {
     todo!()
 }
 
 /// The reason an entry of `state` carries and the time of its next try (0 for none).
 /// Pure. Nothing and 0 for `paused`, `running` and a `ready` that waits for no space.
-/// Otherwise:
+/// Otherwise, the first that holds:
 ///
+/// - the memory keeps a refusal for good (`entry.memory.refusal`): its reason
+///   (`Refusal::reason`), 0 — the reason the plan's answer carries too, when the item was
+///   given;
 /// - `WaitReason::Time { until, reason }`: that reason and `until`;
 /// - `WaitReason::User(reason)`: that reason, 0;
 /// - `WaitReason::StartUpCheck` and `ItemAnswer::Fault`: `Reason::Blocked`, 0;
-/// - an item the last plan was not given: the memory's refusal for good
-///   (`Refusal::reason`), or for a refusal for space `Reason::TooBig` with the size of
-///   the content refused and the free space (`ItemMemory::space_refusal`), 0;
+/// - an item the last plan was not given, of which the memory keeps a refusal for space
+///   (`ItemMemory::space_refusal`): `Reason::TooBig` with the size of the content refused
+///   and the free space, 0;
 /// - any other wait: nothing, 0;
 /// - and where none of these gave a reason, while OneDrive is full
 ///   (`sending.is_onedrive_full`) and `kind` sends content: `Reason::WaitingForSpace`.
@@ -214,11 +226,14 @@ pub fn decide_queue_reason(kind: UnsentKind, state: QueueState, entry: &UnsentEn
 
 /// `Changes()`'s row of one entry: `seq` is the item's `unsent_since`, `kind` and `state`
 /// the words above, the reason as stored (`Reason`'s `Display`; empty for none) and the
-/// next try of [`decide_queue_reason`], the path `path` under `folder`; `sent` and
-/// `total` the running step's bytes, else the remembered upload session's `next_offset`
-/// and the local content's size for a kind that sends content, else 0 and 0. `None` for
-/// an item that agrees by now ([`decide_unsent_kind`]) and for one the plan leaves out
-/// ([`decide_queue_state`]). Pure.
+/// next try of [`decide_queue_reason`], the path `path` under `folder`. `sent` and
+/// `total` are the running step's bytes when the step is of this item itself
+/// (`RunningStep::item`; a step of another item that only carries this row says nothing
+/// of this entry's bytes); else, for a kind that sends content, the remembered upload
+/// session's `next_offset` (0 with none) and the local content's size; else 0 and 0.
+/// `None` for an item that agrees by now ([`decide_unsent_kind`]) and for one the plan
+/// leaves out ([`decide_queue_state`]). Pure. The caller leaves out an entry
+/// [`read_entry_paths`] has no path for.
 pub fn describe_queue_change(entry: &UnsentEntry, path: &Path, sending: &QueueConditions, folder: &Path) -> Option<Change> {
     todo!()
 }
@@ -267,11 +282,14 @@ pub struct QueueTotals {
 ///   for space;
 /// - `pending`: the store's count less `blocked`, `held` and the answered entries the
 ///   plan leaves out; `pending_bytes`: the store's sum less the sizes of the answered
-///   entries that are blocked, held or left out. What waits for space or is too big stays
-///   in both, as today (`status::totals` takes it off what is left to upload).
+///   entries that are blocked, held or left out. An item the memory refuses for good that
+///   the last plan was not given is off `pending` and its bytes stay in `pending_bytes`
+///   until the plan is given it: the memory's list carries no size. What waits for space
+///   or is too big stays in both, as today (`status::totals` takes it off what is left to
+///   upload).
 ///
 /// Each saturates at 0 and at the type's largest.
-// TODO: decide what `HeldCount` counts, which the window's question about a mass removal shows: here it is the removals the last plan holds — a directory removed with all below it is one, and a removal beyond the plan's reach is none — where today it is one per file and directory. The number of items the held removals take from OneDrive is `ItemReader::count_unsent_removals`, a walk below every removed directory at each plan.
+// TODO: decide what `HeldCount` counts, which the window's question about a mass removal shows: here it is the removals the last plan holds — a directory removed with all below it is one, and a removal beyond the plan's reach is none — where today it is one per file and directory. The number of items the held removals take from OneDrive is `ItemReader::count_unsent_removals`, a walk below every removed directory at each plan. Two numbers the user sees beside it differ too: while a removed directory is held, the items below it are entries of their own that read `waiting` (the plan answers them `AnotherItem(directory)`) and stay in `PendingCount`, where today held rows are in neither; and `ConfirmDeletes()` answers the confirmations written (the directory and all below it), which is not `HeldCount`.
 pub fn count_queue(totals: &QueueTotals, sending: &QueueConditions) -> QueueCounts {
     todo!()
 }
@@ -303,8 +321,9 @@ pub fn list_blocked_entries<'a>(entries: &'a [UnsentEntry], sending: &QueueCondi
 }
 
 /// The entries of `entries` kept back for the reason of key `reason`
-/// ([`decide_kept_back_reason`]). Pure. What `NotUploadedFiles` counts and the thin part
-/// reads the paths of.
+/// ([`decide_kept_back_reason`]), by local item id. Pure. What `NotUploadedFiles` counts;
+/// the thin part reads the paths of the first `limit` of them (of all for 0), and of no
+/// other.
 pub fn list_entries_kept_back_for<'a>(entries: &'a [UnsentEntry], sending: &QueueConditions, reason: &str) -> Vec<&'a UnsentEntry> {
     todo!()
 }
@@ -318,9 +337,11 @@ pub fn list_not_uploaded(entries: &[UnsentEntry], paths: &BTreeMap<LocalItemId, 
 }
 
 /// `NotUploadedFiles(reason, limit)`: the files kept back for the reason of key `reason`
-/// ([`list_entries_kept_back_for`]), each with its full path and its reason as stored, by
-/// path, at most `limit` (0 for all); `total` is how many entries are kept back for it,
-/// whatever `limit` and whatever `paths` holds. Pure.
+/// ([`list_entries_kept_back_for`]): the first `limit` of them in that function's order,
+/// by local item id (all for 0) — those `paths` was read for, as today's read with a
+/// `LIMIT` — each with its full path and its reason as stored, sorted by path among
+/// themselves; one `paths` has no path for is left out. `total` is how many entries are
+/// kept back for the reason, whatever `limit` and whatever `paths` holds. Pure.
 pub fn list_kept_back_files(entries: &[UnsentEntry], paths: &BTreeMap<LocalItemId, PathBuf>, sending: &QueueConditions, reason: &str, limit: u32, folder: &Path) -> KeptBackFiles {
     todo!()
 }
@@ -337,8 +358,10 @@ pub fn describe_running_uploads(running: &[RunningStep], paths: &BTreeMap<LocalI
 /// `waits` are empty when the folder does not show the item (`local_path` is `None`).
 /// While it does: `here` is `local_path` under `folder`, and `waits` what keeps it, as
 /// `WaitsFor` is stored, its path a full one: `WaitsFor::OpenForWriting(here)` for the
-/// answer `WaitReason::User(Reason::OpenForWriting)`; `WaitsFor::Cycle` for no answer and
-/// for `WaitReason::Listing`; `WaitsFor::Uploads(1)` for any other answer. Pure.
+/// answer `WaitReason::User(Reason::OpenForWriting)`; `WaitsFor::Cycle` for no answer,
+/// for `WaitReason::Listing` and for `ItemAnswer::Planned`, `Excluded` and `Fault` (the
+/// step that takes the item out of the folder is planned, or no upload keeps it);
+/// `WaitsFor::Uploads(1)` for any other wait. Pure.
 /// MISSING-2.e.
 // TODO: decide what `Skipped()` says keeps a directory here: today the number of changes at or below it that wait; the plan's answer is for the directory alone, so this says 1.
 pub fn describe_item_not_shown(not_shown: &ItemNotShown, local_path: Option<&Path>, answer: Option<&ItemAnswer>, folder: &Path) -> NotInFolder {
@@ -445,7 +468,7 @@ pub fn publish_queue_status(state: &SyncStateHandle, counts: QueueCounts, upload
 /// done and 0 answered when `is_removal_held` is false ([`is_removal_held`], asked of the
 /// published answers by the caller): as today, with nothing held nothing is confirmed.
 /// Otherwise, in one job of the store's writer: reads every unsent removal
-/// (`ItemReader::list_unsent_removals` over `TreeStore::reader`, in pages by the stamp),
+/// (`ItemReader::list_unsent_removals` over the reader of the writer's connection, `ItemStore::reader`, in pages by the stamp),
 /// builds `UnsentRemoval::of` each — the rows as they are when the user answers — writes
 /// their confirmation (`StepMemory::remember_removals_confirmed`, which answers those it
 /// did not write: rows that are another removal by now, or none, left to be asked about
@@ -461,7 +484,7 @@ pub fn confirm_removals(store: &mut TreeStore, is_removal_held: bool) -> Result<
 
 /// `RestoreDeletes()`: the user takes the held removals back. Nothing is done and 0
 /// answered when `is_removal_held` is false, as [`confirm_removals`]. Otherwise, for
-/// every unsent removal (`ItemReader::list_unsent_removals`, in pages by the stamp) whose
+/// every unsent removal (`ItemReader::list_unsent_removals` over `ItemStore::reader`, in pages by the stamp) whose
 /// confirmation the memory does not keep (`ItemReader::find_item_memory`,
 /// `removal_confirmation`), in any order — each write is of one row alone:
 /// `ItemStore::commit_forget_synced_version` with the row's versions as they are
