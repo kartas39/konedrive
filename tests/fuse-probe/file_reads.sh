@@ -13,13 +13,20 @@ seed_random() {
 # is_seed <path> <id>: whether a read of the path gives what OneDrive holds of the item.
 is_seed() { user "cmp -s '$1' '$SRC/seed-$2'"; }
 
-# check_read_gives_the_file_or_fails <path> <id>: a read gives the file whole or an error.
+# check_read_gives_the_file_or_fails <path> <id>: a read gives the file whole or an error, and
+# after an error the file is shown as downloaded only if it is whole.
 check_read_gives_the_file_or_fails() {
     if user "cat '$1' > '$SRC/got' 2> /dev/null"; then
         check "a read that went through gave the file whole" "$(cmp "$SRC/got" "$SRC/seed-$2" 2>&1 && echo equal)" equal
     else
         echo "    ok    the read was given an error"
-        check "after a read that failed, the file is not shown as downloaded" "$(state_of "$1")" online-only
+        # The download that goes on behind the reads may have ended whole meanwhile, by its own tries: only a
+        # file that is not whole must not be shown as downloaded.
+        if [ "$(state_of "$1")" = hydrated ]; then
+            check "after a read that failed, a file shown as downloaded is whole" "$(is_seed "$1" "$2" && echo equal)" equal
+        else
+            echo "    ok    after a read that failed, the file is not shown as downloaded"
+        fi
     fi
 }
 
