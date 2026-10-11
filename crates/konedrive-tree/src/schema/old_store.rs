@@ -189,8 +189,34 @@ pub(super) fn count_rebuild_loss(conn: &Connection) -> Option<RebuildLoss> {
 /// [`TreeStore::open_with_origin`](crate::TreeStore::open_with_origin) removes such a
 /// store, which only counts them (design §13 (6)).
 pub fn list_old_store_upload_sessions(path: &Path) -> Result<Vec<String>, TreeError> {
-    let _ = path;
-    todo!()
+    use rusqlite::OpenFlags;
+    if !path.try_exists()? {
+        return Ok(Vec::new());
+    }
+    let conn = match Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX) {
+        Ok(conn) => conn,
+        Err(error) if is_no_database(&error) => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    if decide_old_store(&read_stored_version(&conn)?) != OldStoreDecision::Rebuild {
+        return Ok(Vec::new());
+    }
+    let list = |table: &str, column: &str, rows: &str| -> rusqlite::Result<Vec<String>> {
+        if !has_table(&conn, table)? {
+            return Ok(Vec::new());
+        }
+        let mut statement = conn.prepare(&format!("SELECT {column} FROM {table} {rows}"))?;
+        let addresses = statement.query_map([], |row| row.get::<_, String>(0))?.collect();
+        addresses
+    };
+    let list_all = || -> rusqlite::Result<Vec<String>> {
+        let mut addresses = list("upload_sessions", "url", "WHERE url IS NOT NULL")?;
+        addresses.extend(list("step_memory", "session_address", "WHERE session_address IS NOT NULL")?);
+        Ok(addresses)
+    };
+    // Tables of a shape that cannot be read hold nothing that can be cancelled.
+    Ok(list_all().unwrap_or_default())
 }
 
 impl crate::TreeStore {

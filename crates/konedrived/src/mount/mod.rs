@@ -58,6 +58,8 @@ mod write_operation_thread;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_announcements;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod fuse_connection;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_attributes;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_content_files;
@@ -87,6 +89,8 @@ mod item_range_fetcher;
 mod item_read_origin;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_write_operations;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod kernel_requests;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod mount_take_down;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]

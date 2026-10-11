@@ -28,13 +28,14 @@
 // test: a_closed_store_that_is_not_there_or_not_of_this_version_counts_as_nothing_unsent
 #![allow(dead_code, unused_variables)]
 
-use konedrive_tree::{Store, UnsentTotal};
+use konedrive_tree::{Reason, Store, UnsentTotal};
 
 use super::start_order::{KeptFolderParts, StartedFolder};
 use super::SyncTasks;
 use crate::folder::root::SyncRoot;
 use crate::listing::listing_poller::ListingPollHandle;
 use crate::sync_parts::sending_holds::SendingHolds;
+use crate::sync_parts::sync_plan_wake::WakeCause;
 
 impl SyncTasks {
     /// Stops the sync and waits for every task. The stop's token is cancelled (again: the
@@ -55,7 +56,19 @@ impl SyncTasks {
     /// stop half-way, and the next change waits for the same task. A `SyncTasks` dropped
     /// without it only tells its tasks to stop (`Drop`).
     pub async fn stop(self) {
-        todo!()
+        let mut tasks = self;
+        tasks.stop.cancel();
+        if let Some(listing_poller) = tasks.listing_poller.take() {
+            listing_poller.stop().await;
+        }
+        if let Err(error) = (&mut tasks.plan_loop).await {
+            tracing::warn!("the loop of the plan's task failed: {error}");
+        }
+        if let Some(thumbnail_filler) = tasks.thumbnail_filler.take() {
+            if let Err(error) = thumbnail_filler.await {
+                tracing::warn!("the task of the thumbnail filler failed: {error}");
+            }
+        }
     }
 
     /// The account signed out: all sending is held (`SendingHolds::set_signed_out`, which
@@ -67,7 +80,7 @@ impl SyncTasks {
     /// (`sync_plan_task`'s settlement), whichever comes first: that hold too is ended by
     /// the owner's watcher, at the next snapshot that says signed in.
     pub fn hold_for_sign_out(&self) {
-        todo!()
+        self.sending_holds.set_signed_out(true);
     }
 
     /// A refresh the user asked for ("sync now"): the plan's task is woken with
@@ -76,7 +89,8 @@ impl SyncTasks {
     /// and the listing is asked for a cycle (`ListingPollHandle::refresh`). The one way a
     /// refresh reaches a running sync: `Folder.Refresh()` calls nothing else of it.
     pub fn refresh(&self) {
-        todo!()
+        self.sync_plan_wake.wake(WakeCause::RefreshAsked);
+        self.poll.refresh();
     }
 
     /// The network is back: the live socket is looked at again
@@ -85,7 +99,9 @@ impl SyncTasks {
     /// (`WakeCause::SendingHoldChanged`: "the network"). No next try is made due: a step
     /// that failed for the network is tried at its own time.
     pub fn wake_for_network(&self) {
-        todo!()
+        self.poll.wake_live();
+        self.poll.refresh();
+        self.sync_plan_wake.wake(WakeCause::SendingHoldChanged);
     }
 }
 
@@ -101,7 +117,14 @@ impl SyncTasks {
 /// `SyncTasks::sending_holds`, `SyncTasks::poll`). Since one task applies the snapshots
 /// in their order, no hold set from an older snapshot outlives a newer one.
 pub async fn release_after_sign_in(store: &Store, sending_holds: &SendingHolds, poll: &ListingPollHandle) {
-    todo!()
+    if let Err(error) = store.call(|store| store.step_memory().forget_refusals_for(&Reason::Forbidden)).await {
+        tracing::warn!("cannot forget what OneDrive refused as not allowed: {error}");
+    }
+    if let Err(error) = store.call(|store| store.step_memory().clear_next_tries()).await {
+        tracing::warn!("cannot make the next tries due: {error}");
+    }
+    sending_holds.set_signed_out(false);
+    poll.refresh();
 }
 
 /// Stops the sync of `started` (`SyncTasks::stop`) and answers what the folder keeps: the
@@ -111,7 +134,9 @@ pub async fn release_after_sign_in(store: &Store, sending_holds: &SendingHolds, 
 /// token and took the folder's write lock; what it answers is started again, taken down
 /// or forgotten.
 pub async fn stop_folder_sync(started: StartedFolder) -> KeptFolderParts {
-    todo!()
+    let StartedFolder { store, mount, tasks, sync_plan_wake, running_steps, published_plan, onedrive_space: _, drive_id, store_origin: _ } = started;
+    tasks.stop().await;
+    KeptFolderParts { store, mount, sync_plan_wake, running_steps, published_plan, drive_id }
 }
 
 /// Whether the store of a folder that was taken down or forgotten is closed.
@@ -125,6 +150,41 @@ pub enum TakeDownOutcome {
     /// daemon runs the check. After a Forget the owner removes the files all the same,
     /// with a warning, as today.
     StoreStillOpen,
+}
+
+/// How long the end of a folder's parts waits for the store's connections to close.
+const STORE_CLOSES_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How the mount of a folder's parts is ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MountEnd {
+    /// Stopped: the folder on disk is left without its write bits (a take-down).
+    Stopped,
+    /// Stopped, and the folder left a plain directory with its write bits (a Forget).
+    StoppedWithWriteBits,
+}
+
+/// Ends the parts a stopped sync kept: the mount stopped as `mount_end` says, off the
+/// runtime's threads; every `Arc` of the mount and of the leaf state dropped; then the
+/// store closed, waited for with [`STORE_CLOSES_WITHIN`].
+async fn end_kept_parts(kept: KeptFolderParts, mount_end: MountEnd) -> TakeDownOutcome {
+    let KeptFolderParts { store, mount, sync_plan_wake, running_steps, published_plan, drive_id: _ } = kept;
+    let stopped = tokio::task::spawn_blocking(move || {
+        match mount_end {
+            MountEnd::Stopped => mount.stop(),
+            MountEnd::StoppedWithWriteBits => mount.stop_and_restore_write_bits(),
+        }
+        // The last of it, where nobody else holds it: dropped off the runtime's threads.
+        drop(mount);
+    });
+    if let Err(error) = stopped.await {
+        tracing::warn!("the task stopping the folder's mount failed: {error}");
+    }
+    drop((sync_plan_wake, running_steps, published_plan));
+    match tokio::time::timeout(STORE_CLOSES_WITHIN, store.close()).await {
+        Ok(()) => TakeDownOutcome::StoreClosed,
+        Err(_) => TakeDownOutcome::StoreStillOpen,
+    }
 }
 
 /// Takes the folder down after its mount asked for it. Called by the owner of the
@@ -152,7 +212,7 @@ pub enum TakeDownOutcome {
 /// which reads what the failed undo left as a change made while no daemon ran (design
 /// §8). `StoreStillOpen` is answered to that owner, which then does not start by itself.
 pub async fn take_folder_down(kept: KeptFolderParts) -> TakeDownOutcome {
-    todo!()
+    end_kept_parts(kept, MountEnd::Stopped).await
 }
 
 /// The daemon's end, for one folder: the mount of the parts its stopped sync kept is
@@ -164,7 +224,14 @@ pub async fn take_folder_down(kept: KeptFolderParts) -> TakeDownOutcome {
 /// caller that is cut at the bound leaves the task running until the process exits, and
 /// the unit's tidy step (`konedrived --tidy`) does for the folder what was not reached.
 pub async fn end_kept_folder_at_daemon_stop(kept: KeptFolderParts) {
-    todo!()
+    let stopped = tokio::task::spawn_blocking(move || {
+        kept.mount.stop();
+        // Dropped here, off the runtime's threads: nothing is closed or waited for.
+        drop(kept);
+    });
+    if let Err(error) = stopped.await {
+        tracing::warn!("the task stopping the folder's mount failed: {error}");
+    }
 }
 
 /// Ends the parts of a folder that is forgotten. Called by the owner of the folder's
@@ -181,7 +248,7 @@ pub async fn end_kept_folder_at_daemon_stop(kept: KeptFolderParts) {
 /// A folder that keeps no parts — its start was refused, or it was taken down — has no
 /// mount to stop: for it the owner calls [`forget_folder_without_mount`] instead.
 pub async fn forget_folder(kept: KeptFolderParts) -> TakeDownOutcome {
-    todo!()
+    end_kept_parts(kept, MountEnd::StoppedWithWriteBits).await
 }
 
 /// Leaves a folder that is forgotten while it keeps no parts a plain directory with its
@@ -193,7 +260,14 @@ pub async fn forget_folder(kept: KeptFolderParts) -> TakeDownOutcome {
 /// not a mount over it). No store is open then, so there is none to close. Called by the
 /// owner of the folder's state, inside a change of the folder.
 pub async fn forget_folder_without_mount(root: &SyncRoot) {
-    todo!()
+    let folder = root.path.clone();
+    let restored = tokio::task::spawn_blocking(move || {
+        crate::mount::unmount_stale_mount(&folder);
+        crate::mount::restore_write_bits(&folder);
+    });
+    if let Err(error) = restored.await {
+        tracing::warn!("the task giving {} its write bits back failed: {error}", root.path.display());
+    }
 }
 
 /// How many changes of the folder whose store is at `tree_db` are unsent, read through a
@@ -204,5 +278,14 @@ pub async fn forget_folder_without_mount(root: &SyncRoot) {
 /// nothing a sync could send. Any other failure — a permission, the disk — is the error.
 /// It refuses nothing: a Forget is never refused for what is unsent.
 pub fn count_unsent_of_closed_store(tree_db: &std::path::Path) -> Result<UnsentTotal, konedrive_tree::TreeError> {
-    todo!()
+    if !tree_db.try_exists()? {
+        return Ok(UnsentTotal::default());
+    }
+    // TODO: contract — konedrive-tree has no public reader of the version a store's file says (`read_stored_version` is private to `schema/old_store.rs`): a store that is not of this version is told here by SQLite refusing the open or the count, which a failing disk under SQLite is taken for too. Check and fix if needed.
+    let counted = konedrive_tree::TreeStore::open_read_only(tree_db).and_then(|store| store.read_items(|items| items.count_unsent()));
+    match counted {
+        Ok(unsent) => Ok(unsent),
+        Err(konedrive_tree::TreeError::Sql(_) | konedrive_tree::TreeError::Schema(_)) => Ok(UnsentTotal::default()),
+        Err(error) => Err(error),
+    }
 }

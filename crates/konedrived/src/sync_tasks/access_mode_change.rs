@@ -51,9 +51,19 @@
 
 use crate::config::Mode;
 use crate::mount::ItemMount;
-use crate::sync_parts::running_steps::RunningSteps;
+use crate::sync_parts::running_steps::{RunningStep, RunningSteps, StepClass};
 use crate::sync_parts::sending_holds::SendingHolds;
-use crate::sync_parts::sync_plan_wake::SyncPlanWake;
+use crate::sync_parts::sync_plan_wake::{SyncPlanWake, WakeCause};
+
+/// How often a switch to read-only looks whether a step towards OneDrive still runs:
+/// `RunningSteps` tells nobody when a step ends.
+const RUNNING_STEPS_LOOKED_AT_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Whether a step towards OneDrive is among `steps`: one that sends content or
+/// metadata. Pure.
+fn has_step_towards_onedrive(steps: &[RunningStep]) -> bool {
+    steps.iter().any(|step| matches!(step.class, StepClass::Content | StepClass::Metadata))
+}
 
 /// Switches the folder to read-only: the order of the module's doc. Answers when the
 /// folder takes no change, sends nothing, and no step towards OneDrive runs. The tasks go
@@ -63,20 +73,39 @@ use crate::sync_parts::sync_plan_wake::SyncPlanWake;
 /// the caller's to count afterwards (`ItemReader::count_unsent`). `Err` when the mount's
 /// thread is gone: the hold stands all the same.
 pub async fn switch_to_read_only(mount: &ItemMount, sending_holds: &SendingHolds, running_steps: &RunningSteps) -> Result<(), String> {
-    todo!()
+    // Nothing towards OneDrive is started from here on.
+    sending_holds.set_folder_read_only(true);
+    // TODO: contract — `ItemMount::switch_to_read_only` answers no error when its thread is gone (mount/item_mount.rs): it makes the switch itself then, so nothing is answered `Err` here.
+    mount.switch_to_read_only().await;
+    while has_step_towards_onedrive(&running_steps.list_steps()) {
+        tokio::time::sleep(RUNNING_STEPS_LOOKED_AT_EVERY).await;
+    }
+    Ok(())
 }
 
 /// Switches the folder to read-write: the order of the module's doc. What was unsent
 /// under the hold is planned at once.
 pub async fn switch_to_read_write(mount: &ItemMount, sending_holds: &SendingHolds) -> Result<(), String> {
-    todo!()
+    mount.switch_to_read_write();
+    sending_holds.set_folder_read_only(false);
+    Ok(())
 }
 
 /// At a start, before the tasks: makes the mount's access mode the wanted one, and the
 /// hold with it (`SendingHolds::set_folder_read_only(wanted == Mode::ReadOnly)`), before
 /// any plan is made: a folder started read-only sends nothing from its first plan on.
 pub async fn apply_wanted_access_mode(mount: &ItemMount, sending_holds: &SendingHolds, wanted: Mode) -> Result<(), String> {
-    todo!()
+    match wanted {
+        Mode::ReadOnly => {
+            sending_holds.set_folder_read_only(true);
+            mount.switch_to_read_only().await;
+        }
+        Mode::ReadWrite => {
+            mount.switch_to_read_write();
+            sending_holds.set_folder_read_only(false);
+        }
+    }
+    Ok(())
 }
 
 /// The account's list of ignored names changed: the rows are gone over once
@@ -86,5 +115,7 @@ pub async fn apply_wanted_access_mode(mount: &ItemMount, sending_holds: &Sending
 /// sync runs: `sync_plan_wake` is the one the mount was built with
 /// (`KeptFolderParts::sync_plan_wake`). How many rows changed. MISSING-4.f.
 pub async fn apply_ignore_list_change(mount: &ItemMount, sync_plan_wake: &SyncPlanWake) -> Result<u64, String> {
-    todo!()
+    let rewritten = mount.rewrite_ignored_names().await.map_err(|error| format!("the ignored names of the folder's rows could not be gone over: {error}"))?;
+    sync_plan_wake.wake(WakeCause::SendingHoldChanged);
+    Ok(rewritten)
 }

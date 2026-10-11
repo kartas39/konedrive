@@ -98,17 +98,17 @@ impl SyncTasks {
     /// What holds this folder's sending: the pause, the sign-out and the write gate set
     /// their causes through it.
     pub fn sending_holds(&self) -> &Arc<SendingHolds> {
-        todo!()
+        &self.sending_holds
     }
 
     /// Asks the listing for a cycle.
     pub fn poll(&self) -> ListingPollHandle {
-        todo!()
+        self.poll.clone()
     }
 
     /// Wakes the plan: after the user's answer, a change of the ignore list, a pin.
     pub fn sync_plan_wake(&self) -> &Arc<SyncPlanWake> {
-        todo!()
+        &self.sync_plan_wake
     }
 
     /// The token that tells the sync to stop: a clone of the one every task and the step
@@ -119,7 +119,7 @@ impl SyncTasks {
     /// (`StepRunners::of_runners`), so the plan's loop has no step left that waits for
     /// the lock its stopper holds.
     pub fn stop_handle(&self) -> CancellationToken {
-        todo!()
+        self.stop.clone()
     }
 }
 

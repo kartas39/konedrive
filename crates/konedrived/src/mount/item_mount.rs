@@ -47,6 +47,8 @@ use konedrive_tree::{DriveId, Store, TreeError};
 
 use super::access_mode_switch::AccessModeSwitch;
 use super::backing_directory::{remove_write_bits, BackingDirectory};
+use super::fuse_connection::FuseConnection;
+use super::kernel_requests::KernelRequests;
 use super::item_content_files::ItemContentFiles;
 use super::item_download_states::ItemDownloadStates;
 use super::item_downloader::ItemDownloader;
@@ -139,14 +141,27 @@ pub struct ItemMount {
     upload_rules: Arc<UploadRules>,
     /// The parts a stop reaches, in the order it stops them (`build_order::PartsToStop`).
     parts_to_stop: build_order::PartsToStop,
-    /// `None` until served.
-    session: std::sync::Mutex<Option<fuser::BackgroundSession>>,
+    /// `None` until served: the session, and the connection the kernel numbers it by,
+    /// read when the mount went over the folder.
+    session: std::sync::Mutex<Option<(fuser::BackgroundSession, FuseConnection)>>,
     /// Whether the mount was stopped: a second stop, and the drop after one, do nothing.
     is_stopped: AtomicBool,
 }
 
 fn to_io_error(error: impl ToString) -> std::io::Error {
     std::io::Error::other(error.to_string())
+}
+
+/// How many threads answer the kernel's requests of one mount, as today.
+const SESSION_THREADS: usize = 4;
+
+/// Takes a served mount off `folder` and waits for its session; from then on the daemon
+/// opens the folder by its path again.
+fn take_session_off(session: fuser::BackgroundSession, folder: &std::path::Path) {
+    if let Err(error) = session.umount_and_join() {
+        tracing::warn!("taking the mount off {}: {error}", folder.display());
+    }
+    crate::folder::root::mount_gone(folder);
 }
 
 impl ItemMount {
@@ -175,7 +190,31 @@ impl ItemMount {
     /// failure leaves the mount built and not served, for the caller to stop. THE
     /// SWITCH'S: its body and the `Filesystem` are written with the switch.
     pub fn serve(self: &Arc<Self>, kernel_requests: ItemKernelRequests) -> std::io::Result<()> {
-        todo!()
+        let folder = &self.folder_step_parts.folder;
+        // What a read of a range and a download before a write are run on.
+        let runtime = tokio::runtime::Handle::try_current().map_err(to_io_error)?;
+        // Taken before the mount: the daemon's own way to the folder once its path is the mount.
+        let own_descriptor = Arc::new(self.backing_directory.clone_descriptor()?);
+        let filesystem = KernelRequests::new(kernel_requests, Arc::clone(&self.backing_directory), Arc::clone(&self.access_mode_switch), runtime);
+        let mut config = fuser::Config::default();
+        config.mount_options = vec![fuser::MountOption::FSName("konedrive".into()), fuser::MountOption::Subtype("konedrive".into()), fuser::MountOption::NoSuid, fuser::MountOption::NoDev];
+        config.n_threads = Some(SESSION_THREADS);
+        config.clone_fd = true;
+        let session = fuser::Session::new(filesystem, folder, &config)?;
+        let notifier = session.notifier();
+        // From here on the daemon opens the folder by this descriptor: its path is the mount.
+        crate::folder::root::mounted_over(folder, own_descriptor);
+        let session = match session.spawn() {
+            Ok(session) => session,
+            Err(error) => {
+                // The session that was not spawned is dropped, and its mount with it.
+                crate::folder::root::mount_gone(folder);
+                return Err(error);
+            }
+        };
+        // Kept before anything else can fail: the stop then takes the mount off.
+        *crate::panic::lock(&self.session) = Some((session, FuseConnection::of_mount_at(folder)));
+        self.parts_to_stop.inotify_bridge.start(Arc::clone(&self.parts_to_stop.read_connections), Some(Arc::new(notifier)))
     }
 
     /// Stops the mount, once: the write-operation thread (the job in flight is waited
@@ -201,9 +240,17 @@ impl ItemMount {
         parts.write_operation_thread.stop();
         parts.inotify_bridge.stop();
         parts.downloader.stop();
-        if let Some(session) = session {
-            if let Err(error) = session.umount_and_join() {
-                tracing::warn!("taking the mount off its folder: {error}");
+        if let Some((session, fuse_connection)) = session {
+            let folder = self.folder_step_parts.folder.clone();
+            // Aborted before the mount is detached: a program that still holds a file of
+            // the mount open would otherwise keep the session, and this call, waiting.
+            match fuse_connection.abort() {
+                Ok(()) => take_session_off(session, &folder),
+                Err(error) => {
+                    tracing::warn!("the connection of {} could not be aborted ({error}); its mount is taken off all the same", folder.display());
+                    // Not waited for: it ends when the last program lets go of the mount.
+                    std::thread::spawn(move || take_session_off(session, &folder));
+                }
             }
         }
         parts.read_connections.close();

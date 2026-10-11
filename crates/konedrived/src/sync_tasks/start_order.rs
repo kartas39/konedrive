@@ -46,13 +46,13 @@
 //! function, and what is undone after a refusal. It is never cut: the owner runs it in a
 //! task of its own (`sync_tasks`' module doc).
 //!
-//! **Until `ItemMount::serve` is written** (the switch's; its body is `todo!()`), a test
-//! cannot pass stage 3 of `start_folder_sync` with nothing kept. So the tests of stages 5
-//! to 7 call `start_sync_over_parts` with a mount built and not served (the fixture's);
-//! the tests of stages 0 to 2 and 4 call the stage's own function; the tests of
-//! `start_folder_sync` itself run with kept parts, or end at a refusal of stage 1 or 2.
-//! The three that need the whole function past stage 3 with nothing kept are written
-//! `#[ignore]`d with the reason "waits for ItemMount::serve", and are marked below.
+//! **A test puts no mount over a folder** (`ItemMount::serve` mounts, which a test of the
+//! daemon does not do outside the VM). So the tests of stages 5 to 7 call
+//! `start_sync_over_parts` with a mount built and not served (the fixture's); the tests
+//! of stages 0 to 2 and 4 call the stage's own function; the tests of `start_folder_sync`
+//! itself run with kept parts, or end at a refusal of stage 1 or 2. The three that need
+//! the whole function past stage 3 with nothing kept are the VM suite's, and are marked
+//! below.
 //!
 //! **Tested without the rest:**
 // test: a_store_that_was_kept_asks_for_no_full_listing
@@ -66,9 +66,9 @@
 // test: every_part_is_made_once_and_given_to_whoever_holds_it
 // test: the_holds_that_stand_at_the_start_are_set_before_the_first_plan
 // test: a_refused_start_gives_back_the_parts_it_was_given_as_kept
-// test: a_refused_start_stops_the_mount_it_built (ignored: waits for ItemMount::serve)
-// test: a_mount_that_cannot_be_served_is_stopped_and_refused_as_the_mounts (ignored: waits for ItemMount::serve)
-// test: a_start_with_nothing_kept_runs_every_stage_in_its_order (ignored: waits for ItemMount::serve)
+// test: a_refused_start_stops_the_mount_it_built (the VM suite's: it mounts)
+// test: a_mount_that_cannot_be_served_is_stopped_and_refused_as_the_mounts (the VM suite's: it mounts)
+// test: a_start_with_nothing_kept_runs_every_stage_in_its_order (the VM suite's: it mounts)
 // test: the_parts_are_given_back_by_a_start_over_them_that_is_refused
 // test: a_refused_start_says_what_the_rebuild_of_its_store_lost
 // test: the_upload_sessions_of_a_store_of_an_older_version_are_cancelled_before_it_is_removed
@@ -78,11 +78,30 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use konedrive_graph::drive::DriveClient;
+use konedrive_graph::drive::{DriveClient, DriveQuota};
 use konedrive_graph::pool::TransferPool;
 use konedrive_tree::{DriveId, FullListingCause, RebuildLoss, Store, StoreOrigin};
 
+use tokio_util::sync::CancellationToken;
+
+use super::access_mode_change::apply_wanted_access_mode;
 use super::SyncTasks;
+use crate::desktop::thumbs::ThumbnailFiller;
+use crate::listing::listing_cycle::{ListingCycle, ListingCycleSetup};
+use crate::listing::listing_poller::ListingPoller;
+use crate::mount::{ItemMountError, ItemMountSetup};
+use crate::onedrive_steps::content_upload::ContentUpload;
+use crate::onedrive_steps::lost_answers::LostAnswers;
+use crate::onedrive_steps::made_items::MadeItems;
+use crate::onedrive_steps::name_holders::NameHolders;
+use crate::onedrive_steps::session_cancellations::SessionCancellations;
+use crate::onedrive_steps::{GraphAccess, OneDriveSteps};
+use crate::status::snapshot::{LocalScan, ScanState};
+use crate::sync_parts::onedrive_space::SpaceChange;
+use crate::sync_parts::sending_holds::SendingHolds;
+use crate::sync_plan_task::row_steps::RowSteps;
+use crate::sync_plan_task::step_runners::{RunningFuture, StepRunners};
+use crate::sync_plan_task::{SyncPlanTask, SyncPlanTaskParts};
 use crate::account::quota::Quota;
 use crate::conditions::running::Running;
 use crate::config::Mode;
@@ -292,7 +311,158 @@ pub struct RefusedStart {
 /// here: they are given back in [`RefusedStart::kept`], and with them only 5 and 6 can be
 /// reached. `RefusedStart::rebuild_loss` is what stage 1 answered.
 pub async fn start_folder_sync(input: FolderStartInput) -> Result<StartedFolder, RefusedStart> {
-    todo!()
+    let mut input = input;
+    if let Some(kept) = input.kept.take() {
+        return match start_sync_over_parts(&input, kept, StoreOrigin::Kept).await {
+            Ok(started) => Ok(started),
+            Err((refusal, kept)) => Err(RefusedStart { refusal, rebuild_loss: None, kept: Some(kept) }),
+        };
+    }
+    cancel_upload_sessions_of_old_store(&input.tree_db, &input.drive).await;
+    let (store, store_origin) = match open_folder_store(&input.tree_db).await {
+        Ok(opened) => opened,
+        Err(refusal) => return Err(RefusedStart { refusal, rebuild_loss: None, kept: None }),
+    };
+    let rebuild_loss = match &store_origin {
+        StoreOrigin::MadeEmpty { loss } => *loss,
+        StoreOrigin::Kept => None,
+    };
+    let refuse = |refusal: StartRefusal| RefusedStart { refusal, rebuild_loss, kept: None };
+    attach_activity_log(&input, &store).await;
+
+    let store_drive = match store.call(|store| store.drive_id()).await {
+        Ok(store_drive) => store_drive.and_then(DriveId::new),
+        Err(error) => {
+            let_go_of_store(&input.report, store).await;
+            return Err(refuse(StartRefusal::Store(format!("the drive of the tree store cannot be read: {error}"))));
+        }
+    };
+    let CheckDrive::Known(drive_id) = decide_check_drive(store_drive, input.recorded_drive.clone(), input.account_drive.clone()) else {
+        let_go_of_store(&input.report, store).await;
+        return Err(refuse(StartRefusal::DriveNotKnown));
+    };
+
+    let sync_plan_wake = Arc::new(SyncPlanWake::new());
+    let running_steps = Arc::new(RunningSteps::new());
+    let published_plan = Arc::new(PublishedPlan::new());
+    let setup = ItemMountSetup {
+        root: input.root.clone(),
+        store_path: input.tree_db.clone(),
+        store: store.clone(),
+        drive_id: drive_id.clone(),
+        source: Arc::clone(&input.source),
+        report: input.report.clone(),
+        pool: Arc::clone(&input.pool),
+        split_download_share: Arc::clone(&input.split_download_share),
+        download_after: input.download_after,
+        tree_lock: Arc::clone(&input.tree_lock),
+        ignore: Arc::clone(&input.ignore),
+        sync_plan_wake: Arc::clone(&sync_plan_wake),
+        running_steps: Arc::clone(&running_steps),
+        published_plan: Arc::clone(&published_plan),
+        take_down_report: Arc::clone(&input.take_down_report),
+        clock: Arc::clone(&input.clock),
+    };
+    let check_began_at = (input.clock)();
+    input.state.update(|state| state.local.scan = describe_running_check(&state.local.scan, check_began_at));
+    let built = ItemMount::build(setup).await;
+    let check_ended_at = (input.clock)();
+    // TODO: contract — `LocalScan` has no member for how much the check left (`StartCheckFindings`: the held items, the unresolved paths; status/snapshot.rs): the findings are in the journal alone (`start_check`), and the counts of directories and files stay 0, which the check does not count.
+    input.state.update(|state| state.local.scan = describe_finished_check(&state.local.scan, check_ended_at));
+    let (mount, kernel_requests) = match built {
+        Ok(built) => built,
+        Err(error) => {
+            let_go_of_store(&input.report, store).await;
+            return Err(refuse(match error {
+                ItemMountError::Store(error) => StartRefusal::Store(format!("the check of {} at start could not write the tree store: {error}", input.root.path.display())),
+                ItemMountError::Io(error) => StartRefusal::Mount(format!("{} cannot be mounted: {error}", input.root.path.display())),
+            }));
+        }
+    };
+    // Off the runtime's threads: it mounts, and asks the mount for its own number.
+    let served = {
+        let mount = Arc::clone(&mount);
+        tokio::task::spawn_blocking(move || mount.serve(kernel_requests)).await
+    };
+    let served = match served {
+        Ok(served) => served.map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    if let Err(error) = served {
+        stop_built_mount(mount).await;
+        let_go_of_store(&input.report, store).await;
+        return Err(refuse(StartRefusal::Mount(format!("{} cannot be mounted: {error}", input.root.path.display()))));
+    }
+    if let Err(refusal) = request_first_listing(&store, &store_origin, mount.start_check_findings()).await {
+        stop_built_mount(mount).await;
+        let_go_of_store(&input.report, store).await;
+        return Err(refuse(refusal));
+    }
+
+    let parts = KeptFolderParts { store, mount, sync_plan_wake, running_steps, published_plan, drive_id };
+    match start_sync_over_parts(&input, parts, store_origin).await {
+        Ok(started) => Ok(started),
+        Err((refusal, parts)) => {
+            // Made in this start: ended here, and nothing of them is kept.
+            let KeptFolderParts { store, mount, .. } = parts;
+            stop_built_mount(mount).await;
+            let_go_of_store(&input.report, store).await;
+            Err(refuse(refusal))
+        }
+    }
+}
+
+/// Why the check at start runs, as `LocalScan.Reason` says it.
+const CHECK_REASON: &str = "start";
+
+/// What `LocalScan` says while the check at start runs, which began at `began_at`: the
+/// last finished one's end and length stay. Pure.
+fn describe_running_check(last: &LocalScan, began_at: i64) -> LocalScan {
+    LocalScan { state: ScanState::Running, reason: CHECK_REASON.to_owned(), started: began_at, directories: 0, files: 0, expected: 0, finished: last.finished, took: last.took }
+}
+
+/// What `LocalScan` says once the check that `running` describes ended at `ended_at`,
+/// however it ended. Pure.
+fn describe_finished_check(running: &LocalScan, ended_at: i64) -> LocalScan {
+    LocalScan { state: ScanState::Idle, finished: ended_at, took: u32::try_from(ended_at.saturating_sub(running.started)).unwrap_or(0), ..running.clone() }
+}
+
+/// Stage 1's second half: the activity log kept in `store` from now on
+/// (`Activity::attach`, off the runtime's threads) and the store's `last_checked` put
+/// into `state`. Neither fails the start: a warning, and the time stays as it was.
+async fn attach_activity_log(input: &FolderStartInput, store: &Store) {
+    let (activity, attached, folder) = (Arc::clone(&input.report.activity), store.clone(), input.root.path.clone());
+    let read = tokio::task::spawn_blocking(move || {
+        activity.attach(attached.clone(), &folder);
+        attached.call_blocking(|store| store.last_checked())
+    });
+    match read.await {
+        Ok(Ok(last_checked)) => input.state.update(|state| state.cycle.last_checked = last_checked.unwrap_or(0)),
+        Ok(Err(error)) => tracing::warn!("the time of the last listing cannot be read from the tree store: {error}"),
+        Err(error) => tracing::warn!("the task attaching the activity log to the tree store failed: {error}"),
+    }
+}
+
+/// What a refusal undoes of the store this start opened: the activity log detached
+/// (`Activity::detach`, off the runtime's threads), and the store dropped.
+async fn let_go_of_store(report: &Report, store: Store) {
+    let activity = Arc::clone(&report.activity);
+    if let Err(error) = tokio::task::spawn_blocking(move || activity.detach()).await {
+        tracing::warn!("the task detaching the activity log failed: {error}");
+    }
+    drop(store);
+}
+
+/// What a refusal undoes of the mount this start built: stopped, served or not, and
+/// dropped, off the runtime's threads (its stop joins a thread and unmounts).
+async fn stop_built_mount(mount: Arc<ItemMount>) {
+    let stopped = tokio::task::spawn_blocking(move || {
+        mount.stop();
+        drop(mount);
+    });
+    if let Err(error) = stopped.await {
+        tracing::warn!("the task stopping the mount a refused start built failed: {error}");
+    }
 }
 
 /// Stages 5 to 7 over the parts of a folder: the holds made and the access mode applied
@@ -308,7 +478,19 @@ pub async fn start_folder_sync(input: FolderStartInput) -> Result<StartedFolder,
 /// [`start_folder_sync`] — gives back the ones it was given as kept and ends the ones it
 /// made.
 async fn start_sync_over_parts(input: &FolderStartInput, parts: KeptFolderParts, store_origin: StoreOrigin) -> Result<StartedFolder, (StartRefusal, KeptFolderParts)> {
-    todo!()
+    let sending_holds = Arc::new(SendingHolds::new(Arc::clone(&parts.sync_plan_wake)));
+    let standing_holds = &input.standing_holds;
+    sending_holds.set_paused(standing_holds.paused_until);
+    sending_holds.set_signed_out(standing_holds.is_signed_out);
+    sending_holds.set_writes_refusal(standing_holds.writes_refusal.clone());
+    if let Err(error) = apply_wanted_access_mode(&parts.mount, &sending_holds, input.wanted).await {
+        return Err((StartRefusal::Mount(error), parts));
+    }
+    let onedrive_space = Arc::new(OneDriveSpace::new(input.quota.clone()));
+    read_quota_before_first_plan(&input.drive, &onedrive_space, &parts.store, (input.clock)()).await;
+    let tasks = start_sync_tasks(input, &parts.store, &parts.mount, &parts.sync_plan_wake, &parts.running_steps, &parts.published_plan, &sending_holds, &onedrive_space, &parts.drive_id);
+    let KeptFolderParts { store, mount, sync_plan_wake, running_steps, published_plan, drive_id } = parts;
+    Ok(StartedFolder { store, mount, tasks, sync_plan_wake, running_steps, published_plan, onedrive_space, drive_id, store_origin })
 }
 
 /// How long the start waits for OneDrive to cancel the upload sessions of a store of an
@@ -334,20 +516,48 @@ pub enum CheckDrive {
 /// then is dropped with its request, logged as not cancelled, and left to expire. No
 /// task outlives this function.
 async fn cancel_upload_sessions_of_old_store(tree_db: &Path, drive: &DriveClient) {
-    todo!()
+    let store_path = tree_db.to_path_buf();
+    let sessions = match tokio::task::spawn_blocking(move || konedrive_tree::list_old_store_upload_sessions(&store_path)).await {
+        Ok(Ok(sessions)) => sessions,
+        Ok(Err(error)) => return tracing::warn!("the upload sessions of the tree store at {} cannot be read, and are left to expire in OneDrive: {error}", tree_db.display()),
+        Err(error) => return tracing::warn!("the task reading the upload sessions of the tree store at {} failed: {error}", tree_db.display()),
+    };
+    if sessions.is_empty() {
+        return;
+    }
+    // All at once, and dropped together at the bound: no request outlives this function.
+    let cancels = futures_util::future::join_all(sessions.iter().map(|session| drive.cancel_upload(session)));
+    match tokio::time::timeout(OLD_SESSIONS_CANCELLED_WITHIN, cancels).await {
+        Ok(cancelled) => {
+            // An address of a session lets whoever has it write: none is put into the journal.
+            for error in cancelled.iter().filter_map(|cancelled| cancelled.as_ref().err()) {
+                tracing::warn!("an upload session of the tree store of an older version could not be cancelled, and is left to expire in OneDrive: {error}");
+            }
+            tracing::info!("{} of {} upload sessions of the tree store of an older version are cancelled in OneDrive", cancelled.iter().filter(|cancelled| cancelled.is_ok()).count(), sessions.len());
+        }
+        Err(_) => tracing::warn!("OneDrive did not answer the cancelling of {} upload sessions of the tree store of an older version within {} s: those not cancelled are left to expire", sessions.len(), OLD_SESSIONS_CANCELLED_WITHIN.as_secs()),
+    }
 }
 
 /// Opens the folder's store, making it or rebuilding it where
 /// `konedrive_tree::decide_old_store` says, and answers how it came to be
 /// (`TreeStore::open_with_origin`). Off the runtime.
 async fn open_folder_store(tree_db: &Path) -> Result<(Store, StoreOrigin), StartRefusal> {
-    todo!()
+    let store_path = tree_db.to_path_buf();
+    match tokio::task::spawn_blocking(move || konedrive_tree::TreeStore::open_with_origin(&store_path)).await {
+        Ok(Ok((store, store_origin))) => Ok((Store::new(store), store_origin)),
+        Ok(Err(error)) => Err(StartRefusal::Store(format!("the tree store cannot be opened: {error}"))),
+        Err(error) => Err(StartRefusal::Store(format!("the tree store cannot be opened: {error}"))),
+    }
 }
 
 /// The drive for the check: the store's own (`meta` `drive_id`), else the one
 /// `config.toml` recorded for the account, else the one the account's profile says. Pure.
 pub fn decide_check_drive(store_drive: Option<DriveId>, recorded_drive: Option<DriveId>, account_drive: Option<DriveId>) -> CheckDrive {
-    todo!()
+    match store_drive.or(recorded_drive).or(account_drive) {
+        Some(drive) => CheckDrive::Known(drive),
+        None => CheckDrive::NotKnownYet,
+    }
 }
 
 /// Whether a full listing is asked for at this start, and why: a store that was kept, in
@@ -355,14 +565,18 @@ pub fn decide_check_drive(store_drive: Option<DriveId>, recorded_drive: Option<D
 /// delta link and lists in full by itself. Pure. Not asked for a folder that was started
 /// with the parts it kept: its check ran at an earlier start, which asked already.
 pub fn decide_first_listing(origin: &StoreOrigin, findings: &StartCheckFindings) -> Option<FullListingCause> {
-    todo!()
+    match origin {
+        StoreOrigin::Kept if findings.bound_by_mark_count > 0 => Some(FullListingCause::BoundByMarkAtStart),
+        StoreOrigin::Kept | StoreOrigin::MadeEmpty { .. } => None,
+    }
 }
 
 /// Writes [`decide_first_listing`]'s answer (`ItemStore::request_full_listing`). After the
 /// mount was built, before the listing's poller starts. A write that fails is
 /// `StartRefusal::Store`.
 async fn request_first_listing(store: &Store, origin: &StoreOrigin, findings: &StartCheckFindings) -> Result<(), StartRefusal> {
-    todo!()
+    let Some(cause) = decide_first_listing(origin, findings) else { return Ok(()) };
+    store.call(move |store| store.item_store().request_full_listing(cause)).await.map_err(|error| StartRefusal::Store(format!("the full listing the check at start needs cannot be asked for: {error}")))
 }
 
 /// Reads the account's quota once, so that the first plan knows whether OneDrive is full
@@ -373,7 +587,15 @@ async fn request_first_listing(store: &Store, origin: &StoreOrigin, findings: &S
 /// OneDrive not full no later read of the quota is due that would. A forgetting that
 /// fails is a warning.
 async fn read_quota_before_first_plan(drive: &DriveClient, space: &OneDriveSpace, store: &Store, now: i64) {
-    todo!()
+    let quota = match drive.quota().await {
+        Ok(quota) => quota,
+        Err(error) => return tracing::warn!("cannot read the OneDrive quota before the first plan: {error}"),
+    };
+    if let SpaceChange::HasSpace { free_space, .. } = space.apply_quota(&quota, now) {
+        if let Err(error) = store.call(move |store| store.step_memory().forget_fitting_space_refusals(free_space)).await {
+            tracing::warn!("cannot forget the refusals for lack of space that fit now: {error}");
+        }
+    }
 }
 
 /// Makes the parts of the sync, each once, in this order, and starts the tasks. Nothing
@@ -409,7 +631,71 @@ async fn read_quota_before_first_plan(drive: &DriveClient, space: &OneDriveSpace
 /// (`SendingHold::FirstListingNotEnded`).
 #[allow(clippy::too_many_arguments)]
 fn start_sync_tasks(input: &FolderStartInput, store: &Store, mount: &Arc<ItemMount>, sync_plan_wake: &Arc<SyncPlanWake>, running_steps: &Arc<RunningSteps>, published_plan: &Arc<PublishedPlan>, sending_holds: &Arc<crate::sync_parts::sending_holds::SendingHolds>, onedrive_space: &Arc<OneDriveSpace>, drive_id: &DriveId) -> SyncTasks {
-    todo!()
+    let stop = CancellationToken::new();
+    let graph = GraphAccess { drive: input.drive.clone(), drive_id: drive_id.clone(), store: store.clone(), clock: Arc::clone(&input.clock) };
+    let session_cancellations = SessionCancellations::new(graph.clone());
+    let lost_answers = LostAnswers::new(graph.clone(), Arc::clone(sending_holds));
+    let made_items = MadeItems::new(graph.clone());
+    let name_holders = NameHolders::new(graph.clone(), session_cancellations.clone());
+    let content_upload = ContentUpload::new(graph.clone(), lost_answers.clone(), Arc::clone(sending_holds), Arc::clone(onedrive_space), Arc::clone(running_steps), input.limits.clone());
+    let onedrive_steps = Arc::new(OneDriveSteps::new(graph, Arc::clone(&input.tree_lock), Arc::clone(mount.item_content_files()), content_upload, name_holders, lost_answers, made_items, Arc::clone(running_steps), Arc::clone(onedrive_space)));
+    let row_steps = Arc::new(RowSteps::new(store.clone(), Arc::clone(&input.tree_lock), Arc::clone(mount.item_content_files()), Arc::clone(&input.ignore), Arc::clone(running_steps)));
+    let folder_steps = make_folder_steps(mount.folder_step_parts());
+    let step_runners = StepRunners::of_runners(Arc::clone(&folder_steps), onedrive_steps, row_steps, input.lease.clone(), stop.clone());
+
+    // The thumbnail filler's nudge: the cycle's at a listing's end, the plan's task's after a round that changed the folder.
+    let thumbnail_nudge = Arc::new(tokio::sync::Notify::new());
+    let listing_cycle = ListingCycle::new(ListingCycleSetup {
+        drive: input.drive.clone(),
+        store: store.clone(),
+        sync_plan_wake: Arc::clone(sync_plan_wake),
+        state: input.state.clone(),
+        drive_record: input.drive_record.clone(),
+        neighbours: input.neighbours.clone(),
+        report: input.report.clone(),
+        after_listing: Some(Arc::clone(&thumbnail_nudge)),
+    });
+    let listing_poller = ListingPoller::start(listing_cycle, input.schedule.clone(), Arc::clone(&input.running));
+    let poll = listing_poller.handle();
+    let thumbnail_filler = input.thumbnail_cache.clone().map(|cache| ThumbnailFiller::new(input.drive.clone(), store.clone(), input.root.clone(), cache, Arc::clone(&input.running)).spawn(Arc::clone(&thumbnail_nudge), stop.clone()));
+
+    let quota_drive = input.drive.clone();
+    let quota_reader: Arc<dyn Fn() -> RunningFuture<Option<DriveQuota>> + Send + Sync> = Arc::new(move || {
+        let drive = quota_drive.clone();
+        Box::pin(async move {
+            match drive.quota().await {
+                Ok(quota) => Some(quota),
+                Err(error) => {
+                    tracing::warn!("cannot read the OneDrive quota: {error}");
+                    None
+                }
+            }
+        })
+    });
+    let plan = SyncPlanTask::new(SyncPlanTaskParts {
+        store: store.clone(),
+        sync_plan_wake: Arc::clone(sync_plan_wake),
+        step_runners,
+        session_cancellations,
+        running_steps: Arc::clone(running_steps),
+        sending_holds: Arc::clone(sending_holds),
+        onedrive_space: Arc::clone(onedrive_space),
+        published_plan: Arc::clone(published_plan),
+        poll: poll.clone(),
+        pool: Arc::clone(&input.pool),
+        state: input.state.clone(),
+        settings: input.settings.clone(),
+        start_check: mount.start_check_findings().clone(),
+        folder: input.root.path.clone(),
+        clock: Arc::clone(&input.clock),
+        quota_reader,
+        activity: Arc::clone(&input.report.activity),
+        marks_announcer: Arc::new(move |items| folder_steps.announce_marks_changed(items)),
+        after_folder_steps: thumbnail_filler.is_some().then(|| Arc::clone(&thumbnail_nudge)),
+        unsent_count_report: Arc::clone(&input.unsent_count_report),
+    });
+    let plan_loop = tokio::spawn(Arc::clone(&plan).run(stop.clone()));
+    SyncTasks { listing_poller: Some(listing_poller), poll, plan, plan_loop, thumbnail_filler, sending_holds: Arc::clone(sending_holds), sync_plan_wake: Arc::clone(sync_plan_wake), stop }
 }
 
 /// The runner of the plan's steps towards the folder, made of the parts the mount hands out
@@ -418,5 +704,6 @@ fn start_sync_tasks(input: &FolderStartInput, store: &Store, mount: &Arc<ItemMou
 /// mount kept or built in this one alike: the runner owns no state, so a second one over the
 /// same parts is the first. Cannot fail.
 fn make_folder_steps(parts: FolderStepParts) -> Arc<FolderSteps> {
-    todo!()
+    let FolderStepParts { place_changes, store, write_operation_thread, upload_rules, item_handles, inotify_bridge, downloader, download_states, range_fetcher, mount_take_down, folder } = parts;
+    Arc::new(FolderSteps::new(place_changes, store, write_operation_thread, upload_rules, item_handles, inotify_bridge, downloader, download_states, range_fetcher, mount_take_down, folder))
 }
