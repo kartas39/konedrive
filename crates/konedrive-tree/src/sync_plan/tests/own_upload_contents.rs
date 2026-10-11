@@ -30,26 +30,52 @@ fn a_content_the_folders_own_upload_left_in_onedrive_is_sent_again() {
     assert_eq!(answer(&given, 4), folder_step(FolderStep::TakeOneDriveContent { item: versions(&given, 4) }), "not told: OneDrive's is taken");
 
     given.own_upload_contents = [own_upload(2, left()), own_upload(3, left()), own_upload(4, left())].into();
-    for number in [2, 3, 4] {
+    for number in [2, 3] {
         assert_eq!(answer(&given, number), onedrive_step(OneDriveStep::SendContent { item: versions(&given, number) }), "item {number}");
     }
+    assert_eq!(answer(&given, 4), row_step(RowStep::HashLocalContent { item: versions(&given, 4) }), "the row is not unsent: made so first");
     // What keeps a content from being sent keeps this one too.
     given.is_onedrive_full = true;
     assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::User(Reason::WaitingForSpace)));
 }
 
-/// The content put back to the one agreed on is sent from a row that is not unsent: it
-/// waits for its next try as any step towards OneDrive, the try being the caller's to
-/// keep, as the store has no stamp to keep it under.
+/// The content put back to the one agreed on, a row per way it stands here
+/// (`AgreedContentHere`). The clean copy is hashed, which makes the row unsent: the store
+/// keeps an upload session and failed tries only for an unsent row. Hashed, the content is
+/// a content of this folder's own and is sent as any unsent change.
 #[test]
-fn a_content_sent_again_from_a_row_that_is_not_unsent_waits_until_its_next_try() {
-    let mut given = input(vec![with_content_in_onedrive(on_disk(synced_file(4, ROOT, "put-back.txt")), left())]);
+fn a_content_put_back_to_the_one_agreed_on_is_hashed_and_then_sent_as_an_unsent_change() {
+    let file = |number: i64, name: &str| with_content_in_onedrive(synced_file(number, ROOT, name), left());
+    let mut hashed_and_unsent = with_content_here(file(5, "hashed.txt"), ContentVersion::Hashed { size: 3, mtime: 100, mtime_nsec: 0, hash: Some("h5".to_owned()), ctag: None });
+    hashed_and_unsent.synced_content = Some(hashed("h5"));
+    let mut given = input(vec![on_disk(file(4, "put-back.txt")), hashed_and_unsent, file(6, "freed-up.txt")]);
+    given.own_upload_contents = [own_upload(4, left()), own_upload(5, left()), own_upload(6, left())].into();
+    assert_eq!(versions(&given, 4).unsent_since, None);
+    assert_eq!(answer(&given, 4), row_step(RowStep::HashLocalContent { item: versions(&given, 4) }));
+    assert!(versions(&given, 5).unsent_since.is_some());
+    assert_eq!(answer(&given, 5), onedrive_step(OneDriveStep::SendContent { item: versions(&given, 5) }), "what the hash left: unsent, the same bytes");
+    // With nothing of it on disk there is nothing to hash: sent from the row as it is, and never taken as a change of OneDrive's.
+    assert_eq!(versions(&given, 6).content_presence, ContentPresence::NotOnDisk);
+    assert_eq!(answer(&given, 6), onedrive_step(OneDriveStep::SendContent { item: versions(&given, 6) }));
+    // The sending waits for its next try as any step towards OneDrive.
+    given.next_tries = [((id(5), TriedStep::TowardsOneDrive), NextTry { not_before: given.now + 30, reason: Reason::Hash })].into();
+    assert_eq!(answer(&given, 5), Answer::Wait(WaitReason::Time { until: given.now + 30, reason: Reason::Hash }));
+}
+
+/// A content of this folder's own that is the one agreed on, with no cTag, cannot be made
+/// unsent by a hash: it is sent from the row as it is, and waits for its next try, which
+/// the caller keeps.
+#[test]
+fn a_content_agreed_on_that_carries_no_ctag_is_sent_from_a_row_that_is_not_unsent() {
+    let mut merged = on_disk(with_content_in_onedrive(synced_file(4, ROOT, "merged.txt"), left()));
+    let own = ContentVersion::Hashed { size: 3, mtime: 100, mtime_nsec: 0, hash: Some("h4".to_owned()), ctag: None };
+    (merged.local.as_mut().unwrap().content, merged.synced_content) = (Some(own.clone()), Some(own));
+    let mut given = input(vec![merged]);
     given.own_upload_contents = [own_upload(4, left())].into();
     assert_eq!(versions(&given, 4).unsent_since, None);
+    assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendContent { item: versions(&given, 4) }));
     given.next_tries = [((id(4), TriedStep::TowardsOneDrive), NextTry { not_before: given.now + 30, reason: Reason::Hash })].into();
     assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::Time { until: given.now + 30, reason: Reason::Hash }));
-    given.now += 30;
-    assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendContent { item: versions(&given, 4) }), "the time has come");
 }
 
 /// The fact counts only while the row's OneDrive content is the one it names: once a

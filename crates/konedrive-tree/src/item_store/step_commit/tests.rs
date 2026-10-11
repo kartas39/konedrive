@@ -500,6 +500,25 @@ fn a_local_content_hashed_is_told_by_its_hash_with_the_size_and_the_time_it_had(
     assert_eq!(row(&mut store, file).local.unwrap().content, Some(ContentVersion::Hashed { size: 5, mtime: 200, mtime_nsec: 7, hash: Some("h5".to_owned()), ctag: None }));
 }
 
+/// What the plan relies on where the content here is the one agreed on and must be sent
+/// (an own upload's leftover in OneDrive): hashed, the clean copy is a content of this
+/// folder's own, with no cTag, which is not the one agreed on, and the row is unsent.
+#[test]
+fn a_clean_copy_that_is_hashed_is_a_content_of_the_folders_own_and_its_row_unsent() {
+    let mut store = store_with_listed_root();
+    let file = show_file(&mut store, "A", "a.txt");
+    store.item_store().set_content_presence(file, ContentPresence::OnDisk).unwrap();
+    let shown = row(&mut store, file);
+    assert!(agrees(&shown) && shown.unsent_since.is_none());
+    assert!(matches!(shown.local.as_ref().unwrap().content, Some(ContentVersion::Hashed { ctag: Some(_), .. })), "{shown:?}");
+
+    commit(&mut store, file, |items, planned_from| items.commit_hash_local_content(planned_from, "h-A"));
+    let hashed = row(&mut store, file);
+    assert!(matches!(hashed.local.as_ref().unwrap().content, Some(ContentVersion::Hashed { ctag: None, .. })), "{hashed:?}");
+    assert_eq!((hashed.synced_content.clone(), hashed.onedrive.clone().unwrap().content), (shown.synced_content.clone(), shown.onedrive.clone().unwrap().content), "nothing agreed on or of OneDrive's changed");
+    assert!(hashed.unsent_since.is_some(), "the row is unsent: a sending can keep its session and its tries");
+}
+
 #[test]
 fn a_place_both_sides_moved_the_item_to_is_the_place_agreed_on() {
     let mut store = store_with_listed_root();

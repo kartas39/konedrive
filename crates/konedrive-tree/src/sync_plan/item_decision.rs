@@ -686,6 +686,28 @@ pub(crate) fn decide_place(case: &ItemCase<'_>, here: PlaceChange, in_onedrive: 
     }
 }
 
+/// How the content here stands that is the one agreed on while OneDrive has what an upload
+/// of this folder left: what the row can be made unsent by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgreedContentHere {
+    /// Nothing of it is on disk (its space was freed up): there is nothing to hash.
+    NotOnDisk,
+    /// The copy of what OneDrive had, with its cTag: hashed here, it is a content of this
+    /// folder's own, which is not the one agreed on any more.
+    CleanCopy,
+    /// A content of this folder's own already, with no cTag: hashing it changes nothing.
+    HashedHere,
+}
+
+/// [`AgreedContentHere`] of `item`, a file whose local content is the one agreed on.
+fn find_agreed_content_here(item: &Item) -> AgreedContentHere {
+    match item.local.as_ref().and_then(|local| local.content.as_ref()) {
+        _ if item.content_presence == ContentPresence::NotOnDisk => AgreedContentHere::NotOnDisk,
+        Some(crate::model::ContentVersion::Hashed { ctag: Some(_), .. }) => AgreedContentHere::CleanCopy,
+        Some(crate::model::ContentVersion::Hashed { ctag: None, .. } | crate::model::ContentVersion::ChangedHere { .. }) | None => AgreedContentHere::HashedHere,
+    }
+}
+
 /// The table "its content", for a file both sides have.
 ///
 /// - Same on both sides: nothing, unless the content versions are not one yet though the
@@ -702,7 +724,13 @@ pub(crate) fn decide_place(case: &ItemCase<'_>, here: PlaceChange, in_onedrive: 
 /// - Not the one agreed on in OneDrive, and what an upload of this folder left there
 ///   ([`OneDriveContentOrigin::OwnUpload`]): no change of OneDrive's. The local content
 ///   stands and is sent, whatever was done to it here; the file does not take OneDrive's,
-///   and nothing is kept beside it.
+///   and nothing is kept beside it. Where the content here is the one agreed on (the user
+///   put it back after the upload) the row is not unsent, and a sending needs an unsent
+///   row: the store keeps what a sending remembers — its failed tries, its upload session
+///   — under the stamp of the unsent change. So the content is hashed first
+///   (`HashLocalContent`): written as a content of this folder's own, with no cTag, it is
+///   not the one agreed on any more, the row is unsent, and the plan made after it sends
+///   it ([`AgreedContentHere`]).
 pub(crate) fn decide_content(case: &ItemCase<'_>, here: ContentChange, in_onedrive: ContentChange) -> ItemDecision {
     let item = case.item;
     let local = item.local.as_ref().and_then(|local| local.content.as_ref());
@@ -711,8 +739,12 @@ pub(crate) fn decide_content(case: &ItemCase<'_>, here: ContentChange, in_onedri
         (ContentChange::Same, ContentChange::Same, _) if local == item.synced_content.as_ref() && is_same_content_but_for_time(onedrive, item.synced_content.as_ref()) => ItemDecision::NothingToDo,
         (ContentChange::Same, ContentChange::Same, _) => row_step(RowStep::AgreeOnContent { item: case.versions() }),
         (ContentChange::Same, ContentChange::Changed | ContentChange::NotKnownWithoutHash, OneDriveContentOrigin::OneDrive) => folder_step(FolderStep::TakeOneDriveContent { item: case.versions() }),
-        // Where the content here is the one agreed on (the user put it back after the upload) the row is not unsent: a failed try has no stamp for the store to keep it under, and is the caller's to keep and to tell, as for a move sent from such a row (`decide_place`).
-        // TODO: the store keeps an upload session only under the stamp of an unsent change (`StepMemory::remember_upload_session` answers `Abandoned` for a row with none), and every content that is not empty is sent through a session: the daemon's step for this case ends as `ContentChanged` at every try, and the file keeps in OneDrive what the upload left. What is missing: either the store keeps a session for a row that is not unsent, by the content it sends, or the row is made unsent when the debt is found (a step of the rows that forgets the content agreed on).
+        // What an upload of this folder left in OneDrive, and the content here is the one agreed on (the user put it back after the upload): the row is not unsent, so nothing of a sending can be kept for it.
+        (ContentChange::Same, ContentChange::Changed | ContentChange::NotKnownWithoutHash, OneDriveContentOrigin::OwnUpload) if item.unsent_since.is_none() => match find_agreed_content_here(item) {
+            AgreedContentHere::CleanCopy => row_step(RowStep::HashLocalContent { item: case.versions() }),
+            // TODO: two rows that a hash cannot make unsent are sent as they are, from a row with no stamp, for which the store keeps no upload session (`StepMemory::remember_upload_session` answers `Abandoned`): a content that is not empty is then never sent, and the step waits longer after every try. One whose content is not on disk (its space was freed up after the user put the agreed content back) has nothing to hash or to send: check whether such a file is to take what OneDrive has, which the rule "an own upload's content is no change of OneDrive's" forbids today, and fix if needed. One whose content here carries no cTag and is the one agreed on (two new files that were merged) stays as it is when hashed: check whether a merge can leave such a row with an own upload's content in OneDrive, and fix if needed.
+            AgreedContentHere::NotOnDisk | AgreedContentHere::HashedHere => find_decision_not_to_send(case, SentPart::Content).unwrap_or_else(|| onedrive_step(OneDriveStep::SendContent { item: case.versions() })),
+        },
         (ContentChange::Changed | ContentChange::NotKnownWithoutHash, ContentChange::Same, _) | (_, ContentChange::Changed | ContentChange::NotKnownWithoutHash, OneDriveContentOrigin::OwnUpload) => {
             find_decision_not_to_send(case, SentPart::Content).unwrap_or_else(|| onedrive_step(OneDriveStep::SendContent { item: case.versions() }))
         }
