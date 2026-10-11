@@ -429,7 +429,9 @@ pub struct QueueTotals {
 ///   or is too big stays in both, as today (`status::totals` takes it off what is left to
 ///   upload).
 ///
-/// Each saturates at 0 and at the type's largest.
+/// Each saturates at 0 and at the type's largest. A pause changes none of them: the
+/// states and the reasons are decided under `sending` with a pause taken off, so what
+/// waits for space is counted through a pause as before it.
 ///
 /// The owner decided `HeldCount`: a held mass removal of a directory is ONE, the
 /// directory, whatever is below it; the rows below it are counted nowhere while it is
@@ -443,6 +445,7 @@ pub struct QueueTotals {
 /// confirmations written, the directory and all below it — which is another number than
 /// this one, and is meant to be.
 pub fn count_queue(totals: &QueueTotals, sending: &QueueConditions) -> QueueCounts {
+    let sending = &describe_conditions_without_pause(sending);
     let refused_for_good: BTreeSet<LocalItemId> = totals.refused_for_good.iter().copied().collect();
     let refused_for_space: BTreeSet<LocalItemId> = totals.refused_for_space.iter().map(|(item, _)| *item).collect();
     let (mut blocked, mut held, mut space_waiting, mut space_waiting_bytes) = (refused_for_good.len() as u64, 0u64, 0u64, 0u64);
@@ -496,8 +499,10 @@ pub fn count_queue(totals: &QueueTotals, sending: &QueueConditions) -> QueueCoun
 /// The reason an entry is kept back for, when it is: the reason of
 /// [`decide_queue_reason`] for an entry that is `blocked`, `waiting` or `retry` with a
 /// reason, and for a `ready` one whose reason waits for space; `Reason::Blocked` for a
-/// `blocked` one with none. `None` for one that goes up by itself, runs, is paused, or is
-/// held by the guard (which has its own question). Pure. Today's `kept_reason`
+/// `blocked` one with none. `None` for one that goes up by itself, runs, or is held by
+/// the guard (which has its own question). A pause changes nothing of it: the summary and
+/// the two lists give this the state and the conditions as they are with no pause
+/// (`find_kept_back`), so `state` is never `paused` there. Pure. Today's `kept_reason`
 /// (`upload/kept_back.rs:60`).
 pub fn decide_kept_back_reason(kind: UnsentKind, state: QueueState, entry: &UnsentEntry, sending: &QueueConditions) -> Option<Reason> {
     let (reason, _) = decide_queue_reason(kind, state, entry, sending);
@@ -647,9 +652,19 @@ fn find_content_size(kind: UnsentKind, item: &Item) -> u64 {
     item.local.as_ref().and_then(|local| local.content.as_ref()).map_or(0, ContentVersion::size)
 }
 
-/// The kind, the state and the reason `entry` is kept back for; `None` for one that is no
-/// entry or is not kept back ([`decide_kept_back_reason`]). Pure.
+/// `sending` with a pause taken off: the conditions what is kept back and the counts are
+/// decided under. A pause is a word of a row of `Changes()` and nothing else: what was
+/// kept back before it is kept back through it. Pure.
+fn describe_conditions_without_pause(sending: &QueueConditions) -> QueueConditions {
+    let hold = sending.hold.clone().filter(|hold| !matches!(hold, SendingHold::Paused { .. }));
+    QueueConditions { hold, ..sending.clone() }
+}
+
+/// The kind, the state and the reason `entry` is kept back for, as they are with no pause
+/// ([`describe_conditions_without_pause`]); `None` for one that is no entry or is not
+/// kept back ([`decide_kept_back_reason`]). Pure.
 fn find_kept_back(entry: &UnsentEntry, sending: &QueueConditions) -> Option<(UnsentKind, QueueState, Reason)> {
+    let sending = &describe_conditions_without_pause(sending);
     let kind = decide_unsent_kind(&entry.item)?;
     let state = decide_queue_state(entry, sending)?;
     let reason = decide_kept_back_reason(kind, state, entry, sending)?;
@@ -708,11 +723,16 @@ pub fn read_unsent_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemI
     let mut entries = Vec::new();
     let mut after = None;
     loop {
-        let wanted = if limit == 0 { READ_PAGE } else { (limit - entries.len()).min(READ_PAGE) };
+        // Rows below a held directory are read and left out: a page is then whole
+        // whatever `limit` is, so that passing them costs the same for every `limit`.
+        let wanted = if limit == 0 || !held_removal_counts.is_empty() { READ_PAGE } else { (limit - entries.len()).min(READ_PAGE) };
         let page = items.list_unsent(after, wanted)?;
         let Some(last_stamp) = page.last().and_then(|item| item.unsent_since) else { break };
         after = Some(last_stamp);
         for item in page {
+            if limit != 0 && entries.len() >= limit {
+                break;
+            }
             if !is_below_held_removal(answers.get(&item.local_item_id), held_removal_counts) {
                 entries.push(read_unsent_entry(items, item, answers, running, held_removal_counts)?);
             }
@@ -727,14 +747,26 @@ pub fn read_unsent_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemI
 /// The path of each of `entries`, relative to the root, by item: its local path
 /// (`ItemReader::find_path`), or for an item with no local version the path of its synced
 /// place (`ItemReader::find_synced_path`, MISSING-6.d). An entry that has neither has no
-/// path here. Called inside the `Store::read_items` that read the entries, for those of
+/// path here, and neither has one whose synced path the store refuses to tell (said once
+/// in the journal): any other error of the store fails the read. Called inside the `Store::read_items` that read the entries, for those of
 /// them a list of files names.
 pub fn read_entry_paths(items: &ItemReader<'_>, entries: &[&UnsentEntry]) -> Result<BTreeMap<LocalItemId, PathBuf>, TreeError> {
     let mut paths = BTreeMap::new();
     for entry in entries {
         let id = entry.item.local_item_id;
-        // TODO: check whether `find_synced_path`'s refusal (the directories a removal was agreed to be below end at none the folder shows) is to fail the whole answer of the bus, as here, or to leave the one entry without a path, and fix if needed.
-        let path = if entry.item.local.is_some() { items.find_path(id)? } else { items.find_synced_path(id)? };
+        let path = if entry.item.local.is_some() {
+            items.find_path(id)?
+        } else {
+            match items.find_synced_path(id) {
+                // One row whose synced places end at no directory the folder shows: that
+                // entry has no path and is left out; the answer of the bus stands.
+                Err(TreeError::Refused(refusal)) => {
+                    tracing::warn!("an unsent removal is left out of what the queue lists: {refusal}");
+                    None
+                }
+                found => found?,
+            }
+        };
         if let Some(path) = path {
             paths.insert(id, path);
         }
