@@ -7,7 +7,7 @@ use konedrivectl::choice::{choose, Source};
 use konedrivectl::text::accounts::{account_list_text, removed_text};
 use konedrivectl::text::formats::warning_text;
 use konedrivectl::text::refusals::{explain_account_error, explain_sync_error_in, AccountAction, Context, SyncAction};
-use konedrivectl::text::status::{decide_read_only_asked, mode_shown_text, read_only_asked_text, unsent_of_read_only_wish, SWITCH_CANCELLED};
+use konedrivectl::text::status::{decide_read_only_asked, mode_shown_text, read_only_asked_text, SWITCH_CANCELLED};
 
 use super::browser::{open_browser, spawn_browser};
 use crate::cli::AccountCmd;
@@ -78,11 +78,11 @@ async fn account_mode(daemon: &Daemon, option: Option<&str>, mode: Option<&str>,
     let (label, tag, prefix) = (chosen.account.label.clone(), chosen.tag(), chosen.prefix());
     let proxy = daemon.account(&chosen.account.path).await?;
     let Some(mode) = mode else {
-        print!("{}", mode_shown_text(&tag, &prefix, &proxy.mode().await?, &proxy.last_error().await?));
+        print!("{}", mode_shown_text(&tag, &prefix, &proxy.mode().await?, crate::read::read_only_wish(&proxy).await?, &proxy.last_error().await?));
         return Ok(());
     };
     // Read before the call: read-write asked of an account that waits to switch cancels the switch.
-    let was_switching = unsent_of_read_only_wish(&proxy.last_error().await?).is_some();
+    let was_switching = proxy.read_only_wanted().await?;
     let result = proxy.set_mode(mode, force).await;
     let url = result.map_err(|e| anyhow!(explain_account_error(AccountAction::SetMode(&label, mode, &prefix), &e)))?;
     if mode == "read-only" {
@@ -93,7 +93,7 @@ async fn account_mode(daemon: &Daemon, option: Option<&str>, mode: Option<&str>,
             .cache_properties(zbus::proxy::CacheProperties::No)
             .build()
             .await?;
-        let asked = decide_read_only_asked(&after.mode().await?, &after.last_error().await?);
+        let asked = decide_read_only_asked(&after.mode().await?, crate::read::read_only_wish(&after).await?);
         print!("{}", read_only_asked_text(&tag, &prefix, asked));
         return Ok(());
     }

@@ -1,6 +1,6 @@
 //! What the commands read of the daemon into the types `text/` prints.
 
-use konedrive_dbus::accounts::FolderProxies;
+use konedrive_dbus::accounts::{AccountProxy, FolderProxies};
 use konedrive_dbus::Refusal;
 use konedrivectl::text::accounts::AccountRow;
 use konedrivectl::text::status::{AccountStatus, FolderStatus, LocalScan};
@@ -44,6 +44,15 @@ async fn decided<T>(read: impl std::future::Future<Output = zbus::Result<T>>) ->
     }
 }
 
+/// How many changes an account that waits to switch to read-only has still to send
+/// (`Account.ReadOnlyWanted`, `Account.UnsentBeforeReadOnly`); `None` with no such wish.
+pub(crate) async fn read_only_wish(account: &AccountProxy<'_>) -> zbus::Result<Option<u64>> {
+    if !said(account.read_only_wanted()).await? {
+        return Ok(None);
+    }
+    Ok(Some(said(account.unsent_before_read_only()).await?))
+}
+
 /// The account at `path`, as `status` shows it.
 pub(crate) async fn account_status(daemon: &Daemon, path: &OwnedObjectPath) -> zbus::Result<AccountStatus> {
     let account = daemon.account(path).await?;
@@ -56,6 +65,7 @@ pub(crate) async fn account_status(daemon: &Daemon, path: &OwnedObjectPath) -> z
         email: said(account.email()).await?,
         quota: both(account.quota_used(), account.quota_total()).await?,
         last_error: said(account.last_error()).await?,
+        read_only_wish: read_only_wish(&account).await?,
         overall: decided(folder.overall()).await?,
         trouble: decided(folder.trouble()).await?.unwrap_or_default(),
         not_updated: decided(folder.not_updated()).await?.unwrap_or_default(),

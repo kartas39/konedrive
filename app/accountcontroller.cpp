@@ -10,7 +10,6 @@
 #include <QDBusPendingReply>
 #include <QDBusServiceWatcher>
 #include <QGuiApplication>
-#include <QRegularExpression>
 
 const QString AccountController::ServiceName = QStringLiteral("org.konedrive.Daemon");
 const QString AccountController::InterfaceName = QStringLiteral("org.konedrive.Account");
@@ -114,13 +113,17 @@ void AccountController::applyProperties(const QVariantMap &properties)
         m_signInUrl.clear();
         Q_EMIT signInUrlChanged();
     }
-    // A switch to read-only that waits for what is unsent is a state of the account, not an error.
-    m_unsentCount = 0;
-    m_switchingToReadOnly = isSwitchingToReadOnly(m_lastError, &m_unsentCount);
+    // A switch to read-only that waits for what is unsent: a state of the account.
+    if (const auto it = properties.constFind(QStringLiteral("ReadOnlyWanted")); it != properties.constEnd()) {
+        m_switchingToReadOnly = it->toBool();
+    }
+    if (const auto it = properties.constFind(QStringLiteral("UnsentBeforeReadOnly")); it != properties.constEnd()) {
+        m_unsentCount = it->toULongLong();
+    }
     // A switch to read-write ends as the command line's does: granted, or LastError
     // saying why not (SetMode cleared it before it answered), or no longer signed in.
     if (modeSignInPending()) {
-        const bool refused = properties.contains(QStringLiteral("LastError")) && !lastError().isEmpty();
+        const bool refused = properties.contains(QStringLiteral("LastError")) && !m_lastError.isEmpty();
         if (m_mode == ReadWrite || refused || m_state != SignedIn) {
             ++m_modeCall;
             endModeSwitch();
@@ -259,25 +262,6 @@ void AccountController::cancelModeSwitch()
     ++m_modeCall;
     endModeSwitch();
     call(m_iface->CancelSignIn());
-}
-
-bool AccountController::isSwitchingToReadOnly(const QString &lastError, qulonglong *unsent)
-{
-    // As the daemon writes it (ModeNote::SwitchingToReadOnly in crates/konedrived/src/account/state.rs).
-    static const QRegularExpression note(QStringLiteral("^switching to read-only: (\\d+) changes still to send$"));
-    const QRegularExpressionMatch match = note.match(lastError);
-    if (!match.hasMatch()) {
-        return false;
-    }
-    bool isNumber = false;
-    const qulonglong count = match.captured(1).toULongLong(&isNumber);
-    if (!isNumber) {
-        return false;
-    }
-    if (unsent) {
-        *unsent = count;
-    }
-    return true;
 }
 
 QString AccountController::modeRefusalText(const QString &mode, const QString &errorName, const QString &message)

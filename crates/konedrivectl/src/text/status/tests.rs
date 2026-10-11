@@ -1,5 +1,5 @@
 use konedrive_dbus::overall::{Overall, Reason};
-use super::{decide_read_only_asked, mode_shown_text, read_only_asked_text, status_text, unsent_of_read_only_wish, AccountStatus, ReadOnlyAsked};
+use super::{decide_read_only_asked, mode_shown_text, read_only_asked_text, status_text, AccountStatus, ReadOnlyAsked};
 
 /// `sync status` says whether changes from OneDrive arrive live, and nothing
 /// while the socket is off (the pause or the hold says why).
@@ -192,44 +192,38 @@ fn the_mode_line_says_a_read_write_account_whose_folder_is_read_only_for_now() {
     assert_eq!(super::mode_text("read-write", None), super::mode_text("read-write", Some(true)));
 }
 
-/// An account that waits to switch to read-only says so in `Account.LastError`: `status`
-/// says it with the mode and as no error; `account mode` adds the two ways out.
+/// An account that waits to switch to read-only: `status` says it with the mode, beside
+/// whatever `LastError` says; `account mode` adds the two ways out.
 #[test]
 fn a_switch_to_read_only_that_waits_is_shown_with_its_count() {
-    assert_eq!(unsent_of_read_only_wish("switching to read-only: 3 changes still to send"), Some(3));
-    assert_eq!(unsent_of_read_only_wish("switching to read-only: 0 changes still to send"), Some(0));
-    for other in ["", "switching to read-only", "switching to read-only: +3 changes still to send", "switching to read-only: many changes still to send", "no client id"] {
-        assert_eq!(unsent_of_read_only_wish(other), None, "{other}");
-    }
-
-    let waits = AccountStatus {
-        mode: Some("read-write".to_owned()),
-        last_error: "switching to read-only: 1 changes still to send".to_owned(),
-        ..AccountStatus::default()
-    };
+    let waits = AccountStatus { mode: Some("read-write".to_owned()), read_only_wish: Some(1), ..AccountStatus::default() };
     assert_eq!(status_text(&waits, None), "Mode:       read-write, switching to read-only: 1 change still to send\n");
-    let failed = AccountStatus { last_error: "no client id".to_owned(), ..waits.clone() };
-    assert_eq!(status_text(&failed, None), "Mode:       read-write\nLast error: no client id\n");
+    let failed = AccountStatus { last_error: "no network".to_owned(), ..waits.clone() };
+    assert_eq!(
+        status_text(&failed, None),
+        "Mode:       read-write, switching to read-only: 1 change still to send\nLast error: no network\n"
+    );
+    let plain = AccountStatus { read_only_wish: None, ..failed.clone() };
+    assert_eq!(status_text(&plain, None), "Mode:       read-write\nLast error: no network\n");
 
-    let shown = mode_shown_text("Test: ", "konedrivectl --account Test", "read-write", "switching to read-only: 3 changes still to send");
+    let shown = mode_shown_text("Test: ", "konedrivectl --account Test", "read-write", Some(3), "");
     assert!(shown.starts_with("Test: read-write\nSwitching to read-only: 3 changes still to send. "), "{shown}");
     assert!(shown.contains("`konedrivectl --account Test account mode read-only --force` switches now"), "{shown}");
     assert!(shown.contains("`konedrivectl --account Test account mode read-write` cancels"), "{shown}");
     assert!(!shown.contains("Last error"), "{shown}");
-    assert_eq!(mode_shown_text("", "konedrivectl", "read-only", ""), "read-only\n");
-    assert_eq!(mode_shown_text("", "konedrivectl", "read-only", "no client id"), "read-only\nLast error: no client id\n");
+    assert_eq!(mode_shown_text("", "konedrivectl", "read-only", None, ""), "read-only\n");
+    assert_eq!(mode_shown_text("", "konedrivectl", "read-only", None, "no client id"), "read-only\nLast error: no client id\n");
 }
 
 /// `account mode read-only` says what came of it: switched, or waiting with the count and
 /// the two ways out; a case per answer of the account.
 #[test]
 fn read_only_asked_says_whether_it_switched_or_waits() {
-    let note = "switching to read-only: 2 changes still to send";
-    assert_eq!(decide_read_only_asked("read-only", ""), ReadOnlyAsked::Switched);
-    assert_eq!(decide_read_only_asked("read-only", note), ReadOnlyAsked::Switched);
-    assert_eq!(decide_read_only_asked("read-write", note), ReadOnlyAsked::Waits { unsent: 2 });
-    assert_eq!(decide_read_only_asked("read-write", ""), ReadOnlyAsked::NotSaid);
-    assert_eq!(decide_read_only_asked("read-write", "no client id"), ReadOnlyAsked::NotSaid);
+    assert_eq!(decide_read_only_asked("read-only", None), ReadOnlyAsked::Switched);
+    assert_eq!(decide_read_only_asked("read-only", Some(2)), ReadOnlyAsked::Switched);
+    assert_eq!(decide_read_only_asked("read-write", Some(2)), ReadOnlyAsked::Waits { unsent: 2 });
+    assert_eq!(decide_read_only_asked("read-write", Some(0)), ReadOnlyAsked::Waits { unsent: 0 });
+    assert_eq!(decide_read_only_asked("read-write", None), ReadOnlyAsked::NotSaid);
 
     let switched = read_only_asked_text("", "konedrivectl", ReadOnlyAsked::Switched);
     assert!(switched.starts_with("Read-only: ") && switched.contains("stays on this computer"), "{switched}");

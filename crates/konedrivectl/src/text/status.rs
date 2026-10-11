@@ -46,6 +46,9 @@ pub struct AccountStatus {
     /// Bytes used and in all.
     pub quota: Option<(u64, u64)>,
     pub last_error: String,
+    /// `Account.ReadOnlyWanted` with `Account.UnsentBeforeReadOnly`: how many changes an
+    /// account that waits to switch to read-only has still to send; `None` with no such wish.
+    pub read_only_wish: Option<u64>,
     /// `Folder.Overall` of the account's folder: the state the account is in as a whole,
     /// and the reason.
     pub overall: Option<Overall>,
@@ -112,9 +115,8 @@ pub fn status_text(status: &AccountStatus, client_id: Option<&str>) -> String {
     if let Some(client_id) = client_id {
         line("Client ID:", if client_id.is_empty() { "(not set)" } else { client_id });
     }
-    let unsent = unsent_of_read_only_wish(&status.last_error);
     if let Some(mode) = &status.mode {
-        match unsent {
+        match status.read_only_wish {
             Some(unsent) => line("Mode:", &format!("{mode}, {}", switching_text(unsent))),
             None => line("Mode:", mode),
         }
@@ -127,22 +129,10 @@ pub fn status_text(status: &AccountStatus, client_id: Option<&str>) -> String {
             line("Storage:", &format!("{} of {} used", human_bytes(used), human_bytes(total)));
         }
     }
-    // A switch to read-only that waits is said with the mode, and is no error.
-    if !status.last_error.is_empty() && unsent.is_none() {
+    if !status.last_error.is_empty() {
         line("Last error:", &status.last_error);
     }
     out
-}
-
-/// How many changes an account that keeps a wish for read-only has still to send, as
-/// `Account.LastError` says it meanwhile ("switching to read-only: N changes still to
-/// send", `dbus/org.konedrive.Account.xml`); `None` for anything else it says.
-pub fn unsent_of_read_only_wish(last_error: &str) -> Option<u64> {
-    let count = last_error.strip_prefix("switching to read-only: ")?.strip_suffix(" changes still to send")?;
-    if !count.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    count.parse().ok()
 }
 
 /// An account that keeps a wish for read-only, in words.
@@ -165,17 +155,18 @@ fn switching_ways_out_text(prefix: &str) -> String {
     )
 }
 
-/// `account mode` with no mode given: the mode, and `Account.LastError` when it says
-/// something; of an account switching to read-only, how many changes it has still to
-/// send and the two ways out. `tag` is what a success line starts with, `prefix` the
-/// command with the account chosen.
-pub fn mode_shown_text(tag: &str, prefix: &str, mode: &str, last_error: &str) -> String {
+/// `account mode` with no mode given: the mode; of an account that waits to switch to
+/// read-only (`read_only_wish`: how many changes it has still to send), that and the two
+/// ways out; and `Account.LastError` when it says something. `tag` is what a success line
+/// starts with, `prefix` the command with the account chosen.
+pub fn mode_shown_text(tag: &str, prefix: &str, mode: &str, read_only_wish: Option<u64>, last_error: &str) -> String {
     let mut out = format!("{tag}{mode}\n");
-    if let Some(unsent) = unsent_of_read_only_wish(last_error) {
+    if let Some(unsent) = read_only_wish {
         let mut said = switching_text(unsent);
         said[..1].make_ascii_uppercase();
         out.push_str(&format!("{said}. {}", switching_ways_out_text(prefix)));
-    } else if !last_error.is_empty() {
+    }
+    if !last_error.is_empty() {
         out.push_str(&format!("{:<12}{last_error}\n", "Last error:"));
     }
     out
@@ -197,10 +188,11 @@ pub enum ReadOnlyAsked {
     NotSaid,
 }
 
-/// What came of `account mode read-only`, from `Account.Mode` and `Account.LastError` read
-/// after `SetMode` answered.
-pub fn decide_read_only_asked(mode: &str, last_error: &str) -> ReadOnlyAsked {
-    match (mode, unsent_of_read_only_wish(last_error)) {
+/// What came of `account mode read-only`, from `Account.Mode` and the account's wish for
+/// read-only (how many changes it has still to send, `None` with no wish), read after
+/// `SetMode` answered.
+pub fn decide_read_only_asked(mode: &str, read_only_wish: Option<u64>) -> ReadOnlyAsked {
+    match (mode, read_only_wish) {
         ("read-only", _) => ReadOnlyAsked::Switched,
         (_, Some(unsent)) => ReadOnlyAsked::Waits { unsent },
         (_, None) => ReadOnlyAsked::NotSaid,

@@ -68,6 +68,8 @@ class FakeAccount : public QDBusAbstractAdaptor
     Q_PROPERTY(QString Mode READ mode)
     Q_PROPERTY(QString State READ state)
     Q_PROPERTY(QString LastError READ lastError)
+    Q_PROPERTY(bool ReadOnlyWanted READ readOnlyWanted)
+    Q_PROPERTY(qulonglong UnsentBeforeReadOnly READ unsentBeforeReadOnly)
     Q_PROPERTY(QString DisplayName READ displayName)
     Q_PROPERTY(QString Email READ email)
     Q_PROPERTY(qulonglong QuotaUsed READ quotaUsed)
@@ -90,6 +92,8 @@ public:
     QString mode() const { return m_properties.value(QStringLiteral("Mode")).toString(); }
     QString state() const { return m_properties.value(QStringLiteral("State")).toString(); }
     QString lastError() const { return m_properties.value(QStringLiteral("LastError")).toString(); }
+    bool readOnlyWanted() const { return m_properties.value(QStringLiteral("ReadOnlyWanted")).toBool(); }
+    qulonglong unsentBeforeReadOnly() const { return m_properties.value(QStringLiteral("UnsentBeforeReadOnly")).toULongLong(); }
     QString displayName() const { return m_properties.value(QStringLiteral("DisplayName")).toString(); }
     QString email() const { return m_properties.value(QStringLiteral("Email")).toString(); }
     qulonglong quotaUsed() const { return m_properties.value(QStringLiteral("QuotaUsed")).toULongLong(); }
@@ -113,11 +117,14 @@ public:
     /// loads the whole window keeps the sign-in, and so the browser, from starting.
     QString readWriteFails;
     /// Changes made here that are not sent: while not 0, an unforced SetMode("read-only")
-    /// keeps the wish and LastError says so, as the daemon's does.
+    /// keeps the wish, with ReadOnlyWanted and UnsentBeforeReadOnly saying so, as the daemon's does.
     qulonglong unsentChanges = 0;
 
-    /// LastError of an account that keeps a wish for read-only, as the daemon writes it.
-    static QString switchingNote(qulonglong unsent) { return QStringLiteral("switching to read-only: %1 changes still to send").arg(unsent); }
+    /// The wish for read-only, kept with `unsent` changes still to send, or gone.
+    void setReadOnlyWish(bool wanted, qulonglong unsent = 0)
+    {
+        set({{QStringLiteral("ReadOnlyWanted"), wanted}, {QStringLiteral("UnsentBeforeReadOnly"), QVariant::fromValue<qulonglong>(wanted ? unsent : 0)}});
+    }
 
 public Q_SLOTS:
     QString BeginSignIn()
@@ -163,8 +170,8 @@ public Q_SLOTS:
             return QString();
         };
         if (mode == QLatin1String("read-write")) {
-            if (lastError().startsWith(QLatin1String("switching to read-only"))) {
-                set({{QStringLiteral("LastError"), QString()}});
+            if (readOnlyWanted()) {
+                setReadOnlyWish(false);
                 return QString();
             }
             if (state() != QLatin1String("signed-in")) {
@@ -178,10 +185,11 @@ public Q_SLOTS:
         }
         if (mode == QLatin1String("read-only")) {
             if (unsentChanges > 0 && !force) {
-                set({{QStringLiteral("LastError"), switchingNote(unsentChanges)}});
+                setReadOnlyWish(true, unsentChanges);
                 return QString();
             }
-            set({{QStringLiteral("Mode"), QStringLiteral("read-only")}, {QStringLiteral("LastError"), QString()}});
+            setReadOnlyWish(false);
+            set({{QStringLiteral("Mode"), QStringLiteral("read-only")}});
             return QString();
         }
         return refuse(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("unknown mode ") + mode);

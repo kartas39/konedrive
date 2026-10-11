@@ -213,28 +213,6 @@ private Q_SLOTS:
         QVERIFY(m_daemon->account->calls.contains(QStringLiteral("SetMode:read-only:force")));
     }
 
-    /// LastError's note of a switch that waits is read as a state with its count,
-    /// and nothing else is.
-    void theNoteOfASwitchToReadOnlyIsRead()
-    {
-        qulonglong unsent = 99;
-        QVERIFY(AccountController::isSwitchingToReadOnly(QStringLiteral("switching to read-only: 3 changes still to send"), &unsent));
-        QCOMPARE(unsent, 3ULL);
-        QVERIFY(AccountController::isSwitchingToReadOnly(QStringLiteral("switching to read-only: 0 changes still to send"), &unsent));
-        QCOMPARE(unsent, 0ULL);
-        QVERIFY(AccountController::isSwitchingToReadOnly(QStringLiteral("switching to read-only: 18446744073709551615 changes still to send"), nullptr));
-        unsent = 99;
-        for (const QString &other : {QString(),
-                                     QStringLiteral("switching to read-only"),
-                                     QStringLiteral("switching to read-only: many changes still to send"),
-                                     QStringLiteral("switching to read-only: 99999999999999999999999 changes still to send"),
-                                     QStringLiteral("x switching to read-only: 3 changes still to send"),
-                                     QStringLiteral("sign in again to change files")}) {
-            QVERIFY2(!AccountController::isSwitchingToReadOnly(other, &unsent), qPrintable(other));
-            QCOMPARE(unsent, 99ULL);
-        }
-    }
-
     /// Read-only asked for while changes are unsent is a state, not an error: the
     /// account stays read-write with the count shown, until it is forced, taken
     /// back, or the daemon switches by itself.
@@ -256,7 +234,7 @@ private Q_SLOTS:
         QTRY_COMPARE(controller.switchingTo(), QString());
 
         // The count follows the daemon's.
-        m_daemon->account->set({{QStringLiteral("LastError"), FakeAccount::switchingNote(1)}});
+        m_daemon->account->setReadOnlyWish(true, 1);
         QTRY_COMPARE(controller.unsentCount(), 1ULL);
 
         // Taken back: read-write, and nothing said.
@@ -274,10 +252,14 @@ private Q_SLOTS:
         QVERIFY(!controller.switchingToReadOnly());
         QCOMPARE(controller.unsentCount(), 0ULL);
 
-        // Another note of LastError is an error still.
-        m_daemon->account->set({{QStringLiteral("LastError"), QStringLiteral("sign in again to change files")}});
-        QTRY_COMPARE(controller.lastError(), QStringLiteral("sign in again to change files"));
+        // LastError is another thing: an error is shown beside a wish, and takes nothing from it.
+        m_daemon->account->set({{QStringLiteral("LastError"), QStringLiteral("no network")}});
+        QTRY_COMPARE(controller.lastError(), QStringLiteral("no network"));
         QVERIFY(!controller.switchingToReadOnly());
+        m_daemon->account->setReadOnlyWish(true, 4);
+        QTRY_VERIFY(controller.switchingToReadOnly());
+        QCOMPARE(controller.unsentCount(), 4ULL);
+        QCOMPARE(controller.lastError(), QStringLiteral("no network"));
     }
 
     void signOutAndRefreshCallTheDaemon()

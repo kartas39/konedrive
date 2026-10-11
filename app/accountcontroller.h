@@ -35,15 +35,12 @@ class AccountController : public QObject
     /// cancelModeSwitch(). Account says nothing while it waits.
     Q_PROPERTY(bool modeSignInPending READ modeSignInPending NOTIFY modeSwitchChanged)
     Q_PROPERTY(QString state READ state NOTIFY accountChanged)
-    /// Account.LastError, except while it says that the account is switching to
-    /// read-only (switchingToReadOnly), which is a state and no error.
     Q_PROPERTY(QString lastError READ lastError NOTIFY accountChanged)
-    /// The account keeps a wish for read-only: it is read-write still, sends what is
-    /// unsent, and switches by itself when nothing is (LastError says "switching to
-    /// read-only: N changes still to send"). setMode("read-only", true) switches at once;
-    /// setMode("read-write") takes the wish back.
+    /// The account keeps a wish for read-only (Account.ReadOnlyWanted): it is read-write
+    /// still, sends what is unsent, and switches by itself when nothing is.
+    /// setMode("read-only", true) switches at once; setMode("read-write") takes the wish back.
     Q_PROPERTY(bool switchingToReadOnly READ switchingToReadOnly NOTIFY accountChanged)
-    /// While switchingToReadOnly: how many changes are still to send.
+    /// While switchingToReadOnly: how many changes are still to send (Account.UnsentBeforeReadOnly).
     Q_PROPERTY(qulonglong unsentCount READ unsentCount NOTIFY accountChanged)
     Q_PROPERTY(QString displayName READ displayName NOTIFY accountChanged)
     Q_PROPERTY(QString email READ email NOTIFY accountChanged)
@@ -67,7 +64,7 @@ public:
     QString switchingTo() const { return m_switchingTo; }
     bool modeSignInPending() const { return m_switchingTo == QLatin1String("read-write") && !m_signInUrl.isEmpty(); }
     QString state() const { return m_state; }
-    QString lastError() const { return m_switchingToReadOnly ? QString() : m_lastError; }
+    QString lastError() const { return m_lastError; }
     bool switchingToReadOnly() const { return m_switchingToReadOnly; }
     qulonglong unsentCount() const { return m_unsentCount; }
     QString displayName() const { return m_displayName; }
@@ -94,11 +91,6 @@ public:
     /// What the window says when SetMode(`mode`) was refused `errorName`, the daemon's
     /// `message` kept only where no plain words fit.
     static QString modeRefusalText(const QString &mode, const QString &errorName, const QString &message);
-
-    /// Whether `lastError` is the daemon's note of an account switching to read-only
-    /// ("switching to read-only: N changes still to send", dbus/org.konedrive.Account.xml);
-    /// `unsent` is then its N.
-    static bool isSwitchingToReadOnly(const QString &lastError, qulonglong *unsent);
 
 Q_SIGNALS:
     void serviceAvailableChanged();
