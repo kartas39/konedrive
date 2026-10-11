@@ -133,8 +133,8 @@ pub(super) async fn open(
     loop {
         match source.fetch(item_id, from, end).await {
             Ok(fetched) => return Ok(fetched),
-            Err(SourceError::NotFound(_)) => return Err(End::Fail(libc::EIO)),
-            Err(SourceError::Transient(why)) => breaks.again(item_id, &why).await?,
+            Err(SourceError::NotFound(_) | SourceError::SignedOut(_)) => return Err(End::Fail(libc::EIO)),
+            Err(SourceError::Transient(why) | SourceError::Throttled { detail: why, .. }) => breaks.again(item_id, &why).await?,
         }
     }
 }

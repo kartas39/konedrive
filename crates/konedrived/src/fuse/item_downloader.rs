@@ -17,6 +17,28 @@
 //! syncs the directory and commits conditionally; then announced and its waiters
 //! answered: `ESTALE` when the landing found the row changed.
 //!
+//! **What the source refuses, typed.** The download (`download_staged`) answers an errno;
+//! the source it fetches through (`download_source`) keeps what the content source last
+//! refused, and a download that failed is answered by it: a sign-out, a throttle, an item
+//! OneDrive does not have. Content of another size or version than was asked for —
+//! OneDrive has another content than the row by now — is answered as an item that is
+//! gone as this content, and nothing lands.
+//!
+//! **The plan and another asker of one download.** The landing's condition is the
+//! starter's. Where the plan started it and a stop aborted the plan's step, the landing
+//! answers `StepStopped`; the download, when it still runs then, was asked for by
+//! somebody else too (the plan's cancel aborts one it alone asked for), and its file is
+//! landed for them, as a read's is: by the content alone. Where a read started it and
+//! the plan joined, the landing does not commit as the plan's step: the plan's step is
+//! answered that the rows changed, which they did — the row says on disk — and the next
+//! plan has no download to plan.
+//!
+//! **What is shown.** A download is shown under its file's path, and announced by its
+//! item and place; the downloader holds no store, so both are the landing's to read
+//! (`ItemDownloadLanding::find_shown_place`) and to answer (`ItemLandingOutcome::Landed`).
+//! How far the plan's download got is not told to `RunningSteps`: the downloader does not
+//! hold them; `Transfers` shows it, as it shows every download.
+//!
 //! **Tested without the rest**, with a content source the test holds, a temporary backing
 //! directory and a store in memory (today's `file_downloader/tests.rs` is the reference):
 // test: a_download_lands_at_the_place_the_row_has_when_it_ends
@@ -32,22 +54,36 @@
 // test: the_pools_class_is_open_for_every_asker_but_the_plans_pin
 // test: the_landing_asks_every_version_for_the_plans_pin_and_the_content_alone_for_anyone_else
 // test: a_stop_aborts_every_download
-#![allow(dead_code, unused_variables)]
+// test: a_refusal_of_the_source_is_typed_by_what_the_plans_task_does_about_it
+// test: content_of_another_size_or_version_than_was_asked_for_is_not_the_asked_content
+// test: a_download_of_content_onedrive_no_longer_has_lands_nothing
+// test: a_plan_that_joins_a_reads_download_is_answered_that_the_rows_changed
+#![allow(dead_code)]
 
+use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use konedrive_graph::pool::{Class, TransferPool};
+use konedrive_graph::pool::{Class, Size, TransferPool};
+use konedrive_graph::quickxor::decode_base64;
 use konedrive_tree::{ContentVersion, ItemVersions, LocalItemId, OneDriveItemReference};
+use tokio::sync::oneshot;
 
 use super::backing_directory::BackingDirectory;
 use super::download_states::Waiter;
+use super::item_announcements::ItemAnnouncement;
 use super::item_download_landing::{ItemDownloadLanding, ItemLandingOutcome, LandingCondition};
-use super::item_download_states::{DownloadAsker, ItemDownloadStates};
+use super::item_download_states::{DownloadAsker, DownloadKey, DownloadRun, ItemDownloadStart, ItemDownloadStates};
 use super::item_inotify_bridge::ItemInotifyBridge;
 use super::write_operation_thread::WriteOperationThread;
-use crate::hydration::source::{ContentSource, Share};
+use crate::hydration::source::{download_staged, ContentSource, Share, Split, Version};
+use crate::hydration::tracked::Tracked;
+use crate::status::activity::{self, Kind as EventKind};
 use crate::status::report::Report;
+
+mod download_source;
+
+use download_source::DownloadSource;
 
 /// A file of OneDrive that is to be downloaded whole. Who asks, and for the plan the
 /// versions its step was planned from, is not said here: `DownloadAsker` says it, once.
@@ -74,16 +110,96 @@ pub enum DownloadRefusal {
     Transient { detail: String },
 }
 
+/// How one download ended: what its landing answered, or what the source refused.
+pub(super) type DownloadEnd = Result<ItemLandingOutcome, DownloadRefusal>;
+
 /// The pool's class a download of `asker` runs in: `Open` for a read, an open for writing
 /// and `Files.Hydrate`, `Download` for the plan's pin. Pure.
 pub(super) fn decide_pool_class(asker: &DownloadAsker) -> Class {
-    todo!()
+    match asker {
+        DownloadAsker::Read | DownloadAsker::OpenForWriting | DownloadAsker::FilesInterface => Class::Open,
+        DownloadAsker::PlanPin { .. } => Class::Download,
+    }
 }
 
 /// What the landing of a download of `file` that `asker` started asks of the row: every
 /// version for the plan's pin, the content alone for anyone else. Pure.
 pub(super) fn decide_landing_condition(file: &ItemToDownload, asker: &DownloadAsker) -> LandingCondition {
-    todo!()
+    match asker {
+        DownloadAsker::PlanPin { planned_from } => LandingCondition::VersionsUnchanged { item: planned_from.clone() },
+        DownloadAsker::Read | DownloadAsker::OpenForWriting | DownloadAsker::FilesInterface => LandingCondition::ContentUnchanged { item: file.item, downloaded: file.content.clone() },
+    }
+}
+
+/// Whether what was downloaded — `size` bytes, checked as `version` when the source said
+/// one — is `content`, the content that was asked for. Pure.
+///
+/// - Another size: no.
+/// - The source said a version: it is the asked one when both have a QuickXorHash and the
+///   hashes are equal; when either has none, when the asked content has no cTag or the
+///   cTags are equal.
+/// - The source said none: the size alone says it.
+pub(super) fn decide_is_asked_content(content: &ContentVersion, size: u64, version: Option<&Version>) -> bool {
+    let (asked_hash, asked_ctag) = match content {
+        ContentVersion::Hashed { hash, ctag, .. } => (hash.as_deref().and_then(decode_base64), ctag.as_deref()),
+        ContentVersion::ChangedHere { .. } => (None, None),
+    };
+    content.size() == size
+        && version.is_none_or(|version| match (asked_hash, version.quick_xor) {
+            (Some(asked), Some(downloaded)) => asked == downloaded,
+            (None, _) | (_, None) => asked_ctag.is_none_or(|ctag| ctag == version.ctag),
+        })
+}
+
+/// What a download that failed with `errno` is answered as: by what the source last
+/// refused, when it refused; a failure of the disk or of the check otherwise. Pure.
+pub(super) fn decide_download_failure(errno: i32, last_refusal: Option<DownloadRefusal>) -> DownloadEnd {
+    match last_refusal {
+        Some(refusal) => Err(refusal),
+        None => Ok(ItemLandingOutcome::Failed { errno }),
+    }
+}
+
+/// What whoever waits for a download is answered when it ended as `end`: nothing for a
+/// landed file, else an errno. `ESTALE` when the row, or OneDrive's content, is not what
+/// was asked for any more: the next read starts a download of what the folder shows
+/// then. Pure.
+pub(super) fn decide_waiters_answer(end: &DownloadEnd) -> Result<(), i32> {
+    match end {
+        Ok(ItemLandingOutcome::Landed { .. }) => Ok(()),
+        Ok(ItemLandingOutcome::RowsChanged) | Err(DownloadRefusal::ItemGone) => Err(libc::ESTALE),
+        Ok(ItemLandingOutcome::PlaceHeld { .. }) => Err(libc::EEXIST),
+        Ok(ItemLandingOutcome::Failed { errno }) => Err(*errno),
+        Ok(ItemLandingOutcome::StepStopped) | Err(DownloadRefusal::SignedOut | DownloadRefusal::Throttled { .. } | DownloadRefusal::Transient { .. }) => Err(libc::EIO),
+    }
+}
+
+/// What the plan's step is answered when it joined a download somebody else started, by
+/// what its waiter heard: the landing did not commit as the step. Pure.
+///
+/// - Landed, by the content alone: the row says on disk, which is not what the step was
+///   planned from: the rows changed, and the next plan has nothing to download.
+/// - `ESTALE`: the rows changed. `EEXIST`: the place is held (where is not known here).
+/// - Anything else: tried again later.
+pub(super) fn decide_joined_end(heard: Result<(), i32>) -> DownloadEnd {
+    match heard {
+        Ok(()) | Err(libc::ESTALE) => Ok(ItemLandingOutcome::RowsChanged),
+        Err(libc::EEXIST) => Ok(ItemLandingOutcome::PlaceHeld { path: PathBuf::new() }),
+        Err(errno) => Err(DownloadRefusal::Transient { detail: format!("the download failed: {}", std::io::Error::from_raw_os_error(errno)) }),
+    }
+}
+
+/// Abandons a download in the download states when its task is dropped, whatever drops
+/// it: for one that ended, or was aborted there, this changes nothing.
+struct RunningDownload {
+    download_states: Arc<ItemDownloadStates>,
+    run: Arc<DownloadRun>,
+}
+
+impl Drop for RunningDownload {
+    fn drop(&mut self) {
+        self.download_states.abandon(&self.run);
+    }
 }
 
 /// The downloader of one mount.
@@ -141,15 +257,147 @@ impl ItemDownloader {
     /// asker that STARTED the download ([`decide_landing_condition`]); one that joins
     /// takes the landing it finds.
     pub(super) fn download(self: &Arc<Self>, file: ItemToDownload, asker: DownloadAsker, waiter: Option<Waiter>) {
-        todo!()
+        self.start_or_join(file, asker, waiter, None);
+    }
+
+    /// [`download`](Self::download), with who is told how the download ended, typed, when
+    /// this asking starts it; an asking that joins hears its waiter alone, and `answer`
+    /// is dropped.
+    fn start_or_join(self: &Arc<Self>, file: ItemToDownload, asker: DownloadAsker, waiter: Option<Waiter>, answer: Option<oneshot::Sender<DownloadEnd>>) {
+        let key = DownloadKey { item: file.item, content: file.content.clone() };
+        let (run, unfinished_file) = match self.download_states.start_or_join(&key, &asker, waiter) {
+            ItemDownloadStart::Started { run, unfinished_file } => (Arc::new(run), unfinished_file),
+            ItemDownloadStart::Joined => return,
+        };
+        // Made before the spawn and moved into the task: a task that is aborted before
+        // its first line still says its download is over.
+        let running = RunningDownload { download_states: Arc::clone(&self.download_states), run: Arc::clone(&run) };
+        let downloader = Arc::clone(self);
+        let task = self.runtime.spawn(async move {
+            let running = running;
+            let end = downloader.run_download(&file, &asker, &running.run, unfinished_file).await;
+            if let Some(answer) = answer {
+                let _ = answer.send(end.clone());
+            }
+            // The task's last act: after it the key is free for another download.
+            downloader.download_states.finish(&running.run, decide_waiters_answer(&end));
+        });
+        self.download_states.keep_abort_handle(&run, task.abort_handle());
+    }
+
+    /// One download from its start to what it is shown and announced as: the place and
+    /// the path the folder shows the file at are read, the change announced (the file is
+    /// shown as being downloaded), the content fetched and landed
+    /// ([`fetch_and_land`](Self::fetch_and_land)), the activity told — but for the plan's
+    /// pin, whose step is told by the plan's task —, the space counted again, and the
+    /// change announced.
+    async fn run_download(self: &Arc<Self>, file: &ItemToDownload, asker: &DownloadAsker, run: &DownloadRun, unfinished_file: Option<Arc<File>>) -> DownloadEnd {
+        let Some((place, path)) = self.download_landing.find_shown_place(file.item).await else { return Ok(ItemLandingOutcome::RowsChanged) };
+        let shown_path = self.folder.join(&path).display().to_string();
+        self.inotify_bridge.announce(vec![ItemAnnouncement::ContentChanged { item: file.item, place: place.clone() }]);
+        let end = self.fetch_and_land(file, asker, run, unfinished_file, &shown_path).await;
+        if !matches!(asker, DownloadAsker::PlanPin { .. }) {
+            let event = match (&end, decide_waiters_answer(&end)) {
+                (Ok(ItemLandingOutcome::Landed { path, .. }), _) => activity::event(EventKind::Downloaded, self.folder.join(path).display().to_string(), activity::human_size(file.content.size())),
+                (_, Err(errno)) => activity::event(EventKind::Failed, shown_path, activity::failure_reason(errno)),
+                (_, Ok(())) => activity::event(EventKind::Downloaded, shown_path, activity::human_size(file.content.size())),
+            };
+            self.report.activity.record(vec![event]).await;
+        }
+        self.report.space.kick();
+        let place = match &end {
+            Ok(ItemLandingOutcome::Landed { place, .. }) => place.clone(),
+            _ => place,
+        };
+        self.inotify_bridge.announce(vec![ItemAnnouncement::ContentChanged { item: file.item, place }]);
+        end
+    }
+
+    /// Fetches the content of `file` into a file that has no name — the unfinished file
+    /// of an earlier try, gone on from its checkpoint, or a new one —, in the pool's slot
+    /// of the asker's class; checks it is the content asked for; syncs it, with no lock
+    /// held; and lands it as one job of the write-operation thread.
+    async fn fetch_and_land(self: &Arc<Self>, file: &ItemToDownload, asker: &DownloadAsker, run: &DownloadRun, unfinished_file: Option<Arc<File>>, shown_path: &str) -> DownloadEnd {
+        let fail = |error: std::io::Error| ItemLandingOutcome::Failed { errno: error.raw_os_error().unwrap_or(libc::EIO) };
+        let (class, size) = (decide_pool_class(asker), file.content.size());
+        let mut slot = self.pool.acquire_sized(class, Size::of(size)).await;
+        // The file a download is built in has no name: it is in the backing directory's
+        // filesystem and in no directory, so nothing lists a file that is not whole, and
+        // one the daemon leaves behind goes by itself.
+        let staged = match unfinished_file {
+            Some(staged) => staged,
+            None => match self.backing_directory.make_unnamed_file() {
+                Ok(staged) => Arc::new(staged),
+                Err(error) => return Ok(fail(error)),
+            },
+        };
+        let tracked = match class {
+            Class::Open => Tracked::opening(Arc::clone(&self.source), self.report.transfers.clone(), shown_path),
+            _ => Tracked::new(Arc::clone(&self.source), self.report.transfers.clone(), shown_path),
+        };
+        // What of the download is on disk in order, for the reads that come meanwhile.
+        let written_up_to = self.download_states.begin_writing(run, Arc::clone(&staged));
+        let source = DownloadSource::new(&tracked, written_up_to);
+        // A large file that nothing waits to open (a pinned one) goes in parallel parts,
+        // the slot held here being its first stream's.
+        let split = (class != Class::Open && Size::of(size) == Size::Large).then(|| Split::new(Arc::clone(&self.pool), Arc::clone(&self.split_download_share)));
+        let downloaded = download_staged(&staged, file.onedrive_item.item_id.as_str(), size, &source, split.as_ref()).await;
+        let last_refusal = source.find_last_refusal();
+        drop(tracked);
+        let downloaded = match downloaded {
+            Ok(downloaded) => downloaded,
+            Err(errno) => return decide_download_failure(errno, last_refusal),
+        };
+        if !decide_is_asked_content(&file.content, downloaded.size, downloaded.version.as_ref()) {
+            tracing::info!("{shown_path}: OneDrive has another content than the one that was asked for; nothing lands");
+            return Err(DownloadRefusal::ItemGone);
+        }
+        // Synced here, by the downloader, with no lock held: the landing's job, under the
+        // tree lock, waits for no file to reach the disk.
+        let to_sync = Arc::clone(&staged);
+        match tokio::task::spawn_blocking(move || to_sync.sync_all()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Ok(fail(error)),
+            Err(_) => return Ok(ItemLandingOutcome::Failed { errno: libc::EIO }),
+        }
+        let mut outcome = self.land(&staged, decide_landing_condition(file, asker)).await;
+        if outcome == ItemLandingOutcome::StepStopped {
+            // The plan's step was stopped and this download still runs: somebody else
+            // asked for it too. Their file lands as a read's does.
+            outcome = self.land(&staged, LandingCondition::ContentUnchanged { item: file.item, downloaded: file.content.clone() }).await;
+        }
+        if matches!(outcome, ItemLandingOutcome::Landed { .. }) {
+            slot.succeeded();
+        }
+        Ok(outcome)
+    }
+
+    /// The landing of `staged` as one job of the write-operation thread, which is no
+    /// thread of the runtime. A thread that is stopped drops the job: the folder is no
+    /// longer served, and nothing lands.
+    async fn land(&self, staged: &Arc<File>, condition: LandingCondition) -> ItemLandingOutcome {
+        let (landing, staged) = (Arc::clone(&self.download_landing), Arc::clone(staged));
+        self.write_operation_thread.run_and_wait(move || landing.land(&staged, &condition)).await.unwrap_or(ItemLandingOutcome::Failed { errno: libc::EIO })
     }
 
     /// As [`download`](Self::download) for the plan's pin (`DownloadAsker::PlanPin {
     /// planned_from }`), awaited: what the landing answered, or the source's refusal
     /// typed, for the plan's step (`FolderSteps::run_download_content`, which turns it
-    /// into `StepRefusal::{SignedOut, Throttled, ItemGone, Transient}`).
+    /// into `StepRefusal::{SignedOut, Throttled, ItemGone, Transient}`). Where the plan's
+    /// asking joined a download somebody else started, the answer is made of what the
+    /// plan's waiter heard ([`decide_joined_end`]); a download that was aborted — the
+    /// mount stops — is `DownloadRefusal::Transient`.
     pub(super) async fn download_and_land(self: &Arc<Self>, file: ItemToDownload, planned_from: ItemVersions) -> Result<ItemLandingOutcome, DownloadRefusal> {
-        todo!()
+        let ((waiter, heard), (answer, answered)) = (oneshot::channel(), oneshot::channel());
+        self.start_or_join(file, DownloadAsker::PlanPin { planned_from }, Some(waiter), Some(answer));
+        // The waiter is answered by the download's last act: awaited also where the typed
+        // answer came, so that the download is over, and its key free, when this returns.
+        let (answered, heard) = (answered.await, heard.await);
+        match (answered, heard) {
+            (Ok(end), _) => end,
+            (Err(_), Ok(heard)) => decide_joined_end(heard),
+            (Err(_), Err(_)) => Err(DownloadRefusal::Transient { detail: "the download was given up".into() }),
+        }
     }
 
     /// The plan gives the download of `item`'s `content` up — a pause, a sign-out, a stop
@@ -159,12 +407,18 @@ impl ItemDownloader {
     /// `download_and_land` is aborted (`RunningSteps::abort_requests`): by a guard that
     /// task holds.
     pub(super) fn cancel(&self, item: LocalItemId, content: &ContentVersion) {
-        todo!()
+        self.download_states.abort_if_plan_alone_asked(&DownloadKey { item, content: content.clone() });
     }
 
-    /// Every download is aborted (`ItemDownloadStates::abort_all`): the mount stops. After
-    /// it no spawned download holds a clone of the store.
+    /// Every download is aborted and whoever waits for one answered `EIO`
+    /// (`ItemDownloadStates::abort_all`, `fail_waiters`): the mount stops. After
+    /// it no spawned download holds a clone of the store. The one path of the mount's
+    /// stop to the downloads.
     pub(super) fn stop(&self) {
-        todo!()
+        self.download_states.abort_all();
+        self.download_states.fail_waiters();
     }
 }
+
+#[cfg(test)]
+mod tests;

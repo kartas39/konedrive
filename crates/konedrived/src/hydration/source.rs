@@ -20,6 +20,13 @@ pub enum SourceError {
     NotFound(String),
     #[error("{0}")]
     Transient(String),
+    /// The account is signed out (401): no try again helps until the sign-in.
+    #[error("{0}")]
+    SignedOut(String),
+    /// OneDrive holds the account back (429, 503), with the time it named when the source
+    /// was told one.
+    #[error("{detail}")]
+    Throttled { detail: String, retry_after: Option<std::time::Duration> },
 }
 
 pub struct Fetched {

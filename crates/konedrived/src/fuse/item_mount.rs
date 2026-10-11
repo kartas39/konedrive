@@ -167,8 +167,7 @@ impl ItemMount {
         // No write operation, landing or step towards the folder runs from here on.
         parts.write_operation_thread.stop();
         parts.inotify_bridge.stop();
-        parts.download_states.abort_all();
-        parts.download_states.fail_waiters();
+        parts.downloader.stop();
         if let Some(session) = session {
             if let Err(error) = session.umount_and_join() {
                 tracing::warn!("taking the mount off its folder: {error}");

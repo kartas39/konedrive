@@ -104,10 +104,15 @@ impl ContentSource for GraphSource {
 }
 
 /// A missing item — and a signed-out account, which no retry can fix — ends
-/// the fill at once; everything else is worth another try.
+/// the fill at once; everything else is worth another try. A throttle (429, 503) is told
+/// apart from the rest of what passes: the drive has waited it out already as far as it
+/// does, and told the pool the time OneDrive named, so none is given here.
 fn source_error(error: DriveError) -> SourceError {
+    let is_throttled = matches!(error.status().map(|status| status.code()), Some(429 | 503));
     match error {
-        DriveError::NotFound | DriveError::SignedOut => SourceError::NotFound(error.to_string()),
+        DriveError::NotFound => SourceError::NotFound(error.to_string()),
+        DriveError::SignedOut => SourceError::SignedOut(error.to_string()),
+        other if is_throttled => SourceError::Throttled { detail: other.to_string(), retry_after: None },
         other => SourceError::Transient(other.to_string()),
     }
 }
