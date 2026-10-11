@@ -478,3 +478,43 @@ fn a_backing_file_that_cannot_be_made_after_its_row_asks_for_the_take_down() {
     assert_eq!(operations.list_records(), []);
     operations.fixture.assert_rows_and_disk_agree();
 }
+
+/// The review's M1: what a restart of the daemon leaves of a program that holds a file
+/// open, wrote into it and put its time back (`cp -p` does, before its close).
+#[test]
+fn bytes_written_through_a_handle_that_was_never_closed_are_unsent_after_the_check_at_start_though_size_and_time_stand() {
+    let operations = OperationsFixture::new();
+    let doc = land(&operations, "doc.txt", b"as it was");
+    let clean = operations.fixture.find_item(doc).unwrap();
+    let fh = open(&operations, doc).unwrap().fh;
+    operations.write_through(fh, b"AS IT WAS");
+    operations.run(move |operations| operations.set_modified_time(doc, Some(fh), ONEDRIVE_MTIME, 0)).unwrap();
+    assert_eq!(disk_time(&operations, "doc.txt"), (ONEDRIVE_MTIME, 0), "the file has the size and the time of the clean copy");
+    // No close: the daemon stops, or dies.
+    operations.fixture.run_start_check();
+    let row = operations.fixture.find_item(doc).unwrap();
+    let content = row.local.clone().unwrap().content.unwrap();
+    assert!(matches!(content, ContentVersion::ChangedHere { size: 9, mtime: ONEDRIVE_MTIME, .. }), "the row says the content was changed here: {content:?}");
+    assert_eq!(row.content_before_write, None, "as a close that changed the file leaves it");
+    assert_eq!((row.synced_content.clone(), row.content_presence), (clean.synced_content.clone(), ContentPresence::OnDisk));
+    assert!(row.unsent_since.is_some() && row.file_sync_state() != Some(FileSyncState::Synced), "the row is unsent: {row:?}");
+    assert_eq!(operations.fixture.read_disk_file("doc.txt").as_deref(), Some(&b"AS IT WAS"[..]), "the bytes to be sent");
+    // The check is done with it.
+    operations.fixture.run_start_check();
+    assert_eq!(operations.fixture.find_item(doc), Some(row));
+}
+
+/// What M1's rule costs, accepted by the owner: a file a program held open for writing
+/// and never wrote into is sent once more.
+#[test]
+fn a_file_opened_for_writing_and_never_closed_is_changed_here_after_the_check_at_start_also_when_nothing_was_written() {
+    let operations = OperationsFixture::new();
+    let doc = land(&operations, "doc.txt", b"as it was");
+    open(&operations, doc).unwrap();
+    operations.fixture.run_start_check();
+    let row = operations.fixture.find_item(doc).unwrap();
+    let content = row.local.clone().unwrap().content.unwrap();
+    assert!(matches!(content, ContentVersion::ChangedHere { size: 9, mtime: ONEDRIVE_MTIME, .. }), "{content:?}");
+    assert_eq!(row.content_before_write, None);
+    assert!(row.unsent_since.is_some(), "{row:?}");
+}

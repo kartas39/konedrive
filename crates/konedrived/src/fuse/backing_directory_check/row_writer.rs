@@ -59,14 +59,14 @@ impl<'a, 'store> RowWriter<'a, 'store> {
 
     /// What a finding of a file's content writes to the row of `item`, whose content on
     /// disk is `file`. `was_open_for_writing` and `was_on_disk` are what the row said when
-    /// it was read.
+    /// it was read. A row a writer held open is never found unchanged
+    /// (`disk_finding::WriterAtStop`): it is written as a close that changed the file
+    /// writes it, and no longer keeps the content of before the write.
     pub(super) fn write_content(&mut self, item: LocalItemId, finding: DiskFinding, file: &DiskContent, was_open_for_writing: bool, was_on_disk: bool) -> Result<(), UnresolvedReason> {
         match finding {
-            // A daemon died with a writer open that wrote nothing: as its close leaves it.
-            DiskFinding::NothingChanged if was_open_for_writing => self.item_store.apply(&LocalVersionChange::ClosedUnchanged { item }).map(|_| ()).map_err(to_refused),
             DiskFinding::ContentChanged => {
-                // Another content, its count raised: by the open that the dead daemon wrote,
-                // or by one written here with the close.
+                // Another content, its count raised: by the open that the stopped daemon
+                // wrote, or by one written here with the close.
                 let closed = LocalVersionChange::ClosedChanged { item, size: file.size, mtime: file.mtime, mtime_nsec: file.mtime_nsec };
                 let changes = if was_open_for_writing { vec![closed] } else { vec![LocalVersionChange::OpenedForWriting { item }, closed] };
                 self.item_store.apply_all(&changes).map_err(to_refused)?;

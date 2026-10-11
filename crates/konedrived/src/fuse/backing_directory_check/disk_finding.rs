@@ -3,6 +3,11 @@
 //! ([`PlaceRow`]) and of what the backing directory has there ([`PlaceEntry`]), with no disk
 //! and no store in it. It is design §10's table, a row of the table an arm.
 //!
+//! A file's content is compared by its size, its time and its cTag mark, with one
+//! exception: a row that still keeps the content of before a write ([`WriterAtStop::Open`])
+//! is of a file a program held open when the daemon stopped, and is changed here whatever
+//! the comparison says. A file opened for writing and never written is so sent once more.
+//!
 //! The decision looks at one place. Nothing of another place enters it: not where an entry
 //! of the same mark is, not whether a row elsewhere misses its entry. Of a mark it is told
 //! one thing ([`EntryMark`]): whether the id is the one of the row at this place, of no row
@@ -61,12 +66,23 @@ pub(super) enum ItemBinding {
     Unbound,
 }
 
+/// Whether a writer held a file open when the daemon stopped: the row still keeps the
+/// content of before the write, which the last close takes away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WriterAtStop {
+    /// No program had it open for writing, or its last close was written.
+    Closed,
+    /// A program had it open for writing and no close was written: bytes may have gone
+    /// into the file that neither its size nor its time shows.
+    Open,
+}
+
 /// What the rows of items say of a place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PlaceRow {
     /// The folder shows nothing there.
     Nothing,
-    File { binding: ItemBinding, content_presence: ContentPresence },
+    File { binding: ItemBinding, content_presence: ContentPresence, writer: WriterAtStop },
     Directory { binding: ItemBinding },
 }
 
@@ -179,6 +195,9 @@ pub(super) fn decide_finding(row: PlaceRow, entry: PlaceEntry) -> DiskFinding {
     match (row, entry) {
         // Row 1: an entry of the row's kind is that item. A file's content is compared.
         (PlaceRow::Directory { .. }, PlaceEntry::Directory { .. }) => DiskFinding::NothingChanged,
+        // A file a writer held open when the daemon stopped is changed here whatever its
+        // size and time say: bytes may have been written that neither shows.
+        (PlaceRow::File { writer: WriterAtStop::Open, .. }, PlaceEntry::File { .. }) => DiskFinding::ContentChanged,
         (PlaceRow::File { content_presence: OnDisk, .. }, PlaceEntry::File { comparison: Same, .. }) => DiskFinding::NothingChanged,
         (PlaceRow::File { content_presence: OnDisk, .. }, PlaceEntry::File { comparison: Different, .. }) => DiskFinding::ContentChanged,
         // Row 2: the whole copy of that item, where the row says its content is not on disk.
@@ -188,10 +207,10 @@ pub(super) fn decide_finding(row: PlaceRow, entry: PlaceEntry) -> DiskFinding {
 
         // Nothing where the row says nothing of the item is on disk: a file that is not
         // downloaded, a directory of OneDrive, which needs none.
-        (PlaceRow::File { binding: Bound, content_presence: NotOnDisk } | PlaceRow::Directory { binding: Bound }, PlaceEntry::Nothing) => DiskFinding::NothingChanged,
+        (PlaceRow::File { binding: Bound, content_presence: NotOnDisk, .. } | PlaceRow::Directory { binding: Bound }, PlaceEntry::Nothing) => DiskFinding::NothingChanged,
         // Row 4: an item OneDrive has, and nothing where its copy was, or an entry of the
         // other kind.
-        (PlaceRow::File { binding: Bound, content_presence: OnDisk }, PlaceEntry::Nothing)
+        (PlaceRow::File { binding: Bound, content_presence: OnDisk, .. }, PlaceEntry::Nothing)
         | (PlaceRow::File { binding: Bound, .. }, PlaceEntry::Directory { .. })
         | (PlaceRow::Directory { binding: Bound }, PlaceEntry::File { .. }) => DiskFinding::NotShownAnyMore,
         // Row 5: an item OneDrive never had, and nothing or an entry of the other kind.

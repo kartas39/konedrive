@@ -5,15 +5,16 @@ use super::ContentComparison::{Different, Same};
 use super::CopyWholeness::{NotWhole, Whole};
 use super::EntryMark::{OfAnotherRow, OfNoRow, OfRowAtPlace, OfSeveralEntries, Unmarked};
 use super::ItemBinding::{Bound, Unbound};
+use super::WriterAtStop::{Closed, Open};
 use crate::fuse::backing_directory_check::mark_change::EntryLinks;
 use super::{compare_content, decide_finding, decide_finding_without_place, ContentComparison, CopyWholeness, DiskContent, DiskFinding, EntryMark, PlaceEntry, PlaceRow};
 
 /// A downloaded copy, clean or changed here: the row says its content is on disk.
-const COPY: PlaceRow = PlaceRow::File { binding: Bound, content_presence: OnDisk };
+const COPY: PlaceRow = PlaceRow::File { binding: Bound, content_presence: OnDisk, writer: Closed };
 /// A file OneDrive never had.
-const OWN_FILE: PlaceRow = PlaceRow::File { binding: Unbound, content_presence: OnDisk };
+const OWN_FILE: PlaceRow = PlaceRow::File { binding: Unbound, content_presence: OnDisk, writer: Closed };
 /// A file of OneDrive that is not downloaded.
-const NOT_DOWNLOADED: PlaceRow = PlaceRow::File { binding: Bound, content_presence: NotOnDisk };
+const NOT_DOWNLOADED: PlaceRow = PlaceRow::File { binding: Bound, content_presence: NotOnDisk, writer: Closed };
 const ONEDRIVE_DIRECTORY: PlaceRow = PlaceRow::Directory { binding: Bound };
 const OWN_DIRECTORY: PlaceRow = PlaceRow::Directory { binding: Unbound };
 
@@ -54,6 +55,33 @@ fn a_file_at_the_row_of_a_file_on_disk_is_that_item_clean_or_changed_by_the_comp
                 assert_eq!(decide_finding(row, file(mark, wholeness, Different)), DiskFinding::ContentChanged, "{row:?} {mark:?} {wholeness:?}");
             }
         }
+    }
+}
+
+/// The review's M1: bytes written through a handle that was never closed may keep the
+/// file's size and its time. A row that still keeps the content of before the write is
+/// never made clean by the comparison.
+#[test]
+fn a_file_a_writer_held_open_when_the_daemon_stopped_is_changed_here_whatever_the_comparison_says() {
+    for binding in [Bound, Unbound] {
+        for content_presence in [OnDisk, NotOnDisk] {
+            for entry in every_file() {
+                let row = PlaceRow::File { binding, content_presence, writer: Open };
+                assert_eq!(decide_finding(row, entry), DiskFinding::ContentChanged, "{row:?} {entry:?}");
+            }
+        }
+    }
+}
+
+/// Nothing of it on disk, or a directory at its name: as any other row, by its binding.
+#[test]
+fn a_file_a_writer_held_open_that_is_gone_from_disk_leaves_as_any_other_file_does() {
+    let open = |binding| PlaceRow::File { binding, content_presence: OnDisk, writer: Open };
+    assert_eq!(decide_finding(open(Bound), PlaceEntry::Nothing), DiskFinding::NotShownAnyMore);
+    assert_eq!(decide_finding(open(Unbound), PlaceEntry::Nothing), DiskFinding::Removed);
+    for entry in every_directory() {
+        assert_eq!(decide_finding(open(Bound), entry), DiskFinding::NotShownAnyMore, "{entry:?}");
+        assert_eq!(decide_finding(open(Unbound), entry), DiskFinding::Removed, "{entry:?}");
     }
 }
 
@@ -107,7 +135,7 @@ fn a_file_that_is_not_downloaded_and_a_directory_of_onedrive_have_nothing_on_dis
 fn an_item_onedrive_never_had_that_is_gone_or_has_the_other_kind_at_its_name_goes() {
     assert_eq!(decide_finding(OWN_FILE, PlaceEntry::Nothing), DiskFinding::Removed);
     assert_eq!(decide_finding(OWN_DIRECTORY, PlaceEntry::Nothing), DiskFinding::Removed);
-    assert_eq!(decide_finding(PlaceRow::File { binding: Unbound, content_presence: NotOnDisk }, PlaceEntry::Nothing), DiskFinding::Removed);
+    assert_eq!(decide_finding(PlaceRow::File { binding: Unbound, content_presence: NotOnDisk, writer: Closed }, PlaceEntry::Nothing), DiskFinding::Removed);
     for entry in every_directory() {
         assert_eq!(decide_finding(OWN_FILE, entry), DiskFinding::Removed, "{entry:?}");
     }
@@ -165,7 +193,9 @@ fn a_row_of_an_item_of_onedrive_is_never_found_removed() {
 fn a_row_whose_directory_leaves_the_folder_leaves_too_by_its_binding() {
     for (binding, finding) in [(Bound, DiskFinding::NotShownAnyMore), (Unbound, DiskFinding::Removed)] {
         for content_presence in [OnDisk, NotOnDisk] {
-            assert_eq!(decide_finding_without_place(PlaceRow::File { binding, content_presence }), finding);
+            for writer in [Closed, Open] {
+                assert_eq!(decide_finding_without_place(PlaceRow::File { binding, content_presence, writer }), finding);
+            }
         }
         assert_eq!(decide_finding_without_place(PlaceRow::Directory { binding }), finding);
     }

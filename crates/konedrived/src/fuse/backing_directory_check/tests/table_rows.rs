@@ -40,17 +40,23 @@ fn a_clean_copy_marked_with_another_ctag_than_its_rows_is_changed_and_one_with_n
     assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 6)]);
 }
 
+/// Design §10, the first row's last sentence (the review's M1): a row that still keeps
+/// the content of before a write is never made clean by size and time.
 #[test]
-fn a_file_a_dead_daemon_had_open_for_writing_is_closed_as_the_disk_has_it() {
-    // Nothing was written: the content from before the open is back.
+fn a_file_a_dead_daemon_had_open_for_writing_is_changed_here_whatever_its_size_and_time_say() {
+    // The size and the time of the clean copy: bytes may have been written all the same.
     let mut f = folder_of_each();
     let a = f.id("docs/a.txt");
     let clean = f.item(a);
     f.store.item_store().apply(&LocalVersionChange::OpenedForWriting { item: a }).unwrap();
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 6)]);
-    assert_eq!(f.item(a), clean);
+    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::ContentChanged, 1)]);
+    let row = f.item(a);
+    assert_eq!((content(&row), row.content_before_write.clone()), (changed_here(clean.local.as_ref().unwrap().content.as_ref().unwrap().size(), 1), None));
+    assert_eq!(row.synced_content, clean.synced_content);
+    f.assert_settled();
 
-    // Bytes were written: the size and the time of the disk, changed here.
+    // Bytes of another size: the size and the time of the disk, changed here.
+    let mut f = folder_of_each();
     f.store.item_store().apply(&LocalVersionChange::OpenedForWriting { item: a }).unwrap();
     f.write("docs/a.txt", b"written by the program");
     assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::ContentChanged, 1)]);

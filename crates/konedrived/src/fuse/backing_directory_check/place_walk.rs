@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use konedrive_tree::{ContentPresence, DriveId, Item, ItemKind, LocalItemId};
 
 use super::backing_directory_contents::{BackingDirectoryContents, BackingDirectoryEntry, EntryIndex};
-use super::disk_finding::{compare_content, decide_finding, decide_finding_without_place, ContentComparison, DiskFinding, EntryMark, ItemBinding, PlaceEntry, PlaceRow, UnresolvedReason};
+use super::disk_finding::{compare_content, decide_finding, decide_finding_without_place, ContentComparison, DiskFinding, EntryMark, ItemBinding, PlaceEntry, PlaceRow, UnresolvedReason, WriterAtStop};
 use super::item_rows::ItemRows;
 use super::mark_change::{decide_mark_change, EntryOwner, MarkChange};
 use super::row_writer::{tell_made_content, RowWriter};
@@ -64,8 +64,17 @@ struct DirectoryVisit {
 fn tell_place_row(row: &Item) -> PlaceRow {
     let binding = tell_binding(row);
     match row.kind {
-        ItemKind::File => PlaceRow::File { binding, content_presence: row.content_presence },
+        ItemKind::File => PlaceRow::File { binding, content_presence: row.content_presence, writer: tell_writer_at_stop(row) },
         ItemKind::Directory => PlaceRow::Directory { binding },
+    }
+}
+
+/// Whether a writer held the file of `row` open when the daemon stopped: only a last
+/// close takes the content of before the write from a row.
+fn tell_writer_at_stop(row: &Item) -> WriterAtStop {
+    match row.content_before_write {
+        Some(_) => WriterAtStop::Open,
+        None => WriterAtStop::Closed,
     }
 }
 
