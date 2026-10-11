@@ -24,6 +24,8 @@
 // test: a_forget_with_something_unsent_is_refused_unless_forced
 // test: a_folder_taken_down_has_no_mount_a_closed_store_and_its_trouble_said
 // test: a_folder_forgotten_has_its_write_bits_and_a_closed_store
+// test: a_folder_forgotten_with_no_parts_kept_has_its_write_bits
+// test: a_watcher_whose_account_signed_in_before_its_first_look_releases_at_once
 // test: a_store_somebody_still_holds_after_the_wait_is_answered
 // test: a_closed_store_that_is_not_there_or_not_of_this_version_counts_as_nothing_unsent
 #![allow(dead_code, unused_variables)]
@@ -34,6 +36,7 @@ use tokio_util::sync::CancellationToken;
 use super::start_order::{KeptFolderParts, StartedFolder};
 use super::SyncTasks;
 use crate::account::state::AccountSnapshot;
+use crate::folder::root::SyncRoot;
 use crate::fuse::TakeDownCause;
 use crate::remote::listing_poller::ListingPollHandle;
 use crate::status::snapshot::SyncStateHandle;
@@ -61,7 +64,10 @@ impl SyncTasks {
 
     /// The account signed out: all sending is held (`SendingHolds::set_signed_out`, which
     /// wakes the plan) and uploads stop after their fragment; no task stops, and the
-    /// mount goes on taking changes, as today.
+    /// mount goes on taking changes, as today. Called by the owner of the folder's state
+    /// when the account's state becomes signed out: the watcher of the sign-in only
+    /// releases. The plan's task sets the same hold itself when a step is answered that
+    /// the account is signed out (`sync_plan_task`'s settlement), whichever comes first.
     pub fn hold_for_sign_out(&self) {
         todo!()
     }
@@ -104,12 +110,19 @@ pub async fn release_after_sign_in(store: &Store, sending_holds: &SendingHolds, 
 /// [`release_after_sign_in`]. It ends when `stop` is cancelled and when the account's
 /// sender is gone. Without it a folder that says "signed out" would say so until the
 /// poller's next cycle after the sign-in.
-pub async fn watch_sign_in(account_changes: tokio::sync::watch::Receiver<AccountSnapshot>, store: Store, sending_holds: std::sync::Arc<SendingHolds>, poll: ListingPollHandle, stop: CancellationToken) {
+///
+/// Its first state is `is_signed_out_at_start` — what the start set on the holds
+/// (`StandingSendingHolds::is_signed_out`) —, NOT what the receiver says when the task is
+/// spawned: the owner read the one before the start's stages, the task begins after
+/// them. So a receiver that says signed in at the watcher's first look, with a start
+/// that held for a sign-out, releases at once; nothing else ends that hold.
+pub async fn watch_sign_in(account_changes: tokio::sync::watch::Receiver<AccountSnapshot>, is_signed_out_at_start: bool, store: Store, sending_holds: std::sync::Arc<SendingHolds>, poll: ListingPollHandle, stop: CancellationToken) {
     todo!()
 }
 
 /// Stops the sync of `started` (`SyncTasks::stop`) and answers what the folder keeps: the
-/// store, the mount — still served — and the leaf state the mount was made with. Called
+/// store, the mount — still served —, the leaf state the mount was made with and the
+/// folder's drive (`StartedFolder::drive_id`). Called
 /// by the owner of the folder's state where a sync ends, after it cancelled the stop's
 /// token and took the folder's write lock; what it answers is started again, taken down
 /// or forgotten.
@@ -138,8 +151,11 @@ pub enum TakeDownOutcome {
 /// (`Activity::detach`) and taken back what it gave the bus and the view (the mount's
 /// `files_interface`, the view's clone of the store): each holds the store open.
 ///
-/// In this order: `cause` is said in the journal and as the folder's blocking trouble
-/// (through `state`); the mount stopped (`ItemMount::stop`, off the runtime's threads: it
+/// In this order: `cause` is said in the journal and as the folder's blocking trouble —
+/// `state.update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text, blocking: true,
+/// kind: TroubleKind::Other }))`, the text made here from `cause` and the folder's path;
+/// nobody clears it but the first cycle that ends well after a later start
+/// (`ListingCycle::run`) —; the mount stopped (`ItemMount::stop`, off the runtime's threads: it
 /// aborts every download, so none holds the store any more, and takes the write bits
 /// off); every `Arc` of the mount and of the leaf state dropped — `kept` is taken by
 /// value; then the store closed (`Store::close`), waited for with a bound.
@@ -163,7 +179,23 @@ pub async fn take_folder_down(kept: KeptFolderParts, cause: TakeDownCause, state
 /// `Arc` of the mount and of the leaf state dropped; the store closed (`Store::close`),
 /// waited for with a bound. The store's files, `config.toml` and what the bus shows are
 /// the owner's to remove and clear afterwards.
+///
+/// A folder that keeps no parts — its start was refused, or it was taken down — has no
+/// mount to stop: for it the owner calls [`forget_folder_without_mount`] instead.
 pub async fn forget_folder(kept: KeptFolderParts) -> TakeDownOutcome {
+    todo!()
+}
+
+/// Leaves a folder that is forgotten while it keeps no parts a plain directory with its
+/// write bits: the daemon's last end, a build that failed or a take-down took them off,
+/// and no mount is there whose stop would give them back. Off the runtime's threads: a
+/// mount a daemon that died left over the folder is taken off first
+/// (`fuse::unmount_stale_mount`), then the write bits are given back to everything in the
+/// folder on disk (`fuse::restore_write_bits`, which must be given the folder itself and
+/// not a mount over it). No store is open then, so there is none to close. Called by the
+/// owner of the folder's state, inside a change of the folder, after [`decide_forget`]
+/// allowed it ([`count_unsent_of_closed_store`]).
+pub async fn forget_folder_without_mount(root: &SyncRoot) {
     todo!()
 }
 

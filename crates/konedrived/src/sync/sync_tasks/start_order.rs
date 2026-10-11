@@ -32,9 +32,22 @@
 //!    the mount's access mode and the store's state of sending, BEFORE any task plans;
 //! 6. `OneDriveSpace::new(input.quota)`, then [`read_quota_before_first_plan`];
 //! 7. [`start_sync_tasks`]: the listing's poller, the thumbnail filler, the plan's task,
-//!    the watcher of the sign-in. In either access mode. Nothing is awaited in it: a start
-//!    that is cut leaves either no task or all of them, held by a `SyncTasks` whose drop
-//!    tells them to stop.
+//!    the watcher of the sign-in. In either access mode. Nothing is awaited in it.
+//!
+//! **Two functions.** Stages 5 to 7 are [`start_sync_over_parts`], over the parts of a
+//! folder whether they were kept or made in this start, and whether the mount is served
+//! or only built: it stops nothing and gives the parts back when it refuses.
+//! [`start_folder_sync`] is stages 0 to 4 for a folder that keeps nothing, then that
+//! function, and what is undone after a refusal. It is never cut: the owner runs it in a
+//! task of its own (`sync_tasks`' module doc).
+//!
+//! **Until `ItemMount::serve` is written** (the switch's; its body is `todo!()`), a test
+//! cannot pass stage 3 of `start_folder_sync` with nothing kept. So the tests of stages 5
+//! to 7 call `start_sync_over_parts` with a mount built and not served (the fixture's);
+//! the tests of stages 0 to 2 and 4 call the stage's own function; the tests of
+//! `start_folder_sync` itself run with kept parts, or end at a refusal of stage 1 or 2.
+//! The three that need the whole function past stage 3 with nothing kept are written
+//! `#[ignore]`d with the reason "waits for ItemMount::serve", and are marked below.
 //!
 //! **Tested without the rest:**
 // test: a_store_that_was_kept_asks_for_no_full_listing
@@ -48,7 +61,10 @@
 // test: every_part_is_made_once_and_given_to_whoever_holds_it
 // test: the_holds_that_stand_at_the_start_are_set_before_the_first_plan
 // test: a_refused_start_gives_back_the_parts_it_was_given_as_kept
-// test: a_refused_start_stops_the_mount_it_built
+// test: a_refused_start_stops_the_mount_it_built (ignored: waits for ItemMount::serve)
+// test: a_mount_that_cannot_be_served_is_stopped_and_refused_as_the_mounts (ignored: waits for ItemMount::serve)
+// test: a_start_with_nothing_kept_runs_every_stage_in_its_order (ignored: waits for ItemMount::serve)
+// test: the_parts_are_given_back_by_a_start_over_them_that_is_refused
 // test: a_refused_start_says_what_the_rebuild_of_its_store_lost
 // test: the_upload_sessions_of_a_store_of_an_older_version_are_cancelled_before_it_is_removed
 // test: a_quota_read_at_the_start_that_has_space_forgets_the_refusals_that_fit
@@ -91,6 +107,10 @@ pub struct KeptFolderParts {
     pub sync_plan_wake: Arc<SyncPlanWake>,
     pub running_steps: Arc<RunningSteps>,
     pub published_plan: Arc<PublishedPlan>,
+    /// The folder's drive: the one the check at start was given when the mount was built
+    /// (`CheckDrive::Known`). The store's own `drive_id` may still be empty when a sync
+    /// was stopped before its first cycle, so the next start takes it from here.
+    pub drive_id: DriveId,
 }
 
 /// What holds all sending when a folder's sync starts, as the account has it then: set
@@ -154,7 +174,12 @@ pub struct FolderStartInput {
     /// the sync and calls `stop_order::take_folder_down`, inside a change of the folder.
     pub take_down_report: TakeDownReport,
     /// What the folder keeps from an earlier sync; `None` at the folder's first start and
-    /// after a take-down.
+    /// after a take-down. With kept parts the fields the mount was made with at its build
+    /// are not read: `tree_db`, `recorded_drive`, `account_drive`, `source`,
+    /// `split_download_share`, `download_after`, `take_down_report`, and `root` and
+    /// `clock` as far as the mount took them. `tree_lock`, `ignore` and `lease` must be
+    /// the very values of that first start: the kept mount holds them, and the runners
+    /// made now must share them with it.
     pub kept: Option<KeptFolderParts>,
 }
 
@@ -167,6 +192,9 @@ pub struct StartedFolder {
     pub running_steps: Arc<RunningSteps>,
     pub published_plan: Arc<PublishedPlan>,
     pub onedrive_space: Arc<OneDriveSpace>,
+    /// The folder's drive, as [`KeptFolderParts::drive_id`]: `stop_order::stop_folder_sync`
+    /// passes it on.
+    pub drive_id: DriveId,
     /// How the store came to be: said to the user where a rebuild lost something. `Kept`
     /// for a folder that was started with the parts it kept.
     pub store_origin: StoreOrigin,
@@ -204,7 +232,12 @@ pub struct RefusedStart {
 /// Starts the folder's sync: the stages of the module's doc, in their order. Called by
 /// the owner of the folder's state, inside a change of the folder, at the daemon's start,
 /// at a registration, after a sync was stopped, and at the user's refresh of a folder
-/// that is in trouble.
+/// that is in trouble. It relies on never being cut between two stages: the owner runs it
+/// in a task of its own and awaits that task (`sync_tasks`' module doc).
+///
+/// With kept parts it is [`start_sync_over_parts`] over them, with `StoreOrigin::Kept`.
+/// With nothing kept it runs stages 0 to 4, makes the parts of what it opened and built
+/// (the drive that of stage 2), and calls the same function.
 ///
 /// **On refusal**, by the stage that failed:
 ///
@@ -232,6 +265,25 @@ pub async fn start_folder_sync(input: FolderStartInput) -> Result<StartedFolder,
     todo!()
 }
 
+/// Stages 5 to 7 over the parts of a folder: the access mode applied
+/// (`apply_wanted_access_mode`), `OneDriveSpace::new(input.quota)` and
+/// [`read_quota_before_first_plan`], then [`start_sync_tasks`] with `parts.drive_id`. The
+/// answer holds the parts, the tasks, the space and `store_origin` as given.
+///
+/// `input.kept` is not read: the parts are `parts`, kept or made by the caller in this
+/// start. The mount of `parts` is built; whether it is served is not asked, so a test
+/// gives one that is not. A refusal (stage 5's `Err`: `StartRefusal::Store`) stops
+/// nothing and drops nothing: the parts are given back with it, and the caller —
+/// [`start_folder_sync`] — gives back the ones it was given as kept and ends the ones it
+/// made.
+async fn start_sync_over_parts(input: &FolderStartInput, parts: KeptFolderParts, store_origin: StoreOrigin) -> Result<StartedFolder, (StartRefusal, KeptFolderParts)> {
+    todo!()
+}
+
+/// How long the start waits for OneDrive to cancel the upload sessions of a store of an
+/// older version, all together. A guess.
+const OLD_SESSIONS_CANCELLED_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The drive the check at start binds an unknown mark in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckDrive {
@@ -246,7 +298,10 @@ pub enum CheckDrive {
 /// [`open_folder_store`], which removes that store. Nothing for a store of today's
 /// version, for no store, and for one whose sessions cannot be read. A session that
 /// cannot be cancelled now — no network, signed out — is logged and left to expire in
-/// OneDrive: the start does not wait for it and is not refused for it.
+/// OneDrive, and the start is not refused for it. All are asked at once and awaited
+/// together under ONE bound ([`OLD_SESSIONS_CANCELLED_WITHIN`]): what has not answered by
+/// then is dropped with its request, logged as not cancelled, and left to expire. No
+/// task outlives this function.
 async fn cancel_upload_sessions_of_old_store(tree_db: &Path, drive: &DriveClient) {
     todo!()
 }
@@ -310,7 +365,9 @@ async fn read_quota_before_first_plan(drive: &DriveClient, space: &OneDriveSpace
 /// `SyncPlanTask::new` with the runners, the mount's `start_check_findings` and a
 /// `quota_reader` that asks `input.drive` for the quota (`DriveClient::quota`, `None`
 /// when it could not be read), and its loop spawned with the stop's token; the watcher of
-/// the sign-in (`stop_order::watch_sign_in`, with `input.account_changes`). The plan's
+/// the sign-in (`stop_order::watch_sign_in`, with `input.account_changes` and
+/// `input.standing_holds.is_signed_out` as its first state). The poller's handle is
+/// cloned for the plan's task, the watcher and `SyncTasks::poll`. The plan's
 /// task sends nothing to OneDrive until the first listing of this start ended
 /// (`SendingHold::FirstListingNotEnded`).
 #[allow(clippy::too_many_arguments)]

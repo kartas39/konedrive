@@ -29,6 +29,16 @@
 //!   the write lock without the token cancelled first would wait for that step for ever;
 //! - it runs the stop in a task of its own, so that a caller that is cut does not cut
 //!   the stop;
+//! - it runs the start in a task of its own too (`tokio::spawn`) and awaits that task: a
+//!   start cut between two of its stages would drop a store the activity log is still
+//!   attached to, and a mount on one of the runtime's threads, where its drop joins a
+//!   thread and unmounts. `start_order::start_folder_sync` relies on never being cut;
+//! - at the daemon's end it stops the sync (`stop_order::stop_folder_sync`, under the
+//!   daemon's stop bound) and then stops the mount of the parts that answers
+//!   (`ItemMount::stop`, off the runtime's threads), which leaves the folder on disk
+//!   without its write bits; it closes nothing more, the process exits. Neither
+//!   `take_folder_down` (it says a trouble) nor `forget_folder` (it gives the write bits
+//!   back) is called for it;
 //! - a pause an older daemon left is not taken over (`take_old_pause` has no place in the
 //!   start's order): a store of an older version is rebuilt.
 //!
@@ -64,6 +74,10 @@ pub struct SyncTasks {
     /// The listing's poller: a cycle on its schedule, on a refresh, when the live socket
     /// says so. `None` once [`stop`](Self::stop) took it to stop it.
     listing_poller: Option<ListingPoller>,
+    /// The poller's handle, cloned from it at the start: what [`poll`](Self::poll)
+    /// answers, also once the poller was taken. The watcher of the sign-in and the plan's
+    /// task were given clones of the same.
+    poll: ListingPollHandle,
     plan: Arc<SyncPlanTask>,
     plan_loop: JoinHandle<()>,
     /// The thumbnail filler (`desktop::thumbs::ThumbnailFiller`); none without a cache to
