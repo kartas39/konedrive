@@ -77,6 +77,19 @@ fn what_a_rebuild_lost_is_said_only_when_something_the_user_misses_was_lost() {
     }
 }
 
+/// What a rebuild lost reaches the activity log as one event of the folder, whose detail
+/// is the sentence; a rebuild that lost nothing the user misses is no event.
+#[test]
+fn what_a_rebuild_lost_is_an_event_of_the_activity_log_at_the_folders_path() {
+    let none = RebuildLoss::default();
+    assert_eq!(SyncService::make_rebuild_loss_event(Path::new(FOLDER), &RebuildLoss { activity_events: 9, ..none }), None);
+    let loss = RebuildLoss { pins: 3, ..none };
+    let event = SyncService::make_rebuild_loss_event(Path::new(FOLDER), &loss).expect("something was lost");
+    assert_eq!((event.kind, event.path.as_str()), (konedrive_tree::ActivityKind::StoreRebuilt, FOLDER));
+    assert_eq!(Some(event.detail), SyncService::describe_rebuild_loss(&loss));
+    assert_eq!(konedrive_tree::ActivityKind::parse("store-rebuilt"), Some(konedrive_tree::ActivityKind::StoreRebuilt));
+}
+
 /// `Refresh()` of a folder a fault took down tries at once; refused, the folder is taken
 /// down still, with the cause, the count and the time of its next try as they were, and the
 /// refusal says the cause.

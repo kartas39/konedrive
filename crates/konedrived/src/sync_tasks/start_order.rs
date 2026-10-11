@@ -175,8 +175,9 @@ pub struct FolderStartInput {
     /// The store's file.
     pub tree_db: PathBuf,
     pub drive: DriveClient,
-    /// The drive `config.toml` recorded for the account, and the one the account's
-    /// profile says: for the check at start.
+    /// The drive `config.toml` recorded for the account, and the one the account's token
+    /// was last seen to reach (`AccountSnapshot::live_drive`, read from `GET /me/drive` at
+    /// a sign-in; none before the first): for the check at start.
     pub recorded_drive: Option<DriveId>,
     pub account_drive: Option<DriveId>,
     pub drive_record: Option<DriveRecord>,
@@ -552,7 +553,8 @@ async fn open_folder_store(tree_db: &Path) -> Result<(Store, StoreOrigin), Start
 }
 
 /// The drive for the check: the store's own (`meta` `drive_id`), else the one
-/// `config.toml` recorded for the account, else the one the account's profile says. Pure.
+/// `config.toml` recorded for the account, else the one the account's token was last seen
+/// to reach. Pure.
 pub fn decide_check_drive(store_drive: Option<DriveId>, recorded_drive: Option<DriveId>, account_drive: Option<DriveId>) -> CheckDrive {
     match store_drive.or(recorded_drive).or(account_drive) {
         Some(drive) => CheckDrive::Known(drive),

@@ -63,7 +63,7 @@ impl SyncService {
             tree_db: paths.tree_db,
             drive,
             recorded_drive,
-            // TODO: check that the drive the account's token was last seen to reach is the one meant by "the one the account's profile says" (`FolderStartInput::account_drive`), and fix if needed.
+            // The drive the account's token was last seen to reach (`AccountSnapshot::live_drive`: `GET /me/drive` at a sign-in), none before the first sign-in: what a start falls back to when neither the store nor `config.toml` names a drive (`decide_check_drive`).
             account_drive: DriveId::new(snapshot.live_drive.clone()),
             drive_record: Some(drive_record),
             neighbours: Some(self.neighbours()),
@@ -99,8 +99,9 @@ impl SyncService {
         let started = match self.sync_change.run(start, self.adopt_left_sync_change()).await {
             Some(SyncChange::Started(started)) => started,
             Some(SyncChange::Refused(refused)) => {
-                if let Some(said) = refused.rebuild_loss.as_ref().and_then(Self::describe_rebuild_loss) {
-                    tracing::warn!("{}: {said}", root.path.display());
+                // The store was made anew before the start was refused: the next start finds it so, and says nothing.
+                if let Some(loss) = &refused.rebuild_loss {
+                    self.tell_rebuild_loss(&root.path, loss).await;
                 }
                 if let Some(record) = stopped.folder_mut().record_mut() {
                     record.kept.parts = refused.kept;
@@ -114,9 +115,7 @@ impl SyncService {
             }
         };
         if let StoreOrigin::MadeEmpty { loss: Some(loss) } = &started.store_origin {
-            if let Some(said) = Self::describe_rebuild_loss(loss) {
-                tracing::warn!("{}: {said}", root.path.display());
-            }
+            self.tell_rebuild_loss(&root.path, loss).await;
         }
         let mount = Arc::clone(&started.mount);
         // The pause as it is now, set again: one that began or ended while the start ran reached no sync.
@@ -140,10 +139,30 @@ impl SyncService {
         self.show_pause();
     }
 
+    /// Tells the user, once, what a start whose store was made anew lost with the old one:
+    /// in the journal, and as an event of the activity log ([`make_rebuild_loss_event`]:
+    /// `ActivityLog.Added` and `Recent`, so the window's activity list and
+    /// `konedrivectl sync activity`). Nothing when nothing the user misses was lost. An
+    /// event recorded while the log has no store (the start was refused) is kept in
+    /// memory and written when a store is attached.
+    async fn tell_rebuild_loss(&self, folder: &std::path::Path, loss: &konedrive_tree::RebuildLoss) {
+        let Some(event) = Self::make_rebuild_loss_event(folder, loss) else { return };
+        tracing::warn!("{}: {}", folder.display(), event.detail);
+        self.report.activity.record(vec![event]).await;
+    }
+
+    /// The event of the activity log for a store made anew that lost something
+    /// (`ActivityKind::StoreRebuilt`): the folder's path, and what was lost as its detail
+    /// ([`describe_rebuild_loss`](Self::describe_rebuild_loss)); `None` when nothing the
+    /// user misses was lost.
+    fn make_rebuild_loss_event(folder: &std::path::Path, loss: &konedrive_tree::RebuildLoss) -> Option<crate::status::activity::Event> {
+        let said = Self::describe_rebuild_loss(loss)?;
+        Some(crate::status::activity::event(konedrive_tree::ActivityKind::StoreRebuilt, folder.display().to_string(), said))
+    }
+
     /// What the user is told once after a start whose store was rebuilt and lost
     /// something (`RebuildLoss`: pins, unsent changes that are not on disk, open upload
     /// sessions): `None` when nothing was lost. Pure.
-    // TODO: where it is said beside the journal — an event of the activity log, the folder's `LastError` — and in which words is the owner's to say; until then the journal alone.
     fn describe_rebuild_loss(loss: &konedrive_tree::RebuildLoss) -> Option<String> {
         let lost: Vec<String> = [
             (loss.pins, "pin(s)"),

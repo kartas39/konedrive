@@ -59,6 +59,11 @@ activity_kinds! {
     /// cannot be shown here: it is to be removed in OneDrive. The path is the directory.
     // TODO: wording
     NotRemovedHere => "not-removed-here",
+    /// The folder's store was of an older version and was made anew, and something the
+    /// user misses went with it: pins, changes that were not sent and are not on disk,
+    /// uploads under way. Once, at the start that made it anew. The path is the folder;
+    /// the detail says what was lost.
+    StoreRebuilt => "store-rebuilt",
     /// A download that failed: a fill on open, or `Hydrate`. Detail: why —
     /// exactly "not enough disk space" when the disk is full.
     Failed => "failed",
