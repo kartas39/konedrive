@@ -194,6 +194,11 @@ pub(crate) enum LocalPlaceAvailability {
     /// has it there by this folder's own request, in the middle of an exchange of names.
     /// The folder never takes that place; the item's place here is sent.
     IsTemporaryName,
+    /// The folder does not show the item, and the place is the temporary name another
+    /// item goes through in OneDrive: which. A listing made this row of what that item's
+    /// own request put there, before the request's commit was written. The folder never
+    /// shows it there: that item's step takes the row over, or forgets the name.
+    IsTemporaryNameOf(LocalItemId),
 }
 
 /// One item as the plan decides on it: its row, and what the plan was given or found among
@@ -538,7 +543,7 @@ fn show_onedrive_item(case: &ItemCase<'_>) -> ItemDecision {
         FolderVisibility::CanBeShown => match case.local_place_availability {
             LocalPlaceAvailability::Free => folder_step(FolderStep::ShowItem { item: case.versions() }),
             LocalPlaceAvailability::DirectoryNotShown(directory) | LocalPlaceAvailability::DirectoryRemovedHere(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
-            LocalPlaceAvailability::NameTaken(holder) => ItemDecision::Wait(WaitReason::AnotherItem(holder)),
+            LocalPlaceAvailability::NameTaken(holder) | LocalPlaceAvailability::IsTemporaryNameOf(holder) => ItemDecision::Wait(WaitReason::AnotherItem(holder)),
             LocalPlaceAvailability::NameUnusable => ItemDecision::Exclusion(ExclusionReason::CannotBeShown),
             // A temporary name is the place of an item the folder shows, and this one it
             // does not.
@@ -646,10 +651,12 @@ pub(crate) fn decide_place(case: &ItemCase<'_>, here: PlaceChange, in_onedrive: 
         (PlaceChange::Same, PlaceChange::Moved) => match case.local_place_availability {
             LocalPlaceAvailability::Free => folder_step(FolderStep::MoveItem { item: case.versions() }),
             LocalPlaceAvailability::DirectoryNotShown(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
+            // TODO: check that a move sent from a row that is not unsent (`unsent_since` is none: the place here is the one agreed on) is right, for both cases of this arm, and fix if needed: in a read-only folder it reads as unsent after the switch and waits for the user, the item staying under its temporary name in OneDrive meanwhile; and a failed try of it is not kept, as no unsent change is there to keep it of, so the next plan sends at once.
             LocalPlaceAvailability::DirectoryRemovedHere(_) | LocalPlaceAvailability::IsTemporaryName => send_move(case),
             LocalPlaceAvailability::NameTaken(holder) => ItemDecision::Wait(WaitReason::AnotherItem(holder)),
             LocalPlaceAvailability::NameUnusable => decide_item_that_cannot_be_shown(case, here_content, onedrive_content),
-            LocalPlaceAvailability::NoOneDrivePlace => row_fault(case),
+            // Another item's temporary name is the place of a row the folder does not show.
+            LocalPlaceAvailability::NoOneDrivePlace | LocalPlaceAvailability::IsTemporaryNameOf(_) => row_fault(case),
         },
         (PlaceChange::Moved, PlaceChange::Same) if !can_be_shown && item.kind == ItemKind::Directory => decide_item_that_cannot_be_shown(case, here_content, onedrive_content),
         (PlaceChange::Moved, PlaceChange::Same) => send_move(case),
@@ -663,7 +670,7 @@ pub(crate) fn decide_place(case: &ItemCase<'_>, here: PlaceChange, in_onedrive: 
                 LocalPlaceAvailability::Free => folder_step(FolderStep::MoveItem { item: case.versions() }),
                 LocalPlaceAvailability::DirectoryNotShown(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
                 LocalPlaceAvailability::NameTaken(_) | LocalPlaceAvailability::NameUnusable | LocalPlaceAvailability::DirectoryRemovedHere(_) | LocalPlaceAvailability::IsTemporaryName => send_move(case),
-                LocalPlaceAvailability::NoOneDrivePlace => row_fault(case),
+                LocalPlaceAvailability::NoOneDrivePlace | LocalPlaceAvailability::IsTemporaryNameOf(_) => row_fault(case),
             }
         }
     }

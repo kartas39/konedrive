@@ -389,7 +389,7 @@ fn is_directory_removal_as_planned(conn: &Connection, item: &ItemVersions, below
     }
     let mut rows_below = Vec::new();
     for row in list_below_in_onedrive(conn, item.local_item_id)? {
-        let is_left_by_upload = match row.onedrive_item.as_ref().filter(|_| row.local.is_none()) {
+        let is_left_by_upload = match row.onedrive_item.as_ref().filter(|_| row.local.is_none() && row.synced_place.is_none() && row.synced_content.is_none()) {
             Some(onedrive_item) => find_mismatched_item(conn, onedrive_item)?.is_some(),
             None => false,
         };

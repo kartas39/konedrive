@@ -73,7 +73,7 @@ fn take_move_back(case: &ItemCase<'_>) -> Option<ItemDecision> {
     match case.local_place_availability {
         LocalPlaceAvailability::Free => Some(ItemDecision::Step(SyncStep::Folder(FolderStep::TakeMoveBack { item: ItemVersions::of(case.item) }))),
         LocalPlaceAvailability::DirectoryNotShown(another) | LocalPlaceAvailability::DirectoryRemovedHere(another) | LocalPlaceAvailability::NameTaken(another) => Some(ItemDecision::Wait(WaitReason::AnotherItem(another))),
-        LocalPlaceAvailability::NameUnusable | LocalPlaceAvailability::NoOneDrivePlace | LocalPlaceAvailability::IsTemporaryName => None,
+        LocalPlaceAvailability::NameUnusable | LocalPlaceAvailability::NoOneDrivePlace | LocalPlaceAvailability::IsTemporaryName | LocalPlaceAvailability::IsTemporaryNameOf(_) => None,
     }
 }
 

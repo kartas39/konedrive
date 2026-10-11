@@ -26,7 +26,8 @@ pub(crate) enum NameHolder<'a> {
     IsHeldBack(LocalItemId),
     /// An upload of this folder left it there with other content than was sent, and it
     /// waits to be removed in OneDrive: the file whose upload left it, none when that
-    /// file's row went.
+    /// file's row went. What the claimant's own upload left is no holder, and is passed
+    /// over where the holder is found ([`settle_name_contests`]).
     IsLeftByUpload { file: Option<LocalItemId> },
 }
 
@@ -74,9 +75,6 @@ pub(crate) enum NameContestOutcome {
 ///
 /// - another item of the folder is to have the name too, and was unsent earlier: the
 ///   claimant steps aside;
-/// - the holder is what an upload of the claimant itself left: it is no holder, and what
-///   follows is asked as with none. The step that sends the claimant again removes it
-///   first;
 /// - OneDrive has the claimant and the holder in that directory already, each under a name
 ///   of this fold: OneDrive has judged, and keeps the two apart. The name is free, once no
 ///   listing is under way that may yet say one of the two is elsewhere; should OneDrive
@@ -105,12 +103,10 @@ pub(crate) fn decide_name_contest(claim: &NameClaim<'_>) -> NameContestOutcome {
     if claim.has_earlier_rival {
         return NameContestOutcome::StepsAside;
     }
-    // TODO: check whether an answer of OneDrive that the name is taken can be of the item the claimant's own upload left (kept from before the upload), and fix if needed: the claimant then steps aside for it below.
-    let holder = claim.holder.filter(|holder| *holder != NameHolder::IsLeftByUpload { file: Some(claimant.local_item_id) });
-    if claim.has_the_name_in_onedrive && holder.is_some() && !claim.is_answered_taken {
+    if claim.has_the_name_in_onedrive && claim.holder.is_some() && !claim.is_answered_taken {
         return if claim.is_listing_under_way { NameContestOutcome::WaitsForListing } else { NameContestOutcome::NameIsFree };
     }
-    let holder = match holder {
+    let holder = match claim.holder {
         None if claim.is_answered_taken && !claim.is_left_here => return if claim.is_listing_under_way { NameContestOutcome::WaitsForListing } else { NameContestOutcome::StepsAside },
         None => return NameContestOutcome::NameIsFree,
         Some(NameHolder::Leaves(_)) if claim.is_left_here => return NameContestOutcome::NameIsFree,
@@ -118,6 +114,7 @@ pub(crate) fn decide_name_contest(claim: &NameClaim<'_>) -> NameContestOutcome {
         Some(NameHolder::IsHeldBack(_)) if claim.is_left_here => return NameContestOutcome::NameIsFree,
         Some(NameHolder::IsHeldBack(holder)) => return NameContestOutcome::WaitsFor(holder),
         Some(NameHolder::IsLeftByUpload { .. }) if claim.is_left_here => return NameContestOutcome::NameIsFree,
+        // TODO: contract — the item an upload left is removed by nobody once its file is left here or has a binding (step_memory: it goes to `mismatched_item_removals` only with the file's row, and the file's step removes it only before it sends the file as new again): the claimant's wait for that file then ends at the user, or at no step.
         Some(NameHolder::IsLeftByUpload { file: Some(file) }) => return NameContestOutcome::WaitsFor(file),
         Some(NameHolder::IsLeftByUpload { file: None }) => return NameContestOutcome::WaitsForRemovalOfHolder,
         Some(NameHolder::Stays(_)) if claim.is_listing_under_way => return NameContestOutcome::WaitsForListing,
@@ -212,7 +209,12 @@ pub(crate) fn settle_name_contests(
         // An item that is left here is never sent: how OneDrive compares names says nothing
         // of it, and only an item OneDrive has under its very name needs its place.
         let has_the_place = |holder: &&Item| !is_left_here(id) || holder.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()).is_some_and(|in_onedrive| in_onedrive.name == place.name);
-        let holder = in_onedrive.iter().filter(|holder| **holder != id).filter_map(|holder| items.find(*holder)).find(has_the_place);
+        // What the claimant's own upload left is no holder: the step that sends the
+        // claimant again removes it first. An answer of OneDrive that the name is taken is
+        // never of it: while such an answer stands the claimant is not sent to the name,
+        // and an upload that went through leaves it.
+        let is_own_leftover = |holder: &LocalItemId| items_left_by_uploads.get(holder) == Some(&Some(id));
+        let holder = in_onedrive.iter().filter(|holder| **holder != id && !is_own_leftover(holder)).filter_map(|holder| items.find(*holder)).find(has_the_place);
         let holder_cannot_be_shown = holder.is_some_and(|holder| cannot_be_shown(holder.local_item_id));
         let holder = holder.map(|holder| {
             if answers.is_held(holder.local_item_id) {

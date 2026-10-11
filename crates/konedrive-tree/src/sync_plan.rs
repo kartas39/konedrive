@@ -243,6 +243,7 @@ pub struct SyncPlanInput {
     /// to the file it was left by. It waits to be removed in OneDrive, which is not the
     /// plan's: the step that sends the file again removes it first, and what is left when
     /// the file's row went is removed by the daemon by itself.
+    // TODO: contract — the row of an item an upload left goes on saying OneDrive has it after the item was removed there and forgotten (`forget_mismatched_item`, step_memory.rs, touches the memory alone), until a listing says it is gone: meanwhile it is not named here and is planned as any item a listing brought (shown, a holder of its name, never shown below a removed directory). The plan needs the row to lose its OneDrive version in the transaction that forgets the item.
     pub items_left_by_uploads: BTreeMap<LocalItemId, Option<LocalItemId>>,
     /// What the steps remember of a temporary name an item goes through in OneDrive
     /// ([`ItemMemory::temporary_name`](crate::ItemMemory)), for every item given that
@@ -476,12 +477,19 @@ fn find_onedrive_directory_not_given(items: &PlanItems<'_>, item: &Item) -> Opti
 /// Whether the folder can take the place OneDrive has `item` at. The place is no place for
 /// the folder to take where it is the temporary name `input` says the item goes through
 /// ([`TemporaryName::is_at`]) and the folder shows the item: asked first, whatever the
-/// directory and the name are here.
+/// directory and the name are here. Nor is it where the folder does not show `item` and
+/// the place is the temporary name of another item: the row a listing made of what that
+/// item's request put there.
 fn find_local_place_availability(input: &SyncPlanInput, items: &PlanItems<'_>, item: &Item) -> LocalPlaceAvailability {
     let Some(place) = item.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()) else { return LocalPlaceAvailability::NoOneDrivePlace };
     // TODO: check what becomes of an item the folder does not show that OneDrive has under its temporary name (removed here, its content changed in OneDrive: it comes back), and fix if needed: it has no local place to be sent on to, and is shown under the temporary name as the place of any item.
     if item.local.is_some() && input.temporary_names.get(&item.local_item_id).is_some_and(|temporary_name| temporary_name.is_at(place)) {
         return LocalPlaceAvailability::IsTemporaryName;
+    }
+    if item.local.is_none() {
+        if let Some((another, _)) = input.temporary_names.iter().find(|(another, temporary_name)| **another != item.local_item_id && temporary_name.is_at(place)) {
+            return LocalPlaceAvailability::IsTemporaryNameOf(*another);
+        }
     }
     if !is_directory_entry_name(&place.name) {
         return LocalPlaceAvailability::NameUnusable;
