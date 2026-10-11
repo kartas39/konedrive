@@ -74,3 +74,12 @@ fn a_folder_is_mounted_when_the_table_of_mounts_has_a_fuse_mount_at_its_path() {
     assert!(!lists_fuse_mount_at(mounts, Path::new("/home/u/Other")));
     assert!(!lists_fuse_mount_at("", Path::new("/home/u/OneDrive")));
 }
+
+/// The table writes a space of a path as `\\040`: a folder whose name has one is found.
+#[test]
+fn a_folder_whose_path_has_a_space_is_found_in_the_table_of_mounts() {
+    let mounts = "konedrive /home/u/OneDrive\\040-\\040Personal fuse.konedrive rw 0 0\nkonedrive /home/u/back\\134slash fuse.konedrive rw 0 0\n";
+    assert!(lists_fuse_mount_at(mounts, Path::new("/home/u/OneDrive - Personal")));
+    assert!(lists_fuse_mount_at(mounts, Path::new("/home/u/back\\slash")));
+    assert!(!lists_fuse_mount_at(mounts, Path::new("/home/u/OneDrive\\040-\\040Personal")));
+}

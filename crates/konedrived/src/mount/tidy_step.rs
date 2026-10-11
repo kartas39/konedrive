@@ -9,12 +9,35 @@ use std::path::{Path, PathBuf};
 use super::backing_directory::remove_write_bits;
 use super::stale_mount::unmount_stale_mount;
 
+/// The path of a mount as the kernel's table of mounts writes it, read back: a space, a
+/// tab, a newline and a backslash stand there as a backslash and three octal digits.
+fn read_mount_path(written: &str) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    let written = written.as_bytes();
+    let mut path = Vec::with_capacity(written.len());
+    let mut at = 0;
+    while at < written.len() {
+        let escaped = written.get(at + 1..at + 4).filter(|_| written[at] == b'\\').and_then(|digits| std::str::from_utf8(digits).ok()).and_then(|digits| u8::from_str_radix(digits, 8).ok());
+        match escaped {
+            Some(byte) => {
+                path.push(byte);
+                at += 4;
+            }
+            None => {
+                path.push(written[at]);
+                at += 1;
+            }
+        }
+    }
+    PathBuf::from(std::ffi::OsString::from_vec(path))
+}
+
 /// Whether `mounts`, the kernel's table of mounts (`/proc/self/mounts`), has a FUSE mount
 /// over `folder`.
 fn lists_fuse_mount_at(mounts: &str, folder: &Path) -> bool {
     mounts.lines().any(|line| {
         let mut fields = line.split(' ');
-        fields.nth(1).is_some_and(|at| Path::new(at) == folder) && fields.next().is_some_and(|kind| kind.starts_with("fuse"))
+        fields.nth(1).is_some_and(|at| read_mount_path(at) == folder) && fields.next().is_some_and(|kind| kind.starts_with("fuse"))
     })
 }
 
