@@ -233,6 +233,13 @@ impl Store {
         self.call_reading_connection_blocking(move |store: &mut TreeStore| f(&ReadStore::of(store)))
     }
 
+    /// How many handles of this store there are, this one among them: what a test asks to
+    /// see that a part it stopped and dropped holds none any more.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn count_handles(&self) -> usize {
+        std::sync::Arc::strong_count(&self.owner)
+    }
+
     /// What changed in the outbox, shared with the store.
     pub fn changes(&self) -> &std::sync::Arc<outbox::OutboxChanges> {
         &self.changes

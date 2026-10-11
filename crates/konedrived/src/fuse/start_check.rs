@@ -14,14 +14,13 @@
 // test: a_check_that_left_nothing_holds_nothing_back
 // test: the_rows_a_check_left_are_answered_as_items
 // test: a_store_that_was_made_empty_has_its_marked_entries_bound_before_the_first_listing
-#![allow(dead_code, unused_variables)]
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use konedrive_tree::{DriveId, LocalItemId, Store, TreeError};
 
 use super::backing_directory::BackingDirectory;
+use super::backing_directory_check::{BackingDirectoryCheck, DiskFinding, DiskFindings};
 use super::upload_rules::UploadRules;
 
 /// What the check at start found, as the start and the plan need it.
@@ -54,5 +53,25 @@ pub struct StartCheckFindings {
 /// §13: 0.07 to 1.4 s per 100 000 files), and hands the findings out
 /// (`ItemMount::start_check_findings`).
 pub(super) fn check_backing_directory_at_start(backing_directory: Arc<BackingDirectory>, upload_rules: Arc<UploadRules>, drive_id: DriveId, store: &Store) -> Result<StartCheckFindings, TreeError> {
-    todo!()
+    let findings = store.call_blocking(move |tree_store| BackingDirectoryCheck::new(&backing_directory, &upload_rules, &drive_id).run(&mut tree_store.item_store()))?;
+    for unresolved in findings.unresolved() {
+        tracing::warn!("the check at start left {} as it found it ({:?}): nothing of it is sent until a start's check decides it", unresolved.path.display(), unresolved.reason);
+    }
+    if findings.has_unread_part() {
+        tracing::warn!("a part of the backing directory was not read at start: {} rows are held as they were found", findings.list_held_items().len());
+    }
+    Ok(to_start_check_findings(&findings))
 }
+
+/// What the start and the plan need of what the check answered. Pure.
+fn to_start_check_findings(findings: &DiskFindings) -> StartCheckFindings {
+    StartCheckFindings {
+        held_items: findings.list_held_items().iter().copied().collect(),
+        has_unread_part: findings.has_unread_part(),
+        unresolved_path_count: findings.unresolved().len(),
+        bound_by_mark_count: findings.count(DiskFinding::MarkedWithoutRow),
+    }
+}
+
+#[cfg(test)]
+mod tests;
