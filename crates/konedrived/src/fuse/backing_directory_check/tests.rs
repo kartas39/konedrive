@@ -5,7 +5,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use konedrive_fs::placeholder::{self, State, XATTR_CTAG, XATTR_ITEM_ID, XATTR_STATE};
 use konedrive_tree::{
-    ContentPresence, ContentVersion, DriveId, FileSyncState, Item, ItemKind, ItemPlace, LocalItemId, LocalVersionChange, OneDriveItemId, OneDriveItemReference, TreeStore,
+    make_sync_plan, Change, ContentPresence, ContentVersion, DriveId, FileSyncState, Item, ItemKind, ItemPlace, Kind, ListingLink, LocalItemId, LocalVersionChange, OneDriveItemId, OneDriveItemReference,
+    OneDriveStep, Placement, Row, SendingState, SyncPlan, SyncPlanInput, SyncStep, TreeStore,
 };
 
 use super::{BackingDirectoryCheck, DiskFinding, DiskFindings, UnresolvedReason};
@@ -39,7 +40,19 @@ pub(super) struct Folder {
 pub(super) fn folder() -> Folder {
     let dir = tempfile::tempdir().unwrap();
     let backing_directory = BackingDirectory::open(dir.path()).unwrap();
-    Folder { dir, backing_directory, store: TreeStore::in_memory().unwrap(), upload_rules: rules(), drive_id: DriveId::new("d1").unwrap() }
+    Folder { dir, backing_directory, store: store_with_listed_root(), upload_rules: rules(), drive_id: DriveId::new("d1").unwrap() }
+}
+
+/// A store in memory that knows its drive, `d1`, whose root, `ROOT`, a full listing told of
+/// and ended: nothing else has a row.
+fn store_with_listed_root() -> TreeStore {
+    let mut store = TreeStore::in_memory().unwrap();
+    store.set_drive_id("d1").unwrap();
+    let listing = store.item_store().begin_full_listing().unwrap();
+    let root = Change::Root(Row { id: "ROOT".into(), parent_id: None, name: String::new(), kind: Kind::Folder, size: 0, mtime: 0, etag: Some("e-R".into()), ctag: None, quickxor: None, mime: None, placement: Placement::Placed });
+    let outcome = store.item_store().write_listed_changes(listing.id, &[root], listing.began_at_count, &ListingLink::DeltaLink("link-0".into())).unwrap();
+    assert!(outcome.is_link_written());
+    store
 }
 
 pub(super) fn reference(drive: &str, id: &str) -> OneDriveItemReference {
@@ -159,9 +172,9 @@ impl Folder {
     }
 
     /// The row of `id` as it is once OneDrive has the item as `onedrive_id` and the two
-    /// sides agree: bound, its synced place the local one, and for a file one hashed content
-    /// of the cTag `c-<onedrive_id>` on both sides. No operation of the store writes what
-    /// was agreed on yet, so it is written as it is.
+    /// sides agree: bound, its synced place and its place in OneDrive the local one, and for
+    /// a file one hashed content of the cTag `c-<onedrive_id>` on all three. Written as it
+    /// is: the listing and the commits that write these are not the check's to run.
     pub(super) fn agree(&mut self, id: LocalItemId, onedrive_id: &str) {
         self.agree_in(id, "d1", onedrive_id);
     }
@@ -172,12 +185,19 @@ impl Folder {
         let content = if self.item(id).kind == ItemKind::File {
             format!(
                 ", local_hash = 'h-{onedrive_id}', local_ctag = 'c-{onedrive_id}', local_change_count = NULL, local_mtime_nsec = 0, \
-                 synced_size = local_size, synced_mtime = local_mtime, synced_mtime_nsec = 0, synced_hash = 'h-{onedrive_id}', synced_ctag = 'c-{onedrive_id}'"
+                 synced_size = local_size, synced_mtime = local_mtime, synced_mtime_nsec = 0, synced_hash = 'h-{onedrive_id}', synced_ctag = 'c-{onedrive_id}', \
+                 onedrive_size = local_size, onedrive_mtime = local_mtime, onedrive_mtime_nsec = 0, onedrive_hash = 'h-{onedrive_id}', onedrive_ctag = 'c-{onedrive_id}'"
             )
         } else {
             String::new()
         };
-        self.store.bench_sql(&format!("UPDATE items SET synced_parent_id = local_parent_id, synced_name = local_name{content} WHERE local_item_id = {id}")).unwrap();
+        self.store
+            .bench_sql(&format!(
+                "UPDATE items SET synced_parent_id = local_parent_id, synced_name = local_name, \
+                     onedrive_parent_id = local_parent_id, onedrive_name = local_name, onedrive_folded_name = local_folded_name, onedrive_etag = 'e-{onedrive_id}'{content} \
+                   WHERE local_item_id = {id}"
+            ))
+            .unwrap();
     }
 
     /// A file of the user's own, on disk and in the rows.
@@ -255,6 +275,102 @@ impl Folder {
         let place = self.place(Path::new(to));
         let is_name_ignored = self.upload_rules.is_name_ignored(&place.name);
         self.store.item_store().apply(&LocalVersionChange::Moved { item, place, is_name_ignored }).unwrap();
+    }
+
+    // OneDrive, and the plan.
+
+    /// What OneDrive has, as the rows say it: each item a listing would name, a directory
+    /// before what is in it.
+    pub(super) fn list_onedrive(&mut self) -> Vec<Change> {
+        let rows = self.rows();
+        let onedrive_id = |id: LocalItemId| rows.iter().find(|row| row.local_item_id == id).and_then(|row| row.onedrive_item.as_ref()).map(|reference| reference.item_id.as_str().to_owned());
+        let mut listed = Vec::new();
+        for row in &rows {
+            let (Some(reference), Some(onedrive)) = (&row.onedrive_item, &row.onedrive) else { continue };
+            let Some(place) = &onedrive.place else { continue };
+            let (size, mtime, quickxor, ctag) = match &onedrive.content {
+                Some(ContentVersion::Hashed { size, mtime, hash, ctag, .. }) => (*size, *mtime, hash.clone(), ctag.clone()),
+                _ => (0, 0, None, None),
+            };
+            let kind = if row.kind == ItemKind::Directory { Kind::Folder } else { Kind::File };
+            listed.push(Change::Upsert(Row {
+                id: reference.item_id.as_str().to_owned(),
+                parent_id: Some(onedrive_id(place.parent_local_item_id).expect("OneDrive has the directory it is in")),
+                name: place.name.to_str().unwrap().to_owned(),
+                kind,
+                size,
+                mtime,
+                etag: row.onedrive_etag.clone(),
+                ctag,
+                quickxor,
+                mime: None,
+                placement: Placement::Placed,
+            }));
+        }
+        listed
+    }
+
+    /// The store is lost and made again, as at a change of its schema: no row but the
+    /// root's. What OneDrive had, for the listing that follows the check.
+    pub(super) fn rebuild_store(&mut self) -> Vec<Change> {
+        let listed = self.list_onedrive();
+        self.store = store_with_listed_root();
+        listed
+    }
+
+    /// A listing of changes that says `changes` in one page and ends.
+    pub(super) fn write_listing(&mut self, changes: &[Change]) {
+        let listing = self.store.item_store().begin_delta_listing().unwrap();
+        let outcome = self.store.item_store().write_listed_changes(listing.id, changes, listing.began_at_count, &ListingLink::DeltaLink("link".into())).unwrap();
+        assert!(outcome.is_link_written(), "the listing left something to read again: {outcome:?}");
+    }
+
+    /// The plan made from every row there is: the set is closed, nothing is left to ask
+    /// for. A read-write folder whose user confirmed every removal, so that no guard holds
+    /// a removal back from being seen here.
+    pub(super) fn plan(&mut self) -> SyncPlan {
+        let rows = self.rows();
+        let items = self.store.item_store();
+        let not_shown: std::collections::BTreeSet<LocalItemId> = rows.iter().filter(|row| row.local.is_none()).map(|row| row.local_item_id).collect();
+        let directories = || rows.iter().filter(|row| row.kind == ItemKind::Directory);
+        let input = SyncPlanInput {
+            folder_visibility: rows.iter().filter(|row| row.onedrive.is_some()).map(|row| (row.local_item_id, items.find_folder_visibility(row.local_item_id).unwrap())).collect(),
+            ignored_items: rows.iter().filter(|row| items.is_ignored(row.local_item_id).unwrap()).map(|row| row.local_item_id).collect(),
+            name_refusals: Default::default(),
+            items_open_for_writing: Default::default(),
+            quiet_until: Default::default(),
+            items_with_running_step: Default::default(),
+            destinations_of_running_steps: Default::default(),
+            pinned_items: Default::default(),
+            is_listing_under_way: items.find_listing_under_way().unwrap().is_some(),
+            is_onedrive_full: false,
+            largest_file_size: 250 << 30,
+            sending_state: SendingState::ReadWrite,
+            computer_name: "pc".to_owned(),
+            shown_item_count: items.count_shown_items().unwrap(),
+            unsent_removal_count: items.count_unsent_removals(&not_shown).unwrap(),
+            items_with_confirmed_removal: not_shown,
+            places_taken_in_onedrive: Default::default(),
+            sent_removal_count: 0,
+            now: 0,
+            next_tries: Default::default(),
+            sending_refusals: Default::default(),
+            items_left_by_start_up_check: Default::default(),
+            onedrive_item_count_below: directories().map(|row| (row.local_item_id, items.list_below_in_onedrive(row.local_item_id).unwrap().len() as u64)).collect(),
+            shown_item_count_in: directories().map(|row| (row.local_item_id, items.list_children(row.local_item_id).unwrap().len() as u64)).collect(),
+            items: rows.clone(),
+        };
+        make_sync_plan(&input)
+    }
+
+    /// The promise of the check, asked of the plan: nothing was removed or moved through
+    /// the mount, so no step towards OneDrive is a removal or a move.
+    pub(super) fn assert_plan_sends_no_removal_or_move(&mut self, said: &str) {
+        let plan = self.plan();
+        for step in &plan.steps {
+            let is_removal_or_move = matches!(step, SyncStep::OneDrive(OneDriveStep::SendMove { .. } | OneDriveStep::SendFileRemoval { .. } | OneDriveStep::SendDirectoryRemoval { .. }));
+            assert!(!is_removal_or_move, "{said}: the plan sends what nobody did through the mount: {step:?}");
+        }
     }
 
     // The check.

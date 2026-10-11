@@ -10,7 +10,9 @@
 //! among them, which is no row's.
 //!
 //! An entry is found by its directory and its name, and by nothing else: there is no way
-//! here from a mark to the entries that carry it.
+//! here from a mark to the entries that carry it. Of a mark one thing is kept: how many of
+//! the entries that were read carry each OneDrive item id, so that an id several entries
+//! carry binds none of them.
 //!
 //! The reading of one directory ([`DirectoryScan`]) and the putting together of all of them
 //! ([`BackingDirectoryContents::gather`]) are apart: the contents are made from whatever
@@ -73,6 +75,8 @@ pub(super) struct BackingDirectoryContents {
     inside: Vec<Range<usize>>,
     /// The entries in the backing directory itself.
     inside_root: Range<usize>,
+    /// How many of the entries carry each OneDrive item id.
+    marked_entry_counts: HashMap<String, usize>,
     /// The directories whose entries are not known, each with why.
     unread: HashMap<Option<EntryIndex>, UnresolvedReason>,
     /// The names that are no file and no directory, or that could not be looked at.
@@ -189,6 +193,7 @@ impl BackingDirectoryContents {
             entries: Vec::new(),
             inside: Vec::new(),
             inside_root: 0..0,
+            marked_entry_counts: HashMap::new(),
             unread: HashMap::new(),
             unknown_names: HashMap::new(),
             unresolved: Vec::new(),
@@ -213,6 +218,9 @@ impl BackingDirectoryContents {
                 let first = contents.entries.len();
                 for entry in read.entries {
                     let index = contents.entries.len();
+                    if let Some(onedrive_id) = &entry.onedrive_id {
+                        *contents.marked_entry_counts.entry(onedrive_id.clone()).or_default() += 1;
+                    }
                     if entry.kind == ItemKind::Directory {
                         // An entry of this directory is one level deeper than it.
                         if depth + 1 < konedrive_fs::MAX_DEPTH {
@@ -253,6 +261,13 @@ impl BackingDirectoryContents {
     pub(super) fn find_inside(&self, directory: Option<EntryIndex>, name: &OsStr) -> Option<EntryIndex> {
         let inside = self.list_inside(directory);
         self.entries[inside.clone()].binary_search_by(|entry| entry.name.as_os_str().cmp(name)).ok().map(|at| inside.start + at)
+    }
+
+    /// How many of the entries that were read are marked with the OneDrive item id
+    /// `onedrive_id`: a second name of a file and a copy made with its marks carry the id
+    /// of what they were made from. Where they are is not kept.
+    pub(super) fn count_entries_marked(&self, onedrive_id: &str) -> usize {
+        self.marked_entry_counts.get(onedrive_id).copied().unwrap_or(0)
     }
 
     /// Whether what is in `directory` is not known: it could not be read, or is too deep.

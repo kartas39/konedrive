@@ -25,16 +25,29 @@
 //! - *A landed file* whose row still has the content that was downloaded is the copy: the
 //!   row says so. One whose row has another content by now is the daemon's own stale
 //!   download, and goes.
+//! - *An undo that cannot be done is not tried again at every start.* The directory an
+//!   entry is to be put back into is gone; or what is at the new place is not the entry
+//!   that was moved (a file of another size or time: the person saved that name again by
+//!   hand); or the name to put an entry back under is taken. The record goes, nothing is
+//!   moved over the person's file, and the entries are left as they are for the check to
+//!   decide like any other: a file with no row is a new item, shown and sent.
 //! - *A place that cannot be looked at* decides nothing: the record stands, and the rows
-//!   it names are left as they are.
+//!   it names are left as they are. A record stands for no other reason.
 
-/// What the disk has at a place a record names: an entry of the kind of the item the
-/// record is about, one of the other kind, nothing, or it could not be looked at.
+/// What the disk has at a place a record names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DiskPlace {
+    /// Its directory is there, and nothing under the name.
     Nothing,
-    OwnKind,
-    OtherKind,
+    /// Its directory is not there: no entry can be put back under the name.
+    NoDirectory,
+    /// An entry that may be the one the record is about: of the item's kind, and for a
+    /// file whose row says its content is on disk, of the size and the time in whole
+    /// seconds that row says.
+    OwnEntry,
+    /// An entry that is not the one the record is about: of the other kind, or a file of
+    /// another size or time — one the person put there since.
+    AnotherEntry,
     NotLookedAt,
 }
 
@@ -170,32 +183,35 @@ pub(super) enum PlaceChangeSettlement {
 /// `facts`.
 pub(super) fn decide_settlement(facts: RecordFacts) -> PlaceChangeSettlement {
     use ChangeUndo::{ContentBeforeWrite, MoveBack, MoveBackAndRestore, RemoveLinkedFile, Restore};
-    use DiskPlace::{NotLookedAt, Nothing, OtherKind, OwnKind};
+    use DiskPlace::{AnotherEntry, NoDirectory, NotLookedAt, Nothing, OwnEntry};
     use PlaceChangeSettlement::{Finish, LeftStanding, NothingLeft, Undo};
+
 
     match facts {
         // Make, of a new item. A row has the place: it was written, or another item is there.
         RecordFacts::MadeForNewItem { is_place_shown: true, .. } => NothingLeft,
         RecordFacts::MadeForNewItem { is_place_shown: false, entry } => match entry {
-            OwnKind => Finish(RowFinish::MadeItem),
-            Nothing | OtherKind => NothingLeft,
+            OwnEntry => Finish(RowFinish::MadeItem),
+            Nothing | NoDirectory | AnotherEntry => NothingLeft,
             NotLookedAt => LeftStanding,
         },
 
         // The backing file of a writer. The row was not told, or is not there.
         RecordFacts::MadeForItem { row: WriterFileRow::NotAtPlace | WriterFileRow::NotOnDisk, .. } => NothingLeft,
         RecordFacts::MadeForItem { row: WriterFileRow::OnDiskWithContentBeforeWrite | WriterFileRow::OnDiskWithoutContentBeforeWrite, entry: NotLookedAt } => LeftStanding,
-        RecordFacts::MadeForItem { row: WriterFileRow::OnDiskWithContentBeforeWrite, entry: Nothing } => Undo(ContentBeforeWrite),
+        RecordFacts::MadeForItem { row: WriterFileRow::OnDiskWithContentBeforeWrite, entry: Nothing | NoDirectory } => Undo(ContentBeforeWrite),
         // A truncation keeps nothing to put back: the check finds the row with no file.
-        RecordFacts::MadeForItem { row: WriterFileRow::OnDiskWithoutContentBeforeWrite, entry: Nothing } => NothingLeft,
-        RecordFacts::MadeForItem { entry: OwnKind | OtherKind, .. } => NothingLeft,
+        RecordFacts::MadeForItem { row: WriterFileRow::OnDiskWithoutContentBeforeWrite, entry: Nothing | NoDirectory } => NothingLeft,
+        RecordFacts::MadeForItem { entry: OwnEntry | AnotherEntry, .. } => NothingLeft,
 
         // A move. The row was written, or the item is not where it was moved from.
         RecordFacts::Moved { row: MovedRow::AtTo | MovedRow::Elsewhere, .. } => NothingLeft,
         RecordFacts::Moved { from: NotLookedAt, .. } | RecordFacts::Moved { to: NotLookedAt, .. } => LeftStanding,
         // Nothing of the item is on disk: what is at the new place is not its entry.
         RecordFacts::Moved { row: MovedRow::AtFromWithoutEntry, .. } => NothingLeft,
-        RecordFacts::Moved { row: MovedRow::AtFromWithEntry, from: Nothing, to: OwnKind } => Undo(MoveBack),
+        // Back under its name, when the directory of that name is there and what is at
+        // the new place is still the entry that was moved.
+        RecordFacts::Moved { row: MovedRow::AtFromWithEntry, from: Nothing, to: OwnEntry } => Undo(MoveBack),
         RecordFacts::Moved { row: MovedRow::AtFromWithEntry, .. } => NothingLeft,
 
         // A move over another item's entry.
@@ -208,14 +224,18 @@ pub(super) fn decide_settlement(facts: RecordFacts) -> PlaceChangeSettlement {
         },
         RecordFacts::MovedOver { row: MovedRow::AtFromWithEntry, replaced, from, to, aside } => match (from, to, aside, replaced) {
             // After the move: the moved entry is at the new place, the other set aside.
-            (Nothing, OwnKind, AsideEntry::Entry, _) => Undo(MoveBackAndRestore),
+            (Nothing, OwnEntry, AsideEntry::Entry, _) => Undo(MoveBackAndRestore),
             // After the set-aside, or half way through the undo; or the moved entry is gone.
+            // The directory of the name is there, and the name is free.
             (_, Nothing, AsideEntry::Entry, _) => Undo(Restore),
             // Nothing was set aside because the replaced file had nothing on disk: what is
             // at its place is the moved entry.
-            (Nothing, OwnKind, AsideEntry::Nothing, ReplacedRow::AtToWithoutEntry) => Undo(MoveBack),
+            (Nothing, OwnEntry, AsideEntry::Nothing, ReplacedRow::AtToWithoutEntry) => Undo(MoveBack),
             // Nothing was set aside and the replaced item has an entry: the one at its
-            // place is its own. Or something else is where the set-aside entry belongs.
+            // place is its own. Or the undo cannot be done: the directory to move back
+            // into is gone, or what is at the new place is not the moved entry but a file
+            // the person put there since, or the name of the set-aside entry is taken.
+            // Nothing is undone over the person's file, and the record does not stand.
             _ => NothingLeft,
         },
 

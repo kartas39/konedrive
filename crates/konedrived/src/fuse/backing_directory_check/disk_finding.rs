@@ -15,6 +15,8 @@
 
 use konedrive_tree::{ContentPresence, ContentVersion};
 
+use super::mark_change::EntryLinks;
+
 /// What the check found at a place, and so what it writes to the rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(in crate::fuse) enum DiskFinding {
@@ -76,8 +78,12 @@ pub(super) enum EntryMark {
     Unmarked,
     /// The id of the row at the entry's own place.
     OfRowAtPlace,
-    /// An id no row has, shown by the folder or not, of whichever drive.
+    /// An id no row has, shown by the folder or not, of whichever drive, that this entry
+    /// alone carries.
     OfNoRow,
+    /// An id no row has that more than one entry carries: a second name of the file, a
+    /// copy made with its marks. Which of them is the item is not known, and none is.
+    OfSeveralEntries,
     /// An id some row has that is not the row at this place. Which row, and where, is not
     /// asked.
     OfAnotherRow,
@@ -142,13 +148,18 @@ pub(super) struct DiskContent {
 /// seconds are the row's, and its cTag mark is the row's cTag where both have one. A row
 /// whose content was changed here has no cTag, and the mark, which is of the copy the change
 /// began from, is not asked.
-pub(super) fn compare_content(row: &ContentVersion, file: &DiskContent) -> ContentComparison {
+///
+/// The cTag mark of a file that has several names is not asked either: the mark is the
+/// file's, written through whichever name was last sent or downloaded, and says nothing of
+/// the item of another name.
+pub(super) fn compare_content(row: &ContentVersion, file: &DiskContent, links: EntryLinks) -> ContentComparison {
+
     let row_ctag = match row {
         ContentVersion::Hashed { ctag, .. } => ctag.as_deref(),
         ContentVersion::ChangedHere { .. } => None,
     };
-    let is_marked_as_the_rows = match (row_ctag, file.ctag.as_deref()) {
-        (Some(of_row), Some(mark)) => of_row == mark,
+    let is_marked_as_the_rows = match (links, row_ctag, file.ctag.as_deref()) {
+        (EntryLinks::One, Some(of_row), Some(mark)) => of_row == mark,
         _ => true,
     };
     if row.size() == file.size && row.mtime().0 == file.mtime && is_marked_as_the_rows {
@@ -188,7 +199,7 @@ pub(super) fn decide_finding(row: PlaceRow, entry: PlaceEntry) -> DiskFinding {
 
         // Row 6: an entry no row has, marked with an id no row has.
         (PlaceRow::Nothing, PlaceEntry::File { mark: EntryMark::OfNoRow, .. } | PlaceEntry::Directory { mark: EntryMark::OfNoRow }) => DiskFinding::MarkedWithoutRow,
-        // Row 7: any other entry no row has.
+        // Row 7: any other entry no row has; one whose id several entries carry among them.
         (PlaceRow::Nothing, PlaceEntry::File { .. } | PlaceEntry::Directory { .. }) => DiskFinding::Made,
         (PlaceRow::Nothing, PlaceEntry::Nothing) => DiskFinding::NothingChanged,
     }

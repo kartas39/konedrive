@@ -373,3 +373,96 @@ fn a_record_whose_place_cannot_be_looked_at_stands_and_its_item_is_held_until_it
     assert_eq!((f.rows(), f.records()), (before, vec![]));
     assert!(f.disk("top.txt").exists());
 }
+
+// ---- An undo that cannot be done: the record goes, and the walk decides the places. ----
+
+/// Review S2 a): `mv mine/own.txt moved.txt` through the mount, a death after the disk, and
+/// then `rmdir mine` by hand. The record stood at every start and `moved.txt` had no row.
+#[test]
+fn a_move_whose_old_directory_is_gone_is_not_undone_and_the_moved_file_is_a_new_item() {
+    let mut f = folder_of_each();
+    let record = move_record(&mut f, "mine/own.txt", "moved.txt");
+    f.record(&record);
+    f.rename("mine/own.txt", "moved.txt");
+    fs::remove_dir(f.disk("mine")).unwrap();
+    let findings = f.check();
+    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 4), (DiskFinding::Made, 1), (DiskFinding::Removed, 2)]);
+    assert_eq!((findings.unresolved(), findings.list_held_items(), findings.has_unread_part(), f.records()), (&[][..], &[][..], false, vec![]));
+    let moved = f.row("moved.txt").unwrap();
+    assert_eq!((content(&moved), moved.onedrive_item.clone()), (changed_here(3, 1), None));
+    assert!(moved.unsent_since.is_some() && f.row("mine").is_none());
+    f.assert_settled();
+}
+
+/// Review S2 b): `rm docs/a.txt` through the mount, a death after the set-aside, and then
+/// `rm -r docs` by hand.
+#[test]
+fn a_set_aside_whose_directory_is_gone_is_not_undone_and_the_item_is_not_shown_any_more() {
+    let mut f = folder_of_each();
+    let (record, aside) = set_aside_record(&mut f, "docs/a.txt");
+    let a = f.id("docs/a.txt");
+    f.record(&record);
+    f.rename("docs/a.txt", &aside);
+    fs::remove_dir_all(f.disk("docs")).unwrap();
+    let before = f.rows();
+    let findings = f.check();
+    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 5), (DiskFinding::NotShownAnyMore, 1)]);
+    assert_eq!((findings.unresolved(), findings.list_held_items(), f.records()), (&[][..], &[][..], vec![]));
+    assert_no_item_of_onedrive_is_removed_or_moved(&before, &f.rows());
+    assert_eq!((f.item(a).local, f.item(a).unsent_since), (None, None));
+    assert!(f.disk(&aside).exists(), "left for the cleaning of what was set aside");
+    for _ in 0..2 {
+        assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5)], "it does not come back at a later start");
+    }
+}
+
+/// Review S3: an editor's save over `docs/a.txt`, a death after both renames, and then the
+/// person saves that name again by hand. The person's file was moved under the editor's
+/// temporary name, and the document showed the content from before the save.
+#[test]
+fn a_save_over_is_not_undone_over_what_the_person_saved_at_the_name_since() {
+    let mut f = folder_of_each();
+    let (record, aside) = save_over_record(&mut f);
+    let a = f.id("docs/a.txt");
+    f.record(&record);
+    f.rename("docs/a.txt", &aside);
+    f.rename("top.txt", "docs/a.txt");
+    f.write("docs/a.txt", b"saved again by hand, no daemon");
+    let before = f.rows();
+    let findings = f.check();
+    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 4), (DiskFinding::ContentChanged, 1), (DiskFinding::Removed, 1)]);
+    assert_eq!((findings.unresolved(), findings.list_held_items(), f.records()), (&[][..], &[][..], vec![]));
+    assert_no_item_of_onedrive_is_removed_or_moved(&before, &f.rows());
+    // The document is the person's last save, under the name they gave it, and is sent.
+    assert_eq!((f.read("docs/a.txt").as_deref(), f.read("top.txt")), (Some(&b"saved again by hand, no daemon"[..]), None));
+    assert_eq!((f.id("docs/a.txt"), content(&f.item(a))), (a, changed_here(30, 1)));
+    f.assert_settled();
+}
+
+/// Review NOTE 3: a move that died before the disk; the person moved the entry elsewhere
+/// and made a file at the record's new place. That file is not the moved entry.
+#[test]
+fn a_file_the_person_made_at_the_new_place_of_a_move_that_never_reached_the_disk_is_not_moved_back() {
+    let mut f = folder_of_each();
+    let record = move_record(&mut f, "docs/a.txt", "docs/b.txt");
+    f.record(&record);
+    f.rename("docs/a.txt", "top2.txt");
+    f.write("docs/b.txt", b"the person's own b");
+    let before = f.rows();
+    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::Made, 2), (DiskFinding::NotShownAnyMore, 1)]);
+    assert_no_item_of_onedrive_is_removed_or_moved(&before, &f.rows());
+    assert_eq!((f.read("docs/b.txt").as_deref(), f.read("docs/a.txt"), f.records()), (Some(&b"the person's own b"[..]), None, vec![]));
+}
+
+/// Review NOTE 1: a file of the size and the second of the download that was to land, which
+/// the person put there: it does not carry the marks of the landed copy, and stays.
+#[test]
+fn a_file_of_the_recorded_size_and_time_that_is_not_marked_as_the_landed_copy_is_not_removed() {
+    let mut f = folder_of_each();
+    let older = ContentVersion::Hashed { size: 5, mtime: MTIME - 100, mtime_nsec: 0, hash: Some("h-older".to_owned()), ctag: Some("c-older".to_owned()) };
+    land_remote(&mut f, older, false);
+    f.write("docs/remote.bin", b"12345");
+    set_mtime(&f.disk("docs/remote.bin"), MTIME - 100);
+    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::ContentChanged, 1)]);
+    assert_eq!((f.read("docs/remote.bin").as_deref(), f.records()), (Some(&b"12345"[..]), vec![]));
+}

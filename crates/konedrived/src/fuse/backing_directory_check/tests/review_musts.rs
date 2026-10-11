@@ -17,6 +17,7 @@ fn check_removing_and_moving_nothing_of_onedrive(f: &mut Folder) -> Vec<(DiskFin
     let before = f.rows();
     let findings = f.check();
     assert_no_item_of_onedrive_is_removed_or_moved(&before, &f.rows());
+    f.assert_plan_sends_no_removal_or_move("after the check");
     found(&findings)
 }
 
@@ -53,7 +54,8 @@ fn review_1_m1_b_items_of_onedrive_moved_into_a_directory_that_cannot_be_read() 
     f.write("docs/b.txt", b"edited through the mount, unsent");
     f.check();
     f.own_directory("box");
-    f.copy("box/c.txt", b"ccc", "C");
+    f.copy("docs/c.txt", b"ccc", "C");
+    f.move_through_the_mount("docs/c.txt", "box/c.txt");
     let (b, c) = (f.id("docs/b.txt"), f.id("box/c.txt"));
     f.make_directory("secret");
     f.rename("docs/b.txt", "secret/b.txt");
@@ -307,11 +309,19 @@ fn review_3_m2_two_items_on_one_file() {
     let b = f.copy("docs/b.txt", b"bbb", "B");
     fs::remove_file(f.disk("docs/b.txt")).unwrap();
     f.link("docs/a.txt", "docs/b.txt");
-    assert_eq!(check_removing_and_moving_nothing_of_onedrive(&mut f), [(DiskFinding::NothingChanged, 6), (DiskFinding::ContentChanged, 1)], "the cTag mark is not the row's: once");
+    assert_eq!(check_removing_and_moving_nothing_of_onedrive(&mut f), [(DiskFinding::NothingChanged, 7)], "of the size and time of both rows; the cTag mark of a file with two names is not asked");
     for _ in 0..4 {
         f.assert_settled();
     }
     assert_eq!((f.mark_of("docs/a.txt").as_deref(), f.mark_of("docs/b.txt").as_deref()), (Some("A"), Some("A")));
+    // Review S4: an upload of one name marks the file as that name's item; the other
+    // name's row is not "changed here" for it, at this start or the next.
+    f.mark_copy("docs/a.txt", "B");
+    for _ in 0..2 {
+        assert_eq!(check_removing_and_moving_nothing_of_onedrive(&mut f), [(DiskFinding::NothingChanged, 7)]);
+    }
+    f.mark_copy("docs/a.txt", "A");
+    assert_eq!(check_removing_and_moving_nothing_of_onedrive(&mut f), [(DiskFinding::NothingChanged, 7)]);
 
     f.rename("docs/b.txt", "docs/c.txt");
     assert_eq!(check_removing_and_moving_nothing_of_onedrive(&mut f), [(DiskFinding::NothingChanged, 6), (DiskFinding::Made, 1), (DiskFinding::NotShownAnyMore, 1)]);

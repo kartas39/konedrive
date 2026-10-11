@@ -5,7 +5,8 @@
 //! transaction of its own: a new item, a binding, a content, a row that leaves the folder.
 //! There is no write that moves a row, and none that removes an item OneDrive has: an item
 //! of OneDrive leaves the folder by [`ItemStore::clear_local_and_synced_version`] alone,
-//! which keeps its binding and sends nothing. Nothing here asks which write comes first:
+//! which keeps its binding and sends nothing. What is written is what the decision found;
+//! a finding that would remove an item OneDrive has is refused here. Nothing here asks which write comes first:
 //! the order is [`PlaceWalk`](super::place_walk::PlaceWalk)'s.
 
 use konedrive_tree::{ContentPresence, ContentVersion, DriveId, ItemKind, ItemPlace, ItemStore, LocalItemId, LocalVersionChange, OneDriveItemId, OneDriveItemReference, TreeError};
@@ -79,14 +80,15 @@ impl<'a, 'store> RowWriter<'a, 'store> {
         }
     }
 
-    /// `item`, which the folder shows nothing in any more, leaves the folder: an item of
-    /// OneDrive is not shown any more and keeps its binding, and the row of an item
-    /// OneDrive never had goes. Which of the two is the binding's to say, and nothing
-    /// else's: no call of this removes an item OneDrive has.
-    pub(super) fn take_from_folder(&mut self, item: LocalItemId, binding: ItemBinding) -> Result<DiskFinding, UnresolvedReason> {
-        match binding {
-            ItemBinding::Bound => self.item_store.clear_local_and_synced_version(item).map(|()| DiskFinding::NotShownAnyMore),
-            ItemBinding::Unbound => self.item_store.apply(&LocalVersionChange::Removed { item }).map(|_| DiskFinding::Removed),
+    /// `item`, which the folder shows nothing in any more, leaves the folder as `finding`
+    /// says: an item of OneDrive is not shown any more and keeps its binding, and the row
+    /// of an item OneDrive never had goes. `binding` is the item's as its row says it: a
+    /// finding that would remove an item OneDrive has is refused, and writes nothing.
+    pub(super) fn take_from_folder(&mut self, item: LocalItemId, finding: DiskFinding, binding: ItemBinding) -> Result<(), UnresolvedReason> {
+        match (finding, binding) {
+            (DiskFinding::NotShownAnyMore, ItemBinding::Bound) => self.item_store.clear_local_and_synced_version(item),
+            (DiskFinding::Removed, ItemBinding::Unbound) => self.item_store.apply(&LocalVersionChange::Removed { item }).map(|_| ()),
+            (finding, binding) => Err(TreeError::Refused(format!("{finding:?} takes no item that is {binding:?} from the folder"))),
         }
         .map_err(to_refused)
     }

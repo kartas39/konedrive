@@ -6,7 +6,9 @@
 //! A place is a directory and a name. What is decided of it comes from that place alone:
 //! the row the folder shows there, the entry the backing directory has there. No row is
 //! looked for by a mark, and no entry by a row: of a mark the walk asks only whether the
-//! id is the one of the row at that very place, and otherwise whether any row has it.
+//! id is the one of the row at that very place, and otherwise whether any row has it, and
+//! whether more than one entry carries it — an id that several entries carry binds none
+//! of them: each is a new item of the user's own.
 //!
 //! **State owned:** the directories still to be gone through, the OneDrive item ids the
 //! walk itself bound, and what was found and left so far.
@@ -169,7 +171,7 @@ impl<'a, 'store> PlaceWalk<'a, 'store> {
         match (finding, row.kind, entry) {
             // Nothing of the item is at its place, or an entry of the other kind is: the
             // row leaves, and what is there is an entry no row has.
-            (DiskFinding::NotShownAnyMore | DiskFinding::Removed, _, _) => match (self.take_from_folder(row, &path), entry) {
+            (DiskFinding::NotShownAnyMore | DiskFinding::Removed, _, _) => match (self.take_from_folder(row, finding, &path), entry) {
                 (true, Some(entry)) => self.make_item(directory, entry, path, next_level),
                 (false, Some(_)) => self.outcome.leave(path, UnresolvedReason::Blocked),
                 (_, None) => {}
@@ -197,7 +199,7 @@ impl<'a, 'store> PlaceWalk<'a, 'store> {
             ItemKind::Directory => PlaceEntry::Directory { mark },
             ItemKind::File => {
                 let row_content = row.and_then(|row| row.local.as_ref()).and_then(|local| local.content.as_ref());
-                let comparison = row_content.map_or(ContentComparison::Different, |content| compare_content(content, &entry.file));
+                let comparison = row_content.map_or(ContentComparison::Different, |content| compare_content(content, &entry.file, entry.links));
                 PlaceEntry::File { mark, wholeness: entry.wholeness, comparison }
             }
         }
@@ -212,6 +214,8 @@ impl<'a, 'store> PlaceWalk<'a, 'store> {
             EntryMark::OfRowAtPlace
         } else if self.rows.has_onedrive_id(onedrive_id) || self.bound_onedrive_ids.contains(onedrive_id) {
             EntryMark::OfAnotherRow
+        } else if self.contents.count_entries_marked(onedrive_id) > 1 {
+            EntryMark::OfSeveralEntries
         } else {
             EntryMark::OfNoRow
         }
@@ -290,11 +294,11 @@ impl<'a, 'store> PlaceWalk<'a, 'store> {
         }
     }
 
-    /// The item of `row` leaves the folder, after everything the rows say is below it,
-    /// deepest first: each by its own row, an item of OneDrive not shown any more and one
-    /// OneDrive never had gone. Whether it left: a row below it that is left as it is, or
-    /// whose write is refused, keeps it.
-    fn take_from_folder(&mut self, row: &Item, path: &Path) -> bool {
+    /// The item of `row` leaves the folder as `finding` says, after everything the rows say
+    /// is below it, deepest first: each as the decision of a row with no place finds it,
+    /// an item of OneDrive not shown any more and one OneDrive never had gone. Whether it
+    /// left: a row below it that is left as it is, or whose write is refused, keeps it.
+    fn take_from_folder(&mut self, row: &Item, finding: DiskFinding, path: &Path) -> bool {
         let mut is_empty = true;
         for inside in self.rows.list_inside(row.local_item_id) {
             let Some(place) = inside.local.as_ref().and_then(|local| local.place.as_ref()) else { continue };
@@ -302,7 +306,7 @@ impl<'a, 'store> PlaceWalk<'a, 'store> {
             if self.standing_place_changes.names_item(inside.local_item_id) || self.standing_place_changes.names_place(row.local_item_id, &place.name) {
                 self.outcome.hold(inside.local_item_id);
                 is_empty = false;
-            } else if decide_finding_without_place(tell_place_row(inside)) == DiskFinding::NothingChanged || !self.take_from_folder(inside, &inside_path) {
+            } else if !self.take_from_folder(inside, decide_finding_without_place(tell_place_row(inside)), &inside_path) {
                 is_empty = false;
             }
         }
@@ -311,8 +315,8 @@ impl<'a, 'store> PlaceWalk<'a, 'store> {
             self.outcome.hold(row.local_item_id);
             return false;
         }
-        match self.writer.take_from_folder(row.local_item_id, tell_binding(row)) {
-            Ok(finding) => {
+        match self.writer.take_from_folder(row.local_item_id, finding, tell_binding(row)) {
+            Ok(()) => {
                 self.outcome.add(finding);
                 true
             }

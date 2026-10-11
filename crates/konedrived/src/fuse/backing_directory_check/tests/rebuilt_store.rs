@@ -71,21 +71,86 @@ fn a_marked_entry_no_row_has_is_bound_in_the_drive_of_the_nearest_directory_of_o
     assert_eq!(f.row("y.bin").unwrap().onedrive_item, Some(reference("d1", "Y")));
 }
 
-/// Two entries carry one id that no row has: the first that is gone through, a directory
-/// before what is in it and by name, is bound; the other is the user's own.
-#[test]
-fn of_two_entries_marked_with_one_id_no_row_has_one_is_bound_and_the_other_is_new() {
+/// A folder a daemon left: `docs` (D) with the clean copy `z.txt` (A), and `zdir` (Z) with
+/// the clean copy `in.txt` (I).
+fn folder_before_the_rebuild() -> Folder {
     let mut f = folder();
-    f.make_directory("copies");
-    f.write("copies/a.txt", b"aaa");
-    f.mark_copy("copies/a.txt", "A");
-    f.write("a.txt", b"aaa");
-    f.mark_copy("a.txt", "A");
-    assert_eq!(found(&f.check()), [(DiskFinding::Made, 2), (DiskFinding::MarkedWithoutRow, 1)]);
-    assert_eq!(f.row("a.txt").unwrap().onedrive_item, Some(reference("d1", "A")));
-    assert_eq!((f.row("copies/a.txt").unwrap().onedrive_item, f.mark_of("copies/a.txt")), (None, None));
-    assert_eq!(f.row("copies").unwrap().kind, ItemKind::Directory);
+    f.onedrive_directory("docs", "D");
+    f.copy("docs/z.txt", b"aaa", "A");
+    f.onedrive_directory("zdir", "Z");
+    f.copy("zdir/in.txt", b"iii", "I");
+    f
+}
+
+/// The store is rebuilt, the check runs, and a listing says what OneDrive has: what the
+/// check found, with the plan asked that nothing is moved or removed in OneDrive.
+fn check_after_rebuild(f: &mut Folder) -> Vec<(DiskFinding, usize)> {
+    let onedrive = f.rebuild_store();
+    let findings = f.check();
+    assert_eq!(findings.unresolved(), []);
+    f.write_listing(&onedrive);
+    f.assert_plan_sends_no_removal_or_move("after a rebuilt store");
+    found(&findings)
+}
+
+/// Review S1 b): `cp -a docs/z.txt docs/a.txt`, and the store rebuilt before the next start.
+/// The copy sorts first, was bound, and the plan sent a move of the item to the copy's name.
+#[test]
+fn an_id_a_file_and_its_copy_carry_binds_neither_and_both_are_new_without_their_marks() {
+    let mut f = folder_before_the_rebuild();
+    f.copy_with_marks("docs/z.txt", "docs/a.txt");
+    assert_eq!(check_after_rebuild(&mut f), [(DiskFinding::Made, 2), (DiskFinding::MarkedWithoutRow, 3)]);
+    for copy in ["docs/a.txt", "docs/z.txt"] {
+        assert_eq!((f.row(copy).unwrap().onedrive_item, f.mark_of(copy), f.copy_marks_of(copy)), (None, None, (false, None)), "{copy}");
+    }
+    assert_eq!(f.row("zdir/in.txt").unwrap().onedrive_item, Some(reference("d1", "I")), "an id one entry carries binds it");
     f.assert_settled();
+    // Rebuilt again: the marks are gone, and nothing is bound by them.
+    assert_eq!(check_after_rebuild(&mut f), [(DiskFinding::Made, 2), (DiskFinding::MarkedWithoutRow, 3)]);
+}
+
+/// Review S1 a): `ln docs/z.txt docs/a.txt` with the rows intact, and the store rebuilt
+/// later. The file has one set of marks for both names: they are left as they are, and
+/// while both names carry the id it binds neither, at this start and at every later one.
+#[test]
+fn an_id_two_names_of_one_file_carry_binds_neither_and_the_marks_of_the_file_are_left() {
+    let mut f = folder_before_the_rebuild();
+    f.link("docs/z.txt", "docs/a.txt");
+    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 4), (DiskFinding::Made, 1)]);
+    for _ in 0..2 {
+        assert_eq!(check_after_rebuild(&mut f), [(DiskFinding::Made, 2), (DiskFinding::MarkedWithoutRow, 3)]);
+        for name in ["docs/a.txt", "docs/z.txt"] {
+            assert_eq!((f.row(name).unwrap().onedrive_item, f.mark_of(name).as_deref()), (None, Some("A")), "{name}");
+        }
+        f.assert_settled();
+    }
+}
+
+/// Review S1 c): `cp -a zdir adir`, rebuilt store. The whole directory of OneDrive was
+/// renamed to the copy's name.
+#[test]
+fn an_id_a_directory_and_its_copy_carry_binds_neither_nor_what_is_in_them() {
+    let mut f = folder_before_the_rebuild();
+    f.make_directory("adir");
+    f.mark_directory("adir", "Z");
+    f.copy_with_marks("zdir/in.txt", "adir/in.txt");
+    assert_eq!(check_after_rebuild(&mut f), [(DiskFinding::Made, 4), (DiskFinding::MarkedWithoutRow, 2)]);
+    for copy in ["adir", "zdir", "adir/in.txt", "zdir/in.txt"] {
+        assert_eq!((f.row(copy).unwrap().onedrive_item, f.mark_of(copy)), (None, None), "{copy}");
+    }
+    f.assert_settled();
+}
+
+/// An entry bound by its mark alone has nothing agreed on: where OneDrive has the item is
+/// the listing's to say and the plan's to compare.
+#[test]
+fn a_row_bound_by_a_mark_is_bound_with_nothing_agreed_on() {
+    let mut f = folder_before_the_rebuild();
+    f.rename("docs/z.txt", "moved.txt");
+    f.rebuild_store();
+    assert_eq!(found(&f.check()), [(DiskFinding::MarkedWithoutRow, 4)]);
+    let row = f.row("moved.txt").unwrap();
+    assert_eq!((row.onedrive_item.clone(), row.synced_place.clone(), row.synced_content.clone(), row.onedrive.clone()), (Some(reference("d1", "A")), None, None, None));
 }
 
 /// The id is one a row has that the folder does not show: no row is bound to it again.

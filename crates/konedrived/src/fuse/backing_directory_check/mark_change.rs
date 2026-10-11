@@ -7,7 +7,9 @@
 //! a new item of the user's own is taken off. A mark is the file's, not the name's: where a
 //! file has several names, a mark written or taken off through one of them is written or
 //! taken off for the others, which may be other items' entries. Such a file's marks are
-//! left as they are.
+//! left as they are. That is stable from start to start, also after a store was rebuilt:
+//! while two names in the folder carry one id, the id is one several entries carry, and
+//! binds none of them.
 
 use super::disk_finding::EntryMark;
 
@@ -52,9 +54,9 @@ pub(super) fn decide_mark_change(owner: EntryOwner, mark: EntryMark, links: Entr
         (EntryLinks::Several, _, _) => MarkChange::Nothing,
         (EntryLinks::One, EntryOwner::BoundRow, EntryMark::OfRowAtPlace) => MarkChange::Nothing,
         (EntryLinks::One, EntryOwner::BoundRow, EntryMark::Unmarked) => MarkChange::WriteId,
-        (EntryLinks::One, EntryOwner::BoundRow, EntryMark::OfNoRow | EntryMark::OfAnotherRow) => MarkChange::ReplaceWithId,
+        (EntryLinks::One, EntryOwner::BoundRow, EntryMark::OfNoRow | EntryMark::OfAnotherRow | EntryMark::OfSeveralEntries) => MarkChange::ReplaceWithId,
         (EntryLinks::One, EntryOwner::NewItem, EntryMark::Unmarked) => MarkChange::Nothing,
-        (EntryLinks::One, EntryOwner::NewItem, EntryMark::OfRowAtPlace | EntryMark::OfNoRow | EntryMark::OfAnotherRow) => MarkChange::TakeOff,
+        (EntryLinks::One, EntryOwner::NewItem, EntryMark::OfRowAtPlace | EntryMark::OfNoRow | EntryMark::OfAnotherRow | EntryMark::OfSeveralEntries) => MarkChange::TakeOff,
         // What the check reads no mark of, it writes none of; and the mark an item is
         // bound by is its own.
         (EntryLinks::One, EntryOwner::UnboundRow | EntryOwner::NewItemBoundByMark, _) => MarkChange::Nothing,

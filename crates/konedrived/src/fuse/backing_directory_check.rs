@@ -25,11 +25,16 @@
 //!
 //! The marks on disk are read for three things and no more: the whole-copy state and the
 //! cTag of the entry at a row's own place (a clean copy or a changed one; a copy that
-//! landed before its row); the id on an entry no row has, when no row at all has that id
+//! landed before its row, also where a record says a download was to land there); the id
+//! on an entry no row has, when no row at all has that id and no other entry carries it
 //! (a store that was rebuilt); and the mark on an entry that becomes a new item, which is
-//! taken off. Nothing is matched by a mark across places. What the check writes of marks
-//! is [`mark_change`]'s decision: the id of its item on the own entry of an item OneDrive
-//! has, and a mark taken off a new item — neither on a file that has several names.
+//! taken off. Nothing is matched by a mark across places: of the entries that carry an id
+//! only their number is kept, and an id that several carry — a second name of a file, a
+//! copy made with its marks — binds none of them. What the check writes of marks is
+//! [`mark_change`]'s decision: the id of its item on the own entry of an item OneDrive
+//! has, and a mark taken off a new item. Of a file that has several names no mark is
+//! written or taken off, and its cTag mark is not asked: the marks are the file's, and
+//! another name of it may be another item's.
 //!
 //! A part of the backing directory that cannot be read is left as it is: no row in it or
 //! below it is changed, and they are held ([`DiskFindings::list_held_items`]) and said.

@@ -3,8 +3,9 @@ use konedrive_tree::ContentVersion;
 
 use super::ContentComparison::{Different, Same};
 use super::CopyWholeness::{NotWhole, Whole};
-use super::EntryMark::{OfAnotherRow, OfNoRow, OfRowAtPlace, Unmarked};
+use super::EntryMark::{OfAnotherRow, OfNoRow, OfRowAtPlace, OfSeveralEntries, Unmarked};
 use super::ItemBinding::{Bound, Unbound};
+use crate::fuse::backing_directory_check::mark_change::EntryLinks;
 use super::{compare_content, decide_finding, decide_finding_without_place, ContentComparison, CopyWholeness, DiskContent, DiskFinding, EntryMark, PlaceEntry, PlaceRow};
 
 /// A downloaded copy, clean or changed here: the row says its content is on disk.
@@ -16,7 +17,7 @@ const NOT_DOWNLOADED: PlaceRow = PlaceRow::File { binding: Bound, content_presen
 const ONEDRIVE_DIRECTORY: PlaceRow = PlaceRow::Directory { binding: Bound };
 const OWN_DIRECTORY: PlaceRow = PlaceRow::Directory { binding: Unbound };
 
-const MARKS: [EntryMark; 4] = [Unmarked, OfRowAtPlace, OfNoRow, OfAnotherRow];
+const MARKS: [EntryMark; 5] = [Unmarked, OfRowAtPlace, OfNoRow, OfAnotherRow, OfSeveralEntries];
 const WHOLENESSES: [CopyWholeness; 2] = [Whole, NotWhole];
 const COMPARISONS: [ContentComparison; 2] = [Same, Different];
 
@@ -131,7 +132,7 @@ fn an_entry_no_row_has_marked_with_an_id_no_row_has_is_a_new_item_bound_to_it() 
 
 #[test]
 fn any_other_entry_no_row_has_is_a_new_item() {
-    for mark in [Unmarked, OfAnotherRow, OfRowAtPlace] {
+    for mark in [Unmarked, OfAnotherRow, OfRowAtPlace, OfSeveralEntries] {
         for wholeness in WHOLENESSES {
             for comparison in COMPARISONS {
                 assert_eq!(decide_finding(PlaceRow::Nothing, file(mark, wholeness, comparison)), DiskFinding::Made, "{mark:?}");
@@ -177,28 +178,46 @@ fn hashed(size: u64, mtime: i64, ctag: Option<&str>) -> ContentVersion {
     ContentVersion::Hashed { size, mtime, mtime_nsec: 0, hash: Some("h".to_owned()), ctag: ctag.map(str::to_owned) }
 }
 
+fn compare_content_of_one_name(row: &ContentVersion, file: &DiskContent) -> ContentComparison {
+    compare_content(row, file, EntryLinks::One)
+}
+
+/// Review S4: the cTag mark is the file's, and says nothing of the item of another name.
+#[test]
+fn the_ctag_mark_is_not_asked_of_a_file_that_has_several_names() {
+    assert_eq!(compare_content(&hashed(3, 100, Some("c-1")), &on_disk(3, 100, 0, Some("c-0")), EntryLinks::Several), Same);
+    assert_eq!(compare_content(&hashed(3, 100, Some("c-1")), &on_disk(4, 100, 0, Some("c-1")), EntryLinks::Several), Different);
+}
+
+/// Review S1: an id that more than one entry carries binds none of them.
+#[test]
+fn an_entry_whose_id_no_row_has_and_several_entries_carry_is_a_new_item_of_the_users_own() {
+    assert_eq!(decide_finding(PlaceRow::Nothing, file(OfSeveralEntries, Whole, Same)), DiskFinding::Made);
+    assert_eq!(decide_finding(PlaceRow::Nothing, PlaceEntry::Directory { mark: OfSeveralEntries }), DiskFinding::Made);
+}
+
 fn on_disk(size: u64, mtime: i64, mtime_nsec: u32, ctag: Option<&str>) -> DiskContent {
     DiskContent { size, mtime, mtime_nsec, ctag: ctag.map(str::to_owned) }
 }
 
 #[test]
 fn a_file_of_the_rows_size_and_whole_seconds_is_the_same_content() {
-    assert_eq!(compare_content(&hashed(3, 100, None), &on_disk(3, 100, 999, None)), Same);
-    assert_eq!(compare_content(&hashed(3, 100, None), &on_disk(4, 100, 0, None)), Different);
-    assert_eq!(compare_content(&hashed(3, 100, None), &on_disk(3, 101, 0, None)), Different);
+    assert_eq!(compare_content_of_one_name(&hashed(3, 100, None), &on_disk(3, 100, 999, None)), Same);
+    assert_eq!(compare_content_of_one_name(&hashed(3, 100, None), &on_disk(4, 100, 0, None)), Different);
+    assert_eq!(compare_content_of_one_name(&hashed(3, 100, None), &on_disk(3, 101, 0, None)), Different);
 }
 
 #[test]
 fn a_ctag_mark_that_is_not_the_rows_ctag_is_another_content_and_one_that_is_missing_says_nothing() {
-    assert_eq!(compare_content(&hashed(3, 100, Some("c-1")), &on_disk(3, 100, 0, Some("c-1"))), Same);
-    assert_eq!(compare_content(&hashed(3, 100, Some("c-1")), &on_disk(3, 100, 0, Some("c-0"))), Different);
-    assert_eq!(compare_content(&hashed(3, 100, Some("c-1")), &on_disk(3, 100, 0, None)), Same);
-    assert_eq!(compare_content(&hashed(3, 100, None), &on_disk(3, 100, 0, Some("c-0"))), Same);
+    assert_eq!(compare_content_of_one_name(&hashed(3, 100, Some("c-1")), &on_disk(3, 100, 0, Some("c-1"))), Same);
+    assert_eq!(compare_content_of_one_name(&hashed(3, 100, Some("c-1")), &on_disk(3, 100, 0, Some("c-0"))), Different);
+    assert_eq!(compare_content_of_one_name(&hashed(3, 100, Some("c-1")), &on_disk(3, 100, 0, None)), Same);
+    assert_eq!(compare_content_of_one_name(&hashed(3, 100, None), &on_disk(3, 100, 0, Some("c-0"))), Same);
 }
 
 #[test]
 fn the_ctag_mark_is_not_asked_of_a_content_changed_here() {
     let changed = ContentVersion::ChangedHere { size: 3, mtime: 100, mtime_nsec: 0, change_count: 2 };
-    assert_eq!(compare_content(&changed, &on_disk(3, 100, 0, Some("c-0"))), Same);
-    assert_eq!(compare_content(&changed, &on_disk(5, 100, 0, Some("c-0"))), Different);
+    assert_eq!(compare_content_of_one_name(&changed, &on_disk(3, 100, 0, Some("c-0"))), Same);
+    assert_eq!(compare_content_of_one_name(&changed, &on_disk(5, 100, 0, Some("c-0"))), Different);
 }
