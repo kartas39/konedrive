@@ -395,3 +395,156 @@ fn a_new_file_in_a_directory_that_gives_up_a_guessed_binding_is_not_sent_into_th
     let docs = world.store.item_store().find_bound_item(&onedrive_reference("Q1")).unwrap().unwrap();
     assert_eq!(world.store.item_store().list_children_in_onedrive(docs.local_item_id).unwrap(), [], "OneDrive's directory holds nothing of the user's");
 }
+
+// -- what the steps remember: a temporary name, what an upload left, an own upload's content
+
+/// The plan made of every row has nothing left: no step, no wait, no fault, and no item a
+/// rule leaves out.
+fn assert_nothing_is_left_to_plan(world: &mut World) {
+    let plan = make_sync_plan(&describe_every_item(&mut world.store, &world.facts));
+    assert_eq!((plan.steps.len(), plan.waits.len(), plan.faults.len(), plan.exclusions.len()), (0, 0, 0, 0), "{plan:?}");
+}
+
+/// The one step of the next plan that sends an item under a temporary name: the item, and
+/// the name.
+fn plan_sending_under_temporary_name(world: &mut World) -> (LocalItemId, std::ffi::OsString) {
+    let (_, plan) = plan_next_steps(&mut world.store, &world.facts, &mut world.widening);
+    let under_temporary_name: Vec<(LocalItemId, std::ffi::OsString)> = plan
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            SyncStep::OneDrive(OneDriveStep::SendMove { item, name, .. } | OneDriveStep::MakeDirectory { item, name, .. }) if name.as_encoded_bytes().starts_with(b".konedrive-swap-") => Some((item.local_item_id, name.clone())),
+            _ => None,
+        })
+        .collect();
+    let [sent] = under_temporary_name.as_slice() else { panic!("no one item goes through a temporary name: {:?}", plan.steps) };
+    sent.clone()
+}
+
+/// The exchange of names killed in the middle. `mv g t; mv c.txt g; mv t c.txt`: the plan
+/// sends one of the two to its temporary name. That request goes through — the steps
+/// remember the name, OneDrive has the file under it — and the daemon dies before the
+/// commit; the listing after the start names the file there. The plans that follow send
+/// the other file to the name that is free now, and then this one on from its temporary
+/// name: no step brings the folder to that name.
+///
+/// End: OneDrive has the two files under each other's names, as the folder shows them; the
+/// two sides agree, and nothing is remembered.
+#[test]
+fn an_exchange_of_names_killed_under_the_temporary_name_ends_with_the_names_exchanged() {
+    let mut world = World::new(1);
+    let (g, c) = (find(&mut world, ROOT, "g"), find(&mut world, ROOT, "c.txt"));
+    move_here(&mut world, g, ROOT, "t");
+    move_here(&mut world, c, ROOT, "g");
+    move_here(&mut world, g, ROOT, "c.txt");
+    let (through, temporary_name) = plan_sending_under_temporary_name(&mut world);
+    let other = if through == g { c } else { g };
+    let sent = row(&mut world, through);
+    let toward = local_place(&sent).unwrap();
+    world.store.step_memory().remember_temporary_name(through, &crate::TemporaryName { name: temporary_name.clone(), toward }).unwrap();
+    let (item_id, size) = (sent.onedrive_item.as_ref().unwrap().item_id.as_str().to_owned(), sent.onedrive.as_ref().and_then(|onedrive| onedrive.content.as_ref()).unwrap().size());
+    write_listing_of_changes(&mut world.store, &[listed_file(&item_id, "R", &temporary_name.to_string_lossy(), (size, &format!("h{size}-1000")), "e-under-temporary-name")]);
+    assert_eq!(onedrive_place(&row(&mut world, through)), Some(place(ROOT, &temporary_name.to_string_lossy())));
+    assert!(world.store.item_store().reader().find_item_memory(through).unwrap().temporary_name.is_some(), "a listing that names the item under the name keeps it");
+
+    assert_eq!(run_and_tell_steps(&mut world), [format!("{other}:SendMove"), format!("{through}:SendMove")]);
+    for (item, name) in [(g, "c.txt"), (c, "g")] {
+        let row = row(&mut world, item);
+        assert_eq!((local_place(&row), onedrive_place(&row), row.synced_place.clone(), row.unsent_since), (Some(place(ROOT, name)), Some(place(ROOT, name)), Some(place(ROOT, name)), None));
+    }
+    assert!(world.store.item_store().reader().find_item_memory(through).unwrap().temporary_name.is_none());
+    assert_nothing_is_left_to_plan(&mut world);
+}
+
+/// The review's M1 and M1b. `mv c.txt t; mkdir c.txt; mv t c.txt/c.txt`: the new directory
+/// is made in OneDrive under its temporary name, as the name it takes is the file's still.
+/// The request goes through and its answer is lost; after the start a listing makes a row
+/// of the directory OneDrive has under that name. The plan merges the two rows, sends the
+/// file into the directory, and the directory on to its name.
+///
+/// End: OneDrive has the directory `c.txt` with the file `c.txt` in it, as the folder
+/// shows them, made once; no row is left of the one the listing made.
+#[test]
+fn a_directory_made_under_its_temporary_name_whose_answer_was_lost_is_merged_and_sent_on() {
+    let mut world = World::new(1);
+    let file = find(&mut world, ROOT, "c.txt");
+    move_here(&mut world, file, ROOT, "t");
+    let directory = apply(&mut world, LocalVersionChange::Made { kind: ItemKind::Directory, place: place(ROOT, "c.txt"), content: None, is_name_ignored: false, replaced: None });
+    move_here(&mut world, file, directory, "c.txt");
+    let (through, temporary_name) = plan_sending_under_temporary_name(&mut world);
+    assert_eq!(through, directory);
+    world.store.step_memory().remember_temporary_name(directory, &crate::TemporaryName { name: temporary_name.clone(), toward: place(ROOT, "c.txt") }).unwrap();
+    write_listing_of_changes(&mut world.store, &[listed_directory("MADE", "R", &temporary_name.to_string_lossy(), "e-made")]);
+    let listed = world.store.item_store().find_bound_item(&onedrive_reference("MADE")).unwrap().unwrap().local_item_id;
+    assert!(listed != directory);
+
+    assert_eq!(run_and_tell_steps(&mut world), [format!("{directory}:MergeItems"), format!("{file}:SendMove"), format!("{directory}:SendMove")]);
+    assert!(world.store.item_store().find_item(listed).unwrap().is_none(), "the listed row went with the merge");
+    let (directory_row, file_row) = (row(&mut world, directory), row(&mut world, file));
+    assert_eq!(directory_row.onedrive_item, Some(onedrive_reference("MADE")), "made once");
+    assert_eq!((local_place(&directory_row), onedrive_place(&directory_row), directory_row.unsent_since), (Some(place(ROOT, "c.txt")), Some(place(ROOT, "c.txt")), None));
+    assert_eq!((local_place(&file_row), onedrive_place(&file_row), file_row.unsent_since), (Some(place(directory, "c.txt")), Some(place(directory, "c.txt")), None));
+    assert_nothing_is_left_to_plan(&mut world);
+}
+
+/// What an upload left. The upload of the new file `new.txt` ends with other content in
+/// OneDrive than was sent: the steps remember the item it left, and a listing makes a row
+/// of it. That row is not shown, and the file is neither merged with it nor renamed for
+/// it: it is sent again under its name. The step removes what was left first, and the
+/// file is then sent.
+///
+/// End: OneDrive has the file once, with the content the folder has; of what the upload
+/// left a binding alone is kept.
+#[test]
+fn a_file_whose_upload_left_other_content_is_sent_again_and_what_was_left_is_never_shown() {
+    let mut world = World::new(1);
+    let file = make_file(&mut world, ROOT, "new.txt");
+    let left = onedrive_reference("LEFT");
+    let standing = world.store.step_memory().remember_mismatched_item(file, &crate::MismatchedItem::of_answer(left.clone(), Some("c-h-left"), None)).unwrap();
+    assert_eq!(standing, crate::MismatchedItemStanding::LeftToRemove);
+    write_listing_of_changes(&mut world.store, &[listed_file("LEFT", "R", "new.txt", (888, "h-left"), "e-left")]);
+    let left_row = world.store.item_store().find_bound_item(&left).unwrap().unwrap().local_item_id;
+
+    let (_, plan) = plan_next_steps(&mut world.store, &world.facts, &mut world.widening);
+    assert_eq!(plan.exclusions, [ItemExclusion { item: left_row, reason: ExclusionReason::LeftByUpload }]);
+    let [SyncStep::OneDrive(OneDriveStep::SendNewFile { item, name, .. })] = plan.steps.as_slice() else { panic!("{:?}", plan.steps) };
+    assert_eq!((item.local_item_id, name.to_str()), (file, Some("new.txt")));
+    assert!(plan.waits.is_empty() && plan.faults.is_empty(), "{plan:?}");
+
+    // The step removes what its upload left before it sends the file again.
+    world.store.step_memory().forget_removed_mismatched_item(&left).unwrap();
+    assert_eq!(run_and_tell_steps(&mut world), [format!("{file}:SendNewFile")]);
+    let (file_row, left_row) = (row(&mut world, file), row(&mut world, left_row));
+    assert_eq!((local_place(&file_row), onedrive_place(&file_row), file_row.unsent_since), (Some(place(ROOT, "new.txt")), Some(place(ROOT, "new.txt")), None));
+    assert_eq!((&left_row.local, &left_row.onedrive, &left_row.synced_place), (&None, &None, &None), "nothing of it was ever shown");
+    assert_nothing_is_left_to_plan(&mut world);
+}
+
+/// An own upload's content. `a/e.txt` is written here; its upload ends with another hash in
+/// OneDrive than was sent, the store keeps that content as the folder's own upload, and a
+/// listing writes it into the row. The plan sends the local content again: OneDrive's is
+/// not taken, the local content is not hashed against it, and no conflict copy is made.
+///
+/// End: the two sides agree on the content written here, and the fact says nothing more.
+#[test]
+fn a_content_the_own_upload_left_in_onedrive_is_sent_again_and_confirmed() {
+    let mut world = World::new(1);
+    let a = find(&mut world, ROOT, "a");
+    let file = find(&mut world, a, "e.txt");
+    apply(&mut world, LocalVersionChange::OpenedForWriting { item: file });
+    apply(&mut world, LocalVersionChange::ClosedChanged { item: file, size: 99, mtime: 7000, mtime_nsec: 5 });
+    write_listing_of_changes(&mut world.store, &[listed_file("F2", "D1", "e.txt", (99, "h-left"), "e-left")]);
+    let written = row(&mut world, file);
+    let content = |version: &Option<ItemVersion>| version.as_ref().and_then(|version| version.content.clone()).unwrap();
+    let own_upload = crate::OwnUploadContent { onedrive_content: content(&written.onedrive), local_content: content(&written.local) };
+    let (_, plan) = plan_next_steps(&mut world.store, &world.facts, &mut world.widening);
+    assert!(matches!(plan.steps.as_slice(), [SyncStep::Row(RowStep::HashLocalContent { .. })]), "not told, as if OneDrive had changed the file: {:?}", plan.steps);
+
+    world.store.item_store().remember_own_upload_content(file, &own_upload).unwrap();
+    assert_eq!(run_and_tell_steps(&mut world), [format!("{file}:SendContent")]);
+    let sent = row(&mut world, file);
+    assert_eq!((hash_of(&content(&sent.local)), hash_of(&content(&sent.onedrive)), sent.unsent_since), ("h99-7000".to_owned(), "h99-7000".to_owned(), None));
+    assert_eq!((local_place(&sent), sent.synced_content.is_some()), (Some(place(a, "e.txt")), true));
+    assert_eq!(world.store.item_store().reader().find_own_upload_content(file).unwrap(), None);
+    assert_nothing_is_left_to_plan(&mut world);
+}

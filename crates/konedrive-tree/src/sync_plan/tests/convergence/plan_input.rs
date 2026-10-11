@@ -136,9 +136,16 @@ impl GivenItems {
     }
 }
 
-/// What a plan is given for `rows`, with what the store and `facts` say of each.
+/// What a plan is given for `rows`, with what the store and `facts` say of each: of what
+/// the steps remember, the temporary name each keeps, whether an upload left it, and
+/// whether its content in OneDrive is the folder's own upload, as the daemon's caller reads
+/// them.
 fn describe(store: &mut TreeStore, facts: &CallerFacts, rows: Vec<Item>) -> SyncPlanInput {
     let items = store.item_store();
+    let reader = items.reader();
+    let temporary_names = rows.iter().filter_map(|row| Some((row.local_item_id, reader.find_item_memory(row.local_item_id).unwrap().temporary_name?))).collect();
+    let items_left_by_uploads = rows.iter().filter_map(|row| Some((row.local_item_id, reader.find_mismatched_item(row.onedrive_item.as_ref()?).unwrap()?.file))).collect();
+    let own_upload_contents = rows.iter().filter_map(|row| Some((row.local_item_id, reader.find_own_upload_content(row.local_item_id).unwrap()?))).collect();
     let confirmed: BTreeSet<LocalItemId> = if facts.confirms_removals { rows.iter().filter(|row| row.local.is_none()).map(|row| row.local_item_id).collect() } else { BTreeSet::new() };
     let all_confirmed: BTreeSet<LocalItemId> = if facts.confirms_removals { items.list_items().unwrap().iter().filter(|row| row.local.is_none()).map(|row| row.local_item_id).collect() } else { BTreeSet::new() };
     let name_refusal = |row: &Item| row.local.as_ref().and_then(|local| local.place.as_ref()).filter(|place| place.name.as_encoded_bytes().contains(&b':')).map(|_| Reason::NameCharacters);
@@ -160,9 +167,9 @@ fn describe(store: &mut TreeStore, facts: &CallerFacts, rows: Vec<Item>) -> Sync
         items_with_confirmed_removal: confirmed,
         unsent_removal_count: items.count_unsent_removals(&all_confirmed).unwrap(),
         places_taken_in_onedrive: facts.places_taken_in_onedrive.clone(),
-        items_left_by_uploads: BTreeMap::new(),
-        temporary_names: BTreeMap::new(),
-        own_upload_contents: BTreeMap::new(),
+        items_left_by_uploads,
+        temporary_names,
+        own_upload_contents,
         sent_removal_count: if facts.confirms_removals { 0 } else { items.find_sent_removal_window(facts.now).unwrap().removal_count },
         now: facts.now,
         next_tries: BTreeMap::new(),

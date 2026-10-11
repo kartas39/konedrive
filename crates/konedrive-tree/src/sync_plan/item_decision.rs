@@ -195,7 +195,8 @@ pub(crate) enum LocalPlaceAvailability {
     /// The folder never takes that place; the item's place here is sent.
     IsTemporaryName,
     /// The folder does not show the item, and the place is the temporary name another
-    /// item goes through in OneDrive: which. A listing made this row of what that item's
+    /// item goes through in OneDrive, a new item of the folder that has no binding yet:
+    /// which. A listing made this row of what that item's
     /// own request put there, before the request's commit was written. The folder never
     /// shows it there: that item's step takes the row over, or forgets the name.
     IsTemporaryNameOf(LocalItemId),

@@ -19,6 +19,9 @@ mod place;
 mod item_relations;
 mod directory_removal;
 mod start_up_check;
+mod temporary_names;
+mod items_left_by_uploads;
+mod own_upload_contents;
 mod enumeration;
 pub(crate) mod convergence;
 

@@ -143,9 +143,22 @@ enum ItemFact {
     LeftByStartUpCheck,
     /// A step that is running sends an item into it, a directory.
     SentIntoByRunningStep,
+    /// An upload of this folder left it in OneDrive with other content than was sent: the
+    /// upload of the first other item that is a new file of the folder, or of a file
+    /// whose row went.
+    LeftByUpload,
+    /// OneDrive has it under the temporary name the steps remember of it, in the directory
+    /// the folder shows it in.
+    UnderTemporaryName,
+    /// A listing made its row of what OneDrive has under the temporary name the steps
+    /// remember of another item, which the folder shows in that directory.
+    ListedUnderTemporaryName,
+    /// The content OneDrive has of it is what an upload of this folder left there in place
+    /// of what it sent.
+    ContentOwnUpload,
 }
 
-const EVERY_ITEM_FACT: [ItemFact; 9] = [
+const EVERY_ITEM_FACT: [ItemFact; 13] = [
     ItemFact::StepRunning,
     ItemFact::OpenForWriting,
     ItemFact::InQuietTime,
@@ -155,13 +168,43 @@ const EVERY_ITEM_FACT: [ItemFact; 9] = [
     ItemFact::SendingRefused,
     ItemFact::LeftByStartUpCheck,
     ItemFact::SentIntoByRunningStep,
+    ItemFact::LeftByUpload,
+    ItemFact::UnderTemporaryName,
+    ItemFact::ListedUnderTemporaryName,
+    ItemFact::ContentOwnUpload,
 ];
+
+fn place_here(item: &Item) -> Option<&ItemPlace> {
+    item.local.as_ref().and_then(|local| local.place.as_ref())
+}
+
+fn place_in_onedrive(item: &Item) -> Option<&ItemPlace> {
+    item.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref())
+}
+
+/// Whether `item` is a row a listing made of an item the folder never showed.
+fn is_listed_and_never_shown(item: &Item) -> bool {
+    item.local.is_none() && item.onedrive.is_some() && item.synced_place.is_none() && item.synced_content.is_none()
+}
+
+/// The item whose temporary name the listed row `item` is under, for
+/// [`ItemFact::ListedUnderTemporaryName`]: of the other items, the first that is new here
+/// — the folder shows it, and it has no binding yet — in the directory OneDrive has
+/// `item` in. Only the request that makes a new item leaves a row of its own behind.
+fn find_keeper_of_temporary_name<'a>(items: &'a [Item], item: &Item) -> Option<&'a Item> {
+    let directory = place_in_onedrive(item)?.parent_local_item_id;
+    items.iter().find(|other| other.local_item_id != item.local_item_id && other.onedrive_item.is_none() && place_here(other).is_some_and(|place| place.parent_local_item_id == directory))
+}
 
 impl ItemFact {
     /// Whether a caller can say this of `item`: a step runs for any item; a program holds
     /// open a file the folder shows; the quiet time is of a file whose content was changed
-    /// here; a name here is refused; and OneDrive has what the folder cannot show.
-    fn can_be_said_of(self, item: &Item) -> bool {
+    /// here; a name here is refused; and OneDrive has what the folder cannot show. An
+    /// upload leaves a file the folder never showed; a temporary name is where OneDrive
+    /// has an item the folder shows in that directory under another name, and a listed row
+    /// is under that of another item of `items`; and an own upload's content is one
+    /// OneDrive has of a file the folder had, that is not the one agreed on.
+    fn can_be_said_of(self, item: &Item, items: &[Item]) -> bool {
         let content_here = item.local.as_ref().and_then(|local| local.content.as_ref());
         match self {
             ItemFact::StepRunning | ItemFact::LeftByStartUpCheck => true,
@@ -171,6 +214,13 @@ impl ItemFact {
             ItemFact::NameRefused => item.local.is_some(),
             ItemFact::CannotBeShown => item.onedrive.is_some(),
             ItemFact::SentIntoByRunningStep => item.kind == ItemKind::Directory && item.onedrive.is_some(),
+            ItemFact::LeftByUpload => item.kind == ItemKind::File && is_listed_and_never_shown(item),
+            ItemFact::UnderTemporaryName => matches!((place_here(item), place_in_onedrive(item)), (Some(here), Some(in_onedrive)) if here.parent_local_item_id == in_onedrive.parent_local_item_id && here.name != in_onedrive.name),
+            ItemFact::ListedUnderTemporaryName => is_listed_and_never_shown(item) && find_keeper_of_temporary_name(items, item).is_some(),
+            ItemFact::ContentOwnUpload => {
+                let in_onedrive = item.onedrive.as_ref().and_then(|onedrive| onedrive.content.as_ref());
+                item.kind == ItemKind::File && in_onedrive.is_some() && in_onedrive != item.synced_content.as_ref() && (item.local.is_some() || item.synced_place.is_some())
+            }
         }
     }
 
@@ -184,6 +234,28 @@ impl ItemFact {
             ItemFact::OpenForWriting => drop(given.items_open_for_writing.insert(item)),
             ItemFact::InQuietTime => drop(given.quiet_until.insert(item, 1000)),
             ItemFact::NameRefused => drop(given.name_refusals.insert(item, Reason::NameCharacters)),
+            ItemFact::LeftByUpload => {
+                let file = given.items.iter().find(|other| other.local_item_id != ROOT && other.kind == ItemKind::File && other.onedrive_item.is_none() && other.local.is_some()).map(|other| other.local_item_id);
+                given.items_left_by_uploads.insert(item, file);
+            }
+            ItemFact::UnderTemporaryName => {
+                let row = given.items.iter().find(|row| row.local_item_id == item).expect("the item is given");
+                let (here, in_onedrive) = (place_here(row).expect("the folder shows it").clone(), place_in_onedrive(row).expect("OneDrive has it").clone());
+                given.temporary_names.insert(item, crate::TemporaryName { name: in_onedrive.name, toward: here });
+            }
+            ItemFact::ListedUnderTemporaryName => {
+                let row = given.items.iter().find(|row| row.local_item_id == item).expect("the item is given");
+                let keeper = find_keeper_of_temporary_name(&given.items, row).expect("an item keeps the name");
+                let (in_onedrive, toward) = (place_in_onedrive(row).expect("OneDrive has it").clone(), place_here(keeper).expect("the folder shows it").clone());
+                given.temporary_names.insert(keeper.local_item_id, crate::TemporaryName { name: in_onedrive.name, toward });
+            }
+            ItemFact::ContentOwnUpload => {
+                let row = given.items.iter().find(|row| row.local_item_id == item).expect("the item is given");
+                let content = |version: &Option<ItemVersion>| version.as_ref().and_then(|version| version.content.clone());
+                let onedrive_content = content(&row.onedrive).expect("OneDrive has a content of it");
+                let local_content = content(&row.local).or_else(|| row.synced_content.clone()).unwrap_or_else(written_here);
+                given.own_upload_contents.insert(item, crate::OwnUploadContent { onedrive_content, local_content });
+            }
             ItemFact::CannotBeShown => {
                 // With the item, all OneDrive has in it, as the store answers it.
                 let mut cannot_be_shown = BTreeSet::from([item]);
@@ -436,7 +508,7 @@ fn tell_callers_facts(mut given: SyncPlanInput, facts: &CallerFacts) -> Option<S
     for (index, fact) in facts.of_items.iter().enumerate() {
         let item = id(index as i64 + 2);
         let Some(fact) = fact else { continue };
-        if !given.items.iter().find(|row| row.local_item_id == item).is_some_and(|row| fact.can_be_said_of(row)) {
+        if !given.items.iter().find(|row| row.local_item_id == item).is_some_and(|row| fact.can_be_said_of(row, &given.items)) {
             return None;
         }
         fact.tell(&mut given, item);
@@ -460,14 +532,16 @@ fn is_to_be_planned(item: &Item) -> bool {
 ///
 /// - A step that sends an item to a name of a directory of OneDrive, while the rows say
 ///   OneDrive has another item under that name there, as OneDrive compares names, or
-///   another step of the plan sends one there.
+///   another step of the plan sends one there. What the item's own upload left under the
+///   name is no other item to it.
 /// - A step that brings an item to a name of a directory of the folder, while the folder
 ///   shows another item under that name, or another step of the plan brings one there.
 /// - A step that moves a directory into what is in it, on the side it moves it on.
 /// - A conflict copy's name that is taken on either side, as OneDrive compares names.
 /// - A move, on either side, of an item both sides have at two places with nothing agreed
 ///   on of it: its binding was a guess, and nobody moved it. Not so of a directory in which
-///   the folder shows what the two sides agreed is in it.
+///   the folder shows what the two sides agreed is in it, nor of an item OneDrive has
+///   under its temporary name, where this folder's own request moved it.
 /// - Two steps for one item; the removal of a directory that would remove an item moved out
 ///   of it here, or beside the removal of what OneDrive has in it; a directory that gives
 ///   up its binding while the folder shows in it what the two sides agreed on there, unless
@@ -511,7 +585,10 @@ fn find_step_the_rows_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<S
             // Unless OneDrive has the item itself under a name of that fold there: it keeps
             // the two apart already.
             let has_the_name_already = onedrive_place(row).is_some_and(|place| folded(&place) == folded(sent));
-            if !has_the_name_already && given.items.iter().any(|item| item.local_item_id != number && onedrive_place(item).is_some_and(|place| folded(&place) == folded(sent))) {
+            // Nor is what the item's own upload left there another item to it: the step
+            // that sends the file again removes it first.
+            let is_own_leftover = |item: &Item| given.items_left_by_uploads.get(&item.local_item_id) == Some(&Some(number));
+            if !has_the_name_already && given.items.iter().any(|item| item.local_item_id != number && !is_own_leftover(item) && onedrive_place(item).is_some_and(|place| folded(&place) == folded(sent))) {
                 return Some(format!("the step of item {number} sends it to a name OneDrive has another item under"));
             }
             if !sent_to.insert(folded(sent)) {
@@ -535,7 +612,10 @@ fn find_step_the_rows_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<S
         let is_bound_by_guess = row.synced_place.is_none() && row.synced_content.is_none() && local_place(row).is_some() && onedrive_place(row).is_some() && local_place(row).map(|place| folded(&place)) != onedrive_place(row).map(|place| folded(&place));
         // A directory in which the folder shows what was agreed to be in it is no guess.
         let holds_what_was_agreed_on = given.items.iter().any(|item| local_place(item).is_some_and(|place| place.parent_local_item_id == number) && (item.synced_place.as_ref().is_some_and(|place| place.parent_local_item_id == number) || onedrive_place(item).is_some_and(|place| place.parent_local_item_id == number)));
-        if is_bound_by_guess && !holds_what_was_agreed_on && matches!(step, SyncStep::OneDrive(OneDriveStep::SendMove { .. }) | SyncStep::Folder(FolderStep::MoveItem { .. } | FolderStep::TakeMoveBack { .. } | FolderStep::MoveToTemporaryName { .. })) {
+        // Nor of an item OneDrive has under its temporary name: this folder's own request
+        // moved it there.
+        let is_under_temporary_name = given.temporary_names.get(&number).zip(onedrive_place(row)).is_some_and(|(temporary_name, place)| temporary_name.is_at(&place));
+        if is_bound_by_guess && !holds_what_was_agreed_on && !is_under_temporary_name && matches!(step, SyncStep::OneDrive(OneDriveStep::SendMove { .. }) | SyncStep::Folder(FolderStep::MoveItem { .. } | FolderStep::TakeMoveBack { .. } | FolderStep::MoveToTemporaryName { .. })) {
             return Some(format!("item {number}, of which nothing is agreed on, is moved on a side though nobody moved it"));
         }
         if plan.steps.iter().filter(|other| other.local_item_id() == number).count() > 1 {
@@ -585,7 +665,7 @@ fn find_step_the_rows_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<S
 ///   towards OneDrive of an item whose next try is later or that OneDrive refused.
 /// - A removal sent to OneDrive while anything it would take with it has a step running,
 ///   is shown by the folder, where it waits to be moved out or is unsent, or was never shown
-///   by the folder: every row the rows say OneDrive has below the removed directory, at any
+///   by the folder and is not what an upload of this folder left: every row the rows say OneDrive has below the removed directory, at any
 ///   depth. And the removal of an item that OneDrive has in a directory that was removed
 ///   here and whose removal is still to be sent: one removal, of the outermost.
 /// - The move of a directory the folder cannot show.
@@ -596,6 +676,14 @@ fn find_step_the_rows_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<S
 ///   a sending of a name OneDrive cannot hold.
 /// - What the user made sent into a directory the folder cannot show as OneDrive has it,
 ///   or merged with an item it cannot show.
+/// - Any step of an item an upload of this folder left in OneDrive: it is never shown. A
+///   merge with such an item, and a conflict copy made of an item for nothing but it.
+/// - A step that brings the folder to a temporary name: a move of an item to the place
+///   OneDrive has it at under its own temporary name, and the showing of a row a listing
+///   made under that of a new item of the folder, which has no binding yet.
+/// - For a file whose content in OneDrive is the folder's own upload: that content taken,
+///   the file shown again for it after it was removed here, and the local content hashed
+///   or kept beside it as if OneDrive had changed the file.
 fn find_step_the_callers_facts_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<String> {
     let row_of = |item: LocalItemId| given.items.iter().find(|row| row.local_item_id == item);
     let directory_in_onedrive = |row: &Item| row.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()).map(|place| place.parent_local_item_id);
@@ -619,8 +707,50 @@ fn find_step_the_callers_facts_refuse(given: &SyncPlanInput, plan: &SyncPlan) ->
         if matches!(step, SyncStep::OneDrive(_)) && given.sending_refusals.contains_key(&number) {
             return Some(format!("item {number} is sent though OneDrive refused it"));
         }
+        if given.items_left_by_uploads.contains_key(&number) {
+            return Some(format!("item {number} has a step though an upload of this folder left it"));
+        }
+        let (place_here, place_in_onedrive) = (place_here(row), place_in_onedrive(row));
+        let folded = |place: &ItemPlace| (place.parent_local_item_id, FoldedName::of(&place.name));
+        if let SyncStep::Folder(FolderStep::RenameToConflictCopy { .. }) = step {
+            let has_its_name = |other: &&Item| other.local_item_id != number && place_here.is_some_and(|place| [self::place_here(other), self::place_in_onedrive(other)].into_iter().flatten().any(|other_place| folded(other_place) == folded(place)));
+            let mut with_its_name = given.items.iter().filter(has_its_name).peekable();
+            if with_its_name.peek().is_some() && with_its_name.all(|other| given.items_left_by_uploads.contains_key(&other.local_item_id)) {
+                return Some(format!("item {number} is renamed to a conflict copy for what an upload of this folder left"));
+            }
+        }
+        let is_under_temporary_name = place_here.is_some() && given.temporary_names.get(&number).zip(place_in_onedrive).is_some_and(|(temporary_name, place)| temporary_name.is_at(place));
+        let is_brought_to_onedrives_place = match step {
+            SyncStep::Folder(FolderStep::MoveItem { .. }) => true,
+            SyncStep::Folder(FolderStep::TakeMoveBack { .. }) => row.synced_place.as_ref() == place_in_onedrive,
+            _ => false,
+        };
+        if is_under_temporary_name && is_brought_to_onedrives_place {
+            return Some(format!("item {number} is moved here to its temporary name"));
+        }
+        let is_new_here = |keeper: LocalItemId| row_of(keeper).is_some_and(|keeper| keeper.local.is_some() && keeper.onedrive_item.is_none());
+        let is_under_temporary_name_of_another = place_in_onedrive.is_some_and(|place| given.temporary_names.iter().any(|(keeper, temporary_name)| *keeper != number && temporary_name.is_at(place) && is_new_here(*keeper)));
+        if is_under_temporary_name_of_another && matches!(step, SyncStep::Folder(FolderStep::ShowItem { .. })) {
+            return Some(format!("item {number} is shown under the temporary name of another item"));
+        }
+        let content_in_onedrive = row.onedrive.as_ref().and_then(|onedrive| onedrive.content.as_ref());
+        let is_content_own_upload = given.own_upload_contents.get(&number).is_some_and(|upload| content_in_onedrive == Some(&upload.onedrive_content));
+        let is_agreed_on = row.synced_place.is_some() || row.synced_content.is_some();
+        let reads_own_upload_as_onedrives_change = match step {
+            SyncStep::Folder(FolderStep::TakeOneDriveContent { .. } | FolderStep::ShowItem { .. }) | SyncStep::Row(RowStep::HashLocalContent { .. }) => true,
+            // Both are kept: but an item of which nothing is agreed on gives up a binding
+            // that was a guess, whatever its content.
+            SyncStep::Row(RowStep::GiveUpBinding { .. }) => is_agreed_on && row.local.is_some(),
+            _ => false,
+        };
+        if is_content_own_upload && reads_own_upload_as_onedrives_change {
+            return Some(format!("item {number} has a step for the content its own upload left, as if OneDrive had changed it"));
+        }
         let SyncStep::OneDrive(sending) = step else {
             if let SyncStep::Row(RowStep::MergeItems { onedrive, .. }) = step {
+                if given.items_left_by_uploads.contains_key(&onedrive.local_item_id) {
+                    return Some(format!("item {number} is merged with item {}, which an upload of this folder left", onedrive.local_item_id));
+                }
                 if cannot_be_shown(onedrive.local_item_id) {
                     return Some(format!("item {number} is merged with item {}, which the folder cannot show", onedrive.local_item_id));
                 }
@@ -668,6 +798,10 @@ fn find_step_the_callers_facts_refuse(given: &SyncPlanInput, plan: &SyncPlan) ->
                 }
                 if taken.local.is_some() {
                     return Some(format!("the removal of the directory {number} takes with it item {}, which the folder shows", taken.local_item_id));
+                }
+                // What an upload of this folder left is the folder's own, and goes with it.
+                if given.items_left_by_uploads.contains_key(&taken.local_item_id) {
+                    continue;
                 }
                 if taken.synced_place.is_none() && taken.synced_content.is_none() {
                     return Some(format!("the removal of the directory {number} takes with it item {}, which the folder never showed", taken.local_item_id));

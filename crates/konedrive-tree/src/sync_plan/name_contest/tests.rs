@@ -122,3 +122,22 @@ fn a_name_onedrive_keeps_apart_from_the_holders_is_free() {
     assert_eq!(decide_name_contest(&NameClaim { has_earlier_rival: true, ..within_the_fold }), NameContestOutcome::StepsAside);
     assert_eq!(decide_name_contest(&NameClaim { has_the_name_in_onedrive: false, ..within_the_fold }), NameContestOutcome::StepsAside, "it comes to the name from elsewhere");
 }
+
+/// What an upload of this folder left in OneDrive holds a name to every file but the one it
+/// was left by: no file is merged with it, and none steps aside for it. The claimant waits
+/// for the file whose sending removes it; where that file's row went, for the removal the
+/// daemon sends by itself; and for nothing when it is left here.
+#[test]
+fn a_claimant_waits_for_the_removal_of_what_an_upload_left_under_its_name() {
+    let new = made_file(2, ROOT, "a.txt");
+    let (of_a_file, of_no_file) = (NameHolder::IsLeftByUpload { file: Some(id(5)) }, NameHolder::IsLeftByUpload { file: None });
+    assert_eq!(decide_name_contest(&claim(&new, Some(of_a_file))), NameContestOutcome::WaitsFor(id(5)));
+    assert_eq!(decide_name_contest(&claim(&new, Some(of_no_file))), NameContestOutcome::WaitsForRemovalOfHolder);
+    for holder in [of_a_file, of_no_file] {
+        assert_eq!(decide_name_contest(&NameClaim { is_left_here: true, ..claim(&new, Some(holder)) }), NameContestOutcome::NameIsFree, "{holder:?}: never sent");
+        assert_eq!(decide_name_contest(&NameClaim { has_earlier_rival: true, ..claim(&new, Some(holder)) }), NameContestOutcome::StepsAside, "{holder:?}: for the rival, not for what was left");
+        assert_ne!(decide_name_contest(&NameClaim { is_answered_taken: true, ..claim(&new, Some(holder)) }), NameContestOutcome::StepsAside, "{holder:?}: answered taken");
+    }
+    // A listing under way changes nothing: what was left is not what a page may move.
+    assert_eq!(decide_name_contest(&NameClaim { is_listing_under_way: true, ..claim(&new, Some(of_no_file)) }), NameContestOutcome::WaitsForRemovalOfHolder);
+}

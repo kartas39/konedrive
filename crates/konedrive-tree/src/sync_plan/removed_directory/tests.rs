@@ -6,7 +6,7 @@ fn removed_with_the_directory(number: i64) -> ItemVersions {
 }
 
 use DirectoryRemovalOutcome::{IsOfFolderAlone, IsSent, WaitsFor, WaitsForListing};
-use ItemBelowRemovedDirectory::{ContentChangedInOneDrive, IsHeldBack, NeverShownHere, RemovedHere, ShownHere};
+use ItemBelowRemovedDirectory::{ContentChangedInOneDrive, IsHeldBack, LeftByUpload, NeverShownHere, RemovedHere, ShownHere};
 
 /// The design's "a directory removed here with everything below it removed here too is one
 /// removal": the positive condition. An empty directory is the same.
@@ -85,5 +85,40 @@ fn an_item_below_a_removed_directory_is_told_by_its_row_and_by_whether_it_is_hel
         ("never shown, and held back", &never_shown, true, IsHeldBack(id(3))),
     ] {
         assert_eq!(ItemBelowRemovedDirectory::of(row, is_held_back, false, false), is, "{what}");
+    }
+}
+
+/// What an upload of this folder left below the directory is the folder's own: it goes with
+/// the directory, keeps no removal from being sent, and is not among what was removed here
+/// with it. What holds, and what the folder never showed, decide as without it.
+#[test]
+fn a_removal_is_sent_with_what_an_upload_left_below_the_directory() {
+    assert_eq!(decide_directory_removal(false, &[LeftByUpload(id(4))]), IsSent { removed_with_it: Vec::new() });
+    assert_eq!(decide_directory_removal(false, &[RemovedHere(removed_with_the_directory(3)), LeftByUpload(id(4))]), IsSent { removed_with_it: vec![removed_with_the_directory(3)] });
+    assert_eq!(decide_directory_removal(false, &[LeftByUpload(id(4)), NeverShownHere(id(5))]), IsOfFolderAlone);
+    assert_eq!(decide_directory_removal(false, &[LeftByUpload(id(4)), ShownHere(id(5))]), WaitsFor(id(5)));
+    assert_eq!(decide_directory_removal(true, &[LeftByUpload(id(4))]), WaitsForListing);
+}
+
+/// What the caller says of a row below a removed directory beside whether it is held back:
+/// that an upload left it, which is asked of a row the folder never showed and of no
+/// other; and that the content OneDrive has of it is the folder's own upload, which makes
+/// a file removed here one that is removed with the directory.
+#[test]
+fn an_item_below_a_removed_directory_is_told_by_what_an_upload_left() {
+    let (shown, removed, never_shown) = (synced_file(3, id(2), "a"), removed_here(synced_file(3, id(2), "a")), listed(3, ItemKind::File, id(2), "a"));
+    let changed = with_content_in_onedrive(removed.clone(), hashed("left"));
+    // (what, the row, held back, left by an upload, its content the own upload, what it is)
+    for (what, row, is_held_back, is_left_by_upload, is_content_own_upload, is) in [
+        ("never shown, left by an upload", &never_shown, false, true, false, LeftByUpload(id(3))),
+        ("never shown, left by an upload, and held back", &never_shown, true, true, false, IsHeldBack(id(3))),
+        ("removed here: an upload left no item the folder had", &removed, false, true, false, RemovedHere(ItemVersions::of(&removed))),
+        ("shown", &shown, false, true, true, ShownHere(id(3))),
+        ("removed here, its content in OneDrive the own upload", &changed, false, false, true, RemovedHere(ItemVersions::of(&changed))),
+        ("removed here, its content changed by OneDrive", &changed, false, false, false, ContentChangedInOneDrive(id(3))),
+        ("removed here, its content the own upload, and held back", &changed, true, false, true, IsHeldBack(id(3))),
+        ("never shown: the own upload is of a file the folder had", &never_shown, false, false, true, NeverShownHere(id(3))),
+    ] {
+        assert_eq!(ItemBelowRemovedDirectory::of(row, is_held_back, is_left_by_upload, is_content_own_upload), is, "{what}");
     }
 }

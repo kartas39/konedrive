@@ -139,12 +139,11 @@ pub(crate) fn break_circles_of_names(cases: &[ItemCase<'_>], items: &PlanItems<'
     answers.into_overrulings()
 }
 
-/// An item that keeps a temporary name, and the row a listing made of what OneDrive has
-/// under that name: a row the folder does not show, which waits for the item.
+/// A new item of the folder that keeps a temporary name and has no binding yet, and the
+/// row a listing made of what OneDrive has under that name: a row the folder does not
+/// show, which waits for the item ([`LocalPlaceAvailability::IsTemporaryNameOf`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ListedTemporaryName {
-    /// The item has a binding: OneDrive has it as another item than the listed one.
-    pub(crate) has_item_binding: bool,
     /// The two are both files, or both directories.
     pub(crate) is_one_kind: bool,
     /// Nothing is agreed on of the listed row: it is new in OneDrive.
@@ -165,12 +164,11 @@ pub(crate) enum ListedTemporaryNameOutcome {
     IsAnotherItem,
 }
 
-/// What becomes of the item of `listed`. An item with no binding and a new row of OneDrive
-/// of its kind under its temporary name are one item, once no listing is under way: the
+/// What becomes of the item of `listed`. The item and a new row of OneDrive of its kind under its temporary name are one item, once no listing is under way: the
 /// name holds the item's id, and nothing but a request of this folder gave it. Sent again,
 /// the item would be made in OneDrive a second time, under the next temporary name.
 pub(crate) fn decide_listed_temporary_name(listed: &ListedTemporaryName) -> ListedTemporaryNameOutcome {
-    if listed.has_item_binding || !listed.is_one_kind || !listed.is_row_new_in_onedrive {
+    if !listed.is_one_kind || !listed.is_row_new_in_onedrive {
         ListedTemporaryNameOutcome::IsAnotherItem
     } else if listed.is_listing_under_way {
         ListedTemporaryNameOutcome::WaitsForListing
@@ -197,7 +195,6 @@ pub(crate) fn merge_rows_listed_under_temporary_names(cases: &[ItemCase<'_>], an
             continue;
         }
         let listed = ListedTemporaryName {
-            has_item_binding: keeper_case.item.onedrive_item.is_some(),
             is_one_kind: keeper_case.item.kind == case.item.kind,
             is_row_new_in_onedrive: case.item.synced_place.is_none() && case.item.synced_content.is_none(),
             is_listing_under_way: case.is_listing_under_way,
@@ -210,3 +207,6 @@ pub(crate) fn merge_rows_listed_under_temporary_names(cases: &[ItemCase<'_>], an
     }
     answers.into_overrulings()
 }
+
+#[cfg(test)]
+mod tests;

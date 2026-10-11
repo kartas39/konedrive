@@ -164,3 +164,88 @@ fn a_page_fetched_before_a_directory_removal_was_confirmed_puts_nothing_into_the
     assert_eq!(row(&mut store, kept).onedrive.as_ref().and_then(|onedrive| onedrive.place.clone()), Some(place(ROOT, "g")));
     assert_eq!(find_broken_rule(&store.item_store().list_items().unwrap(), true), None);
 }
+
+/// The removal the plan answers for `directory` from every row of the store, as the
+/// daemon's caller describes them: the versions it was planned from, and what is removed
+/// with it. `None` when the plan sends no removal of it.
+fn plan_directory_removal(store: &mut TreeStore, directory: LocalItemId) -> Option<(ItemVersions, Vec<ItemVersions>)> {
+    use crate::sync_plan::tests::convergence::plan_input::{describe_every_item, CallerFacts};
+    let plan = crate::make_sync_plan(&describe_every_item(store, &CallerFacts::of_read_write_folder()));
+    plan.steps.into_iter().find_map(|step| match step {
+        crate::SyncStep::OneDrive(crate::OneDriveStep::SendDirectoryRemoval { item, below }) if item.local_item_id == directory => Some((item, below)),
+        _ => None,
+    })
+}
+
+/// The plan, the step's question and the commit agree on a directory's removal with what
+/// an upload of this folder left in it: the item is the folder's own, not one it never
+/// showed. It is not among what is removed here with the directory, holds the removal
+/// back by nothing, and its row loses its OneDrive version with the directory's. Once the
+/// item is not this folder's to remove any more — another changed it — it is an item the
+/// folder never showed, to all three.
+#[test]
+fn the_removal_of_a_directory_is_planned_asked_and_committed_with_what_an_upload_left_in_it() {
+    let store_with_what_an_upload_left = || {
+        let (mut store, [directory, inside, _]) = store_of_removed_directory();
+        let uploaded = make(&mut store, ItemKind::File, ROOT, "n");
+        let standing = store.step_memory().remember_mismatched_item(uploaded, &crate::MismatchedItem::of_answer(reference("LEFT"), Some("c-h-LEFT"), None)).unwrap();
+        assert_eq!(standing, crate::MismatchedItemStanding::LeftToRemove);
+        write_listing_of_changes(&mut store, &[listed_file("LEFT", "D", "left.txt", (4, "h-LEFT"), "e-LEFT")]);
+        (store, directory, inside)
+    };
+    let (mut store, directory, inside) = store_with_what_an_upload_left();
+    let (planned_from, below) = plan_directory_removal(&mut store, directory).expect("the plan sends the removal");
+    assert_eq!((&planned_from, below.as_slice()), (&versions(&mut store, directory), [versions(&mut store, inside)].as_slice()));
+    assert!(can_be_sent(&mut store, &planned_from, &below));
+    let with_what_was_left = [below[0].clone(), ItemVersions::of(&bound(&mut store, "LEFT"))];
+    assert!(!can_be_sent(&mut store, &planned_from, &with_what_was_left), "what was left is not of what is removed here");
+    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below, 0).unwrap(), StepCommitOutcome::Written);
+    for item_id in ["D", "F", "LEFT"] {
+        assert!(is_binding_alone(&bound(&mut store, item_id)), "{item_id}");
+    }
+    assert_eq!(find_broken_rule(&store.item_store().list_items().unwrap(), false), None);
+
+    let (mut store, directory, inside) = store_with_what_an_upload_left();
+    let (planned_from, below) = (versions(&mut store, directory), [versions(&mut store, inside)]);
+    store.step_memory().forget_mismatched_item(&reference("LEFT")).unwrap();
+    assert_eq!(plan_directory_removal(&mut store, directory), None);
+    assert!(!can_be_sent(&mut store, &planned_from, &below));
+    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &below, 0)));
+    assert!(bound(&mut store, "LEFT").onedrive.is_some());
+}
+
+/// The review's M4, at the plan, the step and the commit: the content OneDrive has of the
+/// file that was removed here with the directory is what an upload of this folder left in
+/// place of what it sent. That is no change of OneDrive's, and the file is removed with
+/// the directory. Once a listing writes another content the fact says nothing, and the
+/// removal is not sent: the file comes back.
+#[test]
+fn the_removal_of_a_directory_is_planned_asked_and_committed_with_a_file_whose_content_is_the_own_upload() {
+    let (mut store, [directory, inside, _]) = store_of_removed_directory();
+    write_listing_of_changes(&mut store, &[listed_file("F", "D", "f", (5, "h-F2"), "e-F2")]);
+    assert_eq!(plan_directory_removal(&mut store, directory), None, "not told: OneDrive changed the file");
+    let left = row(&mut store, inside);
+    let own_upload = crate::OwnUploadContent { onedrive_content: left.onedrive.as_ref().and_then(|onedrive| onedrive.content.clone()).unwrap(), local_content: left.synced_content.clone().unwrap() };
+    store.item_store().remember_own_upload_content(inside, &own_upload).unwrap();
+
+    let (planned_from, below) = plan_directory_removal(&mut store, directory).expect("the plan sends the removal");
+    assert_eq!((&planned_from, below.as_slice()), (&versions(&mut store, directory), [versions(&mut store, inside)].as_slice()));
+    assert!(can_be_sent(&mut store, &planned_from, &below));
+
+    // OneDrive changed the file after all: the fact is of another content.
+    write_listing_of_changes(&mut store, &[listed_file("F", "D", "f", (6, "h-F3"), "e-F3")]);
+    let below_now = [versions(&mut store, inside)];
+    assert_eq!(plan_directory_removal(&mut store, directory), None);
+    assert!(!can_be_sent(&mut store, &planned_from, &below_now));
+    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &below_now, 0)));
+
+    let (mut store, [directory, inside, _]) = store_of_removed_directory();
+    write_listing_of_changes(&mut store, &[listed_file("F", "D", "f", (5, "h-F2"), "e-F2")]);
+    let left = row(&mut store, inside);
+    let own_upload = crate::OwnUploadContent { onedrive_content: left.onedrive.as_ref().and_then(|onedrive| onedrive.content.clone()).unwrap(), local_content: left.synced_content.clone().unwrap() };
+    store.item_store().remember_own_upload_content(inside, &own_upload).unwrap();
+    let (planned_from, below) = plan_directory_removal(&mut store, directory).expect("the plan sends the removal");
+    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below, 0).unwrap(), StepCommitOutcome::Written);
+    assert!(is_binding_alone(&bound(&mut store, "D")) && is_binding_alone(&bound(&mut store, "F")));
+    assert_eq!(find_broken_rule(&store.item_store().list_items().unwrap(), false), None);
+}

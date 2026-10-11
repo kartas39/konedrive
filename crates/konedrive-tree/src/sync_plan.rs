@@ -500,8 +500,9 @@ fn find_onedrive_directory_not_given(items: &PlanItems<'_>, item: &Item) -> Opti
 /// the folder to take where it is the temporary name `input` says the item goes through
 /// ([`TemporaryName::is_at`]) and the folder shows the item: asked first, whatever the
 /// directory and the name are here. Nor is it where the folder does not show `item` and
-/// the place is the temporary name of another item: the row a listing made of what that
-/// item's request put there.
+/// the place is the temporary name of another item that has no binding yet: the row a
+/// listing made of what that item's request put there. An item that has a binding is
+/// another item of OneDrive than the listed one, whatever it remembers.
 fn find_local_place_availability(input: &SyncPlanInput, items: &PlanItems<'_>, item: &Item) -> LocalPlaceAvailability {
     let Some(place) = item.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()) else { return LocalPlaceAvailability::NoOneDrivePlace };
     // TODO: check what becomes of an item the folder does not show that OneDrive has under its temporary name (removed here, its content changed in OneDrive: it comes back), and fix if needed: it has no local place to be sent on to, and is shown under the temporary name as the place of any item.
@@ -509,7 +510,8 @@ fn find_local_place_availability(input: &SyncPlanInput, items: &PlanItems<'_>, i
         return LocalPlaceAvailability::IsTemporaryName;
     }
     if item.local.is_none() {
-        if let Some((another, _)) = input.temporary_names.iter().find(|(another, temporary_name)| **another != item.local_item_id && temporary_name.is_at(place)) {
+        let is_new_here = |another: LocalItemId| items.find(another).is_some_and(|keeper| keeper.local.is_some() && keeper.onedrive_item.is_none());
+        if let Some((another, _)) = input.temporary_names.iter().find(|(another, temporary_name)| **another != item.local_item_id && temporary_name.is_at(place) && is_new_here(**another)) {
             return LocalPlaceAvailability::IsTemporaryNameOf(*another);
         }
     }
