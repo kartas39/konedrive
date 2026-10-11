@@ -16,8 +16,6 @@ pub struct Paths {
     /// The tree store of version 1, where the migration finds it. Per account:
     /// [`Paths::account`].
     pub tree_db: PathBuf,
-    /// Where files are rescued to: version 1 directly below it, each account in `<id>/`.
-    pub rescue_dir: PathBuf,
     /// The freedesktop thumbnail cache, shared by every account (keyed by file URI).
     pub thumbnails: PathBuf,
 }
@@ -31,8 +29,6 @@ pub struct AccountPaths {
     pub account_cache: PathBuf,
     /// Its tree store, activity log and conflicts.
     pub tree_db: PathBuf,
-    /// `rescued/<id>/`: kept when the account is removed.
-    pub rescue_dir: PathBuf,
 }
 
 /// The tree store's file. Not the name an older konedrive kept its store under: that one
@@ -44,7 +40,6 @@ impl Paths {
     pub fn from_xdg() -> anyhow::Result<Self> {
         let config = dirs::config_dir().ok_or_else(|| anyhow::anyhow!("no XDG config directory"))?;
         let state = dirs::state_dir().ok_or_else(|| anyhow::anyhow!("no XDG state directory"))?;
-        let data = dirs::data_dir().ok_or_else(|| anyhow::anyhow!("no XDG data directory"))?;
         let cache = dirs::cache_dir().ok_or_else(|| anyhow::anyhow!("no XDG cache directory"))?;
         let state = state.join("konedrive");
         Ok(Self {
@@ -52,7 +47,6 @@ impl Paths {
             account_cache: state.join("account.json"),
             tree_db: state.join(TREE_DB),
             state_dir: state,
-            rescue_dir: data.join("konedrive").join("rescued"),
             thumbnails: cache.join("thumbnails"),
         })
     }
@@ -64,7 +58,6 @@ impl Paths {
             state_dir: dir.to_owned(),
             account_cache: dir.join("account.json"),
             tree_db: dir.join(TREE_DB),
-            rescue_dir: dir.join("rescued"),
             thumbnails: dir.join("thumbnails"),
         }
     }
@@ -81,7 +74,6 @@ impl Paths {
             account_cache: dir.join("account.json"),
             tree_db: dir.join(TREE_DB),
             dir,
-            rescue_dir: self.rescue_dir.join(id.as_str()),
         })
     }
 }

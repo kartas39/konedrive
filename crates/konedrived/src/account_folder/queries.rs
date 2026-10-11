@@ -43,8 +43,8 @@ impl SyncService {
             .map_err(|e| SyncError::Store(e.to_string()))
     }
 
-    /// `Conflicts.List()`: (time, original, rescued), newest first; one whose
-    /// rescued file is gone is dropped on the way.
+    /// `Conflicts.List()`: (time, original, the kept copy), newest first; one whose
+    /// kept copy is gone is dropped on the way.
     pub async fn conflicts(&self) -> Result<Vec<konedrive_tree::ConflictRow>, SyncError> {
         let report = self.report.clone();
         tokio::task::spawn_blocking(move || report.activity.conflicts())
@@ -56,8 +56,8 @@ impl SyncService {
     /// `Conflicts.Dismiss(kept_path)`: the conflict comes off the list, and
     /// the file stays where it is. A path that names no conflict is refused
     /// with that path in the refusal.
-    pub async fn dismiss_conflict(&self, rescued: &str) -> Result<(), SyncError> {
-        let (report, path) = (self.report.clone(), rescued.to_owned());
+    pub async fn dismiss_conflict(&self, kept_copy: &str) -> Result<(), SyncError> {
+        let (report, path) = (self.report.clone(), kept_copy.to_owned());
         let removed = tokio::task::spawn_blocking(move || report.activity.dismiss(&path))
             .await
             .map_err(|e| SyncError::Io(format!("the conflicts task failed: {e}")))?
@@ -65,7 +65,7 @@ impl SyncService {
         if removed {
             Ok(())
         } else {
-            Err(SyncError::NoConflict(rescued.to_owned()))
+            Err(SyncError::NoConflict(kept_copy.to_owned()))
         }
     }
 

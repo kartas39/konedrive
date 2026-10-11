@@ -358,7 +358,7 @@ impl AccountManager {
     /// store with it — then a sign-in under way cancelled, the refresh token and the cached
     /// name and quota deleted, the account taken out of `config.toml`, its directory deleted
     /// with what is left in it, and its object off the bus. The folder's files and the
-    /// rescued files are kept.
+    /// kept copies are kept.
     ///
     /// A removal that fails after the account was retired — the sign-in cannot be deleted,
     /// or the account cannot be taken out of `config.toml` — leaves the account as an

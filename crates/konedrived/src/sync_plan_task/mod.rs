@@ -626,7 +626,7 @@ impl SyncPlanTask {
         for row in written {
             parts.activity.announce(row.clone());
         }
-        // `Activity::prune` reads the store and asks the disk for the rescued files, through the mount for those inside the folder: off the loop's thread, and waited for only while the sync runs. Once the loop is stopping (`SendingHolds::set_stopping`, set before its last settlements) it is not asked: nothing here may wait for the mount to answer when a stop is to end, and `Conflicts.Count` is read again by the next listing and by `Conflicts.List`.
+        // `Activity::prune` reads the store and asks the disk for the kept copies, through the mount for those inside the folder: off the loop's thread, and waited for only while the sync runs. Once the loop is stopping (`SendingHolds::set_stopping`, set before its last settlements) it is not asked: nothing here may wait for the mount to answer when a stop is to end, and `Conflicts.Count` is read again by the next listing and by `Conflicts.List`.
         let is_stopping = parts.sending_holds.find((parts.clock)()) == Some(SendingHold::Stopping);
         if !is_stopping && written.iter().any(|row| row.kind == konedrive_tree::ActivityKind::Conflict) {
             let activity = Arc::clone(&parts.activity);

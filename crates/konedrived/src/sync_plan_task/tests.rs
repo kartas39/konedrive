@@ -4,7 +4,7 @@
 
 use std::sync::Mutex;
 
-use konedrive_tree::{ActivityKind, ActivityRow, ConflictKind, ConflictRow};
+use konedrive_tree::{ActivityKind, ActivityRow, ConflictRow};
 
 use super::*;
 use crate::mount::item_fixture::ItemFixture;
@@ -206,7 +206,7 @@ fn what_a_settlement_wrote_is_announced_and_the_conflicts_counted_again_unless_t
     // A conflict on record whose copy is there; the count on the bus is as it was at the attach.
     let add_conflict = |name: &str| {
         fixture.write_disk_file(name, b"the copy");
-        let row = ConflictRow { at: 1_700_000_000, original: fixture.disk_path("report.txt").display().to_string(), rescued: fixture.disk_path(name).display().to_string(), kind: ConflictKind::Copy };
+        let row = ConflictRow { at: 1_700_000_000, original: fixture.disk_path("report.txt").display().to_string(), kept_copy: fixture.disk_path(name).display().to_string() };
         fixture.write_rows(move |store| store.add_conflicts(&[row]));
     };
     add_conflict("report (copy 1).txt");

@@ -6,7 +6,6 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-use crate::conflicts::ConflictKind;
 use crate::step_memory::schema as step_memory_schema;
 use crate::item_store::{own_upload_contents_schema, place_change_records_schema, thumbnail_marks_schema, unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, IMAGE_OR_VIDEO, LEFT_HERE, NOT_PLACED, SHOWN_AGAINST_PLACEMENT};
 use crate::model::{ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK, PLACED};
@@ -25,7 +24,7 @@ pub use old_store::{decide_old_store, find_stored_version, list_old_store_upload
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "27";
+pub const SCHEMA_VERSION: &str = "28";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with.
@@ -209,8 +208,7 @@ fn schema() -> String {
              BEGIN UPDATE items SET unsent_since = NULL WHERE local_item_id = NEW.local_item_id; END;
          CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
                                 path TEXT NOT NULL, detail TEXT NOT NULL);
-         CREATE TABLE conflicts (rescued TEXT PRIMARY KEY, at INTEGER NOT NULL, original TEXT NOT NULL,
-                                 kind TEXT NOT NULL DEFAULT '{rescued}');",
+         CREATE TABLE conflicts (kept_copy TEXT PRIMARY KEY, at INTEGER NOT NULL, original TEXT NOT NULL);",
         step_memory = step_memory_schema(),
         place_change_records = place_change_records_schema(),
         own_upload_contents = own_upload_contents_schema(),
@@ -238,7 +236,6 @@ fn schema() -> String {
         directory = ItemKind::Directory.as_str(),
         on_disk = ON_DISK,
         not_on_disk = NOT_ON_DISK,
-        rescued = ConflictKind::Rescued.as_str(),
     )
 }
 

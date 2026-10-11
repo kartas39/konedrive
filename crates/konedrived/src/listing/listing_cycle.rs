@@ -472,7 +472,7 @@ impl ListingCycle {
         let now = crate::clock::unix_now();
         self.store.call(move |store| store.set_last_checked(now)).await?;
         self.state.update(|state| state.cycle.last_checked = now);
-        // A conflict whose rescued file is gone drops off by itself, a batch of them
+        // A conflict whose kept copy is gone drops off by itself, a batch of them
         // looked over at each listing's end. The activity log asks the store itself.
         let activity = Arc::clone(&self.report.activity);
         if let Err(error) = tokio::task::spawn_blocking(move || activity.prune()).await {

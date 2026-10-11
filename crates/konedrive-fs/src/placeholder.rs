@@ -317,41 +317,5 @@ pub fn punch_all(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-/// Removes every `user.konedrive.*` attribute: a file that leaves the folder
-/// for the rescue directory is no longer konedrive's.
-fn strip_konedrive_xattrs(file: &File) -> io::Result<()> {
-    let ours: Vec<_> = file
-        .list_xattr()?
-        .filter(|name| name.as_encoded_bytes().starts_with(b"user.konedrive."))
-        .collect();
-    for name in ours {
-        with_owner_write(file, || match file.remove_xattr(&name) {
-            Ok(()) => Ok(()),
-            Err(e) if e.raw_os_error() == Some(libc::ENODATA) => Ok(()),
-            Err(e) => Err(e),
-        })?;
-    }
-    Ok(())
-}
-
-/// Takes konedrive's attributes off `file` for good: the item id first, then
-/// `fsync`, then the rest. With the id gone the object is an ordinary one (a
-/// state with no id is), whatever a crash leaves of the rest.
-///
-/// The rest is not waited for: a crash may leave some of it on an object
-/// that is the user's own by then, which nothing reads without an id. So
-/// this is only for an object whose content is there (a directory, or a
-/// downloaded file).
-///
-/// Only what is there is touched: an object with no item id gets neither
-/// the removal (and its change of mode) nor the `fsync`.
-pub fn strip(file: &File) -> io::Result<()> {
-    if file.get_xattr(XATTR_ITEM_ID)?.is_some() {
-        remove_xattr(file, XATTR_ITEM_ID)?;
-        file.sync_all()?;
-    }
-    strip_konedrive_xattrs(file)
-}
-
 #[cfg(test)]
 mod tests;

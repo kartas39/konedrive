@@ -1,7 +1,6 @@
 use std::ffi::OsStr;
 
 use super::*;
-use crate::conflicts::ConflictKind;
 use crate::item_store::tests::listed_drive::store_with_listed_root;
 use crate::item_store::tests::shown_items::{assert_rules_hold, row, show_listed_file};
 use crate::item_store::tests::place;
@@ -11,8 +10,8 @@ use crate::TreeStore;
 
 const ROOT: LocalItemId = LocalItemId::ROOT;
 
-fn conflict(rescued: &str) -> ConflictRow {
-    ConflictRow { at: 77, original: "/folder/f".into(), rescued: rescued.into(), kind: ConflictKind::Copy }
+fn conflict(kept_copy: &str) -> ConflictRow {
+    ConflictRow { at: 77, original: "/folder/f".into(), kept_copy: kept_copy.into() }
 }
 
 /// The file `F`, shown as `f` with its content on disk, and the record of the move of its

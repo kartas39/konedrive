@@ -4,9 +4,9 @@ use std::os::unix::fs::MetadataExt;
 use std::time::{Duration, UNIX_EPOCH};
 
 use super::{
-    combine_op_and_restore_results, punch_all, read_item_id, read_progress, read_state, remove_progress, set_mtime, strip,
-    strip_konedrive_xattrs, with_owner_write, write_ctag, write_item_id, write_progress, write_state, Progress, State, StateError,
-    LOCKED_FILE_MODE, XATTR_CTAG, XATTR_PROGRESS, XATTR_STATE,
+    combine_op_and_restore_results, punch_all, read_progress, read_state, remove_progress, set_mtime,
+    with_owner_write, write_ctag, write_progress, write_state, Progress, State, StateError,
+    XATTR_CTAG, XATTR_PROGRESS, XATTR_STATE,
 };
 
 fn dir() -> (tempfile::TempDir, File) {
@@ -172,58 +172,6 @@ fn progress_round_trips_and_nonsense_reads_as_none() {
         xattr::FileExt::set_xattr(&file, XATTR_PROGRESS, bad.as_bytes()).unwrap();
         assert_eq!(read_progress(&file).unwrap(), None, "{bad:?}");
     }
-}
-
-#[test]
-fn stripping_leaves_no_konedrive_attribute_and_keeps_the_others() {
-    let (dir, _handle) = dir();
-    let path = locked(dir.path(), "f.bin", b"x");
-    let file = File::open(&path).unwrap();
-    write_item_id(&file, "I").unwrap();
-    write_state(&file, State::Hydrated).unwrap();
-    with_owner_write(&file, || xattr::FileExt::set_xattr(&file, "user.other", b"keep")).unwrap();
-    strip_konedrive_xattrs(&file).unwrap();
-    let names: Vec<_> = xattr::FileExt::list_xattr(&file).unwrap().collect();
-    // Check that no konedrive attributes remain and user.other is preserved
-    for name in &names {
-        assert!(!name.as_encoded_bytes().starts_with(b"user.konedrive."), "konedrive attribute not stripped: {name:?}");
-    }
-    assert!(names.iter().any(|n| n == std::ffi::OsStr::new("user.other")), "user.other attribute was not preserved");
-}
-
-/// The strip of an object that becomes the user's own: every attribute of
-/// konedrive's goes, the item id among them, on a file locked `0444` too, and
-/// on a directory; what is not konedrive's stays, and so does the mode. An
-/// object with no attribute of konedrive's is left as it is: its mode is not
-/// touched even for a moment (its change time stays), so nothing fails on a
-/// file the daemon could not change the mode of.
-#[test]
-fn a_strip_takes_the_id_and_the_rest_and_keeps_the_mode() {
-    let (dir, handle) = dir();
-    let path = locked(dir.path(), "f.bin", b"x");
-    let file = File::open(&path).unwrap();
-    write_item_id(&file, "I").unwrap();
-    write_state(&file, State::Hydrated).unwrap();
-    write_ctag(&file, "c1").unwrap();
-    with_owner_write(&file, || xattr::FileExt::set_xattr(&file, "user.other", b"keep")).unwrap();
-    strip(&file).unwrap();
-    assert_eq!(read_item_id(&file).unwrap(), None);
-    let users = |of: &File| -> Vec<_> { xattr::FileExt::list_xattr(of).unwrap().filter(|name| name.as_encoded_bytes().starts_with(b"user.")).collect() };
-    assert_eq!(users(&file), [std::ffi::OsString::from("user.other")]);
-    assert_eq!(file.metadata().unwrap().mode() & 0o7777, LOCKED_FILE_MODE);
-    strip(&file).unwrap();
-
-    let plain = File::open(locked(dir.path(), "plain.bin", b"x")).unwrap();
-    let changed = |of: &File| of.metadata().map(|m| (m.ctime(), m.ctime_nsec())).unwrap();
-    let before = changed(&plain);
-    std::thread::sleep(Duration::from_millis(20));
-    strip(&plain).unwrap();
-    assert_eq!(changed(&plain), before, "no konedrive attribute: the mode is never lifted");
-    assert_eq!(plain.metadata().unwrap().mode() & 0o7777, LOCKED_FILE_MODE);
-
-    write_item_id(&handle, "D").unwrap();
-    strip(&handle).unwrap();
-    assert!(users(&handle).is_empty());
 }
 
 /// A file's time may be before 1970, and not on a whole second: `tv_nsec` counts forward from

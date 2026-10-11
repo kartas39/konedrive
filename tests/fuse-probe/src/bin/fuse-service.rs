@@ -176,7 +176,7 @@ async fn main() {
                 service
                     .conflicts()
                     .await
-                    .map(|rows| rows.iter().map(|row| format!("{:?} {} {}", row.kind, row.original, row.rescued)).collect::<Vec<_>>().join(" | "))
+                    .map(|rows| rows.iter().map(|row| format!("{} {}", row.original, row.kept_copy)).collect::<Vec<_>>().join(" | "))
                     .map_err(|e| e.to_string()),
             ),
             ["pause"] => said(service.pause_syncing(0).await.map(|()| "paused".into()).map_err(|e| e.to_string())),

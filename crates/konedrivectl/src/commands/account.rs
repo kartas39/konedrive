@@ -54,9 +54,6 @@ pub(crate) async fn account(daemon: &Daemon, option: Option<&str>, command: Acco
             if !super::sync::folder::warn_of_unsent_changes(&sync, yes).await? {
                 return Ok(());
             }
-            // Read first: the list goes with the account. Where each listed file was rescued
-            // to is the one thing about rescues this can know.
-            let conflicts = sync.conflicts.list().await.unwrap_or_default();
             let result = daemon.manager.remove(&target.path.as_ref()).await;
             if let Err(error) = result {
                 let source = sync.folder.source().await.unwrap_or_default();
@@ -64,7 +61,7 @@ pub(crate) async fn account(daemon: &Daemon, option: Option<&str>, command: Acco
                 let action = SyncAction::Remove(&target.label);
                 bail!("{}", explain_sync_error_in(action, &error, context));
             }
-            print!("{}", removed_text(&target.label, &folder, &conflicts));
+            print!("{}", removed_text(&target.label, &folder));
         }
     }
     Ok(())

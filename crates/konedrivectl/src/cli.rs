@@ -99,7 +99,7 @@ pub(crate) enum AccountCmd {
     /// (`--yes` skips the question). Deleted: the refresh token, the cached name and quota, the list of
     /// OneDrive items, the activity and the conflicts list. Kept: what the folder holds on
     /// this computer — the files that were downloaded and your own (a file that was never
-    /// downloaded is not there) — and rescued files.
+    /// downloaded is not there).
     Remove {
         /// The account: its id, label or email
         #[arg(value_name = "ACCOUNT", allow_hyphen_values = true)]

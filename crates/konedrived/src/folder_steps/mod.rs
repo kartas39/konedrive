@@ -106,7 +106,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use konedrive_tree::{
-    ActivityKind, ConflictKind, ConflictRow, ContentPresence, FolderStep, Item, ItemKind, ItemPlace, ItemVersions, LocalItemId, PlaceChangeRecord, PlaceChangeRecordId, StepCommitOutcome, Store, TreeError, TreeStore,
+    ActivityKind, ConflictRow, ContentPresence, FolderStep, Item, ItemKind, ItemPlace, ItemVersions, LocalItemId, PlaceChangeRecord, PlaceChangeRecordId, StepCommitOutcome, Store, TreeError, TreeStore,
 };
 
 use crate::mount::{DirectoryMarks, DownloadRefusal, EntryKind, ItemAnnouncement, ItemDownloadStates, ItemDownloader, ItemHandles, ItemInotifyBridge, ItemLandingOutcome, ItemRangeFetcher, ItemToDownload, MountTakeDown, PlaceChange, PlaceChanges, PlaceRefusal, PlaceUndo, RangeSource, RowPathStat, TakeDownCause, UploadRules, WriteOperationThread, describe_move};
@@ -456,7 +456,7 @@ impl FolderSteps {
         };
         let full_path = |path: &PathBuf| self.folder.join(path).display().to_string();
         let to = moved.rows.destination.as_ref().map(|(to, _)| to.clone()).unwrap_or_default();
-        let conflict = ConflictRow { at: crate::clock::unix_now(), original: full_path(&moved.rows.path), rescued: full_path(&to), kind: ConflictKind::Copy };
+        let conflict = ConflictRow { at: crate::clock::unix_now(), original: full_path(&moved.rows.path), kept_copy: full_path(&to) };
         let (versions, name, is_name_ignored) = (item.clone(), name.to_owned(), self.upload_rules.is_name_ignored(name));
         let commit: StepCommit = Box::new(move |store, record| store.item_store().commit_rename_to_conflict_copy_on_record(&versions, &name, is_name_ignored, &conflict, record));
         self.commit_move(change, moved, &place, ActivityKind::Conflict, commit)

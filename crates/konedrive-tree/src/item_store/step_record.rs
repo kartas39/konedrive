@@ -29,11 +29,11 @@ use crate::TreeError;
 /// (`conflicts.rs:62`) writes in a transaction of its own. Called by the commit below.
 pub(crate) fn add_conflicts_in(tx: &Transaction<'_>, conflicts: &[ConflictRow]) -> Result<(), TreeError> {
     let mut statement = tx.prepare_cached(
-        "INSERT INTO conflicts (rescued, at, original, kind) VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(rescued) DO UPDATE SET at = excluded.at, original = excluded.original, kind = excluded.kind",
+        "INSERT INTO conflicts (kept_copy, at, original) VALUES (?1, ?2, ?3)
+         ON CONFLICT(kept_copy) DO UPDATE SET at = excluded.at, original = excluded.original",
     )?;
     for conflict in conflicts {
-        statement.execute(params![conflict.rescued, conflict.at, conflict.original, conflict.kind.as_str()])?;
+        statement.execute(params![conflict.kept_copy, conflict.at, conflict.original])?;
     }
     Ok(())
 }

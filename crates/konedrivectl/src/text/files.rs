@@ -34,55 +34,17 @@ pub fn where_here_text(here: &str) -> String {
     format!("It is at {here}.")
 }
 
-/// `sync conflicts`: each local version kept, where it was and where it is
-/// now, and when: moved out of the way, or — in a read-write folder — kept as
-/// a copy beside OneDrive's.
+/// `sync conflicts`: each file changed here and in OneDrive, the copy kept of the local
+/// version beside it, and when.
 pub fn conflicts_text(conflicts: &[Conflict]) -> String {
     if conflicts.is_empty() {
         return "No conflicts.\n".to_owned();
     }
     let mut out = String::new();
-    for conflict in conflicts {
-        let Conflict { at, original, kept: rescued, .. } = conflict;
-        if conflict.is_copy() {
-            out.push_str(&format!(
-                "{original}\n    changed here and in OneDrive: yours is kept beside it as {rescued}, {}\n",
-                local_time(*at)
-            ));
-        } else {
-            out.push_str(&format!("{original}\n    moved to {rescued} on {}\n", local_time(*at)));
-        }
+    for Conflict { at, original, kept, .. } in conflicts {
+        out.push_str(&format!("{original}\n    changed here and in OneDrive: yours is kept beside it as {kept}, {}\n", local_time(*at)));
     }
     out
-}
-
-/// The directories the files `conflicts` lists were rescued to: for each, the rescued path
-/// with the original's place in `folder` taken off its end (`rescued/<id>/<time>`, or a
-/// directory beside a folder on another filesystem), or the file's own directory when that
-/// cannot be told. Each once, in the order first met.
-pub fn rescue_dirs(folder: &str, conflicts: &[Conflict]) -> Vec<String> {
-    use std::path::Path;
-    let mut dirs: Vec<String> = Vec::new();
-    // A copy is in the folder, beside its original, and stays with it.
-    for Conflict { original, kept, .. } in conflicts.iter().filter(|c| !c.is_copy()) {
-        let rescued = Path::new(kept);
-        let within = if folder.is_empty() { None } else { Path::new(original).strip_prefix(folder).ok() };
-        let dir = match within {
-            Some(within) if within.components().next().is_some() && rescued.ends_with(within) => {
-                let mut dir = rescued.to_path_buf();
-                for _ in within.components() {
-                    dir.pop();
-                }
-                dir
-            }
-            _ => rescued.parent().map(Path::to_path_buf).unwrap_or_default(),
-        };
-        let dir = dir.display().to_string();
-        if !dirs.contains(&dir) {
-            dirs.push(dir);
-        }
-    }
-    dirs
 }
 
 /// `sync free-up-space`: "Freed N files (X). M files were in use and kept."

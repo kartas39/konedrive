@@ -168,10 +168,10 @@ fn an_event_of_a_kind_this_version_does_not_name_is_left_out() {
 #[test]
 fn a_conflict_is_listed_until_it_is_removed() {
     let mut store = TreeStore::in_memory().unwrap();
-    let row = ConflictRow { at: 7, original: "/root/a.txt".into(), rescued: "/rescued/now/a.txt".into(), kind: ConflictKind::Copy };
+    let row = ConflictRow { at: 7, original: "/root/a.txt".into(), kept_copy: "/root/a-here.txt".into() };
     store.add_conflicts(std::slice::from_ref(&row)).unwrap();
     assert_eq!(store.conflicts().unwrap(), vec![row]);
     assert!(!store.remove_conflict("/elsewhere").unwrap());
-    assert!(store.remove_conflict("/rescued/now/a.txt").unwrap());
+    assert!(store.remove_conflict("/root/a-here.txt").unwrap());
     assert!(store.conflicts().unwrap().is_empty());
 }

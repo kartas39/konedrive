@@ -18,12 +18,12 @@ fn conflicts_are_looked_over_a_batch_at_a_time() {
     let store = konedrive_tree::Store::new(konedrive_tree::TreeStore::open(&dir.path().join("tree.sqlite")).unwrap());
     let rows: Vec<ConflictRow> = (0..450)
         .map(|i| {
-            let rescued = dir.path().join(format!("c{i:03}"));
+            let kept_copy = dir.path().join(format!("c{i:03}"));
             // Every tenth file is gone already.
             if i % 10 != 0 {
-                File::create(&rescued).unwrap();
+                File::create(&kept_copy).unwrap();
             }
-            ConflictRow { at: i, original: format!("/r/c{i:03}"), rescued: rescued.display().to_string(), kind: konedrive_tree::ConflictKind::Rescued }
+            ConflictRow { at: i, original: format!("/r/c{i:03}"), kept_copy: kept_copy.display().to_string() }
         })
         .collect();
     store.call_blocking(move |s| s.add_conflicts(&rows)).unwrap();

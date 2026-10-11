@@ -6,7 +6,7 @@ use rusqlite::Connection;
 use super::*;
 use crate::item_store::tests::shown_items::{show_listed_file, store_in_file_with_listed_root};
 use crate::model::{ContentVersion, ItemKind, ItemPlace, LocalItemId, LocalVersionChange};
-use crate::{ActivityKind, ActivityRow, ConflictKind, ConflictRow, TreeStore};
+use crate::{ActivityKind, ActivityRow, ConflictRow, TreeStore};
 
 fn store_path(dir: &tempfile::TempDir) -> PathBuf {
     dir.path().join("tree.sqlite")
@@ -151,7 +151,7 @@ fn a_rebuild_counts_what_it_loses_before_the_file_goes() {
     }
     let event = |path: &str| ActivityRow { at: 1, kind: ActivityKind::Uploaded, path: path.into(), detail: String::new() };
     store.add_activity(&[event("a"), event("b"), event("c")]).unwrap();
-    store.add_conflicts(&[ConflictRow { at: 1, original: "/f".into(), rescued: "/f (copy)".into(), kind: ConflictKind::Copy }]).unwrap();
+    store.add_conflicts(&[ConflictRow { at: 1, original: "/f".into(), kept_copy: "/f (copy)".into() }]).unwrap();
     // What the tables of an older version hold of what is unsent and of sessions: a store of today's version has neither table.
     store
         .bench_sql(

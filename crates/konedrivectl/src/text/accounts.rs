@@ -1,6 +1,4 @@
-use konedrive_dbus::rows::Conflict;
 
-use super::files::rescue_dirs;
 use super::formats::shell_word;
 
 /// One line of `account list`.
@@ -64,11 +62,9 @@ pub fn account_list_text(rows: &[AccountRow]) -> String {
 }
 
 /// What `account remove` says it did: what was deleted, and what was kept — the folder, as
-/// it is, and the files the conflicts list named (read before the removal), by where they
-/// were rescued to. Rescued files are never deleted; where the rescues of conflicts
-/// dismissed earlier went cannot be told from here (the data directory, beside a folder on
-/// another filesystem, or a migrated account's older ones), so only that they stay is said.
-pub fn removed_text(label: &str, folder: &str, conflicts: &[Conflict]) -> String {
+/// it is. The copies kept of files changed on both sides are files of the folder, and stay
+/// with it.
+pub fn removed_text(label: &str, folder: &str) -> String {
     let mut out = format!(
         "Removed the account {label}: it is signed out, and its token, cached name and quota, list of \
          OneDrive items, activity and conflicts list are deleted.\n"
@@ -80,21 +76,6 @@ pub fn removed_text(label: &str, folder: &str, conflicts: &[Conflict]) -> String
             "Kept: the folder {folder}, with the files that were downloaded and your own. A file that was \
              never downloaded is not in it.\n"
         ));
-    }
-    let rescued = conflicts.iter().filter(|c| !c.is_copy()).count();
-    let files = if rescued == 1 { "1 file".to_owned() } else { format!("{rescued} files") };
-    match rescue_dirs(folder, conflicts).as_slice() {
-        [] => {}
-        [one] => out.push_str(&format!("Kept: the {files} the conflicts list named, rescued in {one}\n")),
-        several => {
-            out.push_str(&format!("Kept: the {files} the conflicts list named, rescued in:\n"));
-            for dir in several {
-                out.push_str(&format!("  {dir}\n"));
-            }
-        }
-    }
-    if !folder.is_empty() || !conflicts.is_empty() {
-        out.push_str("Rescued files are never deleted: any from conflicts dismissed earlier stay where they were moved.\n");
     }
     out
 }

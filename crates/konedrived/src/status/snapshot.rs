@@ -140,7 +140,7 @@ pub struct LocalStatus {
     /// `LocalBytes`: what the folder's files take on disk, as last measured
     /// (`status::space::LocalSpace`).
     pub local_bytes: u64,
-    /// `Conflicts.Count`: conflicts whose rescued file is still there.
+    /// `Conflicts.Count`: conflicts whose kept copy is still there.
     pub conflict_count: u32,
     /// `PinnedCount`: files and folders with a pin of their own, as the folder's mount
     /// has them.

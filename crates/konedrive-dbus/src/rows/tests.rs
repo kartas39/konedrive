@@ -42,7 +42,6 @@ fn a_row_is_read_from_the_structure_the_xml_gives() {
     assert_eq!(files, KeptBackFiles { items: vec![KeptBack { path: s("/f/a"), reason: s("refused: bad name") }], total: 25 });
     let conflicts: Vec<Conflict> = read(&(vec![(5i64, "/f/a", "/f/a-copy", "copy")],));
     assert_eq!(conflicts, [Conflict { at: 5, original: s("/f/a"), kept: s("/f/a-copy"), how: s("copy") }]);
-    assert!(conflicts[0].is_copy());
     let events: Vec<Event> = read(&(vec![(5i64, "downloaded", "/f/a", "")],));
     assert_eq!(events, [Event { at: 5, kind: s("downloaded"), path: s("/f/a"), detail: s("") }]);
     assert_eq!(read::<Freed>(&(1u32, 2u64, 3u32, 4u32)), Freed { files: 1, bytes: 2, busy: 3, pinned: 4 });

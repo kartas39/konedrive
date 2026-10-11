@@ -29,7 +29,7 @@ mod step_memory;
 mod sync_plan;
 
 pub use activity::{ActivityKind, ActivityRow, ACTIVITY_KEPT};
-pub use conflicts::{ConflictKind, ConflictRow};
+pub use conflicts::ConflictRow;
 pub use folded_name::FoldedName;
 pub use item_store::{ConfirmedItem, ConfirmedOneDriveVersion, ItemStore, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay, StepCommitOutcome};
 pub use step_memory::{

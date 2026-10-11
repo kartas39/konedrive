@@ -1,26 +1,16 @@
-use super::rescue_dirs;
 use crate::text::accounts::removed_text;
 use konedrive_dbus::rows::Conflict;
 
-/// `account remove` names where the listed conflicts' files were rescued, and nothing it
-/// cannot know.
+/// `sync conflicts` names the file and the copy kept beside it; `account remove` says what
+/// it deleted and that the folder stays.
 #[test]
-fn removal_says_where_the_listed_rescues_are() {
-    let conflict = |original: &str, kept: &str, how: &str| Conflict { at: 0, original: original.to_owned(), kept: kept.to_owned(), how: how.to_owned() };
-    let rescued = |original: &str, kept: &str| conflict(original, kept, "rescued");
-    let conflicts = [
-        rescued("/home/u/OneDrive/docs/a.txt", "/data/rescued/id/t1/docs/a.txt"),
-        rescued("/home/u/OneDrive/b.txt", "/home/u/.konedrive-rescued-OneDrive/t2/b.txt"),
-        rescued("/home/u/OneDrive/c.txt", "/data/rescued/id/t1/c.txt"),
-        conflict("/home/u/OneDrive/d.txt", "/home/u/OneDrive/d-fedora.txt", "copy"),
-    ];
-    let dirs = rescue_dirs("/home/u/OneDrive", &conflicts);
-    assert_eq!(dirs, ["/data/rescued/id/t1", "/home/u/.konedrive-rescued-OneDrive/t2"], "a copy stays in the folder");
+fn a_conflict_is_listed_with_the_copy_kept_beside_the_file() {
+    let conflicts = [Conflict { at: 0, original: "/home/u/OneDrive/d.txt".to_owned(), kept: "/home/u/OneDrive/d-fedora.txt".to_owned(), how: "copy".to_owned() }];
     let listed = super::conflicts_text(&conflicts);
-    assert!(listed.contains("moved to /data/rescued/id/t1/c.txt"), "{listed}");
-    assert!(listed.contains("changed here and in OneDrive: yours is kept beside it as /home/u/OneDrive/d-fedora.txt"), "{listed}");
-    let said = removed_text("Home", "", &[]);
-    assert!(said.contains("It had no folder.") && !said.contains("Rescued"), "{said}");
+    assert!(listed.starts_with("/home/u/OneDrive/d.txt\n    changed here and in OneDrive: yours is kept beside it as /home/u/OneDrive/d-fedora.txt, "), "{listed}");
+    assert_eq!(super::conflicts_text(&[]), "No conflicts.\n");
+    assert!(removed_text("Home", "").contains("It had no folder."));
+    assert!(removed_text("Home", "/home/u/OneDrive").contains("Kept: the folder /home/u/OneDrive"));
 }
 
 /// The path refused and what pins it travel inside the daemon's sentences (issue #232):

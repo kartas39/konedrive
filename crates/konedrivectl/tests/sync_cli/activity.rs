@@ -43,17 +43,16 @@ async fn binary_conflicts_are_listed_and_dismissed() {
     let addr = f._bus.address();
     assert_eq!(out_text(&run_utc(addr, &["sync", "conflicts"])).trim(), "No conflicts.");
 
-    let rescued = f.dir.path().join("rescued/2023-11-14T22-13-20Z/docs/f.txt");
-    std::fs::create_dir_all(rescued.parent().unwrap()).unwrap();
-    std::fs::write(&rescued, b"mine").unwrap();
+    let kept_copy = f.dir.path().join("docs/f-here.txt");
+    std::fs::create_dir_all(kept_copy.parent().unwrap()).unwrap();
+    std::fs::write(&kept_copy, b"mine").unwrap();
     let activity = &f.service.report().activity;
     // The activity log is blocking code: a plain thread of its own, off the runtime.
     std::thread::scope(|scope| scope.spawn(|| activity.attach(konedrive_tree::Store::new(konedrive_tree::TreeStore::in_memory().unwrap()), f.dir.path())).join().unwrap());
     let conflict = konedrive_tree::ConflictRow {
         at: 1_700_000_000,
         original: "/home/u/OneDrive/docs/f.txt".into(),
-        rescued: rescued.display().to_string(),
-        kind: konedrive_tree::ConflictKind::Rescued,
+        kept_copy: kept_copy.display().to_string(),
     };
     std::thread::scope(|scope| scope.spawn(|| activity.add_conflicts(vec![conflict])).join().unwrap());
 
@@ -64,13 +63,13 @@ async fn binary_conflicts_are_listed_and_dismissed() {
     );
     let text = out_text(&run_utc(addr, &["sync", "conflicts"]));
     assert!(text.contains("/home/u/OneDrive/docs/f.txt"), "{text}");
-    assert!(text.contains(rescued.to_str().unwrap()), "{text}");
+    assert!(text.contains(kept_copy.to_str().unwrap()), "{text}");
     assert!(text.contains("2023-11-14 22:13:20"), "{text}");
 
-    let out = run(addr, &["sync", "dismiss", rescued.to_str().unwrap()]);
+    let out = run(addr, &["sync", "dismiss", kept_copy.to_str().unwrap()]);
     assert!(out.status.success(), "{out:?}");
     assert!(out_text(&out).contains("Dismissed"), "{out:?}");
-    assert!(rescued.exists(), "the file itself is left where it is");
+    assert!(kept_copy.exists(), "the file itself is left where it is");
     assert_eq!(out_text(&run(addr, &["sync", "conflicts"])).trim(), "No conflicts.");
 
     let text = refused(addr, &["sync", "dismiss", "/nowhere/f.txt"]);

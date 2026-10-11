@@ -286,7 +286,7 @@ impl SyncService {
         self.wiring.onedrive.as_ref().map(|onedrive| &onedrive.drive)
     }
 
-    /// Where a OneDrive folder's tree store, rescues and thumbnails go.
+    /// Where a OneDrive folder's tree store and thumbnails go.
     fn sync_paths(&self) -> Option<&SyncPaths> {
         self.wiring.onedrive.as_ref().map(|onedrive| &onedrive.paths)
     }

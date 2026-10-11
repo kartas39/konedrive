@@ -169,7 +169,7 @@ fn run_in_halves(fixture: &ItemFixture, steps: &Arc<FolderSteps>, step: &FolderS
             FolderStep::TakeMoveBack { .. } => Box::new(move |store, record| store.item_store().commit_take_move_back(&item, false, record)),
             FolderStep::MoveToTemporaryName { place, .. } => Box::new(move |store, record| store.item_store().commit_move_to_temporary_name(&item, &place, false, record)),
             FolderStep::RenameToConflictCopy { name, .. } => {
-                let conflict = ConflictRow { at: 0, original: "a.txt".into(), rescued: "the copy".into(), kind: ConflictKind::Copy };
+                let conflict = ConflictRow { at: 0, original: "a.txt".into(), kept_copy: "the copy".into() };
                 Box::new(move |store, record| store.item_store().commit_rename_to_conflict_copy_on_record(&item, &name, upload_rules.is_name_ignored(&name), &conflict, record))
             }
             FolderStep::RemoveItem { .. } => Box::new(move |store, record| store.item_store().commit_remove_item(&item, record)),
@@ -292,7 +292,7 @@ fn a_conflict_copy_is_on_record_with_its_commit() {
     assert_eq!(outcome, StepOutcome::Written { events: vec![StepEvent { kind: ActivityKind::Conflict, path: "a (conflict).txt".into(), former_path: Some("a.txt".into()) }] });
     let conflicts = fixture.write_rows(|store| store.conflicts());
     assert_eq!(conflicts.len(), 1);
-    assert_eq!((conflicts[0].original.clone(), conflicts[0].rescued.clone(), conflicts[0].kind), (fixture.disk_path("a.txt").display().to_string(), fixture.disk_path("a (conflict).txt").display().to_string(), ConflictKind::Copy), "the two full paths");
+    assert_eq!((conflicts[0].original.clone(), conflicts[0].kept_copy.clone()), (fixture.disk_path("a.txt").display().to_string(), fixture.disk_path("a (conflict).txt").display().to_string()), "the two full paths");
 }
 
 #[test]
