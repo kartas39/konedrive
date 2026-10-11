@@ -14,8 +14,9 @@
 // test: a_new_item_whose_row_is_gone_is_removed_in_onedrive
 // test: a_new_item_whose_row_is_still_there_asks_for_a_cycle
 // test: a_made_item_that_cannot_be_removed_is_left_and_said
-#![allow(dead_code, unused_variables)]
 
+use konedrive_graph::drive::WriteError;
+use konedrive_graph::pool::Class;
 use konedrive_tree::{ConfirmedItem, Item, ItemVersions};
 
 use super::GraphAccess;
@@ -34,7 +35,10 @@ pub enum MadeItemFate {
 /// The fate of what `MakeDirectory` or `SendNewFile` made, from the item's row as it is
 /// now. Pure.
 pub fn decide_made_item_fate(row: Option<&Item>) -> MadeItemFate {
-    todo!()
+    match row {
+        None => MadeItemFate::Remove,
+        Some(_) => MadeItemFate::LeaveForListing,
+    }
 }
 
 /// What follows up on made items.
@@ -56,9 +60,35 @@ impl MadeItems {
     /// cycle. Called with NO lock held: the tree lock of the
     /// commit was let go. Answers `MadeItemRemoved` for an item removed or found gone,
     /// `MadeItemLeft` for a removal OneDrive did not carry out (a 412: another changed it
-    /// since; any failure), `CycleWanted` for a row that is still there. Today:
+    /// since; any failure), `CycleWanted` for a row that is still there — and for a row
+    /// that cannot be read: nothing is removed on a guess. Today:
     /// `landed_away` (`upload/steps/shared.rs:663`) and `never_uploaded` (`:632`).
     pub async fn follow_up_new_item(&self, item: &ItemVersions, made: &ConfirmedItem) -> RowsChangedFollowUp {
-        todo!()
+        let id = item.local_item_id;
+        let row = match self.graph.store.read_items(move |items| items.find_item(id)).await {
+            Ok(row) => row,
+            Err(error) => {
+                tracing::warn!("cannot read the row of item {id} after its commit found the rows changed: {error}");
+                return RowsChangedFollowUp::CycleWanted;
+            }
+        };
+        if decide_made_item_fate(row.as_ref()) == MadeItemFate::LeaveForListing {
+            return RowsChangedFollowUp::CycleWanted;
+        }
+        let made_id = made.item.item_id.as_str();
+        let removed = {
+            let _slot = self.graph.drive.pool().acquire(Class::Metadata).await;
+            match made.content {
+                Some(_) => self.graph.drive.delete_item(made_id, &made.etag).await,
+                None => self.graph.drive.delete_folder(made_id).await,
+            }
+        };
+        match removed {
+            Ok(()) | Err(WriteError::NotFound) => RowsChangedFollowUp::MadeItemRemoved(made.item.clone()),
+            Err(error) => {
+                tracing::warn!("what item {id} made in OneDrive before its row went is not removed there: {error}");
+                RowsChangedFollowUp::MadeItemLeft(made.item.clone())
+            }
+        }
     }
 }

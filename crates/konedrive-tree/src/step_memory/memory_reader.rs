@@ -19,7 +19,7 @@ use crate::step_memory;
 use crate::model::{ItemPlace, LocalItemId, OneDriveItemReference};
 use konedrive_reason::Reason;
 
-use crate::{EmptyFileSession, ItemMemory, ItemRefusalReason, ItemTakenName, MismatchedItem, MismatchedItemUpload, OpeningWindow, TimedWait, TreeError, UploadSessionAddress};
+use crate::{EmptyFileSession, ItemMemory, ItemRefusalReason, ItemTakenName, MismatchedItem, MismatchedItemUpload, OpeningWindow, RequestRecord, TimedWait, TreeError, UploadSessionAddress};
 
 impl ItemReader<'_> {
     /// As `StepMemory::find_item_memory`: everything remembered of `item` that its row
@@ -92,5 +92,12 @@ impl ItemReader<'_> {
     /// plan's input is built with for an item a listing brought.
     pub fn find_mismatched_item(&self, onedrive_item: &OneDriveItemReference) -> Result<Option<MismatchedItemUpload>, TreeError> {
         step_memory::find_mismatched_item(self.conn(), onedrive_item)
+    }
+
+    /// Up to `limit` requests that changed OneDrive and are not settled yet, the one sent
+    /// first first: what the plan's input takes the busy items and the destinations from,
+    /// beside the running steps, and what is settled by reading OneDrive after a start.
+    pub fn list_request_records(&self, limit: usize) -> Result<Vec<RequestRecord>, TreeError> {
+        step_memory::list_request_records(self.conn(), limit)
     }
 }

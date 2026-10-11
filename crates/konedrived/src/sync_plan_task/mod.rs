@@ -478,8 +478,11 @@ impl SyncPlanTask {
         self.start_session_cancellations(stop);
     }
 
-    /// Cancels the upload sessions left to cancel and removes the items uploads left with
-    /// other content (`SessionCancellations::cancel_sessions`, `remove_mismatched_items`),
+    /// Cancels the upload sessions left to cancel, removes the items uploads left with
+    /// other content and settles the requests whose answer was never committed
+    /// (`SessionCancellations::cancel_sessions`, `remove_mismatched_items`,
+    /// `settle_request_records`; a record settled wakes the plan as a written page of a
+    /// listing does: what OneDrive has was written, or an item is busy no more),
     /// as a task of its own, one at a time: the loop waits for none of these requests.
     /// It asks one of each at a time, and goes on until both lists are empty, `stop` came,
     /// sending is held, or a round got nothing through: what is left then is asked for
@@ -496,8 +499,8 @@ impl SyncPlanTask {
         *kept_task = Some(tokio::spawn(async move {
             let cancellations = &task.parts.session_cancellations;
             while !stop.is_cancelled() && !is_held(&task) {
-                let read = |items: &konedrive_tree::ItemReader<'_>| Ok((!items.list_upload_session_cancellations(1)?.is_empty(), !items.list_mismatched_item_removals(1)?.is_empty()));
-                let (has_cancellation, has_removal) = match task.parts.store.read_items(read).await {
+                let read = |items: &konedrive_tree::ItemReader<'_>| Ok((!items.list_upload_session_cancellations(1)?.is_empty(), !items.list_mismatched_item_removals(1)?.is_empty(), !items.list_request_records(1)?.is_empty()));
+                let (has_cancellation, has_removal, has_request_record) = match task.parts.store.read_items(read).await {
                     Ok(left) => left,
                     Err(error) => {
                         tracing::warn!("cannot read what uploads left to cancel and to remove: {error}");
@@ -507,7 +510,12 @@ impl SyncPlanTask {
                 // One of each at a time, so that the stop is heard between two requests. What failed waits for its next try and is passed over by `SessionCancellations`, which keeps the tries: a round that gets nothing through ends this task, and a later plan starts it again.
                 let is_cancelled = has_cancellation && cancellations.cancel_sessions(1).await.done_count > 0;
                 let is_removed = has_removal && !stop.is_cancelled() && cancellations.remove_mismatched_items(1).await.done_count > 0;
-                if !is_cancelled && !is_removed {
+                // A request whose answer was never committed is settled by reading OneDrive: its item and its destination are busy to the plan until then, so the plan is made again once one is.
+                let is_settled = has_request_record && !stop.is_cancelled() && cancellations.settle_request_records(1).await.done_count > 0;
+                if is_settled {
+                    task.parts.sync_plan_wake.wake(WakeCause::ListingPageWritten);
+                }
+                if !is_cancelled && !is_removed && !is_settled {
                     break;
                 }
             }
@@ -612,7 +620,7 @@ impl SyncPlanTask {
     /// writing is NOT gathered here: it is read from the rows of the plan's own moment.
     fn gather_daemon_facts(&self) -> DaemonFacts {
         let parts = &self.parts;
-        // The running steps alone, and that is all there is: a step towards OneDrive whose request may have gone through does not end before it read what became of it (`onedrive_steps::lost_answers`), so a request whose answer was lost is a running step here; and what a stop left is settled by the first listing of the next start, before which nothing is sent (`SendingHold::FirstListingNotEnded`).
+        // The running steps; the plan's reading adds the requests on record whose answer was never committed (`plan_input::describe_folder`, `ItemReader::list_request_records`), which no step runs for any more.
         DaemonFacts {
             items_with_running_step: parts.running_steps.list_items(),
             destinations_of_running_steps: parts.running_steps.list_destinations(),

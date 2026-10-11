@@ -3,7 +3,7 @@
 //! source of truth for what an item is: the row is, and a fact is answered only for what it
 //! was learnt for, which the rows say ([`item_memory`]).
 //!
-//! **Four tables**, and why more than one. `step_memory` has one row per item, every fact
+//! **Five tables**, and why more than one. `step_memory` has one row per item, every fact
 //! of the item in it. Three things a step keeps are not of the item they came from, and
 //! would be lost with its row:
 //!
@@ -17,6 +17,8 @@
 //! - the item an upload left in OneDrive with other content than was sent is left to remove
 //!   also when the file's row went first (`mismatched_item_removals`,
 //!   [`mismatched_item_removals`]).
+//! And a request that changes OneDrive is on record from before it leaves until its
+//! answer was committed or what became of it was read ([`request_records`]).
 //!
 //! **Every fact names what voids it**, and the voider is something that happens for every
 //! way the fact can stop being true. What a fact says of OneDrive is void when OneDrive
@@ -97,6 +99,8 @@ mod onedrive_answers;
 mod mismatched_item_removals;
 /// The items OneDrive refused, with their reasons, listed and counted.
 mod refusal_reasons;
+/// The requests that changed OneDrive and are not settled yet.
+mod request_records;
 /// The cancels of upload sessions that are left to send.
 mod upload_session_cancellations;
 /// The upload sessions the folder was about to open, by place and time.
@@ -108,6 +112,7 @@ pub use item_memory::{
     StepFact, TakenName, TemporaryName, UnsentRemoval, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
 };
 pub use refusal_reasons::ItemRefusalReason;
+pub use request_records::{RecordedRequest, RequestRecord};
 pub use upload_session_openings::{OpeningTry, OpeningWindow, UPLOAD_SESSION_OPENING_KEPT};
 
 pub(crate) use mismatched_item_removals::list_removals as list_mismatched_item_removals;
@@ -115,6 +120,7 @@ pub(crate) use onedrive_answers::{
     forget_mismatched_item_listed_changed, forget_removal_confirmations_above, forget_taken_names_onedrive_lacks, forget_temporary_name_unless_at, forget_temporary_names_of_items_onedrive_lacks,
 };
 pub(crate) use refusal_reasons::{count_refusal_reasons, count_space_refusals, list_refusal_reasons, list_space_refusal_reasons};
+pub(crate) use request_records::list_records as list_request_records;
 pub(crate) use upload_session_cancellations::list_cancellations as list_upload_session_cancellations;
 pub(crate) use upload_session_openings::{forget_openings_at, forget_openings_before, list_opening_windows, settle_answered_opening};
 
@@ -123,7 +129,7 @@ use mismatched_item_removals::{find_removal, forget_removal, is_item_of_folder, 
 use upload_session_cancellations::{abandon, abandon_address, forget_cancellation, list_cancellations_at, move_empty_files};
 use upload_session_openings::{forget_opening_of, move_openings, remember_opening};
 
-/// What a store is created with for what the steps remember: the four tables, each as its
+/// What a store is created with for what the steps remember: the five tables, each as its
 /// module has it, and the trigger `step_memory_item_gone`, which holds "a fact does not
 /// outlive its item" whoever deletes a row of `items`; and the triggers of
 /// `mismatched_item_removals`, which hold that an item the folder has is no item an upload
@@ -132,13 +138,15 @@ use upload_session_openings::{forget_opening_of, move_openings, remember_opening
 /// past the item took it.
 pub(crate) fn schema() -> String {
     format!(
-        "{}{}{}{}
-         CREATE TRIGGER step_memory_item_gone AFTER DELETE ON items BEGIN{}{}{}{}
+        "{}{}{}{}{}
+         CREATE TRIGGER step_memory_item_gone AFTER DELETE ON items BEGIN{}{}{}{}{}
          END;",
         memory_row::schema(),
         upload_session_openings::schema(),
         upload_session_cancellations::schema(),
         mismatched_item_removals::schema(),
+        request_records::schema(),
+        request_records::ITEM_GONE_STATEMENTS,
         upload_session_cancellations::ITEM_GONE_STATEMENTS,
         mismatched_item_removals::item_gone_statements(),
         upload_session_openings::ITEM_GONE_STATEMENTS,
@@ -452,6 +460,24 @@ impl StepMemory<'_> {
     /// an id with no row.
     pub fn remember_taken_name(&mut self, item: LocalItemId, unsent_since: Option<u64>, taken_name: &TakenName) -> Result<FactStanding, TreeError> {
         self.write(|tx| remember_taken_name(tx, item, unsent_since, taken_name))
+    }
+
+    /// A step is about to send `record`'s request: written before the request leaves,
+    /// over a record its item had ([`request_records`]). Refused for an id with no row.
+    pub fn remember_request_record(&mut self, record: &RequestRecord) -> Result<(), TreeError> {
+        self.write(|tx| {
+            if find_item(tx, record.item)?.is_none() {
+                return Err(refuse(format!("item {} has no row: no request of it is on record", record.item)));
+            }
+            request_records::remember_record(tx, record)
+        })
+    }
+
+    /// The request of `item` is settled — its answer was committed, OneDrive refused it
+    /// for certain, or what became of it was read from OneDrive —: its record goes.
+    /// Nothing for an item with none.
+    pub fn forget_request_record(&mut self, item: LocalItemId) -> Result<(), TreeError> {
+        self.write(|tx| request_records::forget_record(tx, item))
     }
 
     /// `fact` of `item` is forgotten: its step is done with it. Nothing for an id with no

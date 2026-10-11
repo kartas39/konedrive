@@ -84,17 +84,18 @@ impl PlanSettings {
 /// What the daemon knows beside the rows when a plan is made, as values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonFacts {
-    /// Every item a step runs for (`RunningSteps::list_items`): the plan's
-    /// `items_with_running_step`. A request to OneDrive that is not settled yet is among
-    /// them by that alone: the step of a request whose answer was lost runs until it read
-    /// what became of it (`onedrive_steps::lost_answers`, which names the owner:
-    /// `RunningSteps`). Nothing is kept across a stop: the next start sends nothing
-    /// before a listing of its own ended.
+    /// Every item a step runs for (`RunningSteps::list_items`). The plan's
+    /// `items_with_running_step` are these AND the items of the request records that
+    /// stand (`ItemReader::list_request_records`, read by [`describe_folder`] in the
+    /// plan's own reading): a request to OneDrive whose answer was lost, or that a stop
+    /// or a kill of the daemon left between its request and its commit, is on record
+    /// until what became of it was read from OneDrive (`onedrive_steps::lost_answers`).
     pub items_with_running_step: BTreeSet<LocalItemId>,
     /// The directories of OneDrive the `MakeDirectory`, `SendNewFile` and `SendMove`
-    /// requests that are not settled yet send into (`RunningSteps::list_destinations`:
-    /// `RunningStep::destination` of each running step, one whose answer was lost among
-    /// them): their rows are the plan's `destinations_of_running_steps`.
+    /// running steps send into (`RunningSteps::list_destinations`:
+    /// `RunningStep::destination` of each running step). Their rows, and the rows of the
+    /// directories the request records that stand send into
+    /// (`RecordedRequest::destination`), are the plan's `destinations_of_running_steps`.
     pub destinations_of_running_steps: Vec<OneDriveItemReference>,
     pub is_onedrive_full: bool,
     /// Unix seconds: the plan's `now`.
@@ -406,8 +407,15 @@ pub fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Sy
             break;
         }
     }
+    // A request on record is not settled either, whether its step runs or not: its item is busy, and the directory it sends into is a destination.
+    let mut items_with_running_step = facts.items_with_running_step.clone();
+    let mut destinations = facts.destinations_of_running_steps.clone();
+    for record in items.list_request_records(usize::MAX)? {
+        destinations.extend(record.request.destination().cloned());
+        items_with_running_step.insert(record.item);
+    }
     let mut destinations_of_running_steps = BTreeSet::new();
-    for destination in &facts.destinations_of_running_steps {
+    for destination in &destinations {
         destinations_of_running_steps.extend(items.find_bound_item(destination)?.map(|row| row.local_item_id));
     }
     Ok(SyncPlanInput {
@@ -417,7 +425,7 @@ pub fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Sy
         name_refusals: BTreeMap::new(),
         items_open_for_writing: BTreeSet::new(),
         quiet_until: BTreeMap::new(),
-        items_with_running_step: facts.items_with_running_step.clone(),
+        items_with_running_step,
         destinations_of_running_steps,
         pinned_items: BTreeSet::new(),
         is_listing_under_way: items.find_listing_under_way()?.is_some(),

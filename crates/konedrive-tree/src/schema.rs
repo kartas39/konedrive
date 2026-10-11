@@ -25,7 +25,7 @@ pub use old_store::{decide_old_store, find_stored_version, list_old_store_upload
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "23";
+pub const SCHEMA_VERSION: &str = "24";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with.
@@ -97,7 +97,7 @@ pub const SCHEMA_VERSION: &str = "23";
 ///   `items_parent_kept`, asked per row: what is in a directory is deleted before the
 ///   directory).
 /// - `step_memory`, `upload_session_openings`, `upload_session_cancellations`,
-///   `mismatched_item_removals`: what the steps remember beyond the versions, and the
+///   `mismatched_item_removals`, `request_records`: what the steps remember beyond the versions, and the
 ///   trigger `step_memory_item_gone` that takes it with an item's row
 ///   ([`crate::item_store`]'s `step_memory`, whose modules have their schema).
 /// - `place_change_records`: the changes of the backing directory's names the daemon is

@@ -1,28 +1,38 @@
 //! What became of a request whose answer was lost, or refused in a way its own earlier
 //! try explains: design §7's second exception. The step adopts what it finds.
 //!
-//! **State owned:** none. The record of a request that left is its running step
-//! (`RunningSteps`: the item, and the directory it is sent into): a step whose request
-//! may have gone through does not end before OneDrive was read
-//! ([`LostAnswers::settle_lost_answer`]), so the plan is told the item and the
-//! destination as busy for as long as nothing certain is known, by the readers it has
-//! (`RunningSteps::list_items`, `list_destinations`), and `Refused(Transient)` is
-//! answered only for a request that certainly changed nothing — with one exception,
-//! whose record is the step memory's: an answer lost to the opening of an upload session
-//! or to one of its fragments, the last too, is `Transient` at once
-//! (`content_upload`), and the opening or the session kept tells the next try what the
-//! request left. The file and the directory it is sent into are then not busy to the
-//! plan, and nothing is lost by that: a file removed here meanwhile may come back once
-//! from OneDrive, and a removal of the directory takes only the upload's own file.
-//! Across a stop of the
-//! folder's sync nothing is kept: the next start sends nothing before a listing of its
-//! own ended (`SendingHold::FirstListingNotEnded`), and that listing names what the
-//! request changed. Nothing is remembered here but what the step memory holds anyway
-//! (the opening, the session, the temporary name).
+//! **State owned:** none. The record of a request that changes OneDrive is the store's
+//! (`konedrive_tree::RequestRecord`, the table `request_records`): written by the step
+//! BEFORE its request leaves, and gone when the answer was committed, when OneDrive
+//! refused the request for certain, or when what became of it was read here. While a
+//! record stands, its item is busy to the plan and the directory it was sent into is a
+//! destination no removal is sent for: the plan's input takes both from the running steps
+//! AND from the records (`sync_plan_task::plan_input::describe_folder`,
+//! `ItemReader::list_request_records`), and so does the question a directory's removal
+//! asks before it leaves.
+//!
+//! **Who settles a record.** The step itself, in the run that wrote it: after an answer
+//! that says nothing certain it reads OneDrive once
+//! ([`LostAnswers::read_request_outcome`]) and goes on as the fate says; when that read
+//! says nothing certain either, the step ends `StepRefusal::Transient` and the record
+//! stands. A record that stands — left so, or left by a stop or a kill of the daemon
+//! between a request and its commit — is settled by
+//! [`LostAnswers::settle_lost_answer`], asked for each record by the plan's task with what
+//! else is left to clean in OneDrive (`SessionCancellations::settle_request_records`):
+//! after a start as soon as sending is not held, which is after the first listing ended,
+//! and before any step of that item or into that directory is planned, since the record
+//! keeps both busy until then.
+//!
+//! **What is on record.** Every request of one answer: a directory made, a move, a
+//! removal, and an empty file sent (`upload_empty`). An upload through a session writes
+//! none: its record is the opening and the session the step memory keeps, and an answer
+//! lost to the opening or to a fragment, the last too, is `Transient` at once
+//! (`content_upload`); the file and the directory it is sent into are then not busy, and
+//! nothing is lost by that: a file removed here meanwhile may come back once from
+//! OneDrive, and a removal of the directory takes only the upload's own file.
 //!
 //! **Answers for:** a daemon that died, or was stopped, between a request and its commit,
-//! and an answer that never came while it runs: nothing in the rows says a request went
-//! out, so the replay rests on these (the map's F9, E2). Today:
+//! and an answer that never came while it runs (the map's F9, E2). Today:
 //! `upload/steps/meta.rs:33-36`, `:100-104`,
 //! `upload/content.rs:211-215`, `:374`, `:400-403`, `upload/content/session.rs:397`.
 //!
@@ -31,28 +41,30 @@
 // test: a_directory_of_the_name_that_no_row_is_bound_to_is_the_one_this_step_made
 // test: a_directory_of_the_name_that_a_row_is_bound_to_is_another_item_with_its_name
 // test: a_directory_of_the_name_that_is_not_empty_is_another_item
-// test: a_read_refused_for_certain_ends_the_step_as_unreadable
-// test: an_item_guarded_by_its_ctag_is_as_planned_while_it_has_that_ctag
 // test: a_file_of_the_name_with_the_hash_sent_that_no_row_is_bound_to_is_adopted
 // test: an_item_already_at_the_place_sent_is_the_move_that_went_through
 // test: an_item_that_holds_the_hash_sent_is_the_upload_that_went_through
 // test: an_item_that_is_gone_is_the_removal_that_went_through
 // test: an_item_with_the_etag_planned_from_is_a_request_that_did_not_go_through
+// test: an_item_guarded_by_its_ctag_is_as_planned_while_it_has_that_ctag
 // test: an_item_that_was_moved_or_changed_by_another_is_not_adopted
-// test: a_lost_answer_is_read_again_until_onedrive_answers_and_the_step_ends_only_then
-// test: a_read_that_is_throttled_or_signed_out_tells_the_sending_holds_and_goes_on
-// TODO: the owner's: design §7 says "every request that changes OneDrive is on record before it leaves", a record in the store that is settled at start by reading its item. Written here as: the running step is the record while the daemon runs, and the first listing of a start settles what a stop left. Decide whether that stands, or the store is to keep the record. The case the running step does not cover, to decide with: the first listing of a start ending is not that listing naming what the lost request changed (a delta may lag a request by seconds). A move of X into D went through and the daemon was killed before the commit; after the start the first listing ends without naming X; the user moves X back out (the rows then say nothing is unsent) and removes D; the unguarded removal of D takes X in OneDrive, and the next listing removes X here. A record in the store, read at start, closes it; nothing in this layer does.
-#![allow(dead_code, unused_variables)]
+// test: a_record_whose_request_went_through_is_committed_as_its_step_would_and_goes
+// test: a_record_whose_request_did_not_go_through_goes_and_writes_no_row
+// test: a_record_whose_item_cannot_be_read_now_stands
+// test: a_record_whose_row_went_or_lost_its_binding_goes
 
 use std::ffi::{OsStr, OsString};
 use std::sync::Arc;
 
-use konedrive_graph::drive::DriveItem;
-use konedrive_tree::{ConfirmedItem, DriveId, ItemVersions, OneDriveItemReference};
+use konedrive_graph::drive::{DriveError, DriveItem};
+use konedrive_graph::pool::Class;
+use konedrive_graph::quickxor::QuickXor;
+use konedrive_tree::{ConfirmedItem, DriveId, ItemKind, ItemVersions, OneDriveItemId, OneDriveItemReference, RecordedRequest, RequestRecord, StepCommitOutcome, TreeError, TreeStore};
 
+use super::confirmed_item::{decide_guard, to_confirmed_item, to_graph_name};
+use super::graph_refusal::decide_read_refusal;
 use super::GraphAccess;
-use crate::sync_parts::step_outcome::{StepFailure, StepOutcome};
-use crate::sync_parts::sending_holds::SendingHolds;
+use crate::sync_parts::step_outcome::{StepFailure, StepOutcome, StepRefusal};
 
 /// A request that changes OneDrive, by what it asked: what is compared with OneDrive to
 /// tell whether it went through.
@@ -69,6 +81,19 @@ pub enum SentRequest<'a> {
     SendMove { parent: &'a OneDriveItemReference, name: &'a OsStr },
     /// The removal of the item, a file or a directory. Read: `item`.
     SendRemoval,
+}
+
+impl<'a> SentRequest<'a> {
+    /// The request `recorded` says was sent.
+    pub fn of_record(recorded: &'a RecordedRequest) -> Self {
+        match recorded {
+            RecordedRequest::MakeDirectory { parent, name } => SentRequest::MakeDirectory { parent, name },
+            RecordedRequest::SendNewFile { parent, name, sent_hash } => SentRequest::SendNewFile { parent, name, sent_hash },
+            RecordedRequest::SendContent { sent_hash } => SentRequest::SendContent { sent_hash },
+            RecordedRequest::SendMove { parent, name } => SentRequest::SendMove { parent, name },
+            RecordedRequest::SendFileRemoval | RecordedRequest::SendDirectoryRemoval => SentRequest::SendRemoval,
+        }
+    }
 }
 
 /// What became of a request.
@@ -90,6 +115,22 @@ pub enum LostAnswerFate {
     NameHeld { holder_name: OsString },
 }
 
+/// Whether `found` is the item as the step was planned from it: it has what the request
+/// was guarded with. Never for an item with no guard.
+fn is_as_planned(item: &ItemVersions, found: &DriveItem) -> bool {
+    match (&item.onedrive_etag, decide_guard(item)) {
+        (Some(etag), _) => found.e_tag.as_deref() == Some(etag.as_str()),
+        (None, Some(ctag)) => found.c_tag.as_deref() == Some(ctag.as_str()),
+        (None, None) => false,
+    }
+}
+
+/// Whether `found` holds the content of `sent_hash`; an empty file with no hash holds the
+/// empty content.
+fn has_sent_content(found: &DriveItem, sent_hash: &str) -> bool {
+    found.file.is_some() && (found.quick_xor_hash() == Some(sent_hash) || (found.quick_xor_hash().is_none() && found.size == Some(0) && sent_hash == QuickXor::new().finish_base64()))
+}
+
 /// What became of `request` about `item`, from what OneDrive has now at the place the
 /// request names (`found`: the item read, none when OneDrive has none there) and whether
 /// a row is bound to what was found. Pure. A new item is the step's own only when no row
@@ -102,21 +143,96 @@ pub enum LostAnswerFate {
 /// Graph spells both; a content when the item's hash is `sent_hash`. An answer that
 /// cannot be read as an item (`confirmed_item::to_confirmed_item`) is the failure.
 pub fn decide_lost_answer_fate(request: &SentRequest<'_>, item: &ItemVersions, found: Option<&DriveItem>, is_found_bound: bool, drive_id: &DriveId) -> Result<LostAnswerFate, StepFailure> {
-    todo!()
+    let went_through = |found: &DriveItem| Ok(LostAnswerFate::WentThrough(Some(to_confirmed_item(found, drive_id)?)));
+    let name_held = |found: &DriveItem, sent_name: &OsStr| LostAnswerFate::NameHeld { holder_name: found.name.clone().map_or_else(|| sent_name.to_owned(), OsString::from) };
+    match (request, found) {
+        (SentRequest::MakeDirectory { .. } | SentRequest::SendNewFile { .. }, None) => Ok(LostAnswerFate::DidNotGoThrough),
+        (SentRequest::MakeDirectory { name, .. }, Some(found)) => {
+            let is_empty_directory = found.folder.as_ref().and_then(|folder| folder.get("childCount")).and_then(serde_json::Value::as_u64) == Some(0);
+            match is_empty_directory && !is_found_bound {
+                true => went_through(found),
+                false => Ok(name_held(found, name)),
+            }
+        }
+        (SentRequest::SendNewFile { name, sent_hash, .. }, Some(found)) => match has_sent_content(found, sent_hash) && !is_found_bound {
+            true => went_through(found),
+            false => Ok(name_held(found, name)),
+        },
+        (SentRequest::SendRemoval, None) => Ok(LostAnswerFate::WentThrough(None)),
+        (SentRequest::SendContent { .. } | SentRequest::SendMove { .. }, None) => Ok(LostAnswerFate::ItemChanged),
+        (SentRequest::SendContent { sent_hash }, Some(found)) if has_sent_content(found, sent_hash) => went_through(found),
+        (SentRequest::SendMove { parent, name }, Some(found))
+            if found.parent_reference.as_ref().and_then(|at| at.id.as_deref()).is_some_and(|id| id.eq_ignore_ascii_case(parent.item_id.as_str())) && found.name.as_deref().map(OsStr::new) == Some(*name) =>
+        {
+            went_through(found)
+        }
+        (SentRequest::SendContent { .. } | SentRequest::SendMove { .. } | SentRequest::SendRemoval, Some(found)) => match is_as_planned(item, found) {
+            true => Ok(LostAnswerFate::DidNotGoThrough),
+            false => Ok(LostAnswerFate::ItemChanged),
+        },
+    }
+}
+
+/// Commits the answer of the request `record` says was sent, which went through, as its
+/// step would have: `versions` are those of the row as it is now, `confirmed` the item as
+/// OneDrive has it (none for a removal). In the caller's job of the store, under the
+/// tree lock. A file is confirmed with no session: a request on record sent an empty
+/// file by one request.
+fn commit_settled_request(store: &mut TreeStore, record: &RequestRecord, versions: &ItemVersions, confirmed: Option<&ConfirmedItem>, now: i64) -> Result<StepCommitOutcome, TreeError> {
+    match (&record.request, confirmed) {
+        (RecordedRequest::MakeDirectory { parent, name }, Some(made)) => store.item_store().commit_make_directory(versions, parent, name, made),
+        (RecordedRequest::SendNewFile { parent, name, .. }, Some(made)) => store.item_store().commit_send_new_file(versions, parent, name, made, None),
+        (RecordedRequest::SendContent { .. }, Some(sent)) => store.item_store().commit_send_content(versions, sent, None),
+        (RecordedRequest::SendMove { parent, name }, Some(moved)) => store.item_store().commit_send_move(versions, parent, name, moved),
+        (RecordedRequest::SendFileRemoval, None) => store.item_store().commit_send_file_removal(versions, now),
+        (RecordedRequest::SendDirectoryRemoval, None) => {
+            // All the rows say OneDrive has below the directory, as they are now: the commit asks that it is what was removed here.
+            let below: Vec<ItemVersions> = store.item_store().list_below_in_onedrive(versions.local_item_id)?.iter().map(ItemVersions::of).collect();
+            store.item_store().commit_send_directory_removal(versions, &below, now)
+        }
+        // A fate that does not fit its request writes nothing.
+        (RecordedRequest::MakeDirectory { .. } | RecordedRequest::SendNewFile { .. } | RecordedRequest::SendContent { .. } | RecordedRequest::SendMove { .. }, None) | (RecordedRequest::SendFileRemoval | RecordedRequest::SendDirectoryRemoval, Some(_)) => {
+            Ok(StepCommitOutcome::RowsChanged)
+        }
+    }
 }
 
 /// What reads OneDrive for what became of a step's request.
 #[derive(Clone)]
 pub struct LostAnswers {
     graph: GraphAccess,
-    /// Told when a read is throttled or answered that the account is signed out, so that
-    /// all sending waits though the step does not end.
-    sending_holds: Arc<SendingHolds>,
+    /// Held across the commit of a record whose request went through, and nothing else.
+    tree_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl LostAnswers {
-    pub fn new(graph: GraphAccess, sending_holds: Arc<SendingHolds>) -> Self {
-        Self { graph, sending_holds }
+    /// Made by the folder's start, with the folder's tree lock.
+    pub fn new(graph: GraphAccess, tree_lock: Arc<tokio::sync::Mutex<()>>) -> Self {
+        Self { graph, tree_lock }
+    }
+
+    /// What OneDrive has now where `request` names: one read, with a `Class::Metadata`
+    /// slot of the pool for itself. `Ok(None)` when nothing is there.
+    async fn read_requested_item(&self, item: &ItemVersions, request: &SentRequest<'_>) -> Result<Option<DriveItem>, StepOutcome> {
+        let drive = &self.graph.drive;
+        let _slot = drive.pool().acquire(Class::Metadata).await;
+        let read = match request {
+            SentRequest::MakeDirectory { parent, name } | SentRequest::SendNewFile { parent, name, .. } => {
+                let name = to_graph_name(name).map_err(StepOutcome::Refused)?;
+                drive.child(parent.item_id.as_str(), name).await
+            }
+            SentRequest::SendContent { .. } | SentRequest::SendMove { .. } | SentRequest::SendRemoval => {
+                let Some(onedrive_item) = &item.onedrive_item else {
+                    return Err(StepOutcome::Failed(StepFailure::AnswerUnreadable { detail: format!("item {} has no item of OneDrive to read", item.local_item_id) }));
+                };
+                drive.item(onedrive_item.item_id.as_str()).await
+            }
+        };
+        match read {
+            Ok(found) => Ok(Some(found)),
+            Err(DriveError::NotFound) => Ok(None),
+            Err(error) => Err(StepOutcome::Refused(decide_read_refusal(error))),
+        }
     }
 
     /// What became of `request`, by ONE read of OneDrive (`item`, `G/mod.rs:217`, or
@@ -124,38 +240,90 @@ impl LostAnswers {
     /// bound to what was found (`ItemReader::find_bound_item`), and
     /// [`decide_lost_answer_fate`]. `DriveError::NotFound` is no failed read: it is
     /// `found: None`. Any other `DriveError` is the step's outcome, read through
-    /// `WriteError::from` by `graph_refusal::decide_refusal` (`AnswerLost` of a read is
-    /// `StepRefusal::Transient`). Each read takes a `Class::Metadata` slot of the pool
+    /// `WriteError::from` (`graph_refusal::decide_read_refusal`: a lost answer of a read
+    /// is `StepRefusal::Transient`). Each read takes a `Class::Metadata` slot of the pool
     /// for itself and lets it go with its answer.
     ///
-    /// For a request that was certainly refused and whose refusal an earlier try of the
-    /// same step may explain: a 409 of `MakeDirectory` (`upload/steps/meta.rs:33-36`), a
-    /// 412 of `SendMove` (`meta.rs:100-104`) and of `SendContent`
-    /// (`upload/content.rs:400-403`), an upload session found gone.
+    /// Called for a request that was certainly refused and whose refusal an earlier try
+    /// of the same step may explain — a 409 of `MakeDirectory`
+    /// (`upload/steps/meta.rs:33-36`), a 412 of `SendMove` (`meta.rs:100-104`) and of
+    /// `SendContent` (`upload/content.rs:400-403`), an upload session found gone —, and
+    /// for a request whose answer said nothing certain.
     pub async fn read_request_outcome(&self, item: &ItemVersions, request: SentRequest<'_>) -> Result<LostAnswerFate, StepOutcome> {
-        todo!()
+        let found = self.read_requested_item(item, &request).await?;
+        let is_found_bound = match &found {
+            Some(found) => {
+                let reference = OneDriveItemReference { drive_id: self.graph.drive_id.clone(), item_id: OneDriveItemId::new(found.id.clone()) };
+                self.graph.store.read_items(move |items| Ok(items.find_bound_item(&reference)?.is_some())).await.map_err(|error| StepOutcome::Failed(StepFailure::Store { detail: error.to_string() }))?
+            }
+            None => false,
+        };
+        decide_lost_answer_fate(&request, item, found.as_ref(), is_found_bound, &self.graph.drive_id).map_err(StepOutcome::Failed)
     }
 
-    /// What became of `request`, whose answer said nothing certain
-    /// (`RefusedRequest::AnswerLost`, or an answer of success that cannot be read): reads
-    /// as [`read_request_outcome`](Self::read_request_outcome) does (`DriveError::NotFound`
-    /// is `found: None`; any other `DriveError` is read through `WriteError::from`) and,
-    /// while the read itself says nothing certain — no status (the network), a 408, a
-    /// 429 or a 5xx (`DriveError::status`) —, waits and reads again: a second after the
-    /// first failed read, doubling to a minute. The client waited a throttle's own time
-    /// already and names none: a 429 or a 503 is told as `SendingHolds::throttle(None,
-    /// now)`; a sign-out as `SendingHolds::set_signed_out(true)`, and the next read is a
-    /// minute later. A read that is refused for certain and is neither the item nor "not
-    /// there" — any other 4xx: a 403, a 400, a token Graph rejects — ends the step as
-    /// `StepFailure::AnswerUnreadable { detail }`: nothing says what became of the
-    /// request, the step counts a try, and the one step at a time of the metadata is not
-    /// held by it. It answers otherwise only what is certain, and
-    /// ends else only with the step's task, aborted at a stop of the folder's sync:
-    /// until then the step runs, and its item and destination are busy to the plan. No
-    /// slot of the pool is held while it waits: its caller let its own go before the
-    /// call, and each read takes a `Class::Metadata` slot for itself. The failure is
-    /// also an answer that cannot be read as an item.
-    pub async fn settle_lost_answer(&self, item: &ItemVersions, request: SentRequest<'_>) -> Result<LostAnswerFate, StepFailure> {
-        todo!()
+    /// Settles `record`, a request that left and whose answer was never committed: reads
+    /// what became of it as [`read_request_outcome`](Self::read_request_outcome) does,
+    /// with the versions of the row as it is now — the row of the record's item, or, for
+    /// a request about an item of OneDrive, the row that has that binding now.
+    /// `WentThrough`: the answer is committed as the step would have, under the tree
+    /// lock, in one job of the store with the record's end; a commit that finds the rows
+    /// changed, or that the store refuses, writes nothing, and the record goes all the
+    /// same: a listing brings what OneDrive has. Any other fate: the record goes, and the
+    /// next plan sends what is unsent. A record whose row went, or whose item of
+    /// OneDrive no row is bound to any more, goes with nothing read.
+    ///
+    /// `Err` when nothing certain could be read — the network, a throttle, a sign-out, a
+    /// read OneDrive refuses: the record stands, and with it its item and its destination
+    /// stay busy; the refusal says why, and when OneDrive named a time. Nothing is
+    /// marked on disk and no event is answered for a record committed here: the marks
+    /// serve the check at start, which reads the rows.
+    // TODO: a made directory and an empty file whose record is committed here get no mark of their item id on disk (`ItemContentFiles::mark_made_directory`, `mark_sent_file` are the runner's); check whether the check at start needs them and fix if needed.
+    pub async fn settle_lost_answer(&self, record: &RequestRecord) -> Result<(), StepRefusal> {
+        let store_failure = |error: TreeError| StepRefusal::Transient { detail: format!("the store: {error}") };
+        let (item, onedrive_item) = (record.item, record.onedrive_item.clone());
+        let row = self
+            .graph
+            .store
+            .read_items(move |items| match &onedrive_item {
+                Some(onedrive_item) => items.find_bound_item(onedrive_item),
+                None => items.find_item(item),
+            })
+            .await
+            .map_err(store_failure)?;
+        let forget = move |store: &mut TreeStore| store.step_memory().forget_request_record(item);
+        let Some(row) = row else {
+            return self.graph.store.call(forget).await.map_err(store_failure);
+        };
+        let versions = ItemVersions::of(&row);
+        let fate = match self.read_request_outcome(&versions, SentRequest::of_record(&record.request)).await {
+            Ok(fate) => fate,
+            Err(StepOutcome::Refused(refusal)) => return Err(refusal),
+            Err(outcome) => return Err(StepRefusal::Transient { detail: format!("{outcome:?}") }),
+        };
+        let LostAnswerFate::WentThrough(confirmed) = fate else {
+            return self.graph.store.call(forget).await.map_err(store_failure);
+        };
+        // A file and a directory are told apart by the request; a kind that is not the row's writes nothing.
+        let is_of_kind = match &record.request {
+            RecordedRequest::MakeDirectory { .. } | RecordedRequest::SendDirectoryRemoval => row.kind == ItemKind::Directory,
+            RecordedRequest::SendNewFile { .. } | RecordedRequest::SendContent { .. } | RecordedRequest::SendFileRemoval => row.kind == ItemKind::File,
+            RecordedRequest::SendMove { .. } => true,
+        };
+        let (record, now) = (record.clone(), (self.graph.clock)());
+        let _tree = self.tree_lock.lock().await;
+        self.graph
+            .store
+            .call(move |store| {
+                if is_of_kind {
+                    match commit_settled_request(store, &record, &versions, confirmed.as_ref(), now) {
+                        Ok(StepCommitOutcome::Written) => tracing::info!("the request of item {} whose answer was lost went through: its answer is written", record.item),
+                        Ok(StepCommitOutcome::RowsChanged) => {}
+                        Err(error) => tracing::warn!("the answer of the request of item {} that went through is not written: {error}", record.item),
+                    }
+                }
+                store.step_memory().forget_request_record(record.item)
+            })
+            .await
+            .map_err(store_failure)
     }
 }

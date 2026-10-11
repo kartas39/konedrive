@@ -606,7 +606,8 @@ async fn read_quota_before_first_plan(drive: &DriveClient, space: &OneDriveSpace
 /// set on it what stands (`input.standing_holds`: `set_paused`, `set_signed_out`,
 /// `set_writes_refusal`; a read-only folder's hold) — BEFORE the plan's loop is spawned;
 /// `OneDriveSpace` (given, read before); `GraphAccess`;
-/// `SessionCancellations::new`, `LostAnswers::new`, `MadeItems::new`, `NameHolders::new`,
+/// `LostAnswers::new` (with the tree lock), `SessionCancellations::new` (with it and the
+/// running steps), `MadeItems::new`, `NameHolders::new`,
 /// `ContentUpload::new`; `OneDriveSteps::new` (with the tree lock and the mount's
 /// `item_content_files`); `RowSteps::new`; the runner of the steps towards the folder
 /// ([`make_folder_steps`] over `mount.folder_step_parts()`: the mount holds the parts and

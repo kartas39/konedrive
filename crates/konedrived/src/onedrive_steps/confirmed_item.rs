@@ -17,12 +17,11 @@
 // test: a_drive_id_spelt_in_another_case_is_the_folders_drive
 // test: the_guard_is_the_etag_planned_from_else_the_ctag_of_the_synced_content
 // test: an_item_with_neither_has_no_guard
-#![allow(dead_code, unused_variables)]
 
 use std::ffi::OsStr;
 
 use konedrive_graph::drive::DriveItem;
-use konedrive_tree::{ConfirmedItem, DriveId, ItemVersions};
+use konedrive_tree::{ConfirmedItem, ContentVersion, DriveId, ItemVersions, OneDriveItemId, OneDriveItemReference};
 
 use crate::sync_parts::step_outcome::{StepFailure, StepRefusal};
 
@@ -32,7 +31,7 @@ pub struct RequestGuard(String);
 
 impl RequestGuard {
     pub fn as_str(&self) -> &str {
-        todo!()
+        &self.0
     }
 }
 
@@ -40,7 +39,7 @@ impl RequestGuard {
 /// sent (the upload rules refuse it: `SyncPlanInput::name_refusals`); met here it is
 /// `StepRefusal::RefusedForGood`, and nothing is sent. Pure.
 pub fn to_graph_name(name: &OsStr) -> Result<&str, StepRefusal> {
-    todo!()
+    name.to_str().ok_or_else(|| StepRefusal::RefusedForGood { message: format!("the name {name:?} is not UTF-8") })
 }
 
 /// What a request about `item` is guarded with: the eTag of the OneDrive version it was
@@ -50,7 +49,18 @@ pub fn to_graph_name(name: &OsStr) -> Result<&str, StepRefusal> {
 /// which counts a try and asks for nothing: the step waits, and is planned with a guard
 /// once a listing that names the item wrote its eTag. Pure.
 pub fn decide_guard(item: &ItemVersions) -> Option<RequestGuard> {
-    todo!()
+    let synced_ctag = || match &item.synced_content {
+        Some(ContentVersion::Hashed { ctag, .. }) => ctag.clone(),
+        Some(ContentVersion::ChangedHere { .. }) | None => None,
+    };
+    item.onedrive_etag.clone().or_else(synced_ctag).map(RequestGuard)
+}
+
+/// What a request that follows a read of `answer` is guarded with: the eTag just read,
+/// else its cTag; an answer with neither gives an empty guard, and what OneDrive makes of
+/// it (today's `Guard::of_item`). Pure.
+pub fn to_guard_of_answer(answer: &DriveItem) -> RequestGuard {
+    RequestGuard(answer.e_tag.clone().or_else(|| answer.c_tag.clone()).unwrap_or_default())
 }
 
 /// `answer` as a commit takes it, in the drive `drive_id` unless the answer names
@@ -61,5 +71,38 @@ pub fn decide_guard(item: &ItemVersions) -> Option<RequestGuard> {
 /// answer with no id, no parent's id, no name or no eTag, and one that names the item as
 /// deleted or as the root — OneDrive's failure, tried again as any other.
 pub fn to_confirmed_item(answer: &DriveItem, drive_id: &DriveId) -> Result<ConfirmedItem, StepFailure> {
-    todo!()
+    let unreadable = |what: &str| StepFailure::AnswerUnreadable { detail: format!("OneDrive answered an item {what}") };
+    if answer.id.is_empty() {
+        return Err(unreadable("with no id"));
+    }
+    if answer.deleted.is_some() {
+        return Err(unreadable("that is deleted"));
+    }
+    if answer.root.is_some() {
+        return Err(unreadable("that is the root"));
+    }
+    let parent = answer.parent_reference.as_ref();
+    let Some(parent_id) = parent.and_then(|parent| parent.id.clone()).filter(|id| !id.is_empty()) else { return Err(unreadable("with no parent")) };
+    let Some(name) = answer.name.clone().filter(|name| !name.is_empty()) else { return Err(unreadable("with no name")) };
+    let Some(etag) = answer.e_tag.clone().filter(|etag| !etag.is_empty()) else { return Err(unreadable("with no eTag")) };
+    // Graph spells one drive's id in more than one case: such an answer is of the folder's drive.
+    let answered_drive = parent.and_then(|parent| parent.drive_id.as_deref()).filter(|answered| !answered.eq_ignore_ascii_case(drive_id.as_str()));
+    let drive_id = match answered_drive {
+        Some(answered) => DriveId::new(answered).ok_or_else(|| unreadable("in a drive that cannot be read"))?,
+        None => drive_id.clone(),
+    };
+    let content = answer.file.is_some().then(|| ContentVersion::Hashed {
+        size: answer.size.unwrap_or(0),
+        mtime: answer.mtime(),
+        mtime_nsec: 0,
+        hash: answer.quick_xor_hash().map(str::to_owned),
+        ctag: answer.c_tag.clone(),
+    });
+    Ok(ConfirmedItem {
+        item: OneDriveItemReference { drive_id: drive_id.clone(), item_id: OneDriveItemId::new(answer.id.clone()) },
+        parent: OneDriveItemReference { drive_id, item_id: OneDriveItemId::new(parent_id) },
+        name: name.into(),
+        content,
+        etag,
+    })
 }

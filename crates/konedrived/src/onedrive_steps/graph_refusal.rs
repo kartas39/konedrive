@@ -15,9 +15,8 @@
 // test: a_signed_out_account_is_said_so
 // test: the_network_a_timeout_and_a_5xx_are_an_answer_lost_and_carry_no_address
 // test: any_other_4xx_is_settled_as_transient_at_once
-#![allow(dead_code, unused_variables)]
 
-use konedrive_graph::drive::WriteError;
+use konedrive_graph::drive::{DriveError, WriteError};
 
 use crate::sync_parts::step_outcome::StepRefusal;
 
@@ -38,11 +37,13 @@ pub enum RefusedRequest {
     NoSpace,
     /// `WriteError::Transient` and `Failed` with no status (the network, an answer that
     /// could not be read), a 408 or a 5xx other than 503 (`Detail::status`). Nothing says
-    /// whether the request reached OneDrive: a step whose request changes OneDrive reads what became of it before it
-    /// ends (`LostAnswers::settle_lost_answer`), and answers
-    /// `StepRefusal::Transient { detail }` only for a request that changed nothing; a
-    /// request that only reads answers it at once.
-    // TODO: another layer's: a request that never left (no connection, DNS, a locked secret store: `konedrive-graph/src/drive/send.rs:95`, `:124-126`) is `Transient` with no status, as a dropped answer is. So while offline every step that sends no content, and every empty new file, stays running in `settle_lost_answer`, no try is counted for `Reason::Network`, and the queue shows an item being sent where today it says there is no network. Needed: the Graph client telling "not sent" from "sent, no answer" in `Detail` (`reqwest::Error::is_connect`, the token's errors), and `decide_refusal` settling the first at once as `StepRefusal::Transient`.
+    /// whether the request reached OneDrive: a step whose request changes OneDrive reads
+    /// once what became of it (`LostAnswers::read_request_outcome`); when that read says
+    /// nothing certain either — the network is down — the step ends
+    /// `StepRefusal::Transient { detail }` with its record standing
+    /// (`konedrive_tree::RequestRecord`), which keeps the item and its destination busy
+    /// until the record is settled (`LostAnswers::settle_lost_answer`). A request that
+    /// only reads answers `Transient` at once.
     AnswerLost { detail: String },
     /// Nothing more to look at: the answer of the step.
     Settled(StepRefusal),
@@ -56,5 +57,61 @@ pub enum RefusedRequest {
 /// text of a lost answer is kept without any address in it (`engine/outcome.rs:158`,
 /// `without_urls`).
 pub fn decide_refusal(error: &WriteError) -> RefusedRequest {
-    todo!()
+    match error {
+        WriteError::Changed => RefusedRequest::Changed,
+        WriteError::NameExists => RefusedRequest::NameExists,
+        WriteError::NotFound => RefusedRequest::NotFound,
+        WriteError::SessionGone => RefusedRequest::SessionGone,
+        WriteError::QuotaExceeded => RefusedRequest::NoSpace,
+        WriteError::Throttled { retry_after } => RefusedRequest::Settled(StepRefusal::Throttled { retry_after: *retry_after }),
+        WriteError::Locked => RefusedRequest::Settled(StepRefusal::Locked),
+        WriteError::Forbidden => RefusedRequest::Settled(StepRefusal::Forbidden),
+        WriteError::Refused(detail) => RefusedRequest::Settled(StepRefusal::RefusedForGood { message: detail.message.clone() }),
+        WriteError::SignedOut => RefusedRequest::Settled(StepRefusal::SignedOut),
+        WriteError::Transient(detail) | WriteError::Failed(detail) => {
+            let text = remove_addresses(&detail.message);
+            match detail.status {
+                // A certain answer that the request changed nothing.
+                Some(status) if status.is_client_error() && status.code() != 408 => RefusedRequest::Settled(StepRefusal::Transient { detail: text }),
+                _ => RefusedRequest::AnswerLost { detail: text },
+            }
+        }
+    }
+}
+
+/// What a refusal leaves a step to answer where a taken name, a changed item, a missing
+/// item, a gone session and a lack of space have no meaning of their own for the request:
+/// a read, a cancel, a removal of a leftover. A lost answer is `StepRefusal::Transient`
+/// at once: such a request is asked again whatever became of it. Pure.
+pub fn decide_plain_refusal(error: &WriteError) -> StepRefusal {
+    match decide_refusal(error) {
+        RefusedRequest::Settled(refusal) => refusal,
+        RefusedRequest::AnswerLost { detail } => StepRefusal::Transient { detail },
+        // Said as it is, and tried again.
+        refused @ (RefusedRequest::NameExists | RefusedRequest::Changed | RefusedRequest::NotFound | RefusedRequest::SessionGone | RefusedRequest::NoSpace) => {
+            StepRefusal::Transient { detail: format!("OneDrive answered {refused:?}") }
+        }
+    }
+}
+
+/// What a READ of OneDrive that failed leaves a step to answer: [`decide_plain_refusal`]
+/// of the error through `WriteError::from`. `DriveError::NotFound` is not asked here: it
+/// is the read's answer "nothing is there". Pure.
+pub fn decide_read_refusal(error: DriveError) -> StepRefusal {
+    decide_plain_refusal(&WriteError::from(error))
+}
+
+/// `text` with every `http://…` and `https://…` cut out, up to the next whitespace: the
+/// journal and the bus get no address.
+fn remove_addresses(text: &str) -> String {
+    let mut cleaned = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = [rest.find("http://"), rest.find("https://")].into_iter().flatten().min() {
+        cleaned.push_str(&rest[..at]);
+        cleaned.push_str("<url>");
+        rest = &rest[at..];
+        rest = &rest[rest.find(char::is_whitespace).unwrap_or(rest.len())..];
+    }
+    cleaned.push_str(rest);
+    cleaned
 }

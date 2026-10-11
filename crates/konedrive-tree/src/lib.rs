@@ -33,7 +33,7 @@ pub use conflicts::{ConflictKind, ConflictRow};
 pub use folded_name::FoldedName;
 pub use item_store::{ConfirmedItem, ConfirmedOneDriveVersion, ItemStore, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay, SentRemovalWindow, StepCommitOutcome, SENT_REMOVAL_WINDOW_SECONDS};
 pub use step_memory::{
-    is_content_of, EmptyFileSession, FactStanding, FailedTries, FailedTryStanding, ItemMemory, ItemMemoryParts, ItemRefusalReason, ItemTakenName, MismatchedItem, MismatchedItemStanding, MismatchedItemUpload, OpeningTry, OpeningWindow, Refusal, RefusedVersion,
+    is_content_of, EmptyFileSession, FactStanding, FailedTries, FailedTryStanding, ItemMemory, ItemMemoryParts, ItemRefusalReason, ItemTakenName, MismatchedItem, MismatchedItemStanding, MismatchedItemUpload, OpeningTry, OpeningWindow, RecordedRequest, Refusal, RefusedVersion, RequestRecord,
     RemovalConfirmation, SpaceFit, SpaceRefusal, StepFact, StepMemory, TakenName, TemporaryName, TimedWait, UnsentRemoval, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
     UPLOAD_SESSION_OPENING_KEPT,
 };
