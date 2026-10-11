@@ -84,6 +84,6 @@ fn an_item_below_a_removed_directory_is_told_by_its_row_and_by_whether_it_is_hel
         ("never shown", &never_shown, false, NeverShownHere(id(3))),
         ("never shown, and held back", &never_shown, true, IsHeldBack(id(3))),
     ] {
-        assert_eq!(ItemBelowRemovedDirectory::of(row, is_held_back, false), is, "{what}");
+        assert_eq!(ItemBelowRemovedDirectory::of(row, is_held_back, false, false), is, "{what}");
     }
 }

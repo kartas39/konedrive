@@ -22,7 +22,7 @@
 // test: the_fact_is_not_answered_once_a_listing_wrote_another_content
 // test: the_fact_goes_with_the_items_row_and_stays_with_the_item_when_its_binding_moves
 use rusqlite::types::Value;
-use rusqlite::{params_from_iter, OptionalExtension};
+use rusqlite::{params_from_iter, Connection, OptionalExtension};
 
 use super::item_row::{content_from, content_values, find_item, CONTENT_COLUMNS};
 use super::{refuse, ItemReader, ItemStore};
@@ -90,12 +90,19 @@ impl ItemReader<'_> {
     /// The fact for `item`, while its row's OneDrive content is still the one the upload
     /// left. Called by the plan's input and by `SendContent` before it sends again.
     pub fn find_own_upload_content(&self, item: LocalItemId) -> Result<Option<OwnUploadContent>, TreeError> {
-        let sql = format!("SELECT {} FROM own_upload_contents WHERE local_item_id = ?1", fact_columns());
-        let fact = self.conn().prepare_cached(&sql)?.query_row([item.as_i64()], |row| Ok((content_from(row, 0)?, content_from(row, CONTENT_COLUMNS.len())?))).optional()?;
-        let Some((Some(onedrive_content), Some(local_content))) = fact else { return Ok(None) };
-        let onedrive_content_now = self.find_item(item)?.and_then(|row| row.onedrive).and_then(|onedrive| onedrive.content);
-        Ok((onedrive_content_now.as_ref() == Some(&onedrive_content)).then_some(OwnUploadContent { onedrive_content, local_content }))
+        find_own_upload_content(self.conn(), item)
     }
+}
+
+/// [`ItemReader::find_own_upload_content`], inside the caller's transaction: asked so by
+/// the question and the commit of a directory's removal
+/// ([`ItemStore::can_directory_removal_be_sent`]).
+pub(crate) fn find_own_upload_content(conn: &Connection, item: LocalItemId) -> Result<Option<OwnUploadContent>, TreeError> {
+    let sql = format!("SELECT {} FROM own_upload_contents WHERE local_item_id = ?1", fact_columns());
+    let fact = conn.prepare_cached(&sql)?.query_row([item.as_i64()], |row| Ok((content_from(row, 0)?, content_from(row, CONTENT_COLUMNS.len())?))).optional()?;
+    let Some((Some(onedrive_content), Some(local_content))) = fact else { return Ok(None) };
+    let onedrive_content_now = find_item(conn, item)?.and_then(|row| row.onedrive).and_then(|onedrive| onedrive.content);
+    Ok((onedrive_content_now.as_ref() == Some(&onedrive_content)).then_some(OwnUploadContent { onedrive_content, local_content }))
 }
 
 #[cfg(test)]

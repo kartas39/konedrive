@@ -715,7 +715,7 @@ pub(crate) fn decide_content(case: &ItemCase<'_>, here: ContentChange, in_onedri
         (ContentChange::Same, ContentChange::Same, _) if local == item.synced_content.as_ref() && is_same_content_but_for_time(onedrive, item.synced_content.as_ref()) => ItemDecision::NothingToDo,
         (ContentChange::Same, ContentChange::Same, _) => row_step(RowStep::AgreeOnContent { item: case.versions() }),
         (ContentChange::Same, ContentChange::Changed | ContentChange::NotKnownWithoutHash, OneDriveContentOrigin::OneDrive) => folder_step(FolderStep::TakeOneDriveContent { item: case.versions() }),
-        // TODO: check the sending of a content that is the one agreed on here (the user put it back after the upload: the row is not unsent) and fix if needed, as for a move sent from such a row (`decide_place`).
+        // TODO: check the sending of a content that is the one agreed on here (the user put it back after the upload: the row is not unsent) and fix if needed, as for a move sent from such a row (`decide_place`): a mismatch again leaves no failed try, as no unsent change is there to keep it of, so the next plan uploads the whole file again at once, for as long as OneDrive rewrites what it is sent; and in a read-only folder it reads as unsent after the switch and waits for the user.
         (ContentChange::Changed | ContentChange::NotKnownWithoutHash, ContentChange::Same, _) | (_, ContentChange::Changed | ContentChange::NotKnownWithoutHash, OneDriveContentOrigin::OwnUpload) => {
             find_decision_not_to_send(case, SentPart::Content).unwrap_or_else(|| onedrive_step(OneDriveStep::SendContent { item: case.versions() }))
         }

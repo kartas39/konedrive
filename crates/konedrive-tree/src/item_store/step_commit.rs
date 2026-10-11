@@ -80,6 +80,7 @@ use super::bindings::{bind_item, give_up_binding, merge_items};
 use super::local_content::with_modified_time;
 use super::item_row::{confirm_removal_below, find_bound_item, find_item, list_below_in_onedrive, write_item};
 use super::onedrive_versions::{confirm_onedrive_version, ListingUnderWay};
+use super::own_upload_content::find_own_upload_content;
 use super::place_change_records::{forget_place_change_record_when_written, PlaceChangeRecordId};
 use super::sent_removal_window::add_sent_removals;
 use crate::step_memory::{
@@ -200,7 +201,10 @@ impl ItemStore<'_> {
     /// An item an upload of this folder left below the directory with other content than
     /// was sent, as the step memory says it now (`StepMemory::find_mismatched_item` of
     /// its binding), is the folder's own and not one it never showed: it is not of
-    /// `below`, holds the removal back by nothing, and goes with the directory.
+    /// `below`, holds the removal back by nothing, and goes with the directory. And a
+    /// content an upload of this folder left in a file in place of what it sent
+    /// ([`ItemReader::find_own_upload_content`]) is no change of OneDrive's: such a file,
+    /// removed here, is of `below` like any other.
     ///
     /// What the rows do not say, the caller gives, as it gives it to the plan
     /// ([`SyncPlanInput`](crate::SyncPlanInput)) and with nothing taken out:
@@ -393,7 +397,10 @@ fn is_directory_removal_as_planned(conn: &Connection, item: &ItemVersions, below
             Some(onedrive_item) => find_mismatched_item(conn, onedrive_item)?.is_some(),
             None => false,
         };
-        rows_below.push(ItemBelowRemovedDirectory::of(&row, is_held_back(row.local_item_id), is_left_by_upload));
+        // The fact is asked only of a file that reads as changed in OneDrive without it.
+        let is_held_back = is_held_back(row.local_item_id);
+        let is_content_own_upload = matches!(ItemBelowRemovedDirectory::of(&row, is_held_back, is_left_by_upload, false), ItemBelowRemovedDirectory::ContentChangedInOneDrive(_)) && find_own_upload_content(conn, row.local_item_id)?.is_some();
+        rows_below.push(ItemBelowRemovedDirectory::of(&row, is_held_back, is_left_by_upload, is_content_own_upload));
     }
     let by_id = |versions: &[ItemVersions]| {
         let mut versions: Vec<ItemVersions> = versions.to_vec();

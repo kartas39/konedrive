@@ -27,7 +27,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::item_decision::{find_hold, ItemAnswers, ItemCase, ItemDecision, LocalPlaceAvailability, Overruling};
+use super::item_decision::{find_hold, ItemAnswers, ItemCase, ItemDecision, LocalPlaceAvailability, OneDriveContentOrigin, Overruling};
 use super::side_change::{ContentChange, SideChange};
 use super::plan_items::PlanItems;
 use super::sync_step::{FolderStep, ItemVersions, RowStep, SyncStep};
@@ -66,7 +66,7 @@ pub(crate) enum ItemBelowRemovedDirectory {
     /// it, is not settled, or the check at start could not decide it.
     IsHeldBack(LocalItemId),
     /// A file the folder showed, which the user removed here, and whose content OneDrive
-    /// changed since: by itself it comes back
+    /// changed since — not this folder's own upload, which is no change of OneDrive's: by itself it comes back
     /// ([`decide_existence`](super::item_decision::decide_existence)), and the content
     /// OneDrive alone has is not removed with a directory either.
     ContentChangedInOneDrive(LocalItemId),
@@ -87,15 +87,18 @@ pub(crate) enum ItemBelowRemovedDirectory {
 
 impl ItemBelowRemovedDirectory {
     /// What `row` is, a row OneDrive has below a directory that was removed here.
-    /// What the rows do not say: `is_held_back`, whether something holds the item back,
-    /// and `is_left_by_upload`, whether an upload of this folder left it in OneDrive
-    /// (`find_mismatched_item` of its binding).
-    pub(crate) fn of(row: &Item, is_held_back: bool, is_left_by_upload: bool) -> Self {
+    /// What the rows do not say: `is_held_back`, whether something holds the item back;
+    /// `is_left_by_upload`, whether an upload of this folder left it in OneDrive
+    /// (`find_mismatched_item` of its binding); and `is_content_own_upload`, whether the
+    /// content OneDrive has of it is what an upload of this folder left in place of what
+    /// it sent (`find_own_upload_content`): no change of OneDrive's, so that a file
+    /// removed here does not come back for it, and is removed here like any other.
+    pub(crate) fn of(row: &Item, is_held_back: bool, is_left_by_upload: bool, is_content_own_upload: bool) -> Self {
         if row.local.is_some() {
             ItemBelowRemovedDirectory::ShownHere(row.local_item_id)
         } else if is_held_back {
             ItemBelowRemovedDirectory::IsHeldBack(row.local_item_id)
-        } else if row.kind == ItemKind::File && matches!((SideChange::of_local(row), SideChange::of_onedrive(row)), (SideChange::Removed, SideChange::IsThere { content: ContentChange::Changed | ContentChange::NotKnownWithoutHash, .. })) {
+        } else if !is_content_own_upload && row.kind == ItemKind::File && matches!((SideChange::of_local(row), SideChange::of_onedrive(row)), (SideChange::Removed, SideChange::IsThere { content: ContentChange::Changed | ContentChange::NotKnownWithoutHash, .. })) {
             ItemBelowRemovedDirectory::ContentChangedInOneDrive(row.local_item_id)
         } else if row.synced_place.is_some() || row.synced_content.is_some() {
             ItemBelowRemovedDirectory::RemovedHere(ItemVersions::of(row))
@@ -165,7 +168,8 @@ pub(crate) fn decide_directory_removal(is_listing_under_way: bool, below: &[Item
 pub(crate) fn list_below_removed_directories(cases: &[ItemCase<'_>], items: &PlanItems<'_>) -> HashMap<LocalItemId, Vec<ItemBelowRemovedDirectory>> {
     let held: HashSet<LocalItemId> = cases.iter().filter(|case| find_hold(case).is_some()).map(|case| case.item.local_item_id).collect();
     let left_by_uploads: HashSet<LocalItemId> = cases.iter().filter(|case| case.is_left_by_upload).map(|case| case.item.local_item_id).collect();
-    let describe = |below: LocalItemId| Some(ItemBelowRemovedDirectory::of(items.find(below)?, held.contains(&below), left_by_uploads.contains(&below)));
+    let own_upload_contents: HashSet<LocalItemId> = cases.iter().filter(|case| case.onedrive_content_origin == OneDriveContentOrigin::OwnUpload).map(|case| case.item.local_item_id).collect();
+    let describe = |below: LocalItemId| Some(ItemBelowRemovedDirectory::of(items.find(below)?, held.contains(&below), left_by_uploads.contains(&below), own_upload_contents.contains(&below)));
     cases
         .iter()
         .filter(|case| is_directory_removed_here(case.item))
