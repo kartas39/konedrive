@@ -17,6 +17,9 @@ use konedrive_tree::Store;
 /// known here.
 const MOST: usize = 20_000;
 
+/// How many directories one read of the store answers.
+const DIRECTORIES_READ_AT_ONCE: usize = 1000;
+
 /// Asks whoever lists one of `directories` to list it again. Best effort: with no session bus
 /// nothing is said.
 pub async fn read_again(directories: Vec<PathBuf>) {
@@ -35,7 +38,20 @@ pub async fn read_again(directories: Vec<PathBuf>) {
 /// [`read_again`] for the folder at `folder` and every directory `store` names in it: after
 /// its mount came, or the modes its mount shows changed.
 pub async fn read_folder_again(store: Store, folder: PathBuf) {
-    // TODO: the directories the folder shows (`ItemReader::list_shown_directories`, in pages, each a read
-    // of the store, `Store::read_items`; at most `MOST`), each under `folder`, then `read_again`.
-    todo!()
+    let mut directories = Vec::new();
+    let mut after = None;
+    while directories.len() < MOST {
+        let page = match store.read_items(move |reader| reader.list_shown_directories(after, DIRECTORIES_READ_AT_ONCE)).await {
+            Ok(page) => page,
+            Err(error) => {
+                tracing::debug!("cannot read the directories of {} to tell KDE of: {error}", folder.display());
+                break;
+            }
+        };
+        let Some((last, _)) = page.last() else { break };
+        after = Some(*last);
+        directories.extend(page.into_iter().map(|(_, path)| folder.join(path)));
+    }
+    directories.truncate(MOST);
+    read_again(directories).await;
 }

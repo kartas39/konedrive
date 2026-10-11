@@ -63,10 +63,10 @@ pub(super) fn publish(folder: &Folder) -> Published {
         wanted: folder.wanted,
         tree_lock: folder.acted_on().map(|record| Arc::clone(&record.kept.tree_lock)),
         parts: folder.acted_on().and_then(|_| folder.parts()),
-        // TODO: `poll`, `sending_holds` and `onedrive_space` from the running sync (`SyncTasks::poll`, `SyncTasks::sending_holds`, `StartedFolder::onedrive_space`): `SyncTasks`' accessors are `todo!()` until the folder's start is written.
-        poll: None,
-        sending_holds: None,
-        onedrive_space: None,
+        // Of a running sync alone: with none the queue's answers say them as not known.
+        poll: folder.acted_on().and_then(|_| folder.running()).map(|started| started.tasks.poll()),
+        sending_holds: folder.acted_on().and_then(|_| folder.running()).map(|started| Arc::clone(started.tasks.sending_holds())),
+        onedrive_space: folder.acted_on().and_then(|_| folder.running()).map(|started| Arc::clone(&started.onedrive_space)),
         sync: sync.clone(),
     };
     let (state, error, down) = match &folder.is {

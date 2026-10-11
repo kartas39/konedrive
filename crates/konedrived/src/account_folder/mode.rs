@@ -147,8 +147,7 @@ pub async fn watch_account(mut account: watch::Receiver<AccountSnapshot>, sync: 
     loop {
         let snapshot = account.borrow_and_update().clone();
         let Some(service) = sync.upgrade() else { return };
-        // TODO: `service.follow_account(&snapshot)`, which follows the mode among the rest; until it is written the mode alone is followed, as before.
-        service.follow_mode(snapshot.mode).await;
+        service.follow_account(&snapshot).await;
         drop(service);
         if account.changed().await.is_err() {
             return;

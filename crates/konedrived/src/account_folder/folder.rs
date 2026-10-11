@@ -466,7 +466,14 @@ impl HeldFolder<'_> {
 
 impl Drop for HeldFolder<'_> {
     fn drop(&mut self) {
-        // TODO: the desktop told to read the folder again when `Writable` changed, as `Stopped::drop` does (`was_writable`); check and fix if needed.
+        // A switch that leaves the folder taking changes when it took none, or the other way round, has the desktop
+        // read it again, as a `Stopped` does: the modes its mount shows are others.
+        let is_writable = self.folder.mount().is_some_and(|mount| mount.access_mode_switch().is_read_write());
+        if is_writable != self.was_writable {
+            if let (Some(store), Some(record)) = (self.folder.store(), self.folder.record()) {
+                tokio::spawn(crate::desktop::dirnotify::read_folder_again(store, record.root.path.clone()));
+            }
+        }
         self.service.publish(&self.folder, |_| {});
     }
 }

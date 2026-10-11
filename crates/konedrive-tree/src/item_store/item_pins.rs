@@ -43,7 +43,6 @@ pub enum PinChange {
     Written,
     /// The item's own pin was so already: set where it was to be set, absent where it
     /// was to be taken off. Nothing was written.
-    // TODO: `set_item_pin` does not answer this yet: it answers `Written` for a pin that was there too (the statements' counts of changed rows say which). Fill with its test.
     AlreadySo,
     /// OneDrive does not have the item: there is nothing a pin could follow.
     NoBinding,
@@ -76,11 +75,12 @@ impl ItemStore<'_> {
         self.write(|tx| {
             let Some(row) = find_item(tx, item)? else { return Ok(PinChange::NoItem) };
             let Some(binding) = row.onedrive_item else { return Ok(PinChange::NoBinding) };
-            match is_pinned {
+            let changed_rows = match is_pinned {
                 true => tx.prepare_cached("INSERT OR IGNORE INTO pins (id) VALUES (?1)")?.execute([binding.item_id.as_str()])?,
                 false => tx.prepare_cached("DELETE FROM pins WHERE id = ?1")?.execute([binding.item_id.as_str()])?,
             };
-            Ok(PinChange::Written)
+            // No row changed: the pin was set, or absent, already.
+            Ok(if changed_rows == 0 { PinChange::AlreadySo } else { PinChange::Written })
         })
     }
 }

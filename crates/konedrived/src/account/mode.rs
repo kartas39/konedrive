@@ -48,9 +48,13 @@ impl AccountService {
         }
     }
 
-    // TODO: an account that keeps a wish for read-only takes it back here first (`take_read_only_wish_back`) and needs no sign-in: not written yet.
     /// [`set_mode`](Self::set_mode) to read-write: the sign-in it needs.
     async fn switch_to_read_write(self: &Arc<Self>) -> Result<String, ModeError> {
+        // An account that waits to switch to read-only is read-write still: the wish is taken back, and no sign-in is needed.
+        if self.keeps_read_only_wish() {
+            self.take_read_only_wish_back().await?;
+            return Ok(String::new());
+        }
         let not_signed_in = || ModeError::NotSignedIn("sign in first; then switch the account to read-write".into());
         let snapshot = self.state.get();
         if snapshot.state != SignInState::SignedIn {
@@ -216,15 +220,21 @@ impl AccountService {
     /// account: it holds the token the switch gives up. Called by
     /// [`switch_to_read_only`](Self::switch_to_read_only) under `session`.
     // TODO: `read_only_wanted = true` under the account in `config.toml` (the name is decided) is not in `config::Account` yet: the field is added with its reading of older files (`config/model.rs`, `config/migrate.rs`) when this is filled.
-    #[allow(dead_code, unused_variables)]
+    #[allow(unused_variables)]
     async fn keep_read_only_wish(&self, unsent: u64) -> Result<(), ModeError> {
+        todo!()
+    }
+
+    /// Whether the account keeps a wish for read-only (`read_only_wanted` in `config.toml`,
+    /// read now). Called by [`set_mode`](Self::set_mode) to read-write, which then only
+    /// takes the wish back.
+    fn keeps_read_only_wish(&self) -> bool {
         todo!()
     }
 
     /// Takes the wish for read-only back: `read_only_wanted` off `config.toml`, the note
     /// gone. The account is read-write as it was; nothing else changes. Nothing for an
     /// account that keeps no wish. Called by [`set_mode`](Self::set_mode) to read-write.
-    #[allow(dead_code)]
     async fn take_read_only_wish_back(&self) -> Result<(), ModeError> {
         todo!()
     }
@@ -256,23 +266,19 @@ impl AccountService {
         }
         let uploads = crate::panic::lock(&self.uploads).as_ref().and_then(Weak::upgrade);
         if self.configured_mode() == Mode::ReadOnly {
-            // Read-only already, changes may still wait: a switch nobody forced kept them.
-            // Forced, they go now — the way out a Forget and a Remove refused
-            // `PendingUploads` point to.
-            if let (true, Some(uploads)) = (force, &uploads) {
+            // Read-only already: what was unsent at the switch waits here, under the folder's hold.
+            // The folder is told again, forced or not: it holds already what was unsent, and nothing is dropped.
+            self.recompute_mode();
+            if let Some(uploads) = &uploads {
                 uploads.hold_unsent_changes().await;
             }
-            self.recompute_mode();
             return Ok(());
         }
         if let Some(uploads) = &uploads {
             let pending = uploads.pending_uploads().await;
-            // TODO: an unforced switch with something unsent is no refusal any more: by `decide_read_only_switch(pending, force)` the wish is kept (`keep_read_only_wish(pending)`) and `Ok` answered, and the switch is made when the folder says nothing is unsent (`switch_to_read_only_when_sent`). The refusal below stands until `read_only_wanted` exists in `config.toml`; `tests/mode.rs` holds it.
-            if pending > 0 && !force {
-                return Err(ModeError::PendingUploads(format!(
-                    "{pending} changes made here have not been uploaded yet; wait for them, or force \
-                     the switch: they then stay here, and are not uploaded"
-                )));
+            // Asked while something is unsent and not forced, the switch is neither made nor refused: the wish is kept, and the switch is made when the folder says nothing is unsent.
+            if let ReadOnlySwitch::KeepWish { unsent } = decide_read_only_switch(pending, force) {
+                return self.keep_read_only_wish(unsent).await;
             }
         }
         self.config
@@ -281,13 +287,13 @@ impl AccountService {
                 Ok::<_, ConfigError>(())
             })
             .map_err(|e| ModeError::Failed(format!("cannot save the configuration: {e}")))?;
-        // Dropped only once config.toml says read-only: a write that failed leaves
-        // the account read-write with its rows.
-        // TODO: the one order of a switch is `config.toml`, `recompute_mode`, `hold_unsent_changes` awaited — forced or not —, then the token: here the folder is told only when forced, and before the mode is worked out again. Not changed: `tests/mode.rs` holds this body; check and fix if needed.
-        if let (true, Some(uploads)) = (force, &uploads) {
+        // The one order of a switch, forced or not: `config.toml` says read-only; the mode is worked out again, so that
+        // the snapshot says read-only before the folder is told and its watcher cannot turn it back; the folder holds
+        // what is unsent and takes no change, awaited; and only then the token goes.
+        self.recompute_mode();
+        if let Some(uploads) = &uploads {
             uploads.hold_unsent_changes().await;
         }
-        self.recompute_mode();
         // The token that could write goes now; the next one comes from a refresh that asks
         // for Files.Read (§2.2).
         self.tokens.invalidate().await;
@@ -379,7 +385,7 @@ pub enum ReadOnlySwitch {
 
 /// Whether a switch to read-only asked with `unsent` changes unsent is made now. Pure:
 /// `SwitchNow` with nothing unsent and whenever `is_forced`; else `KeepWish`.
-#[allow(dead_code, unused_variables)]
+#[allow(unused_variables)]
 pub fn decide_read_only_switch(unsent: u64, is_forced: bool) -> ReadOnlySwitch {
     todo!()
 }

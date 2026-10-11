@@ -28,7 +28,7 @@ fn a_pin_is_set_on_the_binding_of_the_item() {
     let directory = show_listed_directory(&mut store, "D", "R", "d");
     let file = show_listed_file(&mut store, "F", "D", "f", "h1");
     pin(&mut store, directory);
-    pin(&mut store, directory);
+    assert_eq!(store.item_store().set_item_pin(directory, true).unwrap(), PinChange::AlreadySo);
     assert_eq!(pins(&store), ["D"], "by the item id of OneDrive; set twice is set once");
     assert!(store.item_store().is_pinned(file).unwrap(), "a pin on a directory holds for what is in it");
     assert_eq!(count_pins(&mut store), 1);
@@ -36,7 +36,7 @@ fn a_pin_is_set_on_the_binding_of_the_item() {
     assert_eq!(store.item_store().set_item_pin(directory, false).unwrap(), PinChange::Written);
     assert_eq!(pins(&store), Vec::<String>::new());
     assert!(!store.item_store().is_pinned(file).unwrap());
-    assert_eq!(store.item_store().set_item_pin(directory, false).unwrap(), PinChange::Written, "taken off twice");
+    assert_eq!(store.item_store().set_item_pin(directory, false).unwrap(), PinChange::AlreadySo, "taken off twice");
 }
 
 #[test]

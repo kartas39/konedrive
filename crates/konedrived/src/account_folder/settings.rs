@@ -96,9 +96,13 @@ impl SyncService {
         })
         .await
         .map_err(|e| SyncError::Io(format!("the settings task failed: {e}")))??;
-        // TODO: `sync_tasks::access_mode_change::apply_ignore_list_change` for a folder whose mount is
-        // served, running or stopped (`View::parts`: its mount and the wake it was built with): the rows are
-        // gone over once and the plan woken.
+        // A folder whose mount is served, running or stopped, has its rows gone over once and its plan woken:
+        // the list holds for what was made before it changed too.
+        if let Some(parts) = self.view().parts {
+            if let Err(error) = crate::sync_tasks::access_mode_change::apply_ignore_list_change(&parts.mount, &parts.sync_plan_wake).await {
+                tracing::warn!("the changed ignore list was not applied to what the folder holds: {error}");
+            }
+        }
         Ok(())
     }
 

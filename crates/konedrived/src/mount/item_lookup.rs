@@ -66,7 +66,7 @@ use super::item_handles::Fh;
 use super::place_changes::PlaceChanges;
 use super::read_connections::ReadConnections;
 use super::upload_rules::UploadRules;
-use crate::sync_parts::published_plan::{ItemAnswer, PublishedPlan};
+use crate::sync_parts::published_plan::{decide_is_shown_blocked, ItemAnswer, PublishedPlan};
 use crate::sync_parts::running_steps::RunningSteps;
 
 /// How the path of an item's local version is read: on the connection of the calling
@@ -140,6 +140,8 @@ pub(super) struct XattrFacts {
     pub(super) has_running_step: bool,
     /// The plan's last answer for it.
     pub(super) answer: Option<ItemAnswer>,
+    /// The step memory keeps a refusal for good of it as it is (`ItemMemory::refusal`).
+    pub(super) has_refusal_for_good: bool,
 }
 
 /// The names of the attributes an item may have, in the order `listxattr` names them.
@@ -160,7 +162,7 @@ pub(super) fn decide_xattr_value(name: &str, item: &Item, facts: &XattrFacts) ->
         XATTR_ITEM_ID => item.onedrive_item.as_ref()?.item_id.as_str(),
         XATTR_STATE => decide_state_attribute(item, facts.is_downloading)?.as_str(),
         XATTR_PIN if facts.is_pinned => "1",
-        XATTR_SYNC => decide_sync_mark(item, facts.is_ignored, facts.has_running_step, facts.answer.as_ref())?.as_str(),
+        XATTR_SYNC => decide_sync_mark(item, facts.is_ignored, facts.has_running_step, facts.answer.as_ref(), facts.has_refusal_for_good)?.as_str(),
         _ => return None,
     };
     Some(value.as_bytes().to_vec())
@@ -406,14 +408,15 @@ impl ItemLookup {
     /// never left here).
     fn read_xattr_facts(&self, node: LocalItemId, wanted: Option<&str>) -> Result<(Item, XattrFacts), Errno> {
         let wants = |name: &str| wanted.is_none_or(|wanted| wanted == name);
-        let (row, is_pinned, is_ignored) = self
+        let (row, is_pinned, is_ignored, has_refusal_for_good) = self
             .read_connections
             .read(|reader| {
                 let row = to_node_row(reader.find_item(node)?);
-                let NodeRow::Shown(item) = &row else { return Ok((row, false, false)) };
+                let NodeRow::Shown(item) = &row else { return Ok((row, false, false, false)) };
                 let is_pinned = wants(XATTR_PIN) && reader.is_pinned(node)?;
                 let is_ignored = wants(XATTR_SYNC) && item.unsent_since.is_some() && item.onedrive_item.is_none() && reader.is_ignored(node)?;
-                Ok((row, is_pinned, is_ignored))
+                let has_refusal_for_good = wants(XATTR_SYNC) && item.unsent_since.is_some() && reader.find_item_memory(node)?.refusal.is_some();
+                Ok((row, is_pinned, is_ignored, has_refusal_for_good))
             })
             .map_err(to_store_errno)?;
         let item = match row {
@@ -427,6 +430,7 @@ impl ItemLookup {
             is_downloading: wants(XATTR_STATE) && self.download_states.is_downloading(node),
             has_running_step: is_unsent && self.running_steps.has_running_step(node),
             answer: if is_unsent { self.published_plan.find_answer(node) } else { None },
+            has_refusal_for_good,
         };
         Ok((item, facts))
     }
@@ -494,16 +498,16 @@ impl SyncMark {
 /// `is_ignored` is `ItemReader::is_ignored`: the row alone says only whether the item's
 /// OWN name is ignored, and the plan is not given an item that is left here, so it has
 /// no answer to tell one below an ignored directory by.
-// TODO: `Blocked` is to be answered by the one rule below both (`sync_parts::published_plan::decide_is_shown_blocked`, given the answer and whether the memory keeps a refusal for good, which `read_xattr_facts` reads with the row: `XattrFacts` gains that value): today this body answers it for every wait for the user and for a fault — a file open for writing, a wait for space, a read-only folder, an item being checked — and not for a refusal the memory keeps of an item the plan was not given. Fill with the tests of the rule.
-pub(super) fn decide_sync_mark(item: &Item, is_ignored: bool, has_running_step: bool, answer: Option<&ItemAnswer>) -> Option<SyncMark> {
+pub(super) fn decide_sync_mark(item: &Item, is_ignored: bool, has_running_step: bool, answer: Option<&ItemAnswer>, has_refusal_for_good: bool) -> Option<SyncMark> {
     if item.local.is_none() || item.unsent_since.is_none() || is_ignored {
         return None;
     }
     match answer {
         Some(ItemAnswer::Excluded(_)) => None,
         _ if has_running_step => Some(SyncMark::Uploading),
-        Some(ItemAnswer::Waiting(WaitReason::User(_)) | ItemAnswer::Fault(_)) => Some(SyncMark::Blocked),
-        Some(ItemAnswer::Planned(_) | ItemAnswer::Waiting(_)) | None => Some(SyncMark::Pending),
+        // The one rule the queue's word goes by too.
+        _ if decide_is_shown_blocked(answer, has_refusal_for_good) => Some(SyncMark::Blocked),
+        Some(ItemAnswer::Planned(_) | ItemAnswer::Waiting(_) | ItemAnswer::Fault(_)) | None => Some(SyncMark::Pending),
     }
 }
 

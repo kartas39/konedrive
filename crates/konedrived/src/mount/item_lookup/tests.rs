@@ -621,27 +621,27 @@ fn the_sync_mark_per_case() {
     let planned = ItemAnswer::Planned(StepClass::Content);
     // An item that agrees has no mark, whatever runs and whatever the plan said last.
     for (has_running_step, answer) in [(false, None), (true, None), (true, Some(&user)), (false, Some(&fault))] {
-        assert_eq!(decide_sync_mark(&agreeing, false, has_running_step, answer), None);
+        assert_eq!(decide_sync_mark(&agreeing, false, has_running_step, answer, false), None);
     }
     // Nor one that is left here: by the rows, or by the plan's answer.
     for has_running_step in [false, true] {
-        assert_eq!(decide_sync_mark(&unsent, true, has_running_step, None), None);
-        assert_eq!(decide_sync_mark(&unsent, false, has_running_step, Some(&excluded)), None);
-        assert_eq!(decide_sync_mark(&unsent, false, has_running_step, Some(&ItemAnswer::Excluded(ExclusionReason::CannotBeShown))), None);
+        assert_eq!(decide_sync_mark(&unsent, true, has_running_step, None, false), None);
+        assert_eq!(decide_sync_mark(&unsent, false, has_running_step, Some(&excluded), false), None);
+        assert_eq!(decide_sync_mark(&unsent, false, has_running_step, Some(&ItemAnswer::Excluded(ExclusionReason::CannotBeShown)), false), None);
     }
     // Nor one the folder does not show.
-    assert_eq!(decide_sync_mark(&Item { local: None, ..unsent.clone() }, false, true, Some(&user)), None);
+    assert_eq!(decide_sync_mark(&Item { local: None, ..unsent.clone() }, false, true, Some(&user), false), None);
     // Uploading while a step runs, before anything the plan said.
     for answer in [None, Some(&planned), Some(&user), Some(&time), Some(&fault)] {
-        assert_eq!(decide_sync_mark(&unsent, false, true, answer), Some(SyncMark::Uploading));
+        assert_eq!(decide_sync_mark(&unsent, false, true, answer, false), Some(SyncMark::Uploading));
     }
     // Blocked: a wait for the user, or a fault of the plan.
-    assert_eq!(decide_sync_mark(&unsent, false, false, Some(&user)), Some(SyncMark::Blocked));
-    assert_eq!(decide_sync_mark(&unsent, false, false, Some(&fault)), Some(SyncMark::Blocked));
+    assert_eq!(decide_sync_mark(&unsent, false, false, Some(&user), false), Some(SyncMark::Blocked));
+    assert_eq!(decide_sync_mark(&unsent, false, false, Some(&fault), false), Some(SyncMark::Blocked));
     // Pending: everything else, an item the last plan was not given among it.
     let other_waits = [WaitReason::AnotherItem(LocalItemId::new(8)), WaitReason::ItemNotGiven(LocalItemId::new(8)), WaitReason::RunningStep, WaitReason::StartUpCheck, WaitReason::Listing, WaitReason::ItemsInDirectoryNotGiven(LocalItemId::new(8))];
     for answer in [None, Some(planned), Some(time)].into_iter().chain(other_waits.into_iter().map(|wait| Some(ItemAnswer::Waiting(wait)))) {
-        assert_eq!(decide_sync_mark(&unsent, false, false, answer.as_ref()), Some(SyncMark::Pending), "{answer:?}");
+        assert_eq!(decide_sync_mark(&unsent, false, false, answer.as_ref(), false), Some(SyncMark::Pending), "{answer:?}");
     }
     assert_eq!((SyncMark::Pending.as_str(), SyncMark::Uploading.as_str(), SyncMark::Blocked.as_str()), ("pending", "uploading", "blocked"), "the words Dolphin's emblem reads");
 }

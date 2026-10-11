@@ -29,6 +29,7 @@ use super::item_free_up::FreeUpDecision;
 use super::item_download_states::{DownloadAsker, ItemDownloadStates};
 use super::item_downloader::{ItemDownloader, ItemToDownload};
 use super::item_free_up::{FreedCopy, ItemFreeUp};
+use super::item_announcements::ItemAnnouncement;
 use super::item_handles::ItemHandles;
 use super::item_inotify_bridge::ItemInotifyBridge;
 use super::write_operation_thread::WriteOperationThread;
@@ -157,8 +158,20 @@ impl ItemFilesInterface {
         let (item, is_pinned) = self.find_onedrive_item(path).await?;
         let Some(onedrive_item) = item.onedrive_item.clone() else { return Err(FilesRefusal::NotInOneDrive) };
         let id = item.local_item_id;
-        // TODO: `pin_holder` from `ItemReader::find_pin_holder(id)` and its path (`find_path`), read in `find_onedrive_item`'s closure; `Nobody` until that reader is filled.
-        Ok(ItemPathStatus { item: id, kind: item.kind, onedrive_item, sync_state: item.file_sync_state(), is_pinned, pin_holder: PinHolder::Nobody, is_downloading: self.download_states.is_downloading(id), is_open_for_writing: self.item_handles.is_open_for_writing(id) })
+        // Whose pin holds for it: the nearest directory above with a pin of its own, else the item's own.
+        let folder = self.folder.clone();
+        let pin_holder = self
+            .store
+            .read_items(move |reader| {
+                Ok(match reader.find_pin_holder(id)? {
+                    None => PinHolder::Nobody,
+                    Some(holder) if holder == id => PinHolder::Itself,
+                    Some(holder) => PinHolder::DirectoryAbove { path: folder.join(reader.find_path(holder)?.unwrap_or_default()) },
+                })
+            })
+            .await
+            .map_err(to_refusal)?;
+        Ok(ItemPathStatus { item: id, kind: item.kind, onedrive_item, sync_state: item.file_sync_state(), is_pinned, pin_holder, is_downloading: self.download_states.is_downloading(id), is_open_for_writing: self.item_handles.is_open_for_writing(id) })
     }
 
     /// Asks for the download of each of `files` and waits for them all: the first
@@ -250,13 +263,16 @@ impl ItemFilesInterface {
     /// its place: the emblem is read from `user.konedrive.pin`). It is the item's OWN pin
     /// that is set or taken off, whatever a directory above it has. Answers whether the
     /// item's own pin changed: `false` for a pin that was there already, or was not.
-    // TODO: filling: the answer is `false` for `PinChange::AlreadySo` once the store answers it (it answers `Written` for every pin today), and the announcement through `inotify_bridge` of the item at its place is not made yet.
     pub async fn set_pin(&self, path: &Path, is_pinned: bool) -> Result<bool, FilesRefusal> {
         let (item, _) = self.find_onedrive_item(path).await?;
         let id = item.local_item_id;
         match self.store.call(move |store| store.item_store().set_item_pin(id, is_pinned)).await.map_err(to_refusal)? {
             PinChange::Written => {
                 self.sync_plan_wake.wake(WakeCause::UserAnswered);
+                // The emblem is read from the pin: whoever watches the folder is told it changed.
+                if let Some(place) = item.local.and_then(|local| local.place) {
+                    self.inotify_bridge.announce(vec![ItemAnnouncement::MarksChanged { item: id, place }]);
+                }
                 Ok(true)
             }
             PinChange::AlreadySo => Ok(false),
