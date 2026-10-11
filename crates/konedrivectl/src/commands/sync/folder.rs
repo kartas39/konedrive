@@ -36,9 +36,7 @@ pub(super) async fn folder_command(
         }
         FolderCmd::Forget { yes } => {
             // Never refused for what is unsent: the user is told what stays only here, and may leave it.
-            if !warn_of_unsent_changes(proxy, yes).await? {
-                return Ok(());
-            }
+            warn_of_unsent_changes(proxy, yes).await?;
             explained(chosen, proxy, SyncAction::Forget, proxy.folder.unregister().await).await?;
             println!("{tag}{}", said::FORGOTTEN);
             fail_if_folder_unhealthy(proxy).await?;
@@ -197,18 +195,18 @@ async fn ignore(chosen: &Chosen, proxy: &FolderProxies<'_>, action: IgnoreCmd) -
 /// (`UploadQueue.UnsentCount()`, answered for a folder in any state) and, when it is not
 /// 0, says "N changes were not sent to OneDrive and will stay only on this computer" and
 /// asks whether to go on; with `is_asking_skipped` — the command's `--yes` — it says it
-/// and goes on unasked, as a script needs. Whether the caller goes on; `true` at once for
-/// 0. A count that cannot be read is said, and asked about too. The question is asked of
+/// and goes on unasked, as a script needs. `Ok` when the caller goes on, at once for
+/// 0; a "no" is the error `Declined`, which ends the command with status 1. A count that cannot be read is said, and asked about too. The question is asked of
 /// a terminal alone: with an input that is none (a script, a pipe, a loop that reads a
 /// list) nothing is read from it and the command fails, naming `--yes`; so does an input
 /// that ends with no answer. The texts and the two decisions are `text::folder`'s.
-pub(crate) async fn warn_of_unsent_changes(proxy: &FolderProxies<'_>, is_asking_skipped: bool) -> anyhow::Result<bool> {
+pub(crate) async fn warn_of_unsent_changes(proxy: &FolderProxies<'_>, is_asking_skipped: bool) -> anyhow::Result<()> {
     use std::io::{IsTerminal as _, Write as _};
     let count = proxy.queue.unsent_count().await.map_err(|error| error.to_string());
-    let Some(warning) = said::unsent_warning_text(count.as_ref().map(|count| *count).map_err(String::as_str)) else { return Ok(true) };
+    let Some(warning) = said::unsent_warning_text(count.as_ref().map(|count| *count).map_err(String::as_str)) else { return Ok(()) };
     eprintln!("{warning}");
     match said::decide_unsent_question(is_asking_skipped, std::io::stdin().is_terminal()) {
-        said::UnsentQuestion::Skipped => return Ok(true),
+        said::UnsentQuestion::Skipped => return Ok(()),
         said::UnsentQuestion::NoTerminal => bail!("{}", said::NO_TERMINAL_TO_ASK),
         said::UnsentQuestion::Asked => {}
     }
@@ -217,12 +215,9 @@ pub(crate) async fn warn_of_unsent_changes(proxy: &FolderProxies<'_>, is_asking_
     let mut line = String::new();
     let is_line_read = std::io::stdin().read_line(&mut line).context("cannot read the answer")? > 0;
     match said::decide_unsent_answer(is_line_read.then_some(line.as_str())) {
-        said::UnsentAnswer::GoOn => Ok(true),
+        said::UnsentAnswer::GoOn => Ok(()),
         said::UnsentAnswer::NotAnswered => bail!("{}", said::QUESTION_NOT_ANSWERED),
-        said::UnsentAnswer::Declined => {
-            // TODO: a "no" ends the command with exit code 0, like one that had nothing to do: whether a command the user declined is to exit with another code is the owner's to say; check and fix if needed.
-            eprintln!("{}", said::NOTHING_CHANGED);
-            Ok(false)
-        }
+        // A command the user declined did not do what it was asked: it says so and exits with status 1.
+        said::UnsentAnswer::Declined => Err(crate::Declined(said::NOTHING_CHANGED).into()),
     }
 }

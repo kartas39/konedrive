@@ -160,4 +160,5 @@ When the service refuses a command, `konedrivectl` says what that means and what
 non-zero. The refusals have D-Bus error names — `org.konedrive.Error.ModifiedLocally`,
 `.NotHydrated`, `.NotUp`, … — which is what a script calling the service directly should match.
 A command that has a question to ask (`sync forget` and `account remove`, when changes were not
-sent) fails when its input is not a terminal, unless it is given `--yes`.
+sent) fails when its input is not a terminal, unless it is given `--yes`. Answered "no" on a
+terminal, it changes nothing and exits with status 1.
