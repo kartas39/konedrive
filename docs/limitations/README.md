@@ -12,40 +12,40 @@ lines: why the limit exists, what follows from it, why it stays, and where to lo
 the code. Ids do not change.
 
 Until 2026-10-05 the log recorded every weak spot, 366 entries. An id with no file here (F245,
-D33) was removed then, and `git log --diff-filter=D -- docs/limitations/<id>.md` finds its text.
+D33) was removed, then or since, and `git log --diff-filter=D -- docs/limitations/<id>.md` finds
+its text. An id is never given twice: a new entry takes the next number its letter never had.
 
 ## What the kernel and the filesystem decide
 
-- [F53](F53.md) — A move is told from a copy only by the recorded inode
-- [F72](F72.md) — A subvolume or mount inside the folder is not synced
-- [F187](F187.md) — A program holding a file open can lose writes when OneDrive removes it
-- [F193](F193.md) — A file saved by rename and moved at once loses its history
-- [F16](F16.md) — A rescue fails when the sync folder is itself a mount point
+- [F296](F296.md) — The sync folder is not served while the daemon is not running
+- [F301](F301.md) — Only the user who runs the daemon reaches the sync folder
+- [F124](F124.md) — A move between two accounts is a download, a removal and an upload
 
 ## What OneDrive and Microsoft decide
 
-- [P7](P7.md) — Some OneDrive items are never placed in the folder
+- [P7](P7.md) — Some OneDrive items are never shown in the folder
 - [F34](F34.md) — A file OneDrive gives without a hash is downloaded unverified
+- [F297](F297.md) — A range read of a file that is not on disk is not checked against the content's version
 - [F39](F39.md) — An upload cannot tell OneDrive its size up front
 - [F66](F66.md) — Consent to write stays with Microsoft after the account turns read-only
 - [F80](F80.md) — A finishing upload can replace an edit just made in OneDrive
-- [F124](F124.md) — A move between two accounts is a download, a delete and an upload
 - [F172](F172.md) — An unfinished upload holds its name in OneDrive with an empty file
 - [F295](F295.md) — "Open in OneDrive" opens under whichever personal account the browser is signed in to
+- [F300](F300.md) — No links, special files or extended attributes of the user's own in the folder
 
 ## What the desktop and the package decide
 
 - [K1](K1.md) — Dolphin opens some files just to show them, which downloads them
+- [K34](K34.md) — "Move to Trash" needs KDE Frameworks 6.21 or later to delete without a download
 - [W14](W14.md) — No desktop search inside a OneDrive folder
 - [F175](F175.md) — No automatic pause without NetworkManager, UPower or power-profiles-daemon
 - [R3](R3.md) — Removing the package does not refuse while a folder is registered
 
 ## What we chose
 
-- [F140](F140.md) — A read-only folder with changes waiting to upload stops following OneDrive
-- [F255](F255.md) — A local-only file keeps a folder that OneDrive no longer has
-- [F38](F38.md) — Finding pins means walking the whole folder
-- [F43](F43.md) — All accounts of one user share one link to the helper
-- [F208](F208.md) — The helper caps each user at 32 folders and 8192 waiting opens
-- [D36](D36.md) — An older build rebuilds a store written by a newer build
+- [F302](F302.md) — A removal made here is sent to OneDrive with no local trash and no confirmation
+- [F299](F299.md) — A directory that holds in OneDrive what the folder cannot show cannot be removed here
+- [F298](F298.md) — A change made in the folder on disk while the daemon is not running is not a move or a removal in OneDrive
+- [F255](F255.md) — A file that is never uploaded keeps a directory that OneDrive removed
+- [D36](D36.md) — A store of another version, or a lost one, is rebuilt
 - [A31](A31.md) — While a wallet prompt is open at the end of a sign-in, other account changes wait
