@@ -244,6 +244,9 @@ impl SyncService {
             }
             if let Some(poll) = &view.poll {
                 poll.refresh();
+                // The notification socket too: closed while the account's background work stops, it looks at the
+                // pause again only once a minute by itself.
+                poll.wake_live();
             }
         }
     }
