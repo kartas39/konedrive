@@ -189,7 +189,7 @@ void AccountStatus::update()
     } else {
         // The line under the folder: what the account is doing, in words, from the counts
         // and the times. The trouble that does not stop the folder is said first, whatever
-        // the reason is (deletes held, a pause).
+        // the reason is (a pause).
         const bool listing = m_sync->rootState() == QLatin1String("listing");
         const int uploads = m_sync->uploads()->count();
         const uint pending = m_sync->pendingCount();
@@ -223,11 +223,7 @@ void AccountStatus::update()
         }
 
         // Why the account needs attention, where the line does not say it: by the reason.
-        if (reason == QLatin1String("deletes-held")) {
-            attention = i18np("1 item deleted here waits for you: delete it in OneDrive too, or restore it",
-                              "%1 items deleted here wait for you: delete them in OneDrive too, or restore them",
-                              m_sync->heldCount());
-        } else if (reason == QLatin1String("conflicts")) {
+        if (reason == QLatin1String("conflicts")) {
             attention = i18np("1 changed file was moved out of the way", "%1 changed files were moved out of the way", m_sync->conflictCount());
         } else if (reason == QLatin1String("quota-full")) {
             attention = i18np("OneDrive is full: 1 file waits for space", "OneDrive is full: %1 files wait for space", m_sync->spaceWaitingCount());

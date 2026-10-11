@@ -24,7 +24,7 @@ FormCard.FormCardPage {
     property bool waitingOpened: false
 
     function countsNow() {
-        return sync ? sync.pendingCount + "/" + sync.blockedCount + "/" + sync.heldCount + "/" + sync.quotaFull + "/" + sync.spaceWaitingCount + "/" + sync.tooBigCount : "";
+        return sync ? sync.pendingCount + "/" + sync.blockedCount + "/" + sync.quotaFull + "/" + sync.spaceWaitingCount + "/" + sync.tooBigCount : "";
     }
 
     /// Loads the summary when the page is shown, when a count changes while

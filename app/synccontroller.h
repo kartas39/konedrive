@@ -65,14 +65,11 @@ class SyncController : public QObject
     /// What the last Free Up Space did, for an inline message; empty when there is nothing to say.
     Q_PROPERTY(QString freeUpResult READ freeUpResult NOTIFY freeUpResultChanged)
     Q_PROPERTY(bool freeingUp READ freeingUp NOTIFY freeUpResultChanged)
-    /// Changes waiting to be uploaded (neither blocked nor held), and the size they send.
+    /// Changes waiting to be uploaded (not blocked), and the size they send.
     Q_PROPERTY(uint pendingCount READ pendingCount NOTIFY syncChanged)
     Q_PROPERTY(qulonglong pendingBytes READ pendingBytes NOTIFY syncChanged)
     /// Changes that need the user before they can go up (see notUploadedSummary).
     Q_PROPERTY(uint blockedCount READ blockedCount NOTIFY syncChanged)
-    /// Removals the mass-delete guard holds (HeldCount), waiting for
-    /// confirmDeletes() or restoreDeletes().
-    Q_PROPERTY(uint heldCount READ heldCount NOTIFY syncChanged)
     /// OneDrive is full (QuotaFull): no content goes up until a Refresh finds space.
     Q_PROPERTY(bool quotaFull READ quotaFull NOTIFY syncChanged)
     /// While full: the changes that wait for space, and the size of their files.
@@ -202,7 +199,6 @@ public:
     uint pendingCount() const { return m_pendingCount; }
     qulonglong pendingBytes() const { return m_pendingBytes; }
     uint blockedCount() const { return m_blockedCount; }
-    uint heldCount() const { return m_heldCount; }
     bool quotaFull() const { return m_quotaFull; }
     uint spaceWaitingCount() const { return m_spaceWaitingCount; }
     qulonglong spaceWaitingBytes() const { return m_spaceWaitingBytes; }
@@ -294,9 +290,6 @@ public:
     /// The list with `pattern` (trimmed) added, if it is not there yet.
     Q_INVOKABLE void addIgnorePattern(const QString &pattern);
     Q_INVOKABLE void removeIgnorePattern(const QString &pattern);
-    /// The mass-delete guard: the held removals go ahead, or are taken back.
-    Q_INVOKABLE void confirmDeletes();
-    Q_INVOKABLE void restoreDeletes();
     /// NotUploadedSummary() into `notUploadedSummary`, and the files of the
     /// reasons shown into `notUploadedFiles`, quietly; at most once a second
     /// (a call within the second is put off to its end). The pages call it
@@ -383,7 +376,6 @@ private:
     uint m_pendingCount = 0;
     qulonglong m_pendingBytes = 0;
     uint m_blockedCount = 0;
-    uint m_heldCount = 0;
     bool m_quotaFull = false;
     uint m_spaceWaitingCount = 0;
     qulonglong m_spaceWaitingBytes = 0;

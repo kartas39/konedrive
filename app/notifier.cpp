@@ -12,7 +12,6 @@
 
 #include <QElapsedTimer>
 #include <QFileInfo>
-#include <QPointer>
 #include <QRegularExpression>
 #include <QTimer>
 #include <QUrl>
@@ -113,11 +112,9 @@ Notifier::Notifier(AccountController *account, SyncController *sync, Notificatio
     connect(m_sync, &SyncController::activityAdded, this, &Notifier::onActivity);
     connect(m_sync, &SyncController::syncChanged, this, &Notifier::onSyncChanged);
     connect(m_sync, &SyncController::serviceAvailableChanged, this, [this] {
-        m_held = m_sync->serviceAvailable() ? int(m_sync->heldCount()) : -1;
         m_full = m_sync->serviceAvailable() ? int(m_sync->quotaFull()) : -1;
     });
     if (m_sync->serviceAvailable()) {
-        m_held = int(m_sync->heldCount());
         m_full = int(m_sync->quotaFull());
     }
     connect(m_account, &AccountController::accountChanged, this, &Notifier::onAccountChanged);
@@ -188,7 +185,7 @@ void Notifier::onActivity(qint64, const QString &kind, const QString &path, cons
 
 void Notifier::onSyncChanged()
 {
-    if (m_held < 0) {
+    if (m_full < 0) {
         // The daemon's first answer sets the baseline (serviceAvailableChanged).
         return;
     }
@@ -201,36 +198,6 @@ void Notifier::onSyncChanged()
               {}});
     }
     m_full = full;
-    const int held = int(m_sync->heldCount());
-    const int before = m_held;
-    m_held = held;
-    if (before != 0 || held == 0) {
-        // A count still held says nothing new.
-        return;
-    }
-    const QPointer<SyncController> sync = m_sync;
-    const auto restore = [sync] {
-        if (sync) {
-            sync->restoreDeletes();
-        }
-    };
-    const auto confirm = [sync] {
-        if (sync) {
-            sync->confirmDeletes();
-        }
-    };
-    Notice notice{QStringLiteral("massDelete"),
-                  i18nc("@title notification", "Many files deleted here"),
-                  i18np("1 item deleted in %2 is not deleted in OneDrive yet. Restore it here, or delete it in OneDrive too?",
-                        "%1 items deleted in %2 are not deleted in OneDrive yet. Restore them here, or delete them in OneDrive too?",
-                        held,
-                        m_sync->rootPath()),
-                  {}};
-    notice.actions = {{i18nc("@action:button", "Restore Them"), restore}, {i18nc("@action:button", "Delete in OneDrive"), confirm}};
-    // Restoring loses nothing, so it is what a click on the notification does;
-    // deleting in OneDrive is only ever its own button.
-    notice.defaultAction = restore;
-    post(notice);
 }
 
 void Notifier::onAccountChanged()
@@ -315,8 +282,6 @@ Notice Notifier::summary(const Window &window) const
         notice.text = i18np("1 more of your changed files was moved out of the way.", "%1 more of your changed files were moved out of the way.", n);
     } else if (notice.event == QLatin1String("uploadFailed")) {
         notice.text = i18np("1 more change could not be uploaded.", "%1 more changes could not be uploaded.", n);
-    } else if (notice.event == QLatin1String("massDelete")) {
-        notice.text = i18n("More items deleted here are not deleted in OneDrive yet.");
     }
     return notice;
 }

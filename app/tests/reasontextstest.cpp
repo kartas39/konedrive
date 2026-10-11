@@ -35,7 +35,6 @@ private Q_SLOTS:
         row("quota-exceeded", QStringLiteral("OneDrive is full: free some space in OneDrive."));
         row("forbidden", QStringLiteral("This sign-in does not allow uploads: sign in again."));
         row("open-for-writing", QStringLiteral("Open for writing in another program: it goes up once closed."));
-        row("mass-delete", QStringLiteral("Part of a large delete: delete it in OneDrive too, or restore it, on the Status page."));
         row("symlink", QStringLiteral("A symbolic link: never uploaded."));
         row("fifo", notAFile);
         row("socket", notAFile);
@@ -105,7 +104,6 @@ private Q_SLOTS:
                                    "something-new",
                                    "network: connection reset",
                                    "symlink: of some kind",
-                                   "mass-delete: 12 files",
                                    "too-big:1:2:3",
                                    // Past what a signed 64-bit number holds: not printed negative.
                                    "too-big:9223372036854775808:1",

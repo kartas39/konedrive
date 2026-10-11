@@ -414,7 +414,6 @@ class FakeUploadQueue : public FakeFolderInterface
     Q_PROPERTY(uint PendingCount READ pendingCount)
     Q_PROPERTY(qulonglong PendingBytes READ pendingBytes)
     Q_PROPERTY(uint BlockedCount READ blockedCount)
-    Q_PROPERTY(uint HeldCount READ heldCount)
     Q_PROPERTY(bool QuotaFull READ quotaFull)
     Q_PROPERTY(uint QuotaWaitingCount READ quotaWaitingCount)
     Q_PROPERTY(qulonglong QuotaWaitingBytes READ quotaWaitingBytes)
@@ -429,7 +428,6 @@ public:
                                   {QStringLiteral("PendingCount"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("PendingBytes"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(0)},
-                                  {QStringLiteral("HeldCount"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("QuotaFull"), false},
                                   {QStringLiteral("QuotaWaitingCount"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("QuotaWaitingBytes"), QVariant::fromValue<qulonglong>(0)},
@@ -441,7 +439,6 @@ public:
     uint pendingCount() const { return value("PendingCount").toUInt(); }
     qulonglong pendingBytes() const { return value("PendingBytes").toULongLong(); }
     uint blockedCount() const { return value("BlockedCount").toUInt(); }
-    uint heldCount() const { return value("HeldCount").toUInt(); }
     bool quotaFull() const { return value("QuotaFull").toBool(); }
     uint quotaWaitingCount() const { return value("QuotaWaitingCount").toUInt(); }
     qulonglong quotaWaitingBytes() const { return value("QuotaWaitingBytes").toULongLong(); }
@@ -450,8 +447,6 @@ public:
 public Q_SLOTS:
     KonedriveOutboxList Changes(uint limit);
     qulonglong UnsentCount();
-    uint ConfirmDeletes();
-    uint RestoreDeletes();
     KonedriveSkippedList NotUploaded();
     KonedriveKeptBackList NotUploadedSummary();
     KonedriveSkippedList NotUploadedFiles(const QString &reason, uint limit, uint &total);
@@ -565,16 +560,6 @@ public:
     void setTransfers(const KonedriveTransferList &downloads) { transfers->setDownloads(downloads); }
     void setUploads(const KonedriveTransferList &uploads) { transfers->setUploads(uploads); }
 
-    /// The mass-delete guard trips: `count` removals of `path`'s kind are
-    /// held, in the queue and in HeldCount.
-    void holdDeletes(const QString &path, uint count)
-    {
-        for (uint i = 0; i < count; ++i) {
-            outboxRows << KonedriveOutboxRow{100 + i, QStringLiteral("delete"), path + QString::number(i), QStringLiteral("held"), 0, 0, QStringLiteral("mass-delete"), 0};
-        }
-        queue->set({{QStringLiteral("HeldCount"), QVariant::fromValue<uint>(queue->heldCount() + count)}});
-    }
-
     /// Records an event in Recent() and emits ActivityLog.Added, as the daemon does.
     void activity(qint64 time, const QString &kind, const QString &path, const QString &detail)
     {
@@ -628,8 +613,7 @@ public:
     uint freedFiles = 0;
     qulonglong freedBytes = 0;
     uint busyFiles = 0;
-    /// Changes(), oldest first; Confirm/RestoreDeletes act on its "held" rows
-    /// and set HeldCount to 0. holdDeletes() holds some, as the guard does.
+    /// Changes(), oldest first.
     KonedriveOutboxList outboxRows;
     /// NotUploaded().
     KonedriveSkippedList notUploadedList;
@@ -753,31 +737,6 @@ inline qulonglong FakeUploadQueue::UnsentCount()
 {
     m_sync->calls << QStringLiteral("UnsentCount");
     return qulonglong(m_sync->outboxRows.size());
-}
-
-inline uint FakeUploadQueue::ConfirmDeletes()
-{
-    m_sync->calls << QStringLiteral("ConfirmDeletes");
-    uint released = 0;
-    for (KonedriveOutboxRow &row : m_sync->outboxRows) {
-        if (row.state == QLatin1String("held")) {
-            row.state = QStringLiteral("ready");
-            row.reason.clear();
-            ++released;
-        }
-    }
-    set({{QStringLiteral("HeldCount"), QVariant::fromValue<uint>(0)}});
-    return released;
-}
-
-inline uint FakeUploadQueue::RestoreDeletes()
-{
-    m_sync->calls << QStringLiteral("RestoreDeletes");
-    const auto dropped = m_sync->outboxRows.removeIf([](const KonedriveOutboxRow &row) {
-        return row.state == QLatin1String("held");
-    });
-    set({{QStringLiteral("HeldCount"), QVariant::fromValue<uint>(0)}});
-    return uint(dropped);
 }
 
 inline KonedriveSkippedList FakeUploadQueue::NotUploaded()

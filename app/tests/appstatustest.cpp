@@ -187,9 +187,9 @@ private Q_SLOTS:
         QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
     }
 
-    /// Changes waiting or going up are syncing; blocked ones and held
-    /// removals need attention; a pause is its own state.
-    void uploadsBlockedHeldAndPaused()
+    /// Changes waiting or going up are syncing; blocked ones need attention;
+    /// a pause is its own state.
+    void uploadsBlockedAndPaused()
     {
         startSynced();
         m_daemon->sync->queue->set({{QStringLiteral("PendingCount"), QVariant::fromValue<uint>(3)}});
@@ -205,11 +205,6 @@ private Q_SLOTS:
         QCOMPARE(m_status->iconName(), QStringLiteral("state-warning"));
         QCOMPARE(m_status->attention(), QStringLiteral("2 changes cannot be uploaded"));
 
-        m_daemon->sync->holdDeletes(Root + QStringLiteral("/old"), 1);
-        decide("warning", "deletes-held");
-        QTRY_COMPARE(m_status->attention(), QStringLiteral("1 item deleted here waits for you: delete it in OneDrive too, or restore it"));
-
-        m_daemon->sync->queue->RestoreDeletes();
         m_daemon->sync->queue->set({{QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(0)}, {QStringLiteral("PendingCount"), QVariant::fromValue<uint>(0)}});
         m_daemon->sync->setUploads({});
         m_daemon->sync->folder->Pause(0);

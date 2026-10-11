@@ -258,7 +258,6 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         count("PendingCount", m_pendingCount);
         number("PendingBytes", m_pendingBytes);
         count("BlockedCount", m_blockedCount);
-        count("HeldCount", m_heldCount);
         if (const auto it = p.constFind(QLatin1String("QuotaFull")); it != p.constEnd()) {
             m_quotaFull = it->toBool();
         }
@@ -637,16 +636,6 @@ void SyncController::removeIgnorePattern(const QString &pattern)
     if (patterns.removeAll(pattern) > 0) {
         setIgnorePatterns(patterns);
     }
-}
-
-void SyncController::confirmDeletes()
-{
-    call(m_queue->ConfirmDeletes());
-}
-
-void SyncController::restoreDeletes()
-{
-    call(m_queue->RestoreDeletes());
 }
 
 void SyncController::loadNotUploaded()

@@ -380,33 +380,6 @@ FormCard.FormCardPage {
             icon.name: "dialog-warning"
             onClicked: page.window.showPage("notUploaded")
         }
-        // The mass-delete guard: held until the user decides, here, in the
-        // notification, or with konedrivectl sync deletes.
-        FormCard.FormTextDelegate {
-            objectName: "heldLine"
-            visible: page.oneDrive && page.sync.heldCount > 0
-            text: page.sync ? i18np("1 item deleted here waits for you", "%1 items deleted here wait for you", page.sync.heldCount) : ""
-            description: i18n("So many deletions at once are held: nothing is deleted in OneDrive until you say so. Restoring puts the files back here; deleting in OneDrive moves them to its recycle bin.")
-            leading: Kirigami.Icon {
-                source: "dialog-warning"
-                implicitWidth: Kirigami.Units.iconSizes.medium
-                implicitHeight: Kirigami.Units.iconSizes.medium
-            }
-        }
-        FormCard.FormButtonDelegate {
-            objectName: "restoreDeletes"
-            visible: page.oneDrive && page.sync.heldCount > 0
-            text: i18nc("@action:button", "Restore Them")
-            icon.name: "edit-undo"
-            onClicked: page.sync.restoreDeletes()
-        }
-        FormCard.FormButtonDelegate {
-            objectName: "confirmDeletes"
-            visible: page.oneDrive && page.sync.heldCount > 0
-            text: i18nc("@action:button", "Delete in OneDrive Too")
-            icon.name: "edit-delete"
-            onClicked: page.sync.confirmDeletes()
-        }
         // The account holds back by itself (HeldBack): a metered connection, the
         // battery. Not the user's pause, which the line below shows as before.
         FormCard.FormTextDelegate {

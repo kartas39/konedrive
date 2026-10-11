@@ -200,36 +200,6 @@ private Q_SLOTS:
         QCOMPARE(m_sink.sent.size(), 1);
     }
 
-    /// Removals the mass-delete guard holds notify once when they appear
-    /// (not those already held when the window first looked), with Restore
-    /// first and as what a click on the notification does.
-    void heldDeletesNotifyWithRestoreAsTheDefault()
-    {
-        start();
-        QCOMPARE(m_sink.sent.size(), 0);
-
-        m_daemon->sync->holdDeletes(Root + QStringLiteral("/old"), 2);
-        QTRY_COMPARE(m_sink.sent.size(), 1);
-        const Notice notice = m_sink.sent.first();
-        QCOMPARE(notice.event, QStringLiteral("massDelete"));
-        QCOMPARE(notice.text, QStringLiteral("2 items deleted in /home/u/OneDrive are not deleted in OneDrive yet. Restore them here, or delete them in OneDrive too?"));
-        QCOMPARE(notice.actions.size(), 2);
-        QCOMPARE(notice.actions.at(0).label, QStringLiteral("Restore Them"));
-        QCOMPARE(notice.actions.at(1).label, QStringLiteral("Delete in OneDrive"));
-        QVERIFY(notice.defaultAction);
-
-        // More held while some already are: nothing new.
-        m_daemon->sync->holdDeletes(Root + QStringLiteral("/older"), 1);
-        QTRY_COMPARE(m_sync->heldCount(), 3u);
-        QCOMPARE(m_sink.sent.size(), 1);
-
-        notice.defaultAction();
-        QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("RestoreDeletes")));
-        QVERIFY(!m_daemon->sync->calls.contains(QStringLiteral("ConfirmDeletes")));
-        notice.actions.at(1).run();
-        QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("ConfirmDeletes")));
-    }
-
     /// M3: past the cap, the daemon's own "and N more" conflict event (path
     /// = the root) is a count, not a rescued path.
     void aCappedConflictSummaryCountsRatherThanNamingAPath()

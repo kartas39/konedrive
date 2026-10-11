@@ -91,7 +91,7 @@ private Q_SLOTS:
     }
 
     /// What waits to go up, and the controls over it: the counts, pause and
-    /// resume, the ignore list, the mass-delete guard's two answers, and what
+    /// resume, the ignore list, and what
     /// is kept back — by reason, with the files of a reason only when shown.
     void theOutboxAndItsControls()
     {
@@ -99,7 +99,6 @@ private Q_SLOTS:
         const QString root = QStringLiteral("/home/u/OneDrive");
         m_fake->outboxRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("running"), 5, 10, QString(), 0},
                               {2, QStringLiteral("create"), root + QStringLiteral("/a:b"), QStringLiteral("blocked"), 0, 3, QStringLiteral("name-characters"), 0}};
-        m_fake->holdDeletes(root + QStringLiteral("/old"), 1);
         m_fake->keptBack = {{QStringLiteral("one-action"), QStringLiteral("quota-exceeded"), 5000, 7ULL << 30},
                             {QStringLiteral("per-file"), QStringLiteral("name-characters"), 1, 3},
                             {QStringLiteral("never"), QStringLiteral("symlink"), 1, 0}};
@@ -108,7 +107,6 @@ private Q_SLOTS:
         QTRY_VERIFY(controller.serviceAvailable());
         QCOMPARE(controller.machineName(), QStringLiteral("fedora"));
         QCOMPARE(controller.ignorePatterns(), (QStringList{QStringLiteral("*.tmp"), QStringLiteral("~*")}));
-        QCOMPARE(controller.heldCount(), 1u);
 
         m_fake->queue->set({{QStringLiteral("PendingCount"), QVariant::fromValue<uint>(1)},
                             {QStringLiteral("PendingBytes"), QVariant::fromValue<qulonglong>(10)},
@@ -129,10 +127,6 @@ private Q_SLOTS:
         QTRY_COMPARE(controller.ignorePatterns(), (QStringList{QStringLiteral("*.tmp"), QStringLiteral("*.bak")}));
         controller.addIgnorePattern(QStringLiteral("a/b"));
         QTRY_VERIFY(controller.actionError().contains(QStringLiteral("not a pattern")));
-
-        controller.restoreDeletes();
-        QTRY_COMPARE(controller.heldCount(), 0u);
-        QVERIFY(m_fake->calls.contains(QStringLiteral("RestoreDeletes")));
 
         controller.loadNotUploaded();
         QTRY_VERIFY(controller.notUploadedKnown());

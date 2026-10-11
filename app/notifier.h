@@ -20,7 +20,7 @@ struct NoticeAction {
 /// One desktop notification, as the Notifier decides it.
 struct Notice {
     /// The event in konedrive.notifyrc: signedOut, diskFull, downloadFailed,
-    /// updateFailed, uploadFailed, conflict, massDelete.
+    /// updateFailed, uploadFailed, conflict.
     QString event;
     QString title;
     QString text;
@@ -33,7 +33,7 @@ struct Notice {
     /// Buttons, in order.
     QList<NoticeAction> actions = {};
     /// When set, a click on the notification itself runs this rather than
-    /// opening the window: massDelete's safe choice, RestoreDeletes.
+    /// opening the window.
     std::function<void()> defaultAction = {};
 };
 
@@ -65,8 +65,8 @@ private:
 
 /// Turns what one account's daemon objects report into notifications:
 /// signing out after being signed in, a full disk, a failed download, a
-/// failed update, a change that cannot be uploaded, a conflict (a rescue or a
-/// copy), and removals the mass-delete guard holds. Nothing else notifies. Each event kind sends at
+/// failed update, a change that cannot be uploaded and a conflict (a rescue or a
+/// copy). Nothing else notifies. Each event kind sends at
 /// most one notification per 10 s window; what arrives inside a window is
 /// counted and sent as one summary when the window ends. Each account has its
 /// own Notifier, so windows and summaries are per account and kind.
@@ -110,7 +110,7 @@ private:
 
     void onActivity(qint64 time, const QString &kind, const QString &path, const QString &detail);
     void onAccountChanged();
-    /// Held removals appearing (HeldCount from 0): massDelete, once each time they appear.
+    /// OneDrive turning full (QuotaFull from false): uploadFailed, once each time.
     void onSyncChanged();
     /// The sign-out, once SignOutDelayMs has passed with the account still signed out.
     void announceSignOut();
@@ -132,9 +132,8 @@ private:
     QString m_accountState;
     /// The user signed out from this window: the sign-out that follows is theirs, not news.
     bool m_signOutAsked = false;
-    /// HeldCount as last seen; -1 while the daemon is away. The daemon's first
-    /// answer only sets it (a restart replays nothing).
-    int m_held = -1;
-    /// QuotaFull as last seen, the same way: one notice when OneDrive turns full.
+    /// QuotaFull as last seen; -1 while the daemon is away. The daemon's first
+    /// answer only sets it (a restart replays nothing): one notice when OneDrive
+    /// turns full.
     int m_full = -1;
 };
