@@ -47,7 +47,7 @@ fn about(reason: Reason, trouble: &str) -> Overall {
 fn an_account_signing_in_is_offline() {
     // Whatever its folder says.
     let mut s = healthy();
-    s.outbox.held_count = 3;
+    s.outbox.blocked_count = 3;
     assert_eq!(overall(SignInState::SigningIn, &s, 1), plain(Reason::SigningIn));
     assert_eq!(Reason::SigningIn.state(), State::Offline);
 }
@@ -89,12 +89,6 @@ fn anything_moving_or_waiting_to_upload_is_transferring() {
     assert_eq!(with(|s| s.outbox.uploads = vec![("/home/u/OneDrive/a".into(), 1, 2)]), plain(Reason::Transferring), "an upload");
     assert_eq!(with(|s| s.outbox.pending_count = 1), plain(Reason::Transferring), "a change waiting to upload");
     assert_eq!(Reason::Transferring.state(), State::Syncing);
-}
-
-#[test]
-fn deletions_held_for_the_user_are_a_warning() {
-    assert_eq!(with(|s| s.outbox.held_count = 40), plain(Reason::DeletesHeld));
-    assert_eq!(Reason::DeletesHeld.state(), State::Warning);
 }
 
 #[test]
@@ -148,15 +142,6 @@ fn a_folder_at_rest_is_up_to_date() {
 // --- The order between rows that can hold at once ---
 
 #[test]
-fn deletes_held_come_before_conflicts() {
-    let both = with(|s| {
-        s.outbox.held_count = 2;
-        s.local.conflict_count = 5;
-    });
-    assert_eq!(both, plain(Reason::DeletesHeld));
-}
-
-#[test]
 fn unreachable_and_paused_is_paused() {
     let both = with(|s| {
         s.cycle.sync_trouble = unreachable("cannot reach OneDrive (timed out); trying again");
@@ -189,11 +174,11 @@ fn a_listing_with_trouble_that_does_not_stop_it_is_listing() {
     });
     assert_eq!(listing, plain(Reason::Listing));
     // What needs the user is counted while listing too.
-    let held = with(|s| {
+    let conflicts = with(|s| {
         s.cycle.listing = true;
-        s.outbox.held_count = 1;
+        s.local.conflict_count = 1;
     });
-    assert_eq!(held, plain(Reason::DeletesHeld));
+    assert_eq!(conflicts, plain(Reason::Conflicts));
 }
 
 // --- Nothing is decided by a sentence ---
@@ -250,8 +235,7 @@ fn trouble_that_does_not_stop_the_folder_is_a_warning_that_says_it() {
 #[test]
 fn the_first_rule_that_holds_decides() {
     type Change = fn(&mut SyncSnapshot);
-    let rules: [(Reason, Change); 10] = [
-        (Reason::DeletesHeld, |s| s.outbox.held_count = 1),
+    let rules: [(Reason, Change); 9] = [
         (Reason::Conflicts, |s| s.local.conflict_count = 1),
         (Reason::QuotaFull, |s| s.outbox.quota_full = true),
         (Reason::TooBig, |s| s.outbox.too_big_count = 1),
@@ -315,9 +299,9 @@ fn unreachable_with_other_trouble_is_a_warning() {
 fn the_sentences_are_published_under_every_reason() {
     let mut s = healthy();
     s.outbox.note = Some(OutboxNote::Unreadable);
-    s.outbox.held_count = 1;
+    s.local.conflict_count = 1;
     let said = |reason| about(reason, &OutboxNote::Unreadable.text());
-    assert_eq!(of(&s), said(Reason::DeletesHeld));
+    assert_eq!(of(&s), said(Reason::Conflicts));
     assert_eq!(overall(SignInState::SignedOut, &s, 0), said(Reason::SignedOut));
 
     // A folder that has stopped says everything `LastError` says.
@@ -333,9 +317,9 @@ fn no_trouble_is_published_while_listing_or_starting() {
     let listing = with(|s| {
         s.cycle.listing = true;
         s.outbox.note = Some(OutboxNote::Unreadable);
-        s.outbox.held_count = 1;
+        s.local.conflict_count = 1;
     });
-    assert_eq!(listing, plain(Reason::DeletesHeld));
+    assert_eq!(listing, plain(Reason::Conflicts));
     let starting = with(|s| {
         s.folder.root_state = RootState::Waiting;
         s.outbox.note = Some(OutboxNote::Unreadable);

@@ -170,9 +170,6 @@ pub struct OutboxStatus {
     pub pending_count: u32,
     pub pending_bytes: u64,
     pub blocked_count: u32,
-    /// `HeldCount`: removals the mass-delete guard holds for `ConfirmDeletes`
-    /// or `RestoreDeletes` (the outbox on the bus).
-    pub held_count: u32,
     /// `Transfers.Uploads`: (full path, bytes sent, bytes in all), as `Downloads`.
     pub uploads: Vec<(String, u64, u64)>,
     /// `QuotaFull`: OneDrive is full and no content goes up.

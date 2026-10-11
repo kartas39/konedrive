@@ -170,8 +170,8 @@ impl Answers {
                 let moved = ConfirmedItem { parent: parent.clone(), name: name.clone(), ..moved };
                 store.item_store().commit_send_move(item, parent, name, &moved)?
             }
-            OneDriveStep::SendFileRemoval { item } => store.item_store().commit_send_file_removal(item, 0)?,
-            OneDriveStep::SendDirectoryRemoval { item, below } => store.item_store().commit_send_directory_removal(item, below, 0)?,
+            OneDriveStep::SendFileRemoval { item } => store.item_store().commit_send_file_removal(item)?,
+            OneDriveStep::SendDirectoryRemoval { item, below } => store.item_store().commit_send_directory_removal(item, below)?,
         };
         Ok(StandInAnswer::Committed(committed))
     }

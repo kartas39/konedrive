@@ -43,7 +43,6 @@
 // test: the_unsent_total_leaves_out_what_is_left_here_and_sums_the_local_content
 // test: the_items_left_here_are_read_bounded
 // test: the_path_of_an_item_the_folder_does_not_show_is_that_of_its_synced_place
-// test: the_unsent_removals_are_read_in_the_order_they_came_to_be_unsent
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
@@ -515,20 +514,6 @@ impl ItemReader<'_> {
             }
         }
         Err(refuse(format!("the directories item {item} was agreed to be below do not end at one the folder shows")))
-    }
-
-    /// The items that were removed here and that OneDrive has, in the order they came to
-    /// be unsent, after the stamp `after`, at most `limit`: a removed directory, and each
-    /// item OneDrive has below it that was removed with it, as rows of their own. Called
-    /// by `ConfirmDeletes` (what is confirmed) and `RestoreDeletes` (what is taken back),
-    /// which read it whole in pages. MISSING-1.k, 2.l.
-    pub fn list_unsent_removals(&self, after: Option<u64>, limit: usize) -> Result<Vec<Item>, TreeError> {
-        let sql = format!(
-            "SELECT {ITEM_COLUMNS} FROM items INDEXED BY items_unsent
-             WHERE unsent_since IS NOT NULL AND NOT {LEFT_HERE} AND local_parent_id IS NULL AND onedrive_parent_id IS NOT NULL AND unsent_since > ?1
-             ORDER BY unsent_since LIMIT ?2"
-        );
-        self.list_items(&sql, params![after.map_or(0, |stamp| stamp as i64), limit as i64])
     }
 
     /// The folder's state of sending, with the stamp of its switch to read-only, as

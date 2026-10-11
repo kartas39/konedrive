@@ -168,7 +168,6 @@
                                         (State is "waiting")
            warning  stopped             the folder's syncing has stopped on an
                                         error (State is "error")
-           warning  deletes-held        deletions wait for the user's decision
            warning  conflicts           changed files were moved out of the way
            warning  quota-full          OneDrive is full, files wait for space
            warning  too-big             files are too big for the space left
@@ -201,7 +200,7 @@
          failed-update note. Empty in every other State: no such trouble is
          counted while the first listing runs. A client shows it as the
          sentence of "stopped", "trouble" and "unreachable", and may show it
-         under any other reason too (deletes held, a pause). -->
+         under any other reason too (a pause). -->
     <property name="Trouble" type="s" access="read"/>
     <!-- The failed-update note alone, "N file(s) changed in OneDrive could
          not be updated here yet: <reason>", whenever there is one, whatever

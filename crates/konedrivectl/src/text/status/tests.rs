@@ -42,7 +42,7 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
         path: "/home/u/OneDrive".into(),
         state: Some("ready".into()),
         last_error: "one file could not be placed".into(),
-        overall: Some(Reason::DeletesHeld.into()),
+        overall: Some(Reason::Conflicts.into()),
         trouble: "one file could not be placed".into(),
         not_updated: String::new(),
         source: "onedrive".into(),
@@ -60,7 +60,6 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
         quota_waiting: 4,
         quota_waiting_bytes: 1 << 30,
         too_big: 1,
-        held_deletes: 60,
         paused: true,
         paused_until: 0,
         held_back: "metered".into(),
@@ -71,7 +70,7 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
     let p = "konedrivectl --account Work";
     let expected = format!(
         "Folder:                 /home/u/OneDrive\n\
-         Overall:                warning — deletions made here wait for you: delete them in OneDrive too, or restore them\n\
+         Overall:                warning — changed files were moved out of the way\n\
          State:                  ready\n\
          Files:                  a file that is not downloaded is read from OneDrive when something reads it\n\
          Last error:             one file could not be placed\n\
@@ -86,7 +85,6 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
          Blocked:                1 (see `{p} sync not-uploaded`)\n\
          Waiting for space:      {space}\n\
          Too big for the space:  1 (see `{p} sync outbox`)\n\
-         Held for confirmation:  60 deletions (`{p} sync deletes confirm` or `{p} sync deletes restore`)\n\
          Paused until:           resumed (`{p} sync resume`)\n\
          Paused by itself:       metered connection (`{p} sync anyway` syncs now)\n\
          On this computer:       5.0 MiB\n\

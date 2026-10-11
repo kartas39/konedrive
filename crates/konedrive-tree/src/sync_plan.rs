@@ -23,7 +23,6 @@
 //!   what was agreed to be in it ([`directory_binding`]);
 //! - the items that wait for each other's names, and the temporary name one of them goes
 //!   through, and the row a listing made of an item under that name ([`name_exchange`]);
-//! - the guard against a mass removal ([`mass_removal`]);
 //! - the items that wait for one another, and where that ends ([`wait_chain`]).
 //!
 //! And what they are made of: one thing to do ([`sync_step`]), and the rows of one plan, as
@@ -46,8 +45,6 @@ use crate::{OwnUploadContent, TemporaryName};
 mod conflict_copy_name;
 /// The binding of a directory that moves to another row, and what was agreed to be in it.
 mod directory_binding;
-/// The guard against a mass removal.
-mod mass_removal;
 /// A directory moved here into what OneDrive has in it.
 mod move_cycle;
 /// A name of a directory of OneDrive, and the items that have or want it.
@@ -215,18 +212,6 @@ pub struct SyncPlanInput {
     /// This computer's name, as a conflict copy's name holds it
     /// ([`make_conflict_copy_name`]).
     pub computer_name: String,
-    /// How many items the folder shows: what the guard against a mass removal takes a share
-    /// of.
-    pub shown_item_count: u64,
-    /// The items whose removal from OneDrive the user confirmed: a removed directory, for
-    /// all OneDrive has in it.
-    pub items_with_confirmed_removal: BTreeSet<LocalItemId>,
-    /// How many items the unsent removals take from OneDrive that the user did not confirm,
-    /// those of items that were not given too: every item that was removed here and that
-    /// OneDrive has, a removed directory with all OneDrive has in it
-    /// ([`ItemStore::count_unsent_removals`](crate::ItemStore::count_unsent_removals)).
-    /// What the guard against a mass removal asks of.
-    pub unsent_removal_count: u64,
     /// What the steps remember of a name OneDrive answered is taken: for each item whose
     /// sending OneDrive refused so, the place the folder showed it at when it was sent —
     /// its local place, also when the request named a temporary name. While the item is at
@@ -265,18 +250,6 @@ pub struct SyncPlanInput {
     /// and forgets it once the content was sent again and confirmed or OneDrive's was
     /// taken; it goes with the item's row, and stays with the item when its binding moves.
     pub own_upload_contents: BTreeMap<LocalItemId, OwnUploadContent>,
-    /// How many items the removals took from OneDrive that this client sent a short time
-    /// ago: what the store counted, as of `now`
-    /// ([`ItemStore::find_sent_removal_window`](crate::ItemStore::find_sent_removal_window),
-    /// its `removal_count`), whatever listing ended meanwhile. The guard against a mass
-    /// removal counts them with the unsent ones, so that removals that come one by one,
-    /// with a plan made between them, are held like those of one plan. The window ends by
-    /// itself, a fixed time after the last removal sent; the caller owes it only the time
-    /// — the same `now` here, to the reading and to the commit of each removal. *Not
-    /// enforced*: a commit given a time long past counts its removal in no window, and
-    /// the next plan holds less; one given a time to come holds more, until that time has
-    /// passed by the window's length.
-    pub sent_removal_count: u64,
     /// The time now, in Unix seconds: what a time the caller gives is compared with.
     pub now: i64,
     /// What is remembered of a try that failed: for each such item, and for the steps the
@@ -657,8 +630,7 @@ impl SyncPlan {
 ///    own (`removed_directory`); then a directory whose binding moves to another row, and
 ///    what was agreed to be in it (`directory_binding`);
 /// 5. the items that wait for each other's names (`name_exchange`);
-/// 6. the guard against a mass removal (`mass_removal`);
-/// 7. where each wait for another item ends (`wait_chain`); and, for a file whose wait
+/// 6. where each wait for another item ends (`wait_chain`); and, for a file whose wait
 ///    ends at the user, what the content table says meanwhile.
 ///
 /// A step towards the folder or of the rows whose own next try is later waits until then
@@ -674,9 +646,8 @@ impl SyncPlan {
 /// directory is made to wait for it (4), and read a file removed here that waits for
 /// another item as one that comes back and stays at its name — true of what an item is
 /// answered by itself, and not of the wait (4) gives everything below a removed directory,
-/// whose removal frees its name. The guard against a mass removal (6) holds only steps,
-/// so it comes after everything that makes or takes a removal; and the waits are followed
-/// to their ends (7) last, over the answers as they then stand.
+/// whose removal frees its name. The waits are followed to their ends (6) last, over the
+/// answers as they then stand.
 pub fn make_sync_plan(input: &SyncPlanInput) -> SyncPlan {
     let items = PlanItems::of(&input.items);
     let cases = describe_items(input, &items);
@@ -692,7 +663,6 @@ pub fn make_sync_plan(input: &SyncPlanInput) -> SyncPlan {
     answers.overrule(removed_directory::keep_directories_that_hold_the_users_own(&cases, &items, &answers));
     answers.overrule(directory_binding::wait_for_directories_that_give_up_their_binding(&cases, &answers));
     answers.overrule(name_exchange::break_circles_of_names(&cases, &items, &name_contests.sendings_that_wait, &answers));
-    answers.overrule(mass_removal::hold_mass_removal(input.unsent_removal_count + input.sent_removal_count, input.shown_item_count, &input.items_with_confirmed_removal, &answers));
     answers.overrule(tried_step::hold_steps_until_next_try(&input.next_tries, input.now, &answers));
     answers.overrule(wait_chain::end_waits_for_other_items(input.is_listing_under_way, &items, &answers));
     let waiting_for_the_user: BTreeSet<LocalItemId> = wait_chain::list_items_that_wait_for_the_user(&answers).into_iter().collect();

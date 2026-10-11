@@ -82,7 +82,6 @@ use super::item_row::{confirm_removal_below, find_bound_item, find_item, list_be
 use super::onedrive_versions::{confirm_onedrive_version, ListingUnderWay};
 use super::own_upload_content::find_own_upload_content;
 use super::place_change_records::{forget_place_change_record_when_written, PlaceChangeRecordId};
-use super::sent_removal_window::add_sent_removals;
 use crate::step_memory::{
     carry_content, find_mismatched_item, forget_confirmed_request, forget_ended_upload_session, forget_temporary_name_unless_at, forget_temporary_names_of_items_onedrive_lacks, ConfirmedRequest, UploadSessionAddress,
 };
@@ -165,11 +164,9 @@ impl ItemStore<'_> {
     /// alone, stamped, for the guard against an outdated listing. That is the row the step
     /// was planned from, unless a file was made at its place meanwhile and took the
     /// binding: that file then gives the binding up to such a row, and is an item OneDrive
-    /// does not have, which the next plan sends as a new one. `now` is the time, in Unix
-    /// seconds: the removal is counted among those sent a short time ago
-    /// ([`find_sent_removal_window`](Self::find_sent_removal_window)).
-    pub fn commit_send_file_removal(&mut self, item: &ItemVersions, now: i64) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_send_file_removal(tx, item, now))
+    /// does not have, which the next plan sends as a new one.
+    pub fn commit_send_file_removal(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
+        self.write(|tx| commit_send_file_removal(tx, item))
     }
 
     /// The commit of
@@ -181,11 +178,9 @@ impl ItemStore<'_> {
     /// are their rows', and `below` is all the rows say OneDrive has below the directory —
     /// what [`can_directory_removal_be_sent`](Self::can_directory_removal_be_sent) asks,
     /// of the rows alone. When the rows changed, OneDrive has removed what they still say
-    /// it has: the step asks for a listing. `now` is the time, in Unix seconds: the
-    /// directory and each of `below` are counted among the removals sent a short time ago
-    /// ([`find_sent_removal_window`](Self::find_sent_removal_window)).
-    pub fn commit_send_directory_removal(&mut self, item: &ItemVersions, below: &[ItemVersions], now: i64) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_send_directory_removal(tx, item, below, now))
+    /// it has: the step asks for a listing.
+    pub fn commit_send_directory_removal(&mut self, item: &ItemVersions, below: &[ItemVersions]) -> Result<StepCommitOutcome, TreeError> {
+        self.write(|tx| commit_send_directory_removal(tx, item, below))
     }
 
     /// Whether the removal of the directory of `item`, planned with `below` as what was
@@ -565,7 +560,7 @@ pub(crate) fn commit_send_move(tx: &Transaction<'_>, item: &ItemVersions, parent
 
 /// [`ItemStore::commit_send_file_removal`], inside the caller's transaction, which is
 /// dropped on any error.
-pub(crate) fn commit_send_file_removal(tx: &Transaction<'_>, item: &ItemVersions, now: i64) -> Result<StepCommitOutcome, TreeError> {
+pub(crate) fn commit_send_file_removal(tx: &Transaction<'_>, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
     let id = item.local_item_id;
     let (Some(binding), None) = (&item.onedrive_item, &item.local) else { return Err(refuse_step(id, "it has no binding, or the folder showed it when the step was planned")) };
     let Some(row) = find_bound_item(tx, binding)?.filter(|row| item.are_onedrive_and_synced_those_of(row)) else { return Ok(StepCommitOutcome::RowsChanged) };
@@ -579,7 +574,6 @@ pub(crate) fn commit_send_file_removal(tx: &Transaction<'_>, item: &ItemVersions
         None => row.local_item_id,
     };
     confirm_onedrive_version(tx, removed, &ConfirmedOneDriveVersion::Removed)?;
-    add_sent_removals(tx, 1, now)?;
     forget_temporary_names_of_items_onedrive_lacks(tx)?;
     Ok(StepCommitOutcome::Written)
 }
@@ -590,7 +584,7 @@ pub(crate) fn commit_send_file_removal(tx: &Transaction<'_>, item: &ItemVersions
 /// was agreed on, under the same stamp. The rows alone are asked: a listing under way and
 /// a request not settled hold a removal back before it is sent, not once OneDrive
 /// confirmed it.
-pub(crate) fn commit_send_directory_removal(tx: &Transaction<'_>, item: &ItemVersions, below: &[ItemVersions], now: i64) -> Result<StepCommitOutcome, TreeError> {
+pub(crate) fn commit_send_directory_removal(tx: &Transaction<'_>, item: &ItemVersions, below: &[ItemVersions]) -> Result<StepCommitOutcome, TreeError> {
     let id = item.local_item_id;
     let Some(row) = find_planned(tx, item)? else { return Ok(StepCommitOutcome::RowsChanged) };
     if row.kind != ItemKind::Directory || row.local.is_some() || row.onedrive_item.is_none() {
@@ -601,7 +595,6 @@ pub(crate) fn commit_send_directory_removal(tx: &Transaction<'_>, item: &ItemVer
     }
     let count = confirm_onedrive_version(tx, id, &ConfirmedOneDriveVersion::Removed)?;
     confirm_removal_below(tx, id, count)?;
-    add_sent_removals(tx, 1 + below.len() as u64, now)?;
     forget_temporary_names_of_items_onedrive_lacks(tx)?;
     Ok(StepCommitOutcome::Written)
 }

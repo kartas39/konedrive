@@ -762,8 +762,7 @@ impl OneDriveSteps {
     /// content: the item comes back" or "only moved it: the removal is sent" as rows,
     /// with the eTag a listing wrote (today `file_changed`, `meta.rs:251`, read the item
     /// and tried three times in place).
-    /// Commit: `commit_send_file_removal(item, now)`, `now` in Unix seconds, which counts
-    /// the removal among those sent a short time ago and forgets what was kept for the
+    /// Commit: `commit_send_file_removal(item)`, which forgets what was kept for the
     /// request. `RowsChanged`: a listing cycle is asked for.
     async fn run_send_file_removal(&self, item: &ItemVersions) -> StepOutcome {
         let (onedrive_item, guard) = match self.find_guarded_item(item) {
@@ -780,8 +779,8 @@ impl OneDriveSteps {
         if let Err(outcome) = self.follow_removal_answer(item, answered).await {
             return outcome;
         }
-        let (planned, now) = (item.clone(), (self.graph.clock)());
-        let committed = match self.commit_step(item, move |store| store.item_store().commit_send_file_removal(&planned, now)).await {
+        let planned = item.clone();
+        let committed = match self.commit_step(item, move |store| store.item_store().commit_send_file_removal(&planned)).await {
             Ok(committed) => committed,
             Err(outcome) => return outcome,
         };
@@ -814,9 +813,8 @@ impl OneDriveSteps {
     /// listing is under way and no request not settled is about any of it. When it
     /// answers yes, the record of this removal is written in the same job. The lock is
     /// let go before the request.
-    /// Commit: `commit_send_directory_removal(item, below, now)`, which asks the same of
-    /// the rows alone and counts the directory and each of `below` among the removals
-    /// sent a short time ago. `RowsChanged`: the directory is gone in OneDrive with what the rows
+    /// Commit: `commit_send_directory_removal(item, below)`, which asks the same of
+    /// the rows alone. `RowsChanged`: the directory is gone in OneDrive with what the rows
     /// still say it has: a listing cycle is asked for.
     async fn run_send_directory_removal(&self, item: &ItemVersions, below: &[ItemVersions]) -> StepOutcome {
         let id = item.local_item_id;
@@ -866,8 +864,8 @@ impl OneDriveSteps {
         if let Err(outcome) = self.follow_removal_answer(item, answered).await {
             return outcome;
         }
-        let (planned, planned_below, now) = (item.clone(), below.to_vec(), (self.graph.clock)());
-        let committed = match self.commit_step(item, move |store| store.item_store().commit_send_directory_removal(&planned, &planned_below, now)).await {
+        let (planned, planned_below) = (item.clone(), below.to_vec());
+        let committed = match self.commit_step(item, move |store| store.item_store().commit_send_directory_removal(&planned, &planned_below)).await {
             Ok(committed) => committed,
             Err(outcome) => return outcome,
         };

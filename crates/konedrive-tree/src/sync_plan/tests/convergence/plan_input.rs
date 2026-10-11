@@ -21,16 +21,13 @@ pub(crate) struct CallerFacts {
     /// Whether the directories above an item are given with it; when not, the plan has to
     /// ask for each it needs.
     pub(crate) gives_directories_above: bool,
-    /// The user confirmed every removal.
-    pub(crate) confirms_removals: bool,
     pub(crate) places_taken_in_onedrive: BTreeMap<LocalItemId, ItemPlace>,
     pub(crate) items_open_for_writing: BTreeSet<LocalItemId>,
     pub(crate) quiet_until: BTreeMap<LocalItemId, i64>,
     pub(crate) items_with_running_step: BTreeSet<LocalItemId>,
     pub(crate) is_onedrive_full: bool,
     pub(crate) destinations_of_running_steps: BTreeSet<LocalItemId>,
-    /// The time, in Unix seconds: the plan's `now`, and what the removals sent a short
-    /// time ago are read as of.
+    /// The time, in Unix seconds: the plan's `now`.
     pub(crate) now: i64,
 }
 
@@ -40,7 +37,6 @@ impl CallerFacts {
             sending_state: SendingState::ReadWrite,
             items_read_at_once: 1000,
             gives_directories_above: true,
-            confirms_removals: true,
             places_taken_in_onedrive: BTreeMap::new(),
             items_open_for_writing: BTreeSet::new(),
             quiet_until: BTreeMap::new(),
@@ -146,8 +142,6 @@ fn describe(store: &mut TreeStore, facts: &CallerFacts, rows: Vec<Item>) -> Sync
     let temporary_names = rows.iter().filter_map(|row| Some((row.local_item_id, reader.find_item_memory(row.local_item_id).unwrap().temporary_name?))).collect();
     let items_left_by_uploads = rows.iter().filter_map(|row| Some((row.local_item_id, reader.find_mismatched_item(row.onedrive_item.as_ref()?).unwrap()?.file))).collect();
     let own_upload_contents = rows.iter().filter_map(|row| Some((row.local_item_id, reader.find_own_upload_content(row.local_item_id).unwrap()?))).collect();
-    let confirmed: BTreeSet<LocalItemId> = if facts.confirms_removals { rows.iter().filter(|row| row.local.is_none()).map(|row| row.local_item_id).collect() } else { BTreeSet::new() };
-    let all_confirmed: BTreeSet<LocalItemId> = if facts.confirms_removals { items.list_items().unwrap().iter().filter(|row| row.local.is_none()).map(|row| row.local_item_id).collect() } else { BTreeSet::new() };
     let name_refusal = |row: &Item| row.local.as_ref().and_then(|local| local.place.as_ref()).filter(|place| place.name.as_encoded_bytes().contains(&b':')).map(|_| Reason::NameCharacters);
     SyncPlanInput {
         folder_visibility: rows.iter().filter(|row| row.onedrive.is_some()).map(|row| (row.local_item_id, items.find_folder_visibility(row.local_item_id).unwrap())).collect(),
@@ -163,14 +157,10 @@ fn describe(store: &mut TreeStore, facts: &CallerFacts, rows: Vec<Item>) -> Sync
         largest_file_size: 250 << 30,
         sending_state: facts.sending_state,
         computer_name: COMPUTER_NAME.to_owned(),
-        shown_item_count: items.count_shown_items().unwrap(),
-        items_with_confirmed_removal: confirmed,
-        unsent_removal_count: items.count_unsent_removals(&all_confirmed).unwrap(),
         places_taken_in_onedrive: facts.places_taken_in_onedrive.clone(),
         items_left_by_uploads,
         temporary_names,
         own_upload_contents,
-        sent_removal_count: if facts.confirms_removals { 0 } else { items.find_sent_removal_window(facts.now).unwrap().removal_count },
         now: facts.now,
         next_tries: BTreeMap::new(),
         sending_refusals: BTreeMap::new(),

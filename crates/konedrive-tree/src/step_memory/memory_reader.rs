@@ -54,12 +54,6 @@ impl ItemReader<'_> {
         step_memory::count_space_refusals(self.conn())
     }
 
-    /// As `StepMemory::list_items_with_confirmed_removal`: the plan's
-    /// `items_with_confirmed_removal`, those of items the plan was not given among them.
-    pub fn list_items_with_confirmed_removal(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<LocalItemId>, TreeError> {
-        step_memory::list_items_with_confirmed_removal(self.conn(), after, limit)
-    }
-
     /// As `StepMemory::list_taken_names`.
     pub fn list_taken_names(&self, directory: LocalItemId) -> Result<Vec<ItemTakenName>, TreeError> {
         step_memory::list_taken_names(self.conn(), directory)

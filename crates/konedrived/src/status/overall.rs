@@ -71,11 +71,7 @@ pub fn reason(sign_in: SignInState, s: &SyncSnapshot, downloads: usize) -> Reaso
     if state == "error" {
         return Reason::Stopped;
     }
-    // What needs the user comes first, the mass-delete guard before all: only the user can
-    // decide.
-    if s.outbox.held_count > 0 {
-        return Reason::DeletesHeld;
-    }
+    // What needs the user comes first.
     if s.local.conflict_count > 0 {
         return Reason::Conflicts;
     }

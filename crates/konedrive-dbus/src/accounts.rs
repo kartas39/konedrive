@@ -336,10 +336,6 @@ pub trait UploadQueue {
     /// How many changes made here are not sent, whatever holds them: for the warning
     /// before a Forget and a removal of the account. Answered for a folder in any state.
     fn unsent_count(&self) -> zbus::Result<u64>;
-    /// The held removals go ahead; how many.
-    fn confirm_deletes(&self) -> zbus::Result<u32>;
-    /// The held removals are dropped and their items placed again; how many.
-    fn restore_deletes(&self) -> zbus::Result<u32>;
     /// What stays on this computer and why.
     fn not_uploaded(&self) -> zbus::Result<Vec<KeptBack>>;
     /// What is kept back, one row per reason, by group: one-action, per-file, never,
@@ -357,10 +353,6 @@ pub trait UploadQueue {
     /// Changes that need the user before they can go up.
     #[zbus(property)]
     fn blocked_count(&self) -> zbus::Result<u32>;
-    /// Removals held by the mass-delete guard: `confirm_deletes` or
-    /// `restore_deletes` decides them.
-    #[zbus(property)]
-    fn held_count(&self) -> zbus::Result<u32>;
     /// OneDrive is full: no content goes up until a quota read finds space.
     #[zbus(property)]
     fn quota_full(&self) -> zbus::Result<bool>;

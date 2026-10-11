@@ -53,7 +53,7 @@
          while nothing is left. Time left: seconds at the speed of the last
          30 s; 0 when unknown — nothing moved for 10 s, OneDrive's
          Retry-After, and for uploads a pause. What is kept back
-         (UploadQueue.BlockedCount, HeldCount, QuotaWaitingCount,
+         (UploadQueue.BlockedCount, QuotaWaitingCount,
          TooBigCount) is not left. Coalesced with the counters. -->
     <property name="DownloadLeftCount" type="u" access="read"/>
     <property name="DownloadLeftBytes" type="t" access="read"/>

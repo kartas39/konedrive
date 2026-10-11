@@ -4,7 +4,7 @@
 
 use std::sync::Mutex;
 
-use konedrive_tree::{ActivityKind, ActivityRow, ConflictKind, ConflictRow, Reason};
+use konedrive_tree::{ActivityKind, ActivityRow, ConflictKind, ConflictRow};
 
 use super::*;
 use crate::mount::item_fixture::ItemFixture;
@@ -143,29 +143,6 @@ fn the_queues_status_is_published_from_the_rows_the_answers_and_the_running_uplo
     fixture.onedrive_space.apply_quota(&DriveQuota { total: 10, used: 10, remaining: Some(0), state: "exceeded".into() }, (task.parts.clock)());
     run.block_on(task.publish_queue_status(false));
     assert!(task_fixture.outbox().quota_full);
-}
-
-/// The review's note: without the plan's counts of the held removals the rows below a held
-/// directory would be counted as pending.
-#[test]
-fn a_held_removal_of_a_directory_is_published_as_one_held_and_what_is_below_it_as_nothing() {
-    let task_fixture = TaskFixture::new();
-    let (fixture, task) = (&task_fixture.fixture, &task_fixture.task);
-    let directory = fixture.show_onedrive_directory("docs").local_item_id;
-    let below: Vec<LocalItemId> = ["docs/a.txt", "docs/b.txt", "docs/c.txt"].into_iter().map(|path| fixture.show_onedrive_file(path, b"content").local_item_id).collect();
-    for item in below.iter().chain([&directory]) {
-        fixture.remove_here(*item);
-    }
-    fixture.make_own_file("beside.txt", b"1234");
-    // As the plan answers a mass removal it holds: the directory waits for the user, what is below it for the directory.
-    let mut answers = BTreeMap::from([(directory, ItemAnswer::Waiting(WaitReason::User(Reason::MassDelete)))]);
-    answers.extend(below.iter().map(|item| (*item, ItemAnswer::Waiting(WaitReason::AnotherItem(directory)))));
-    fixture.published_plan.publish(answers, BTreeMap::from([(directory, 3)]));
-
-    fixture.runtime().block_on(task.publish_queue_status(true));
-
-    let published = task_fixture.outbox();
-    assert_eq!((published.held_count, published.pending_count, published.pending_bytes, published.blocked_count), (1, 1, 4, 0), "one held entry, the directory; the file beside it is all that is pending");
 }
 
 #[test]

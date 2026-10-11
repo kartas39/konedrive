@@ -279,11 +279,9 @@ enum FolderFact {
     /// Switched to read-only when item 2 was the last to have come to be unsent.
     ReadOnly,
     OneDriveFull,
-    /// The unsent removals are a mass removal, and the user confirmed none.
-    MassRemovalUnconfirmed,
 }
 
-const EVERY_FOLDER_FACT: [FolderFact; 4] = [FolderFact::ListingUnderWay, FolderFact::ReadOnly, FolderFact::OneDriveFull, FolderFact::MassRemovalUnconfirmed];
+const EVERY_FOLDER_FACT: [FolderFact; 3] = [FolderFact::ListingUnderWay, FolderFact::ReadOnly, FolderFact::OneDriveFull];
 
 /// The last stamp given before the folder of [`FolderFact::ReadOnly`] was switched.
 const LAST_UNSENT_SINCE_AT_SWITCH: u64 = 2;
@@ -294,7 +292,6 @@ impl FolderFact {
             FolderFact::ListingUnderWay => given.is_listing_under_way = true,
             FolderFact::ReadOnly => given.sending_state = SendingState::ReadOnly { last_unsent_since: LAST_UNSENT_SINCE_AT_SWITCH },
             FolderFact::OneDriveFull => given.is_onedrive_full = true,
-            FolderFact::MassRemovalUnconfirmed => given.unsent_removal_count = 600,
         }
     }
 }
@@ -669,8 +666,7 @@ fn find_step_the_rows_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<S
 ///   depth. And the removal of an item that OneDrive has in a directory that was removed
 ///   here and whose removal is still to be sent: one removal, of the outermost.
 /// - The move of a directory the folder cannot show.
-/// - The removal of a directory while a listing is under way; a removal while the unsent
-///   removals are a mass removal the user did not confirm.
+/// - The removal of a directory while a listing is under way.
 /// - In a read-only folder, a step towards OneDrive of what came to be unsent after the
 ///   switch; while OneDrive is full, or within a file's quiet time, a sending of content;
 ///   a sending of a name OneDrive cannot hold.
@@ -772,9 +768,6 @@ fn find_step_the_callers_facts_refuse(given: &SyncPlanInput, plan: &SyncPlan) ->
                     return Some(format!("the removal of item {number} is sent while the directory {} above it in OneDrive is still to be removed", directory.local_item_id));
                 }
                 above = directory_in_onedrive(directory);
-            }
-            if given.unsent_removal_count > 500 && !given.items_with_confirmed_removal.contains(&number) {
-                return Some(format!("the removal of item {number} is sent in a mass removal the user did not confirm"));
             }
         }
         if matches!(sending, OneDriveStep::SendMove { .. }) && row.kind == ItemKind::Directory && cannot_be_shown(number) {

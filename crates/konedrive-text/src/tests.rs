@@ -116,7 +116,6 @@ fn a_stored_reason_is_worded_by_its_key_and_what_stands_behind_it() {
     assert_eq!(reasons::split("refused: bad: name"), ("refused", Some("bad: name")));
     assert_eq!(reasons::split("too-big:300:20"), ("too-big", Some("300:20")));
     assert_eq!(reasons::split("network"), ("network", None));
-    assert_eq!(reasons::split("mass-delete: 3"), ("mass-delete: 3", None));
 
     assert_eq!(said("refused", Client::Desktop), "Refused by OneDrive.");
     assert_eq!(said("refused: bad: name", Client::CommandLine), "OneDrive refused it: bad: name");
@@ -137,9 +136,7 @@ fn a_stored_reason_is_worded_by_its_key_and_what_stands_behind_it() {
 #[test]
 fn the_clients_differ_only_in_their_own_controls() {
     let differing: Vec<&str> = REASONS.iter().filter(|entry| said(entry.key, Client::Desktop) != said(entry.key, Client::CommandLine)).map(|entry| entry.key).collect();
-    assert_eq!(differing, ["mass-delete", "waiting-for-space", "too-big"]);
-    assert_eq!(said("mass-delete", Client::Desktop), "Part of a large delete: delete it in OneDrive too, or restore it, on the Status page.");
-    assert_eq!(said("mass-delete", Client::CommandLine), "Part of a large delete: confirm it (`sync deletes confirm`) or undo it (`sync deletes restore`).");
+    assert_eq!(differing, ["waiting-for-space", "too-big"]);
     assert_eq!(said("waiting-for-space", Client::Desktop), "OneDrive is full: free up space in OneDrive, then Refresh.");
     assert_eq!(said("waiting-for-space", Client::CommandLine), "Waiting for space: OneDrive is full.");
     assert_eq!(said("too-big", Client::CommandLine), "Too big for the space left in OneDrive: free up space there, then `sync refresh`.");

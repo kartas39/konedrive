@@ -188,7 +188,7 @@ impl World {
     }
 
     /// What only the caller knows, drawn at random for one round: files a program holds
-    /// open, files in their quiet time, OneDrive full, removals not confirmed. Nothing of it
+    /// open, files in their quiet time, OneDrive full. Nothing of it
     /// once the rounds of drawn facts are over.
     fn draw_callers_facts(&mut self) {
         let is_drawn = self.fact_rounds_left > 0;
@@ -198,7 +198,6 @@ impl World {
         self.facts.items_open_for_writing = files.iter().copied().filter(|_| is_drawn && random.below(6) == 0).collect();
         self.facts.quiet_until = files.iter().copied().filter(|_| is_drawn && random.below(6) == 0).map(|file| (file, 1000)).collect();
         self.facts.is_onedrive_full = is_drawn && random.below(4) == 0;
-        self.facts.confirms_removals = !is_drawn || random.below(3) != 0;
     }
 
     /// Makes plans and runs their steps until a plan has none, for `rounds` rounds at most:

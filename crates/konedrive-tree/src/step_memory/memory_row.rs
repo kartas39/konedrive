@@ -9,7 +9,7 @@ use konedrive_reason::Reason;
 use rusqlite::types::{FromSql, Value};
 use rusqlite::{Connection, OptionalExtension};
 
-use super::item_memory::{FailedTries, ItemMemory, MismatchedItem, Refusal, RefusedVersion, RemovalConfirmation, SpaceRefusal, TakenName, TemporaryName, UploadSession, UploadSessionAddress, UploadTag};
+use super::item_memory::{FailedTries, ItemMemory, MismatchedItem, Refusal, RefusedVersion, SpaceRefusal, TakenName, TemporaryName, UploadSession, UploadSessionAddress, UploadTag};
 use crate::model::{ContentVersion, DriveId, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference};
 use crate::path_column::{path_from, path_value};
 use crate::{FoldedName, TreeError};
@@ -41,7 +41,6 @@ fn columns() -> Vec<(String, &'static str)> {
         named(&["last_failure"], "TEXT"),
         content("space_refusal"),
         named(&["space_refusal_free_space"], "INTEGER"),
-        named(&["is_removal_confirmed"], "INTEGER"),
         named(&["refusal_reason"], "TEXT"),
         named(&["refused_parent_id"], "INTEGER"),
         named(&["refused_name"], ""),
@@ -58,7 +57,7 @@ fn columns() -> Vec<(String, &'static str)> {
 /// place is of the version shown there, and one without is of a removal. The item an
 /// upload left is kept with its drive. Each reader that is not by the item has an index:
 /// the items that wait until a time, those OneDrive refused for good and those it refused
-/// for lack of space, those whose removal is confirmed, and by directory the names that are
+/// for lack of space, and by directory the names that are
 /// taken in it (with the holder's name folded as OneDrive compares names, which is what a
 /// row that leaves or takes that name is matched by), the versions that were refused in it and the empty files of upload
 /// sessions in it; a session is found by its address, and the item an upload left by its
@@ -70,7 +69,7 @@ pub(super) fn schema() -> String {
              local_item_id INTEGER PRIMARY KEY,
              {columns}
              CHECK (unsent_since IS NOT NULL OR (session_address IS NULL AND tries_count IS NULL AND space_refusal_size IS NULL
-                AND is_removal_confirmed IS NULL AND refusal_reason IS NULL AND taken_parent_id IS NULL)),
+                AND refusal_reason IS NULL AND taken_parent_id IS NULL)),
              CHECK ((session_address IS NULL) = (session_next_offset IS NULL) AND (session_address IS NULL) = (session_size IS NULL)),
              CHECK (session_address IS NOT NULL OR (session_expires_at IS NULL AND session_empty_file_parent_id IS NULL)),
              CHECK ((session_empty_file_parent_id IS NULL) = (session_empty_file_name IS NULL)
@@ -87,7 +86,6 @@ pub(super) fn schema() -> String {
          CREATE INDEX step_memory_next_try ON step_memory(next_try_at, local_item_id) WHERE next_try_at IS NOT NULL;
          CREATE INDEX step_memory_refusal ON step_memory(local_item_id) WHERE refusal_reason IS NOT NULL;
          CREATE INDEX step_memory_space_refusal ON step_memory(local_item_id) WHERE space_refusal_size IS NOT NULL;
-         CREATE INDEX step_memory_removal_confirmation ON step_memory(local_item_id) WHERE is_removal_confirmed IS NOT NULL;
          CREATE INDEX step_memory_taken_name ON step_memory(taken_parent_id, taken_holder_folded_name) WHERE taken_parent_id IS NOT NULL;
          CREATE INDEX step_memory_refused_place ON step_memory(refused_parent_id) WHERE refused_parent_id IS NOT NULL;
          CREATE INDEX step_memory_session_empty_file ON step_memory(session_empty_file_parent_id, session_empty_file_folded_name)
@@ -188,8 +186,6 @@ fn memory_from(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<ItemMe
     let failed_tries = count.zip(last_failure).map(|(count, last_failure)| FailedTries { count, next_try_at, last_failure: Reason::parse(&last_failure) });
     let (content, free_space) = (read.content()?, read.next::<Option<i64>>()?);
     let space_refusal = content.zip(free_space).map(|(content, free_space)| SpaceRefusal { content, free_space: free_space.max(0) as u64 });
-    // The confirmation is of the removal the memory's stamp is of.
-    let removal_confirmation = read.next::<Option<i64>>()?.and(unsent_since).map(|unsent_since| RemovalConfirmation { unsent_since });
     let (reason, place, content) = (read.next::<Option<String>>()?, read.place()?, read.content()?);
     // A refused version has a place; a refused removal has none.
     let refused = match place {
@@ -200,7 +196,7 @@ fn memory_from(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<ItemMe
     let (place, holder_name) = (read.place()?, read.name()?);
     read.next::<Value>()?;
     let taken_name = place.zip(holder_name).map(|(place, holder_name)| TakenName { place, holder_name });
-    Ok(ItemMemory { unsent_since, upload_session, mismatched_item, temporary_name, failed_tries, space_refusal, removal_confirmation, refusal, taken_name })
+    Ok(ItemMemory { unsent_since, upload_session, mismatched_item, temporary_name, failed_tries, space_refusal, refusal, taken_name })
 }
 
 /// The item an upload left, as two tables keep it: its drive, its id, and the tag of the
@@ -268,7 +264,6 @@ fn values_of(memory: &ItemMemory) -> Vec<Value> {
     let space_refusal = memory.space_refusal.as_ref();
     values.extend(content_values(space_refusal.map(|space_refusal| &space_refusal.content)));
     values.push(optional(space_refusal.map(|space_refusal| space_refusal.free_space as i64)));
-    values.push(optional(memory.removal_confirmation.map(|_| 1i64)));
     let refusal = memory.refusal.as_ref();
     let refused = match refusal.map(|refusal| &refusal.version) {
         Some(RefusedVersion::Shown(version)) => Some(version),

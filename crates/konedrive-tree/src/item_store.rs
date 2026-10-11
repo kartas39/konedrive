@@ -86,8 +86,6 @@ mod pinned_items;
 mod place_change_records;
 /// What a step of the sync plan writes into the rows once it is done.
 mod step_commit;
-/// The removals this client sent a short time ago, counted since their window began.
-mod sent_removal_window;
 /// A full listing that was asked for and has not begun.
 mod full_listing_request;
 /// The flag of an ignored name, gone over when the list of ignored names changes.
@@ -114,7 +112,6 @@ pub(crate) use item_row::find_item;
 pub(crate) use item_row::find_bound_item as find_item_bound_to;
 pub(crate) use onedrive_versions::confirm_onedrive_version_of_item;
 pub use step_commit::{ConfirmedItem, StepCommitOutcome};
-pub use sent_removal_window::{SentRemovalWindow, SENT_REMOVAL_WINDOW_SECONDS};
 pub use full_listing_request::FullListingCause;
 pub use item_pins::PinChange;
 pub use own_upload_content::OwnUploadContent;
@@ -239,22 +236,6 @@ impl ItemStore<'_> {
     /// read-only, to tell afterwards what was unsent then.
     pub fn last_unsent_since(&self) -> Result<u64, TreeError> {
         Ok(crate::meta::get(&self.store.conn, crate::meta::LAST_UNSENT_SINCE)?.and_then(|stamp| stamp.parse().ok()).unwrap_or(0))
-    }
-
-    /// How many items the folder shows, the root not among them: what the guard against a
-    /// mass removal takes a share of.
-    pub fn count_shown_items(&self) -> Result<u64, TreeError> {
-        item_row::count_shown_items(&self.store.conn)
-    }
-
-    /// How many items the unsent removals take from OneDrive: every item that was removed
-    /// here and that OneDrive has, and with a removed directory all the rows say OneDrive
-    /// has in it and below it that the folder does not show. Each item once. Left out are
-    /// the items of `confirmed`, the removals the user confirmed, each with all OneDrive
-    /// has below it. What the guard against a mass removal asks of, whatever part of the
-    /// unsent items a plan is given. Found from the index of what is unsent.
-    pub fn count_unsent_removals(&self, confirmed: &std::collections::BTreeSet<LocalItemId>) -> Result<u64, TreeError> {
-        item_row::count_unsent_removals(&self.store.conn, confirmed)
     }
 
     /// What OneDrive has in `directory`, as the rows say, by name there: the items whose

@@ -56,8 +56,6 @@ pub enum Reason {
     Transferring,
     /// The folder's syncing has stopped on an error; `Folder.Trouble` says it.
     Stopped,
-    /// Deletions wait for the user's decision.
-    DeletesHeld,
     /// Changed files were moved out of the way.
     Conflicts,
     /// OneDrive is full and files wait for space.
@@ -82,7 +80,7 @@ pub enum Reason {
 
 impl Reason {
     /// Every reason.
-    pub const ALL: [Reason; 19] = [
+    pub const ALL: [Reason; 18] = [
         Self::SigningIn,
         Self::SignedOut,
         Self::NoFolder,
@@ -91,7 +89,6 @@ impl Reason {
         Self::Listing,
         Self::Transferring,
         Self::Stopped,
-        Self::DeletesHeld,
         Self::Conflicts,
         Self::QuotaFull,
         Self::TooBig,
@@ -115,7 +112,6 @@ impl Reason {
             Self::Listing => "listing",
             Self::Transferring => "transferring",
             Self::Stopped => "stopped",
-            Self::DeletesHeld => "deletes-held",
             Self::Conflicts => "conflicts",
             Self::QuotaFull => "quota-full",
             Self::TooBig => "too-big",
@@ -140,7 +136,6 @@ impl Reason {
             Self::SigningIn | Self::SignedOut | Self::NoFolder | Self::Unreachable => State::Offline,
             Self::Starting | Self::Listing | Self::Transferring => State::Syncing,
             Self::Stopped
-            | Self::DeletesHeld
             | Self::Conflicts
             | Self::QuotaFull
             | Self::TooBig

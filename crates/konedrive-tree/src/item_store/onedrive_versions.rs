@@ -97,7 +97,7 @@
 //! last call brings what was read again, has pages older than that call.
 
 use crate::step_memory::{
-    forget_mismatched_item, forget_mismatched_item_listed_changed, forget_removal_confirmations_above, forget_taken_names_onedrive_lacks, forget_temporary_name_unless_at, forget_temporary_names_of_items_onedrive_lacks,
+    forget_mismatched_item, forget_mismatched_item_listed_changed, forget_taken_names_onedrive_lacks, forget_temporary_name_unless_at, forget_temporary_names_of_items_onedrive_lacks,
 };
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -234,11 +234,6 @@ fn write_listed_item(tx: &Transaction<'_>, listed: &ListedItem, row: Option<&Ite
     // remembered of it is not the name it is under, unless it is that very place.
     if row.is_some() && place_before != Some(&place) {
         forget_temporary_name_unless_at(tx, item, &place)?;
-    }
-    // The directory has an item the rows did not say it had: a removal of the directory,
-    // or of one above it, that the user confirmed was confirmed for less.
-    if place_before.map(|before| before.parent_local_item_id) != Some(directory) {
-        forget_removal_confirmations_above(tx, directory)?;
     }
     // An item an upload of this folder left that has another content now is another
     // client's.

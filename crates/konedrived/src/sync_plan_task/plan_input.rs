@@ -27,14 +27,13 @@
 // test: twice_as_many_are_read_when_no_step_can_run_and_more_is_there
 // test: a_window_whose_every_item_is_refused_or_waits_for_its_next_try_is_widened_until_a_step_can_run
 // test: the_items_open_for_writing_are_those_whose_row_keeps_a_content_before_the_write
-// test: the_confirmed_removals_and_the_taken_names_come_from_the_step_memory
+// test: the_taken_names_come_from_the_step_memory
 // test: an_item_whose_next_try_is_kept_is_given_with_it_and_its_reason
 // test: the_tasks_tries_whose_rows_changed_or_went_are_void_before_the_plan_is_told
 // test: a_step_towards_the_folder_that_failed_waits_until_its_next_try_and_a_sending_of_the_item_does_not
 // test: an_item_refused_for_good_or_too_big_for_the_space_is_given_as_refused_with_the_reason
 // test: the_items_the_check_left_are_given_as_left_by_it
 // test: the_rows_of_the_directories_running_steps_send_into_are_given_as_destinations
-// test: the_removals_sent_a_short_time_ago_are_read_as_of_the_time_the_facts_give
 // test: the_quiet_time_of_a_changed_file_ends_that_long_after_its_time
 // test: a_name_onedrive_cannot_hold_is_refused_with_its_reason
 // test: the_plan_made_through_this_caller_converges_as_the_tests_caller_does
@@ -130,9 +129,6 @@ pub struct GivenItems {
 
 /// How many names of a conflict copy are tried for a name before none is taken as free.
 const CONFLICT_COPY_ATTEMPTS: u32 = 100;
-
-/// How many confirmed removals are read from the step memory at a time.
-const CONFIRMED_REMOVALS_READ_AT_ONCE: usize = 1000;
 
 /// The places `item` is at: the local one, OneDrive's and the one agreed on.
 fn list_places(item: &Item) -> impl Iterator<Item = &ItemPlace> {
@@ -391,22 +387,10 @@ pub fn void_local_step_tries(items: &ItemReader<'_>, local_step_tries: &LocalSte
 
 /// What the plan is told of the folder as a whole, with no row yet: read once for a plan,
 /// whatever is given later. What the store says — whether a listing is under way, the
-/// count of shown items, the confirmed removals (`list_items_with_confirmed_removal`,
-/// those of items the plan is not given among them), the count of unsent removals, the
-/// removals sent a short time ago (`find_sent_removal_window(facts.now)`, its
-/// `removal_count`), the folder's state of sending — and what `facts` say: running, the
+/// folder's state of sending — and what `facts` say: running, the
 /// destinations of the running steps (each reference turned into its row by
 /// `find_bound_item`), OneDrive full, the time, the settings.
 pub fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<SyncPlanInput, TreeError> {
-    let mut items_with_confirmed_removal = BTreeSet::new();
-    loop {
-        let read = items.list_items_with_confirmed_removal(items_with_confirmed_removal.last().copied(), CONFIRMED_REMOVALS_READ_AT_ONCE)?;
-        let is_last = read.len() < CONFIRMED_REMOVALS_READ_AT_ONCE;
-        items_with_confirmed_removal.extend(read);
-        if is_last {
-            break;
-        }
-    }
     // A request on record is not settled either, whether its step runs or not: its item is busy, and the directory it sends into is a destination.
     let mut items_with_running_step = facts.items_with_running_step.clone();
     let mut destinations = facts.destinations_of_running_steps.clone();
@@ -433,14 +417,10 @@ pub fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Sy
         largest_file_size: facts.settings.largest_file_size,
         sending_state: items.find_sending_state()?,
         computer_name: facts.settings.computer_name.clone(),
-        shown_item_count: items.count_shown_items()?,
-        unsent_removal_count: items.count_unsent_removals(&items_with_confirmed_removal)?,
-        items_with_confirmed_removal,
         places_taken_in_onedrive: BTreeMap::new(),
         items_left_by_uploads: BTreeMap::new(),
         temporary_names: BTreeMap::new(),
         own_upload_contents: BTreeMap::new(),
-        sent_removal_count: items.find_sent_removal_window(facts.now)?.removal_count,
         now: facts.now,
         next_tries: BTreeMap::new(),
         sending_refusals: BTreeMap::new(),

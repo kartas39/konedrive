@@ -75,14 +75,14 @@ fn a_confirmed_removal_takes_the_pin_of_the_item() {
     store.item_store().apply(&LocalVersionChange::Removed { item: other }).unwrap();
     assert_eq!(pins(&store), ["D", "F", "G"], "removed here, and OneDrive still has it");
     let removed = ItemVersions::of(&row(&mut store, other));
-    assert_eq!(store.item_store().commit_send_file_removal(&removed, 0).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_send_file_removal(&removed).unwrap(), StepCommitOutcome::Written);
     assert_eq!(pins(&store), ["D", "F"]);
 
     // A directory's removal takes the pins of all OneDrive had in it.
     store.item_store().apply(&LocalVersionChange::Removed { item: inside }).unwrap();
     store.item_store().apply(&LocalVersionChange::Removed { item: directory }).unwrap();
     let (removed, below) = (ItemVersions::of(&row(&mut store, directory)), ItemVersions::of(&row(&mut store, inside)));
-    assert_eq!(store.item_store().commit_send_directory_removal(&removed, &[below], 0).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_send_directory_removal(&removed, &[below]).unwrap(), StepCommitOutcome::Written);
     assert_eq!(pins(&store), Vec::<String>::new());
     assert_rules_hold(&mut store);
 }
@@ -128,7 +128,7 @@ fn the_count_of_pins_is_of_bindings_that_rows_still_have() {
     // binding alone goes when a listing's end takes the row.
     store.item_store().apply(&LocalVersionChange::Removed { item: file }).unwrap();
     let removed = ItemVersions::of(&row(&mut store, file));
-    store.item_store().commit_send_file_removal(&removed, 0).unwrap();
+    store.item_store().commit_send_file_removal(&removed).unwrap();
     pin(&mut store, file);
     assert_eq!(count_pins(&mut store), 1, "the row stays until a listing that began after the removal has ended");
     write_listing_of_changes(&mut store, &[]);

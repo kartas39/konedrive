@@ -10,15 +10,13 @@ fn sorted(mut addresses: Vec<UploadSessionAddress>) -> Vec<String> {
     addresses.into_iter().map(|address| address.as_str().to_owned()).collect()
 }
 
-/// `take_over_binding`: the confirmation of the replaced file's removal is of that removal,
-/// and goes with its row: the file that was made in its place and is removed later is
-/// another removal, which nobody confirmed. Every fact of an unsent change of the replacing
+/// `take_over_binding`: every fact of an unsent change of the replacing
 /// file is dropped, the taken name among them, its session to the cancellations with the
 /// one the replaced row had; the item an upload left is left to the daemon to remove: the
 /// file has a binding now, and no step of a new file runs for it. The temporary name the
 /// replaced file was under in OneDrive is the replacing file's: it has the binding.
 #[test]
-fn a_binding_taken_over_drops_the_confirmation_and_what_was_asked_of_onedrive() {
+fn a_binding_taken_over_drops_what_was_asked_of_onedrive() {
     let mut store = TreeStore::in_memory().unwrap();
     let replaced = make_file(&mut store, ROOT, "report");
     synced(&mut store, replaced, "A");
@@ -28,8 +26,6 @@ fn a_binding_taken_over_drops_the_confirmation_and_what_was_asked_of_onedrive() 
     let under = TemporaryName { name: ".swap".into(), toward: place(ROOT, "elsewhere") };
     store.step_memory().remember_temporary_name(replaced, &under).unwrap();
     remove(&mut store, replaced);
-    let removal = unsent_removal(&mut store, replaced);
-    assert_eq!(store.step_memory().remember_removals_confirmed(&[removal]).unwrap(), []);
     let replacing = make_file(&mut store, ROOT, "report.tmp");
     let before = remember_everything_of_a_shown_file(&mut store, replacing);
 
@@ -37,9 +33,6 @@ fn a_binding_taken_over_drops_the_confirmation_and_what_was_asked_of_onedrive() 
     assert_eq!(kept(&store, replacing), ItemMemory { temporary_name: Some(under), ..ItemMemory::default() });
     assert_eq!(store.step_memory().list_mismatched_item_removals(10).unwrap(), before.mismatched_item.into_iter().collect::<Vec<_>>());
     assert_eq!((count(&store, "step_memory"), sorted(abandoned(&mut store))), (1, vec!["https://up/1".to_owned(), "https://up/replaced".to_owned()]));
-    remove(&mut store, replacing);
-    assert_eq!(said(&mut store, replacing).removal_confirmation, None, "removed again: a removal nobody confirmed");
-    assert_eq!(store.step_memory().list_items_with_confirmed_removal(None, 10).unwrap(), []);
 }
 
 /// `give_up_binding` of a file: it keeps its id and its content, and every fact of an unsent
@@ -70,8 +63,8 @@ fn a_file_that_gives_its_binding_up_drops_what_was_asked_of_onedrive_for_it() {
 /// row that has its binding now — the openings in it, and the empty files of the sessions
 /// in it, which are abandoned — and what OneDrive answered about sending an item into it is
 /// dropped, a taken name and a refusal: the directory the folder shows is one OneDrive does
-/// not have yet. Of a file removed in it, the confirmation and the refusal of the removal
-/// stand: it is removed from the same directory of OneDrive.
+/// not have yet. Of a file removed in it, the refusal of the removal
+/// stands: it is removed from the same directory of OneDrive.
 #[test]
 fn a_directory_that_gives_its_binding_up_leaves_what_was_asked_of_it_with_the_binding() {
     let mut store = TreeStore::in_memory().unwrap();
@@ -86,9 +79,8 @@ fn a_directory_that_gives_its_binding_up_leaves_what_was_asked_of_it_with_the_bi
     assert_eq!(remember_refused(&mut store, refused, &refusal), StillSaid);
     synced(&mut store, removed, "X");
     remove(&mut store, removed);
-    let removal = unsent_removal(&mut store, removed);
+    let removal = removal_stamp(&mut store, removed);
     let refused_removal = Refusal { reason: Reason::Forbidden, version: RefusedVersion::Removal };
-    assert_eq!(store.step_memory().remember_removals_confirmed(&[removal]).unwrap(), []);
     assert_eq!(remember_refused(&mut store, removed, &refused_removal), StillSaid);
 
     let taker = store.item_store().give_up_binding(directory, false).unwrap();
@@ -96,9 +88,8 @@ fn a_directory_that_gives_its_binding_up_leaves_what_was_asked_of_it_with_the_bi
     assert_eq!((said(&mut store, sending), abandoned(&mut store)), (ItemMemory::default(), vec![address("1")]));
     assert_eq!(store.step_memory().list_empty_file_sessions(&place(taker, "sending")).unwrap(), [EmptyFileSession::Abandoned { address: address("1") }]);
     assert_eq!((store.step_memory().list_taken_names(directory).unwrap(), kept(&store, refused)), (vec![], ItemMemory::default()), "the refusal goes with the taken name");
-    assert_eq!(unsent_removal(&mut store, removed), removal, "the same removal, agreed to be in the directory the taker has now");
-    let confirmation = Some(RemovalConfirmation { unsent_since: removal.unsent_since });
-    assert_eq!(said(&mut store, removed), ItemMemory { unsent_since: Some(removal.unsent_since), removal_confirmation: confirmation, refusal: Some(refused_removal), ..ItemMemory::default() });
+    assert_eq!(removal_stamp(&mut store, removed), removal, "the same removal, agreed to be in the directory the taker has now");
+    assert_eq!(said(&mut store, removed), ItemMemory { unsent_since: Some(removal), refusal: Some(refused_removal), ..ItemMemory::default() });
 }
 
 /// `merge_items`: the local item takes the binding, and every fact of an unsent change of it

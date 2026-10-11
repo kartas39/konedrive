@@ -39,7 +39,6 @@ pub enum SyncAction<'a> {
     /// `sync anyway`.
     Anyway,
     NotUploaded,
-    Deletes,
 }
 
 impl SyncAction<'_> {
@@ -69,7 +68,6 @@ impl SyncAction<'_> {
             Self::Settings => "changing the sync settings".to_owned(),
             Self::Anyway => "syncing anyway".to_owned(),
             Self::NotUploaded => "listing what is not uploaded".to_owned(),
-            Self::Deletes => "deciding on the large delete".to_owned(),
         }
     }
 
@@ -96,8 +94,7 @@ impl SyncAction<'_> {
             | Self::Ignore
             | Self::Settings
             | Self::Anyway
-            | Self::NotUploaded
-            | Self::Deletes => "",
+            | Self::NotUploaded => "",
         }
     }
 }

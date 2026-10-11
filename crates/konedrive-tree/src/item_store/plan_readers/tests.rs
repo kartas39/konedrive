@@ -2,8 +2,6 @@
 //! name, over rows built by the store's own operations, and against what those rows were
 //! built to answer.
 
-use std::collections::BTreeSet;
-
 use super::*;
 use crate::item_store::tests::listed_drive::{listed_file, not_placed, store_with_listed_root, write_listing_of_changes};
 use crate::item_store::tests::shown_items::{bound, show_listed_directory, show_listed_file};
@@ -13,7 +11,6 @@ use crate::sync_plan::ItemVersions;
 use crate::{StepCommitOutcome, TreeStore};
 
 const ROOT: LocalItemId = LocalItemId::ROOT;
-const NOW: i64 = 1_700_000_000;
 
 fn ids(items: &[Item]) -> Vec<LocalItemId> {
     items.iter().map(|item| item.local_item_id).collect()
@@ -39,7 +36,6 @@ struct Rows {
     f: LocalItemId,
     g: LocalItemId,
     p: LocalItemId,
-    gone: LocalItemId,
     d: LocalItemId,
     in_d: LocalItemId,
     moved: LocalItemId,
@@ -66,16 +62,15 @@ fn rows() -> Rows {
         apply(&mut store, LocalVersionChange::Removed { item });
     }
     let planned_from = ItemVersions::of(&store.item_store().find_item(sent).unwrap().unwrap());
-    assert_eq!(store.item_store().commit_send_file_removal(&planned_from, NOW).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_send_file_removal(&planned_from).unwrap(), StepCommitOutcome::Written);
     write_listing_of_changes(&mut store, &[listed_file("M", "R", "Moved-There", (3, "h-m"), "e-M2"), not_placed(listed_file("H", "R", "hidden", (3, "h-h"), "e-H2")), listed_file("N", "A", "F", (3, "h-n"), "e-N")]);
     let new = bound(&mut store, "N").local_item_id;
-    Rows { store, a, sub, f, g, p, gone, d, in_d, moved, hidden, new }
+    Rows { store, a, sub, f, g, p, d, in_d, moved, hidden, new }
 }
 
 #[test]
 fn each_plan_reader_answers_what_the_item_stores_reader_of_the_same_name_answers() {
-    let Rows { mut store, a, sub, f, g, p, gone, d, in_d, moved, hidden, new } = rows();
-    let confirmed: BTreeSet<LocalItemId> = [gone].into();
+    let Rows { mut store, a, sub, f, g, p, d, in_d, moved, hidden, new } = rows();
     let folded = FoldedName::of("f".as_ref());
     let items = store.item_store();
     let reader = items.reader();
@@ -92,11 +87,6 @@ fn each_plan_reader_answers_what_the_item_stores_reader_of_the_same_name_answers
     assert_eq!(sorted(ids(&reader.list_below_in_onedrive(a).unwrap())), sorted(vec![f, sub, g, new]));
     assert_eq!(ids(&reader.list_below_in_onedrive(d).unwrap()), [in_d]);
     assert_eq!(ids(&reader.list_children_in_onedrive_with_folded_name(a, &folded).unwrap()), [f, new], "one name as OneDrive compares names");
-    assert_eq!(reader.count_shown_items().unwrap(), 8, "a, f, sub, g, p, moved, hidden, own");
-    assert_eq!(reader.count_unsent_removals(&BTreeSet::new()).unwrap(), 3, "gone, d and what OneDrive has in d");
-    assert_eq!(reader.count_unsent_removals(&confirmed).unwrap(), 2);
-    assert_eq!(reader.find_sent_removal_window(NOW + 1).unwrap(), SentRemovalWindow { last_removal_at: Some(NOW), removal_count: 1 });
-    assert_eq!(reader.find_sent_removal_window(NOW + crate::SENT_REMOVAL_WINDOW_SECONDS).unwrap(), SentRemovalWindow::EMPTY);
     assert_eq!(reader.confirmation_count().unwrap(), 1, "the one removal OneDrive confirmed");
 
     // And each is the store's reader of the same name.
@@ -109,13 +99,6 @@ fn each_plan_reader_answers_what_the_item_stores_reader_of_the_same_name_answers
         assert_eq!(reader.list_children_in_onedrive(directory).unwrap(), items.list_children_in_onedrive(directory).unwrap());
         assert_eq!(reader.list_below_in_onedrive(directory).unwrap(), items.list_below_in_onedrive(directory).unwrap());
         assert_eq!(reader.list_children_in_onedrive_with_folded_name(directory, &folded).unwrap(), items.list_children_in_onedrive_with_folded_name(directory, &folded).unwrap());
-    }
-    assert_eq!(reader.count_shown_items().unwrap(), items.count_shown_items().unwrap());
-    for confirmed in [BTreeSet::new(), confirmed, [d].into()] {
-        assert_eq!(reader.count_unsent_removals(&confirmed).unwrap(), items.count_unsent_removals(&confirmed).unwrap());
-    }
-    for now in [NOW, NOW + crate::SENT_REMOVAL_WINDOW_SECONDS] {
-        assert_eq!(reader.find_sent_removal_window(now).unwrap(), items.find_sent_removal_window(now).unwrap());
     }
     assert_eq!(reader.confirmation_count().unwrap(), items.confirmation_count().unwrap());
 }

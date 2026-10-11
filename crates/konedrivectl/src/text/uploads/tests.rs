@@ -68,7 +68,6 @@ fn waiting_for_space_is_one_line_and_too_big_says_what_it_needs() {
     assert_eq!(upload_reason_text("too-big:3221225472:1073741824"), "Too big: needs 3.0 GiB, 1.0 GiB free.");
     assert_eq!(upload_reason_text("waiting-for-space"), "Waiting for space: OneDrive is full.");
     assert_eq!(upload_reason_text("too-big"), "Too big for the space left in OneDrive: free up space there, then `sync refresh`.");
-    assert_eq!(upload_reason_text("mass-delete"), "Part of a large delete: confirm it (`sync deletes confirm`) or undo it (`sync deletes restore`).");
     assert_eq!(upload_reason_text("network"), "OneDrive could not be reached: tried again later.");
     assert_eq!(upload_reason_text("local-error"), "The local file could not be read: tried again later.");
     assert_eq!(upload_reason_text("unreadable"), "Cannot be read: not uploaded, nor anything inside it, until KOneDrive may read it.");
@@ -119,7 +118,6 @@ fn the_reasons_the_worker_writes_have_sentences() {
 fn spelled(reason: &Reason) -> (&'static str, bool) {
     match reason {
         Reason::OpenForWriting => ("open-for-writing", true),
-        Reason::MassDelete => ("mass-delete", true),
         Reason::NameCharacters => ("name-characters", true),
         Reason::NameSpaces => ("name-spaces", true),
         Reason::NameReserved => ("name-reserved", true),
@@ -162,6 +160,7 @@ fn spelled(reason: &Reason) -> (&'static str, bool) {
         Reason::Blocked => ("blocked", true),
         Reason::NotReadOnDisk => ("not-read-on-disk", true),
         Reason::BeingChecked => ("being-checked", true),
+        Reason::QuietTime => ("quiet-time", true),
         Reason::Network => ("network", true),
         Reason::LocalIo => ("local-error", true),
         Reason::Store => ("index-error", true),

@@ -1,6 +1,6 @@
 //! What the plan decides between items: a test per case of the design's list
-//! (`docs/tasks/item-versions-design.md`, §6, "what it decides between items"), the guard
-//! against a mass removal, the closed set, the order of the steps and the rule that a plan
+//! (`docs/tasks/item-versions-design.md`, §6, "what it decides between items"), the
+//! closed set, the order of the steps and the rule that a plan
 //! in which nothing can run says why. A test's comment names the row of the map of today's
 //! code (`docs/tasks/item-versions-plan-map.txt`, §2: B1a–B8), or says "new" or "differs
 //! from today".
@@ -531,58 +531,6 @@ fn an_item_of_onedrive_in_a_directory_whose_name_the_folder_cannot_hold_is_not_s
     assert_eq!(answer(&given, 3), Answer::Exclusion(ExclusionReason::CannotBeShown));
 }
 
-// -- the guard against a mass removal
-
-/// Differs from today, as the design says: today the guard runs as each removal is
-/// recorded, and the first ones leave before it trips
-/// (`a_mass_delete_is_held_until_confirmed`, `local/record/tests.rs`). The plan is given
-/// the count of every unsent removal the user did not confirm, given to it or not
-/// ([`ItemStore::count_unsent_removals`](crate::ItemStore::count_unsent_removals)), and
-/// none leaves before the user confirms.
-#[test]
-fn a_mass_removal_waits_for_the_user_to_confirm_it() {
-    let removed: Vec<Item> = (2..12).map(|number| removed_here(synced_file(number, ROOT, &format!("f{number}")))).collect();
-    let held = Answer::Wait(WaitReason::User(Reason::MassDelete));
-    let mut given = input(removed.clone());
-    given.shown_item_count = 40;
-    given.unsent_removal_count = 10;
-    for number in 2..12 {
-        assert_eq!(answer(&given, number), held, "ten of forty: {number}");
-    }
-    given.shown_item_count = 50;
-    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 2) }), "a fifth, and no more");
-
-    // The count is of every unsent removal, also of those the plan was not given: three of
-    // the ten are given, and none of them leaves.
-    let mut given = input(removed[..3].to_vec());
-    given.shown_item_count = 40;
-    given.unsent_removal_count = 10;
-    for number in 2..5 {
-        assert_eq!(answer(&given, number), held, "three given of ten: {number}");
-    }
-    given.unsent_removal_count = 3;
-    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 2) }), "three in all");
-
-    // What the user confirmed is sent, whatever is counted beside it.
-    let mut given = input(removed);
-    given.shown_item_count = 40;
-    given.unsent_removal_count = 10;
-    given.items_with_confirmed_removal = [id(2)].into();
-    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 2) }));
-    assert_eq!(answer(&given, 3), held);
-
-    // A removed directory is one step for all OneDrive has in it; what is in it waits for it.
-    let mut tree = vec![removed_here(synced_directory(2, ROOT, "d"))];
-    tree.extend((3..12).map(|number| removed_here(synced_file(number, id(2), &format!("f{number}")))));
-    let mut given = input(tree);
-    given.shown_item_count = 40;
-    given.unsent_removal_count = 10;
-    assert_eq!(answer(&given, 2), held);
-    assert_eq!(answer(&given, 3), waits_for(2));
-    given.items_with_confirmed_removal = [id(2)].into();
-    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendDirectoryRemoval { item: versions(&given, 2), below: (3..12).map(|number| versions(&given, number)).collect() }));
-}
-
 // -- the answer
 
 /// The design's "for an item it needs and was not given, the function answers 'waits for
@@ -803,24 +751,6 @@ fn two_items_onedrive_lists_under_names_that_fold_to_one_are_both_shown() {
     assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::Listing), "a page to come may say the first was renamed");
     let given = input(vec![listed(2, ItemKind::File, ROOT, "a.txt"), listed(3, ItemKind::File, ROOT, "a.txt")]);
     assert_eq!(answer(&given, 3), Answer::OtherFault(PlanFault::FullListingNeeded(id(3))));
-}
-
-/// The review's S6, new: the guard against a mass removal counts, with the unsent
-/// removals, those that were sent a short time ago: twelve removals in two plans of six
-/// are held like twelve in one.
-#[test]
-fn removals_sent_a_short_time_ago_count_towards_a_mass_removal() {
-    let rows: Vec<Item> = (2..8).map(|number| removed_here(synced_file(number, ROOT, &format!("f{number}")))).collect();
-    let mut given = input(rows);
-    given.shown_item_count = 40;
-    given.unsent_removal_count = 6;
-    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 2) }), "six of forty are no mass removal");
-    given.sent_removal_count = 6;
-    for held in 2..8 {
-        assert_eq!(answer(&given, held), Answer::Wait(WaitReason::User(Reason::MassDelete)));
-    }
-    given.items_with_confirmed_removal = [id(2)].into();
-    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 2) }));
 }
 
 /// The review's S7, new: a directory whose answer is made from what is in it, given

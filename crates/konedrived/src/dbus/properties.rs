@@ -179,14 +179,12 @@ properties! {
     /// Conflicts whose kept file is still there.
     CONFLICT_COUNT: u32 = CONFLICTS_INTERFACE_NAME, "Count", |s| s.snapshot.local.conflict_count;
 
-    /// Changes waiting to be uploaded (not blocked, not held).
+    /// Changes waiting to be uploaded (not blocked).
     PENDING_COUNT: u32 = QUEUE, "PendingCount", |s| s.snapshot.outbox.pending_count;
     /// The size of the files those changes send.
     PENDING_BYTES: u64 = QUEUE, "PendingBytes", |s| s.snapshot.outbox.pending_bytes;
     /// Changes that need the user to go up.
     BLOCKED_COUNT: u32 = QUEUE, "BlockedCount", |s| s.snapshot.outbox.blocked_count;
-    /// Removals the mass-delete guard holds for `ConfirmDeletes` or `RestoreDeletes`.
-    HELD_COUNT: u32 = QUEUE, "HeldCount", |s| s.snapshot.outbox.held_count;
     QUOTA_WAITING_COUNT: u32 = QUEUE, "QuotaWaitingCount", |s| s.snapshot.outbox.space_waiting_count;
     QUOTA_WAITING_BYTES: u64 = QUEUE, "QuotaWaitingBytes", |s| s.snapshot.outbox.space_waiting_bytes;
     TOO_BIG_COUNT: u32 = QUEUE, "TooBigCount", |s| s.snapshot.outbox.too_big_count;

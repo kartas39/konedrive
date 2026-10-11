@@ -54,11 +54,10 @@ enum Fact {
     SpaceRefusal,
     Refusal,
     TakenName,
-    RemovalConfirmation,
     RemovalRefusal,
 }
 
-const FACTS: [Fact; 10] = [
+const FACTS: [Fact; 9] = [
     Fact::UploadSession,
     Fact::Opening,
     Fact::MismatchedItem,
@@ -67,7 +66,6 @@ const FACTS: [Fact; 10] = [
     Fact::SpaceRefusal,
     Fact::Refusal,
     Fact::TakenName,
-    Fact::RemovalConfirmation,
     Fact::RemovalRefusal,
 ];
 
@@ -222,7 +220,6 @@ fn decide_fate_by_rule(fact: Fact, kind: ItemKind, learnt: &Item, after: &RowsAf
             is_said_by_the_item && is_said_by_onedrive
         }
         Fact::FailedTries => !happening.is_request_confirmed,
-        Fact::RemovalConfirmation => !happening.is_item_listed_into_it,
         Fact::RemovalRefusal => true,
         Fact::Opening | Fact::MismatchedItem | Fact::TemporaryName => unreachable!("decided above"),
     };
@@ -626,13 +623,10 @@ impl Scene {
                 let taken = taken_at(store, id, &holder_name(at.as_ref()?));
                 assert_eq!(remember_taken(store, id, unsent_since?, &taken), StillSaid);
             }
-            Fact::RemovalConfirmation => {
-                let removal = UnsentRemoval::of(&row)?;
-                assert_eq!(store.step_memory().remember_removals_confirmed(&[removal]).unwrap(), []);
-            }
             Fact::RemovalRefusal => {
-                let removal = UnsentRemoval::of(&row)?;
-                assert_eq!(remember_refused(store, id, unsent_since, &removal_refusal(removal)), StillSaid);
+                // Of a removal made here that is not sent.
+                let _ = (row.onedrive_item.is_some() && row.local.is_none() && row.synced_place.is_some() && unsent_since.is_some()).then_some(())?;
+                assert_eq!(remember_refused(store, id, unsent_since, &removal_refusal()), StillSaid);
             }
         }
         self.learnt = Some(row);
@@ -674,7 +668,7 @@ fn remember_taken(store: &mut TreeStore, id: LocalItemId, unsent_since: u64, tak
     store.step_memory().remember_taken_name(id, Some(unsent_since), taken).unwrap()
 }
 
-fn removal_refusal(_removal: UnsentRemoval) -> Refusal {
+fn removal_refusal() -> Refusal {
     Refusal { reason: Reason::Forbidden, version: RefusedVersion::Removal }
 }
 
@@ -967,8 +961,8 @@ fn act(scene: &mut Scene, operation: Operation) {
         CommitSendRemoval => {
             scene.step(|store| {
                 is_written(match kind {
-                    ItemKind::File => store.item_store().commit_send_file_removal(&planned_from, 0),
-                    ItemKind::Directory => store.item_store().commit_send_directory_removal(&planned_from, &[], 0),
+                    ItemKind::File => store.item_store().commit_send_file_removal(&planned_from),
+                    ItemKind::Directory => store.item_store().commit_send_directory_removal(&planned_from, &[]),
                 })
             });
             (scene.happening.is_request_confirmed, scene.happening.is_removal_confirmed) = (true, true);
@@ -976,7 +970,7 @@ fn act(scene: &mut Scene, operation: Operation) {
         CommitSendRemovalOfTheDirectory => {
             scene.step(|store| {
                 let removed_directory = versions(store, directory);
-                is_written(store.item_store().commit_send_directory_removal(&removed_directory, &[planned_from], 0));
+                is_written(store.item_store().commit_send_directory_removal(&removed_directory, &[planned_from]));
             });
             (scene.happening.is_request_confirmed, scene.happening.is_removal_confirmed) = (true, true);
         }
@@ -1022,7 +1016,6 @@ fn holds(memory: &ItemMemory, fact: Fact) -> bool {
         Fact::SpaceRefusal => memory.space_refusal.is_some(),
         Fact::Refusal => memory.refusal.as_ref().is_some_and(|refusal| !is_removal_refusal(refusal)),
         Fact::TakenName => memory.taken_name.is_some(),
-        Fact::RemovalConfirmation => memory.removal_confirmation.is_some(),
         Fact::RemovalRefusal => memory.refusal.as_ref().is_some_and(is_removal_refusal),
     }
 }
@@ -1050,7 +1043,6 @@ fn is_listed(store: &mut TreeStore, id: LocalItemId, fact: Fact, at: Option<&Ite
         Fact::FailedTries => memory.list_timed_waits(100).unwrap().iter().any(|wait| wait.item == id),
         Fact::Refusal | Fact::RemovalRefusal => memory.list_refusal_reasons(None, None, 100).unwrap().iter().any(|refused| refused.item == id),
         Fact::SpaceRefusal => memory.list_space_refusal_reasons(None, 100).unwrap().iter().any(|refused| refused.item == id),
-        Fact::RemovalConfirmation => memory.list_items_with_confirmed_removal(None, 100).unwrap().contains(&id),
         Fact::TakenName => memory.list_taken_names(at?.parent_local_item_id).unwrap().iter().any(|taken| taken.item == id),
         _ => return None,
     })

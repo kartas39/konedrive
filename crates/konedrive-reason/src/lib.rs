@@ -63,8 +63,6 @@ impl Group {
 pub enum Reason {
     /// A writer has the file open (`docs/design/writes.md` §4.3).
     OpenForWriting,
-    /// A removal held by the mass-delete guard (§4.5).
-    MassDelete,
     /// The name holds one of `" * : < > ? \ |` (§4.4).
     NameCharacters,
     /// The name starts or ends with a space.
@@ -175,6 +173,9 @@ pub enum Reason {
     /// The sync plan cannot judge the item from what the store says of it: the daemon
     /// asks OneDrive for a full listing by itself, and the item waits for it.
     BeingChecked,
+    /// The file's content was changed a moment ago: it is sent once its quiet time has
+    /// ended, so that a program that saves in several writes is not sent half-way.
+    QuietTime,
     /// OneDrive could not be reached. In backoff; the error's
     /// own text is in the journal only.
     Network,
@@ -204,7 +205,6 @@ impl Reason {
     /// Every variant but [`Reason::Other`], those with a detail without it.
     pub const ALL: [Reason; 50] = [
         Self::OpenForWriting,
-        Self::MassDelete,
         Self::NameCharacters,
         Self::NameSpaces,
         Self::NameReserved,
@@ -247,6 +247,7 @@ impl Reason {
         Self::Blocked,
         Self::NotReadOnDisk,
         Self::BeingChecked,
+        Self::QuietTime,
         Self::Network,
         Self::LocalIo,
         Self::Store,
@@ -261,7 +262,6 @@ impl Reason {
     pub fn key(&self) -> &str {
         match self {
             Self::OpenForWriting => "open-for-writing",
-            Self::MassDelete => "mass-delete",
             Self::NameCharacters => "name-characters",
             Self::NameSpaces => "name-spaces",
             Self::NameReserved => "name-reserved",
@@ -304,6 +304,7 @@ impl Reason {
             Self::Blocked => "blocked",
             Self::NotReadOnDisk => "not-read-on-disk",
             Self::BeingChecked => "being-checked",
+            Self::QuietTime => "quiet-time",
             Self::Network => "network",
             Self::LocalIo => "local-error",
             Self::Store => "index-error",
@@ -373,8 +374,7 @@ impl Reason {
 
     /// The group of a row kept back for this reason, by the reason alone
     /// (a blocked row is never [`Group::Waiting`]: the daemon's
-    /// `kept_back::group_of`). `None` for a held removal, which has its own
-    /// question, and for a string in no table.
+    /// `kept_back::group_of`). `None` for a string in no table.
     pub fn group(&self) -> Option<Group> {
         Some(match self {
             // `quota-exceeded` only until a start converts it to `waiting-for-space`.
@@ -395,6 +395,7 @@ impl Reason {
             | Self::Blocked => Group::PerFile,
             Self::OpenForWriting
             | Self::BeingChecked
+            | Self::QuietTime
             | Self::Locked
             | Self::NotFound
             | Self::NotLocal
@@ -423,7 +424,6 @@ impl Reason {
             | Self::ChangingAgain
             | Self::SessionEnded
             | Self::NotAllowed(_) => Group::Waiting,
-            Self::MassDelete => return None,
             Self::Other(stored) => return known_group(key_of(stored)),
         })
     }
@@ -735,7 +735,7 @@ fn detail_of(stored: &str) -> Option<String> {
 }
 
 /// The group of a key ([`key_of`]) of either table; `None` for one no code
-/// of the daemon writes, and for `mass-delete`.
+/// of the daemon writes.
 pub fn known_group(key: &str) -> Option<Group> {
     match Reason::from_key(key) {
         Some(reason) => reason.group(),

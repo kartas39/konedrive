@@ -233,17 +233,17 @@ pub fn decide_lost_answer_fate(request: &SentRequest<'_>, item: &ItemVersions, f
 /// OneDrive has it (none for a removal). In the caller's job of the store, under the
 /// tree lock. A file is confirmed with no session: a request on record sent an empty
 /// file by one request.
-fn commit_settled_request(store: &mut TreeStore, record: &RequestRecord, versions: &ItemVersions, confirmed: Option<&ConfirmedItem>, now: i64) -> Result<StepCommitOutcome, TreeError> {
+fn commit_settled_request(store: &mut TreeStore, record: &RequestRecord, versions: &ItemVersions, confirmed: Option<&ConfirmedItem>) -> Result<StepCommitOutcome, TreeError> {
     match (&record.request, confirmed) {
         (RecordedRequest::MakeDirectory { parent, name }, Some(made)) => store.item_store().commit_make_directory(versions, parent, name, made),
         (RecordedRequest::SendNewFile { parent, name, .. }, Some(made)) => store.item_store().commit_send_new_file(versions, parent, name, made, None),
         (RecordedRequest::SendContent { .. }, Some(sent)) => store.item_store().commit_send_content(versions, sent, None),
         (RecordedRequest::SendMove { parent, name }, Some(moved)) => store.item_store().commit_send_move(versions, parent, name, moved),
-        (RecordedRequest::SendFileRemoval, None) => store.item_store().commit_send_file_removal(versions, now),
+        (RecordedRequest::SendFileRemoval, None) => store.item_store().commit_send_file_removal(versions),
         (RecordedRequest::SendDirectoryRemoval, None) => {
             // All the rows say OneDrive has below the directory, as they are now: the commit asks that it is what was removed here.
             let below: Vec<ItemVersions> = store.item_store().list_below_in_onedrive(versions.local_item_id)?.iter().map(ItemVersions::of).collect();
-            store.item_store().commit_send_directory_removal(versions, &below, now)
+            store.item_store().commit_send_directory_removal(versions, &below)
         }
         // A fate that does not fit its request writes nothing.
         (RecordedRequest::MakeDirectory { .. } | RecordedRequest::SendNewFile { .. } | RecordedRequest::SendContent { .. } | RecordedRequest::SendMove { .. }, None) | (RecordedRequest::SendFileRemoval | RecordedRequest::SendDirectoryRemoval, Some(_)) => {
@@ -396,7 +396,7 @@ impl LostAnswers {
             RecordedRequest::SendNewFile { .. } | RecordedRequest::SendContent { .. } | RecordedRequest::SendFileRemoval => row.kind == ItemKind::File,
             RecordedRequest::SendMove { .. } => true,
         };
-        let (record, now) = (record.clone(), (self.graph.clock)());
+        let record = record.clone();
         let _tree = self.tree_lock.lock().await;
         self.graph
             .store
@@ -407,7 +407,7 @@ impl LostAnswers {
                     return Ok(SettledRecord::Settled);
                 }
                 if is_of_kind {
-                    match commit_settled_request(store, &record, &versions, confirmed.as_ref(), now) {
+                    match commit_settled_request(store, &record, &versions, confirmed.as_ref()) {
                         Ok(StepCommitOutcome::Written) => tracing::info!("the request of item {} whose answer was lost went through: its answer is written", record.item),
                         Ok(StepCommitOutcome::RowsChanged) => {}
                         Err(error) => tracing::warn!("the answer of the request of item {} that went through is not written: {error}", record.item),

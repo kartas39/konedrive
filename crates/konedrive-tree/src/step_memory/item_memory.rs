@@ -23,8 +23,8 @@
 //!   those bytes;
 //! - a taken name, that the item's local place is the place that was sent.
 //!
-//! The confirmation and the refusal of a removal are asked that the row is a removal
-//! ([`UnsentRemoval`]), which the stamp implies. The failed tries are asked nothing more.
+//! The refusal of a removal is asked that the row is a removal, which the stamp implies.
+//! The failed tries are asked nothing more.
 //!
 //! **A fact of what OneDrive has** holds no version of the item and is not of an unsent
 //! change: the temporary name says under which name OneDrive has the item that has the
@@ -50,7 +50,6 @@ use std::ffi::OsString;
 use konedrive_reason::Reason;
 
 use crate::model::{ContentVersion, Item, ItemPlace, ItemVersion, LocalItemId, OneDriveItemReference};
-use crate::sync_plan::ItemVersions;
 
 /// The address OneDrive gave an upload session: what its fragments are sent to and what it
 /// is cancelled by. Whoever has it can write to the session, so it is never printed.
@@ -281,50 +280,10 @@ impl SpaceRefusal {
     }
 }
 
-/// A removal made here that is not sent, told from every other removal of the same item: by
-/// the stamp its row was given when the removal came to be unsent
-/// ([`Item::unsent_since`]). The stamp is of one counter and is taken when the folder shows
-/// the item again, so that a second removal of the item has another.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct UnsentRemoval {
-    pub item: LocalItemId,
-    pub unsent_since: u64,
-}
-
 /// Whether `item` is a removal made here: OneDrive has the item, the folder does not show
 /// it, and the two sides agreed on a place. Such a row is unsent, and has a stamp.
 fn is_removal(item: &Item) -> bool {
     item.onedrive_item.is_some() && item.local.is_none() && item.synced_place.is_some()
-}
-
-impl UnsentRemoval {
-    /// The removal `item`'s row is now; `None` for a row that is no removal that is not
-    /// sent.
-    pub fn of(item: &Item) -> Option<Self> {
-        Self::of_versions(&ItemVersions::of(item))
-    }
-
-    /// The removal a step was planned from, or a plan held: `None` for versions that are
-    /// no removal that is not sent. What the user is asked to confirm is these, kept by
-    /// whoever asks until the answer comes.
-    pub fn of_versions(versions: &ItemVersions) -> Option<Self> {
-        let is_removal = versions.onedrive_item.is_some() && versions.local.is_none() && versions.synced_place.is_some();
-        versions.unsent_since.filter(|_| is_removal).map(|unsent_since| Self { item: versions.local_item_id, unsent_since })
-    }
-}
-
-/// The user's confirmation of a removal a mass removal held: of the removal with this
-/// stamp, and of no later removal of the same item. For a directory it is given for what
-/// OneDrive had below it when the user was asked.
-///
-/// *Voided by:* the row not being that removal ([`ItemMemory::split_by_standing`]); an
-/// operation on the item's binding ([`ItemMemory::drop_facts_of_binding`]); and, for a
-/// directory, a listing that puts an item into it or below it that the rows did not say
-/// it had (`forget_removal_confirmations_above`, in the page's transaction): the guard
-/// against a mass removal asks again for what OneDrive has there now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RemovalConfirmation {
-    pub unsent_since: u64,
 }
 
 /// What OneDrive refused of an item.
@@ -385,7 +344,6 @@ pub enum StepFact {
     TemporaryName,
     FailedTries,
     SpaceRefusal,
-    RemovalConfirmation,
     Refusal,
     TakenName,
 }
@@ -456,14 +414,12 @@ pub(crate) enum ConfirmedRequest<'a> {
 pub struct ItemMemory {
     /// The stamp of the unsent change that the facts of such a change were learnt under
     /// ([`Item::unsent_since`]): the upload session, the failed tries, the refusal for lack
-    /// of space, the confirmation of a removal, the refusal and the taken name. None while
+    /// of space, the refusal and the taken name. None while
     /// none of them is kept.
     pub unsent_since: Option<u64>,
     pub upload_session: Option<UploadSession>,
     pub failed_tries: Option<FailedTries>,
     pub space_refusal: Option<SpaceRefusal>,
-    /// The user confirmed the item's removal when a mass removal was held.
-    pub removal_confirmation: Option<RemovalConfirmation>,
     pub refusal: Option<Refusal>,
     pub taken_name: Option<TakenName>,
     /// Of what OneDrive has, under no stamp.
@@ -489,7 +445,7 @@ impl ItemMemory {
 
     /// Whether a fact of an unsent change is kept.
     fn holds_fact_of_unsent_change(&self) -> bool {
-        self.upload_session.is_some() || self.failed_tries.is_some() || self.space_refusal.is_some() || self.removal_confirmation.is_some() || self.refusal.is_some() || self.taken_name.is_some()
+        self.upload_session.is_some() || self.failed_tries.is_some() || self.space_refusal.is_some() || self.refusal.is_some() || self.taken_name.is_some()
     }
 
     /// The memory holds the stamp only while it holds a fact that was learnt under it.
@@ -519,7 +475,6 @@ impl ItemMemory {
         part(self.upload_session, |fact| is_same_unsent_change && is_content_of(item, &fact.content), &mut said.upload_session, &mut gone.upload_session);
         part(self.failed_tries, |_| is_same_unsent_change, &mut said.failed_tries, &mut gone.failed_tries);
         part(self.space_refusal, |fact| is_same_unsent_change && is_content_of(item, &fact.content), &mut said.space_refusal, &mut gone.space_refusal);
-        part(self.removal_confirmation, |_| is_same_unsent_change && is_removal(item), &mut said.removal_confirmation, &mut gone.removal_confirmation);
         part(self.refusal, |fact| is_same_unsent_change && fact.version.is_version_of(item), &mut said.refusal, &mut gone.refusal);
         part(self.taken_name, |fact| is_same_unsent_change && local_place(item) == Some(&fact.place), &mut said.taken_name, &mut gone.taken_name);
         (said.unsent_since, gone.unsent_since) = (self.unsent_since, self.unsent_since);
@@ -590,7 +545,7 @@ impl ItemMemory {
     /// name is returned too: it goes with the binding. The item an upload left stays: it is
     /// in OneDrive whatever this item is bound to.
     pub(crate) fn drop_facts_of_binding(&mut self) -> (Option<UploadSession>, Option<TemporaryName>) {
-        (self.failed_tries, self.space_refusal, self.removal_confirmation, self.refusal, self.taken_name, self.unsent_since) = (None, None, None, None, None, None);
+        (self.failed_tries, self.space_refusal, self.refusal, self.taken_name, self.unsent_since) = (None, None, None, None, None);
         (self.upload_session.take(), self.temporary_name.take())
     }
 

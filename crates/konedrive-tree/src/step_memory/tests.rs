@@ -113,9 +113,11 @@ fn abandoned(store: &mut TreeStore) -> Vec<UploadSessionAddress> {
     store.step_memory().list_upload_session_cancellations(100).unwrap()
 }
 
-/// The removal the row of `id` is now.
-fn unsent_removal(store: &mut TreeStore, id: LocalItemId) -> UnsentRemoval {
-    UnsentRemoval::of(&item(store, id)).expect("a removal that is not sent")
+/// The stamp of the removal the row of `id` is now.
+fn removal_stamp(store: &mut TreeStore, id: LocalItemId) -> u64 {
+    let row = item(store, id);
+    assert!(row.onedrive_item.is_some() && row.local.is_none() && row.synced_place.is_some(), "a removal that is not sent");
+    row.unsent_since.expect("a removal that is not sent")
 }
 
 /// The folder shows the item of OneDrive `id` again, as a step towards the folder leaves it:
@@ -154,7 +156,6 @@ fn remember_everything_of_a_shown_file(store: &mut TreeStore, file: LocalItemId)
         temporary_name: Some(temporary_toward(store, file)),
         failed_tries: Some(FailedTries { count: 1, next_try_at: Some(60), last_failure: Reason::Refused(Some("no".to_owned())) }),
         space_refusal: Some(space_refusal(store, file, 5)),
-        removal_confirmation: None,
         refusal: Some(refusal_of(store, file, Reason::Forbidden)),
         taken_name: Some(taken_at(store, file, "REPORT")),
     };
@@ -444,48 +445,20 @@ fn a_quota_read_lets_go_what_fits_and_says_the_free_space_of_the_rest() {
     assert_eq!(said(&mut store, large).space_refusal, Some(SpaceRefusal { free_space: 500, ..large_fact }));
 }
 
-/// The confirmation of a mass removal is written of the removals it is given, each while
-/// the row is still that removal, and of no other row; the items whose removal is confirmed
-/// are read bounded, by local item id.
+/// A fact of a removal is of that removal. OneDrive refused a removal: the folder shows the
+/// item again, as a step towards the folder leaves it, and the item is removed again. The
+/// second removal is not refused, whether or not anything was written of the item in
+/// between; and a refusal given with the stamp of the first removal is not written of the
+/// second.
 #[test]
-fn a_confirmation_is_written_of_a_removal_that_is_not_sent() {
-    let mut store = TreeStore::in_memory().unwrap();
-    let (removed, shown, never_sent, second) = (make_file(&mut store, ROOT, "removed"), make_file(&mut store, ROOT, "shown"), make_file(&mut store, ROOT, "never-sent"), make_file(&mut store, ROOT, "second"));
-    for (id, onedrive_id) in [(removed, "A"), (shown, "B"), (second, "C")] {
-        synced(&mut store, id, onedrive_id);
-    }
-    remove(&mut store, removed);
-    remove(&mut store, second);
-    let (of_removed, of_second) = (unsent_removal(&mut store, removed), unsent_removal(&mut store, second));
-    assert_eq!(UnsentRemoval::of(&item(&mut store, shown)), None);
-    let given = [of_removed, UnsentRemoval { item: shown, unsent_since: 1 }, UnsentRemoval { item: never_sent, unsent_since: 3 }, UnsentRemoval { item: LocalItemId::new(99), unsent_since: 1 }, of_second];
-    assert_eq!(store.step_memory().remember_removals_confirmed(&given).unwrap(), [given[1], given[2], given[3]], "those that were not written are said");
-    assert_eq!(said(&mut store, removed), ItemMemory { unsent_since: Some(of_removed.unsent_since), removal_confirmation: Some(RemovalConfirmation { unsent_since: of_removed.unsent_since }), ..ItemMemory::default() });
-    assert_eq!((said(&mut store, shown), said(&mut store, never_sent)), (ItemMemory::default(), ItemMemory::default()));
-    assert_eq!(store.step_memory().list_items_with_confirmed_removal(None, 10).unwrap(), [removed, second]);
-    assert_eq!(store.step_memory().list_items_with_confirmed_removal(None, 1).unwrap(), [removed]);
-    assert_eq!(store.step_memory().list_items_with_confirmed_removal(Some(removed), 10).unwrap(), [second]);
-
-    store.step_memory().forget_fact(removed, StepFact::RemovalConfirmation).unwrap();
-    assert_eq!((said(&mut store, removed), count(&store, "step_memory")), (ItemMemory::default(), 1));
-    assert_eq!(store.step_memory().list_items_with_confirmed_removal(None, 10).unwrap(), [second]);
-}
-
-/// A fact of a removal is of that removal. The user confirmed a removal, and OneDrive
-/// refused one: the folder shows the item again, as a step towards the folder leaves it,
-/// and the item is removed again. The second removal is neither confirmed nor refused,
-/// whether or not anything was written of the item in between; and a confirmation given
-/// with the stamp of the first removal is not written of the second.
-#[test]
-fn a_confirmation_and_a_refusal_of_a_removal_are_not_answered_for_the_next_removal() {
+fn a_refusal_of_a_removal_is_not_answered_for_the_next_removal() {
     for writes_in_between in [false, true] {
         let mut store = TreeStore::in_memory().unwrap();
         let file = make_file(&mut store, ROOT, "report");
         synced(&mut store, file, "A");
         remove(&mut store, file);
-        let first = unsent_removal(&mut store, file);
+        let first = removal_stamp(&mut store, file);
         let refusal = Refusal { reason: Reason::Forbidden, version: RefusedVersion::Removal };
-        assert_eq!(store.step_memory().remember_removals_confirmed(&[first]).unwrap(), []);
         assert_eq!(remember_refused(&mut store, file, &refusal), StillSaid);
         assert_eq!(store.step_memory().list_refusal_reasons(None, None, 10).unwrap(), [ItemRefusalReason { item: file, reason: Reason::Forbidden }]);
 
@@ -496,12 +469,10 @@ fn a_confirmation_and_a_refusal_of_a_removal_are_not_answered_for_the_next_remov
             store.step_memory().forget_fact(file, StepFact::FailedTries).unwrap();
         }
         remove(&mut store, file);
-        let second = unsent_removal(&mut store, file);
+        let second = removal_stamp(&mut store, file);
         assert_ne!(first, second, "another removal has another stamp");
         assert_eq!(said(&mut store, file), ItemMemory::default(), "written in between: {writes_in_between}");
-        assert_eq!(store.step_memory().list_items_with_confirmed_removal(None, 10).unwrap(), []);
-        assert_eq!(store.step_memory().remember_removals_confirmed(&[first]).unwrap(), [first], "the removal the user was asked about is not this one");
-        assert_eq!(store.step_memory().remember_refusal(file, Some(first.unsent_since), &refusal).unwrap(), VersionGone, "nor is the refusal of the first");
+        assert_eq!(store.step_memory().remember_refusal(file, Some(first), &refusal).unwrap(), VersionGone, "the refusal of the first is not of this one");
     }
 }
 

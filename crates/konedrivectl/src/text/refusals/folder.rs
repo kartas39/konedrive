@@ -118,7 +118,7 @@ fn group(action: SyncAction<'_>) -> Group {
         Unpin(_) => Group::FileOperation(Operation::Unpin),
         Free(_) => Group::FileOperation(Operation::FreeUp),
         Open(_) => Group::FileOperation(Operation::OpenOnline),
-        Outbox | Pause | Resume | Ignore | NotUploaded | Deletes => Group::Uploads,
+        Outbox | Pause | Resume | Ignore | NotUploaded => Group::Uploads,
         Settings | Anyway => Group::Settings,
         Skipped | Activity | Conflicts | Dismiss(_) => Group::Lists,
     }

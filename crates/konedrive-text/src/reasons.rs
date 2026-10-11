@@ -45,14 +45,6 @@ const NOT_A_FILE: &str = "Not a file or a folder: never uploaded.";
 /// not a row's reasons too.
 pub const REASONS: &[ReasonText] = &[
     bare("open-for-writing", "Open for writing in another program: it goes up once closed."),
-    ReasonText {
-        key: "mass-delete",
-        bare: Some(Each {
-            desktop: "Part of a large delete: delete it in OneDrive too, or restore it, on the Status page.",
-            command_line: "Part of a large delete: confirm it (`sync deletes confirm`) or undo it (`sync deletes restore`).",
-        }),
-        detailed: None,
-    },
     bare("name-characters", "A name OneDrive refuses (it holds one of \" * : < > ? \\ |): rename it to upload it."),
     bare("name-spaces", "A name that starts or ends with a space, which OneDrive refuses: rename it to upload it."),
     bare("name-reserved", "A name OneDrive reserves: rename it to upload it."),
@@ -107,6 +99,8 @@ pub const REASONS: &[ReasonText] = &[
     bare("not-read-on-disk", "KOneDrive could not read this on disk when it started: nothing of it is uploaded until it can be read at a start."),
     // TODO: wording
     bare("being-checked", "Being checked: KOneDrive is asking OneDrive for the whole folder again, and goes on by itself."),
+    // TODO: wording
+    bare("quiet-time", "Changed a moment ago: it goes up once it has been left alone for a moment."),
     bare("network", "OneDrive could not be reached: tried again later."),
     bare("local-error", "The local file could not be read: tried again later."),
     bare("index-error", "KOneDrive's local index failed: tried again later."),

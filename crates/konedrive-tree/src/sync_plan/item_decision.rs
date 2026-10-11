@@ -466,7 +466,7 @@ fn find_decision_not_to_send(case: &ItemCase<'_>, sent_part: SentPart) -> Option
         SendingObstacle::NameRefused(reason) => ItemDecision::Wait(WaitReason::User(reason)),
         SendingObstacle::TooLarge => ItemDecision::Wait(WaitReason::User(Reason::TooLarge)),
         SendingObstacle::OneDriveFull => ItemDecision::Wait(WaitReason::User(Reason::WaitingForSpace)),
-        SendingObstacle::QuietTime { until } => ItemDecision::Wait(WaitReason::Time { until, reason: Reason::Changed }),
+        SendingObstacle::QuietTime { until } => ItemDecision::Wait(WaitReason::Time { until, reason: Reason::QuietTime }),
         SendingObstacle::Refused(reason) => ItemDecision::Wait(WaitReason::User(reason)),
         SendingObstacle::TriedAgainLater { until, reason } => ItemDecision::Wait(WaitReason::Time { until, reason }),
     })

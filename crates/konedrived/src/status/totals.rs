@@ -8,7 +8,7 @@
 //!   already sent of the uploads under way. Downloads, in files: every download under way
 //!   (`Transfers`: files being read, `Hydrate`, pinned files), less the bytes already
 //!   received of those. Nothing is queued ahead: a download counts only while it runs.
-//!   What is kept back — blocked, held, waiting for space while OneDrive is full, too big for
+//!   What is kept back — blocked, waiting for space while OneDrive is full, too big for
 //!   the space left — is not left: the Not Uploaded page counts it.
 //! - **Done.** The bytes moved that way (the transfer pool's count) since nothing was last
 //!   left that way, or since the daemon started; 0 while nothing is left.

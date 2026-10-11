@@ -285,7 +285,7 @@ fn a_removed_file_whose_removal_was_sent_is_not_found_by_its_synced_place() {
     let removed = row(&mut store, file);
     assert_eq!(store.item_store().reader().find_removed_file_at_synced_place(ROOT, OsStr::new("f")).unwrap(), Some(removed.clone()));
 
-    assert_eq!(store.item_store().commit_send_file_removal(&ItemVersions::of(&removed), 0).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_send_file_removal(&ItemVersions::of(&removed)).unwrap(), StepCommitOutcome::Written);
     assert!(store.item_store().find_item(file).unwrap().is_some(), "the row stays, with its binding alone");
     assert_eq!(store.item_store().reader().find_removed_file_at_synced_place(ROOT, OsStr::new("f")).unwrap(), None);
 }
@@ -430,34 +430,6 @@ fn the_path_of_an_item_the_folder_does_not_show_is_that_of_its_synced_place() {
     remove(&mut store, b);
     assert_eq!(synced_path(&mut store, file), Some(PathBuf::from("renamed/b/f")));
     assert_eq!(synced_path(&mut store, b), Some(PathBuf::from("renamed/b")));
-}
-
-#[test]
-fn the_unsent_removals_are_read_in_the_order_they_came_to_be_unsent() {
-    let mut store = store_with_listed_root();
-    let first = show_listed_file(&mut store, "F1", "R", "f1", "h1");
-    let directory = show_listed_directory(&mut store, "D", "R", "d");
-    let inside = show_listed_file(&mut store, "F2", "D", "f2", "h2");
-    let second = show_listed_file(&mut store, "F3", "R", "f3", "h3");
-    let never_sent = make_file(&mut store, ROOT, "never-sent");
-    let moved = show_listed_file(&mut store, "M", "R", "m", "h4");
-
-    remove(&mut store, second);
-    remove(&mut store, inside);
-    remove(&mut store, directory);
-    store.item_store().apply(&LocalVersionChange::Moved { item: moved, place: place(ROOT, "n"), is_name_ignored: false }).unwrap();
-    remove(&mut store, never_sent);
-    remove(&mut store, first);
-
-    let removals = |store: &mut TreeStore, after, limit| ids(&store.item_store().reader().list_unsent_removals(after, limit).unwrap());
-    assert_eq!(removals(&mut store, None, 10), [second, inside, directory, first], "a removed directory and what was removed with it are rows of their own");
-    assert_eq!(removals(&mut store, None, 2), [second, inside]);
-    let stamp_of_inside = row(&mut store, inside).unsent_since;
-    assert_eq!(removals(&mut store, stamp_of_inside, 10), [directory, first]);
-
-    let sent = row(&mut store, second);
-    store.item_store().commit_send_file_removal(&ItemVersions::of(&sent), 0).unwrap();
-    assert_eq!(removals(&mut store, None, 10), [inside, directory, first], "a removal that was sent is unsent no more");
 }
 
 #[test]

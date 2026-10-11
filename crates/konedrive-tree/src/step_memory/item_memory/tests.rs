@@ -66,7 +66,6 @@ fn everything() -> ItemMemory {
         temporary_name: Some(TemporaryName { name: ".konedrive-swap-A".into(), toward: place("report") }),
         failed_tries: Some(FailedTries { count: 2, next_try_at: Some(50), last_failure: Reason::Network }),
         space_refusal: Some(SpaceRefusal { content: content(1), free_space: 5 }),
-        removal_confirmation: None,
         refusal: Some(Refusal { reason: Reason::Forbidden, version: RefusedVersion::Shown(version("report", 1)) }),
         taken_name: Some(TakenName { place: place("report"), holder_name: "REPORT".into() }),
     }
@@ -152,30 +151,6 @@ fn a_refusal_is_said_while_the_row_is_the_version_or_the_removal_that_was_refuse
     assert!(!is_said(&of_a_removal, &Item { unsent_since: Some(LEARNT_UNDER), ..row(Some(version("report", 1)), true, true) }), "the folder shows it");
 }
 
-/// The confirmation of a removal is of that removal: the row is a removal — bound, not
-/// shown, with a place agreed on — and has the stamp the removal was held with.
-#[test]
-fn a_confirmation_is_said_while_the_row_is_the_removal_that_was_confirmed() {
-    let confirmed = ItemMemory { unsent_since: Some(LEARNT_UNDER), removal_confirmation: Some(RemovalConfirmation { unsent_since: LEARNT_UNDER }), ..ItemMemory::default() };
-    let is_said = |item: &Item| said(confirmed.clone(), item).removal_confirmation.is_some();
-    assert!(is_said(&removed(LEARNT_UNDER)));
-    assert!(!is_said(&removed(9)), "shown again and removed again: another removal");
-    assert!(!is_said(&Item { unsent_since: Some(LEARNT_UNDER), ..row(Some(version("report", 1)), true, true) }), "the folder shows it");
-    assert!(!is_said(&Item { unsent_since: None, ..row(None, true, false) }), "nothing is agreed on: no removal is unsent");
-    assert!(!is_said(&Item { unsent_since: Some(LEARNT_UNDER), ..row(None, false, false) }), "an item OneDrive does not have");
-}
-
-/// The removal a row is now, and the one a step was planned from: told by the stamp, and
-/// none for what is no removal that is not sent.
-#[test]
-fn an_unsent_removal_is_told_by_the_stamp_of_its_row() {
-    let of_removed = Some(UnsentRemoval { item: LocalItemId::new(7), unsent_since: 4 });
-    assert_eq!(UnsentRemoval::of(&removed(4)), of_removed);
-    assert_eq!(UnsentRemoval::of_versions(&ItemVersions::of(&removed(4))), of_removed, "as a plan held it");
-    assert_eq!(UnsentRemoval::of(&shown("report", 1)), None, "the folder shows it");
-    assert_eq!(UnsentRemoval::of(&row(None, true, false)), None, "the removal was sent");
-}
-
 /// Beside the stamp, a taken name is asked that the item's local place is the place that
 /// was sent; a change of the content leaves it. The failed tries are asked nothing more.
 #[test]
@@ -251,7 +226,7 @@ fn what_a_confirmed_request_ends_is_forgotten_whatever_the_stamp() {
 /// binding; the item an upload left stays.
 #[test]
 fn an_operation_on_the_items_binding_drops_every_fact_of_an_unsent_change() {
-    let mut memory = ItemMemory { removal_confirmation: Some(RemovalConfirmation { unsent_since: LEARNT_UNDER }), ..everything() };
+    let mut memory = everything();
     assert_eq!(memory.drop_facts_of_binding(), (everything().upload_session, everything().temporary_name));
     assert_eq!(memory, ItemMemory { mismatched_item: everything().mismatched_item, ..ItemMemory::default() });
 }

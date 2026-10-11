@@ -62,7 +62,6 @@ pub(super) fn publish_running_view(service: &SyncService, fixture: &ItemFixture,
     let (poll, asked_cycle_count) = fixture.poll_handle();
     let record = make_record(&fixture.folder(), None);
     service.view.send_replace(View {
-        tree_lock: Some(Arc::clone(&fixture.tree_lock)),
         record: Some(record),
         parts: Some(parts),
         poll: Some(poll),

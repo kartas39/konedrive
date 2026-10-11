@@ -331,7 +331,6 @@ impl Folder {
     pub(super) fn plan(&mut self) -> SyncPlan {
         let rows = self.rows();
         let items = self.store.item_store();
-        let not_shown: std::collections::BTreeSet<LocalItemId> = rows.iter().filter(|row| row.local.is_none()).map(|row| row.local_item_id).collect();
         let directories = || rows.iter().filter(|row| row.kind == ItemKind::Directory);
         let input = SyncPlanInput {
             folder_visibility: rows.iter().filter(|row| row.onedrive.is_some()).map(|row| (row.local_item_id, items.find_folder_visibility(row.local_item_id).unwrap())).collect(),
@@ -347,14 +346,10 @@ impl Folder {
             largest_file_size: 250 << 30,
             sending_state: SendingState::ReadWrite,
             computer_name: "pc".to_owned(),
-            shown_item_count: items.count_shown_items().unwrap(),
-            unsent_removal_count: items.count_unsent_removals(&not_shown).unwrap(),
-            items_with_confirmed_removal: not_shown,
             places_taken_in_onedrive: Default::default(),
             items_left_by_uploads: Default::default(),
             temporary_names: Default::default(),
             own_upload_contents: Default::default(),
-            sent_removal_count: 0,
             now: 0,
             next_tries: Default::default(),
             sending_refusals: Default::default(),

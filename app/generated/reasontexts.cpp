@@ -81,6 +81,7 @@ bool takesDetail(QStringView key)
         QLatin1String("blocked"),
         QLatin1String("not-read-on-disk"),
         QLatin1String("being-checked"),
+        QLatin1String("quiet-time"),
         QLatin1String("network"),
         QLatin1String("local-error"),
         QLatin1String("index-error"),
@@ -133,12 +134,6 @@ QString reasonSentence(const ReasonParts &parts, const QString &needs, const QSt
     if (parts.key == QLatin1String("open-for-writing")) {
         if (!parts.hasDetail) {
             return i18n("Open for writing in another program: it goes up once closed.");
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("mass-delete")) {
-        if (!parts.hasDetail) {
-            return i18n("Part of a large delete: delete it in OneDrive too, or restore it, on the Status page.");
         }
         return QString();
     }
@@ -319,6 +314,12 @@ QString reasonSentence(const ReasonParts &parts, const QString &needs, const QSt
     if (parts.key == QLatin1String("being-checked")) {
         if (!parts.hasDetail) {
             return i18n("Being checked: KOneDrive is asking OneDrive for the whole folder again, and goes on by itself.");
+        }
+        return QString();
+    }
+    if (parts.key == QLatin1String("quiet-time")) {
+        if (!parts.hasDetail) {
+            return i18n("Changed a moment ago: it goes up once it has been left alone for a moment.");
         }
         return QString();
     }

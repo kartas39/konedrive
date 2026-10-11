@@ -33,8 +33,8 @@
 //! **The two kinds of fact, and what each is answered by.**
 //!
 //! - *A fact of a local change that is not sent* — the upload session, the failed tries
-//!   of what was sent with their wait, the refusal for lack of space, the refusal for good, the taken name,
-//!   the confirmation of a removal — is learnt under the stamp of the row the step was
+//!   of what was sent with their wait, the refusal for lack of space, the refusal for good, the taken name
+//!   — is learnt under the stamp of the row the step was
 //!   planned from ([`ItemVersions::unsent_since`](crate::ItemVersions), which the caller
 //!   gives), is not written when the row has another stamp or none, and is answered only
 //!   while the row has that stamp ([`ItemMemory::split_by_standing`], the one decision). A
@@ -107,8 +107,8 @@ mod upload_session_openings;
 
 pub(crate) use item_memory::ConfirmedRequest;
 pub use item_memory::{
-    is_content_of, FactStanding, FailedTries, FailedTryStanding, ItemMemory, ItemMemoryParts, MismatchedItem, MismatchedItemStanding, Refusal, RefusedVersion, RemovalConfirmation, SpaceFit, SpaceRefusal,
-    StepFact, TakenName, TemporaryName, UnsentRemoval, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
+    is_content_of, FactStanding, FailedTries, FailedTryStanding, ItemMemory, ItemMemoryParts, MismatchedItem, MismatchedItemStanding, Refusal, RefusedVersion, SpaceFit, SpaceRefusal,
+    StepFact, TakenName, TemporaryName, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
 };
 pub use refusal_reasons::ItemRefusalReason;
 pub use request_records::{RecordedRequest, RequestRecord};
@@ -116,7 +116,7 @@ pub use upload_session_openings::{OpeningTry, OpeningWindow, UPLOAD_SESSION_OPEN
 
 pub(crate) use mismatched_item_removals::list_removals as list_mismatched_item_removals;
 pub(crate) use onedrive_answers::{
-    forget_mismatched_item_listed_changed, forget_removal_confirmations_above, forget_taken_names_onedrive_lacks, forget_temporary_name_unless_at, forget_temporary_names_of_items_onedrive_lacks,
+    forget_mismatched_item_listed_changed, forget_taken_names_onedrive_lacks, forget_temporary_name_unless_at, forget_temporary_names_of_items_onedrive_lacks,
 };
 pub(crate) use refusal_reasons::{count_refusal_reasons, count_space_refusals, list_refusal_reasons, list_space_refusal_reasons};
 pub(crate) use request_records::list_records as list_request_records;
@@ -247,14 +247,6 @@ impl StepMemory<'_> {
     /// lists in all. Every row of the index is read.
     pub fn count_space_refusals(&self) -> Result<u64, TreeError> {
         count_space_refusals(&self.store.conn)
-    }
-
-    /// The items whose removal the user confirmed, by local item id, after the item `after`
-    /// when one is given, at most `limit` of them: what a plan is given so that the guard
-    /// against a mass removal leaves them out. Found by an index; an item whose row is not
-    /// the removal that was confirmed any more is not among them.
-    pub fn list_items_with_confirmed_removal(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<LocalItemId>, TreeError> {
-        list_items_with_confirmed_removal(&self.store.conn, after, limit)
     }
 
     /// The names OneDrive answered are taken in `directory`, each with the item that was
@@ -439,13 +431,6 @@ impl StepMemory<'_> {
         self.write(|tx| forget_fitting_space_refusals(tx, free_space))
     }
 
-    /// The user confirmed `removals`, which a mass removal held: written of each whose row
-    /// is still that removal, with the stamp it was held with, and of no other. Those that
-    /// were not written, each a row that is another removal by now, or none.
-    pub fn remember_removals_confirmed(&mut self, removals: &[UnsentRemoval]) -> Result<Vec<UnsentRemoval>, TreeError> {
-        self.write(|tx| remember_removals_confirmed(tx, removals))
-    }
-
     /// OneDrive refuses for good what a step planned from a row stamped `unsent_since` sent
     /// of `item`. Not written when the row has another stamp or none, or does not say what
     /// was refused any more: its version at that place, or a removal. Refused for an id
@@ -547,12 +532,6 @@ fn list_said_facts<T>(conn: &Connection, condition: &str, after: Option<LocalIte
         }
     }
     Ok(facts)
-}
-
-/// [`StepMemory::list_items_with_confirmed_removal`], inside the caller's transaction.
-pub(crate) fn list_items_with_confirmed_removal(conn: &Connection, after: Option<LocalItemId>, limit: usize) -> Result<Vec<LocalItemId>, TreeError> {
-    let confirmed = list_said_facts(conn, "is_removal_confirmed IS NOT NULL", after, limit, |said| said.removal_confirmation)?;
-    Ok(confirmed.into_iter().map(|(item, _)| item).collect())
 }
 
 /// [`StepMemory::list_taken_names`], inside the caller's transaction.
@@ -827,21 +806,6 @@ pub(crate) fn forget_fitting_space_refusals(conn: &Connection, free_space: u64) 
     Ok(forgotten)
 }
 
-/// [`StepMemory::remember_removals_confirmed`], inside the caller's transaction.
-pub(crate) fn remember_removals_confirmed(conn: &Connection, removals: &[UnsentRemoval]) -> Result<Vec<UnsentRemoval>, TreeError> {
-    let mut not_written = Vec::new();
-    for removal in removals {
-        let standing = change_memory(conn, removal.item, |row, memory| {
-            let confirmation = RemovalConfirmation { unsent_since: removal.unsent_since };
-            Ok(learn_of_unsent_change(row, memory, Some(removal.unsent_since), |memory| memory.removal_confirmation = Some(confirmation)))
-        })?;
-        if standing != Some(FactStanding::StillSaid) {
-            not_written.push(*removal);
-        }
-    }
-    Ok(not_written)
-}
-
 /// [`StepMemory::remember_refusal`], inside the caller's transaction.
 pub(crate) fn remember_refusal(conn: &Connection, item: LocalItemId, unsent_since: Option<u64>, refusal: &Refusal) -> Result<FactStanding, TreeError> {
     if item == LocalItemId::ROOT {
@@ -879,7 +843,6 @@ pub(crate) fn forget_fact(conn: &Connection, item: LocalItemId, fact: StepFact) 
             StepFact::TemporaryName => memory.temporary_name = None,
             StepFact::FailedTries => memory.failed_tries = None,
             StepFact::SpaceRefusal => memory.space_refusal = None,
-            StepFact::RemovalConfirmation => memory.removal_confirmation = None,
             StepFact::Refusal => memory.refusal = None,
             StepFact::TakenName => memory.taken_name = None,
         }

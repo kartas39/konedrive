@@ -559,9 +559,6 @@ impl SyncPlanTask {
     /// published answers and the running steps taken before it
     /// (`upload_queue::read_queue_totals`, `count_queue`, `read_running_upload_paths`,
     /// `describe_running_uploads`), `read_queue_conditions` taken before the read too.
-    /// The plan's counts of the held removals (`PublishedPlan::list_held_removal_counts`)
-    /// are taken with the answers and given to `read_queue_totals`: without them
-    /// `PendingCount` would count the rows below a held directory.
     /// With `is_counts_read` false only the bytes of the running uploads are published,
     /// with the counts as they were last read: the tick's round, which reads no row but
     /// the paths of the uploads. The task is the ONE writer of these fields. Called by
@@ -571,12 +568,12 @@ impl SyncPlanTask {
     async fn publish_queue_status(&self, is_counts_read: bool) {
         let parts = &self.parts;
         let conditions = crate::upload_queue::read_queue_conditions(&parts.sending_holds, &parts.onedrive_space, (parts.clock)());
-        let (answers, held_removal_counts) = parts.published_plan.list_answers_and_held_removal_counts();
+        let answers = parts.published_plan.list_answers();
         let running = parts.running_steps.list_steps();
         let read = {
             let running = running.clone();
             move |items: &konedrive_tree::ItemReader<'_>| {
-                let totals = if is_counts_read { Some(crate::upload_queue::read_queue_totals(items, &answers, &running, &held_removal_counts)?) } else { None };
+                let totals = if is_counts_read { Some(crate::upload_queue::read_queue_totals(items, &answers, &running)?) } else { None };
                 Ok((totals, crate::upload_queue::read_running_upload_paths(items, &running)?))
             }
         };
@@ -902,14 +899,7 @@ impl SyncPlanTask {
             .into_iter()
             .filter(|item| decide_is_shown_blocked(answers_before.get(item), has_refusal_for_good(item)) != decide_is_shown_blocked(answers.get(item), has_refusal_for_good(item)))
             .collect();
-        // The count of each held removal of a directory is the plan's own, of its reading.
-        let held_removal_counts: BTreeMap<LocalItemId, u64> = plan
-            .waits
-            .iter()
-            .filter(|wait| wait.reason == WaitReason::User(konedrive_tree::Reason::MassDelete))
-            .filter_map(|wait| round.input.onedrive_item_count_below.get(&wait.item).map(|count| (wait.item, *count)))
-            .collect();
-        parts.published_plan.publish(answers, held_removal_counts);
+        parts.published_plan.publish(answers);
         if !marks_changed.is_empty() {
             (parts.marks_announcer)(marks_changed);
         }

@@ -57,7 +57,7 @@ fn removed_file() -> Item {
 }
 
 fn entry(item: Item, answer: Option<ItemAnswer>) -> UnsentEntry {
-    UnsentEntry { item, answer, running: None, memory: ItemMemory::default(), held_items_below: None }
+    UnsentEntry { item, answer, running: None, memory: ItemMemory::default() }
 }
 
 fn waiting(reason: WaitReason) -> Option<ItemAnswer> {
@@ -125,8 +125,8 @@ fn the_words_of_the_bus_are_todays() {
     let kinds = [UnsentKind::Mkdir, UnsentKind::Create, UnsentKind::Update, UnsentKind::Move, UnsentKind::Delete];
     assert_eq!(kinds.map(UnsentKind::as_str), ["mkdir", "create", "update", "move", "delete"]);
     assert_eq!(kinds.map(UnsentKind::sends_content), [false, true, true, false, false]);
-    let states = [QueueState::Ready, QueueState::Running, QueueState::Retry, QueueState::Waiting, QueueState::Blocked, QueueState::Held, QueueState::Paused];
-    assert_eq!(states.map(QueueState::as_str), ["ready", "running", "retry", "waiting", "blocked", "held", "paused"]);
+    let states = [QueueState::Ready, QueueState::Running, QueueState::Retry, QueueState::Waiting, QueueState::Blocked, QueueState::Paused];
+    assert_eq!(states.map(QueueState::as_str), ["ready", "running", "retry", "waiting", "blocked", "paused"]);
 }
 
 // ---- the state and the reason ----
@@ -145,7 +145,6 @@ fn every_answer_of_the_plan_has_its_word_and_its_reason() {
         ("a planned step", Some(ItemAnswer::Planned(StepClass::Content)), QueueState::Ready, None, 0),
         ("a planned step of the rows", Some(ItemAnswer::Planned(StepClass::Row)), QueueState::Ready, None, 0),
         ("not given to the last plan", None, QueueState::Ready, None, 0),
-        ("the guard's hold", for_user(Reason::MassDelete), QueueState::Held, Some(Reason::MassDelete), 0),
         ("a name OneDrive cannot hold", for_user(Reason::NameCharacters), QueueState::Blocked, Some(Reason::NameCharacters), 0),
         ("larger than OneDrive takes", for_user(Reason::TooLarge), QueueState::Blocked, Some(Reason::TooLarge), 0),
         ("a file open for writing", for_user(Reason::OpenForWriting), QueueState::Waiting, Some(Reason::OpenForWriting), 0),
@@ -153,7 +152,7 @@ fn every_answer_of_the_plan_has_its_word_and_its_reason() {
         ("a read-only folder's wait", for_user(Reason::NotAllowed(Some(READ_ONLY_FOLDER.to_owned()))), QueueState::Waiting, Some(Reason::NotAllowed(Some(READ_ONLY_FOLDER.to_owned()))), 0),
         ("OneDrive full", for_user(Reason::WaitingForSpace), QueueState::Ready, Some(Reason::WaitingForSpace), 0),
         ("too big for the space", for_user(Reason::TooBig(Some((20, 5)))), QueueState::Ready, Some(Reason::TooBig(Some((20, 5)))), 0),
-        ("the quiet time", waiting(WaitReason::Time { until: 90, reason: Reason::Changed }), QueueState::Waiting, Some(Reason::Changed), 90),
+        ("the quiet time", waiting(WaitReason::Time { until: 90, reason: Reason::QuietTime }), QueueState::Waiting, Some(Reason::QuietTime), 90),
         ("another item", waiting(WaitReason::AnotherItem(id(2))), QueueState::Waiting, None, 0),
         ("an item not given", waiting(WaitReason::ItemNotGiven(id(2))), QueueState::Waiting, None, 0),
         ("a running step that is not found", waiting(WaitReason::RunningStep), QueueState::Waiting, None, 0),
@@ -245,16 +244,7 @@ fn a_row_says_the_stamp_the_full_path_and_how_far_a_kept_session_got() {
 }
 
 #[test]
-fn a_removal_the_mass_removal_guard_holds_is_held() {
-    let mut held = entry(removed_file(), for_user(Reason::MassDelete));
-    held.item.kind = ItemKind::Directory;
-    held.held_items_below = Some(41);
-    let row = describe_queue_change(&held, Path::new("old"), &running(Some(SendingHold::Paused { until: None })), Path::new(FOLDER)).expect("a row");
-    assert_eq!((row.kind.as_str(), row.state.as_str(), row.sent, row.total, row.reason), ("delete", "held", 0, 41, Reason::MassDelete.to_string()));
-}
-
-#[test]
-fn every_entry_that_is_not_blocked_or_held_is_paused_while_the_account_is() {
+fn every_entry_that_is_not_blocked_is_paused_while_the_account_is() {
     let paused = running(Some(SendingHold::Paused { until: Some(900) }));
     let mut in_flight = entry(changed_file(), waiting(WaitReason::RunningStep));
     in_flight.running = Some(step(id(7), StepClass::Content, 4, 20));
@@ -263,7 +253,6 @@ fn every_entry_that_is_not_blocked_or_held_is_paused_while_the_account_is() {
     for paused_entry in [in_flight, retried, entry(changed_file(), None), entry(changed_file(), for_user(Reason::WaitingForSpace)), entry(changed_file(), for_user(Reason::OpenForWriting))] {
         assert_eq!(state_and_reason(&paused_entry, &paused), Some((QueueState::Paused, None, 0)));
     }
-    assert_eq!(decide_queue_state(&entry(removed_file(), for_user(Reason::MassDelete)), &paused), Some(QueueState::Held));
     assert_eq!(decide_queue_state(&entry(changed_file(), for_user(Reason::NameCharacters)), &paused), Some(QueueState::Blocked));
     // An item the check at start left, and a faulty one, keep their word too.
     assert_eq!(decide_queue_state(&entry(changed_file(), waiting(WaitReason::StartUpCheck)), &paused), Some(QueueState::Waiting));
@@ -305,18 +294,17 @@ fn what_is_kept_back_is_what_needs_the_user_or_waits_with_a_reason() {
     };
     assert_eq!(kept(for_user(Reason::NameCharacters)), Some(Reason::NameCharacters));
     assert_eq!(kept(for_user(Reason::OpenForWriting)), Some(Reason::OpenForWriting));
-    assert_eq!(kept(waiting(WaitReason::Time { until: 5, reason: Reason::Changed })), Some(Reason::Changed));
+    assert_eq!(kept(waiting(WaitReason::Time { until: 5, reason: Reason::QuietTime })), Some(Reason::QuietTime));
     assert_eq!(kept(for_user(Reason::WaitingForSpace)), Some(Reason::WaitingForSpace));
     assert_eq!(kept(waiting(WaitReason::Listing)), None, "it waits with no reason");
     assert_eq!(kept(Some(ItemAnswer::Planned(StepClass::Content))), None, "it goes up by itself");
-    assert_eq!(kept(for_user(Reason::MassDelete)), None, "the guard has its own question");
     let mut in_flight = entry(changed_file(), waiting(WaitReason::RunningStep));
     in_flight.running = Some(step(id(7), StepClass::Content, 1, 20));
     assert_eq!(decide_kept_back_reason(UnsentKind::Update, QueueState::Running, &in_flight, &sending), None);
     assert_eq!(decide_kept_back_reason(UnsentKind::Update, QueueState::Blocked, &entry(changed_file(), None), &sending), Some(Reason::Blocked), "blocked with no reason");
 }
 
-/// Six entries kept back for four reasons, and two that are not.
+/// Six entries kept back for four reasons, and one that is not.
 fn kept_back_entries() -> Vec<UnsentEntry> {
     let numbered = |number: i64, size: u64, answer: Option<ItemAnswer>| {
         let mut item = changed_file();
@@ -334,7 +322,6 @@ fn kept_back_entries() -> Vec<UnsentEntry> {
         numbered(11, 3, for_user(Reason::NameCharacters)),
         numbered(10, 50, for_user(Reason::TooBig(Some((50, 5))))),
         numbered(16, 1, Some(ItemAnswer::Planned(StepClass::Content))),
-        numbered(17, 1, for_user(Reason::MassDelete)),
     ]
 }
 
@@ -403,12 +390,10 @@ fn the_counts_are_the_stores_sum_less_what_the_memory_and_the_answers_take_out()
         item.local_item_id = id(number);
         entry(item, answer)
     };
-    let mut held = numbered(2, removed_file(), for_user(Reason::MassDelete));
-    held.held_items_below = Some(5);
     let mut no_kind = numbered(8, agreed_file(), for_user(Reason::NameCharacters));
     no_kind.item.unsent_since = Some(9);
     let answered = vec![
-        held,
+        numbered(2, removed_file(), Some(ItemAnswer::Planned(StepClass::Metadata))),
         numbered(3, changed_file(), for_user(Reason::NameCharacters)),
         numbered(4, changed_file(), Some(ItemAnswer::Excluded(ExclusionReason::CannotBeShown))),
         numbered(5, changed_file(), for_user(Reason::WaitingForSpace)),
@@ -417,11 +402,11 @@ fn the_counts_are_the_stores_sum_less_what_the_memory_and_the_answers_take_out()
         // A stamp and no kind: no entry, and it stays pending.
         no_kind,
     ];
-    // In the store: the seven above, the five rows below the held directory, one item
-    // the memory refuses for good that the plan was not given, and three more.
+    // In the store: the seven above, one item the memory refuses for good that the plan
+    // was not given, and eight more.
     let totals = QueueTotals { unsent: UnsentTotal { count: 16, bytes: 1_000 }, refused_for_good: vec![id(40)], refused_for_space: vec![(id(7), 20)], answered };
     let counts = count_queue(&totals, &running(None));
-    assert_eq!(counts, QueueCounts { pending: 16 - 2 - 1 - 1 - 5, pending_bytes: 1_000 - 20 - 20, blocked: 2, held: 1, space_waiting: 1, space_waiting_bytes: 20, too_big: 1, too_big_bytes: 20 });
+    assert_eq!(counts, QueueCounts { pending: 16 - 2 - 1, pending_bytes: 1_000 - 20 - 20, blocked: 2, space_waiting: 1, space_waiting_bytes: 20, too_big: 1, too_big_bytes: 20 });
 }
 
 #[test]
@@ -436,7 +421,7 @@ fn an_item_the_memory_and_the_answers_both_refuse_is_counted_once() {
     assert_eq!((count_queue(&none, &running(None)).pending, count_queue(&none, &running(None)).pending_bytes), (0, 0));
 }
 
-// ---- the uploads, what is not shown, the held removal ----
+// ---- the uploads, what is not shown ----
 
 #[test]
 fn a_running_upload_is_shown_under_its_items_path() {
@@ -470,15 +455,6 @@ fn an_item_not_shown_that_is_still_here_says_its_path_and_what_keeps_it() {
     }
 }
 
-#[test]
-fn a_removal_is_held_when_an_answer_waits_for_the_user_for_a_mass_removal() {
-    let mut answers = BTreeMap::from([(id(2), ItemAnswer::Planned(StepClass::Metadata)), (id(3), ItemAnswer::Waiting(WaitReason::User(Reason::NameCharacters)))]);
-    assert!(!is_removal_held(&answers));
-    assert!(!is_removal_held(&BTreeMap::new()));
-    answers.insert(id(4), ItemAnswer::Waiting(WaitReason::User(Reason::MassDelete)));
-    assert!(is_removal_held(&answers));
-}
-
 // ---- the readers, over a store ----
 
 /// A folder with an unsent item in every state, and what the last plan answered for
@@ -503,7 +479,6 @@ struct QueueFixture {
     spaced: LocalItemId,
     named: LocalItemId,
     answers: BTreeMap<LocalItemId, ItemAnswer>,
-    held_removal_counts: BTreeMap<LocalItemId, u64>,
     running: Vec<RunningStep>,
 }
 
@@ -550,7 +525,7 @@ impl QueueFixture {
         });
 
         let answers = BTreeMap::from([
-            (old, ItemAnswer::Waiting(WaitReason::User(Reason::MassDelete))),
+            (old, ItemAnswer::Planned(StepClass::Metadata)),
             (old_a, ItemAnswer::Waiting(WaitReason::AnotherItem(old))),
             (old_b, ItemAnswer::Waiting(WaitReason::AnotherItem(old))),
             (created, ItemAnswer::Planned(StepClass::Content)),
@@ -565,31 +540,30 @@ impl QueueFixture {
             (spaced, ItemAnswer::Waiting(WaitReason::User(Reason::WaitingForSpace))),
             (named, ItemAnswer::Waiting(WaitReason::User(Reason::NameCharacters))),
         ]);
-        let held_removal_counts = BTreeMap::from([(old, 2)]);
         let running = vec![step(uploading, StepClass::Content, 4, 10)];
-        QueueFixture { fixture, docs, old_a, old_b, old, created, uploading, moved, changed, gone, refused: refused_id, too_big: too_big_id, left_out, faulty, unread, made_directory, spaced, named, answers, held_removal_counts, running }
+        QueueFixture { fixture, docs, old_a, old_b, old, created, uploading, moved, changed, gone, refused: refused_id, too_big: too_big_id, left_out, faulty, unread, made_directory, spaced, named, answers, running }
     }
 
     /// `Changes(limit)`, as the owner of the folder's state answers it.
     fn read_changes(&self, sending: &QueueConditions, limit: usize) -> Vec<Change> {
-        let (answers, held, running, sending) = (self.answers.clone(), self.held_removal_counts.clone(), self.running.clone(), sending.clone());
+        let (answers, running, sending) = (self.answers.clone(), self.running.clone(), sending.clone());
         self.fixture.read_rows(move |items| {
-            let entries = read_unsent_entries(items, &answers, &running, &held, limit)?;
+            let entries = read_unsent_entries(items, &answers, &running, limit)?;
             let paths = read_entry_paths(items, &entries.iter().collect::<Vec<_>>())?;
             Ok(entries.iter().filter_map(|entry| describe_queue_change(entry, paths.get(&entry.item.local_item_id)?, &sending, Path::new(FOLDER))).collect())
         })
     }
 
     fn read_counts(&self, sending: &QueueConditions) -> (QueueTotals, QueueCounts) {
-        let (answers, held, running) = (self.answers.clone(), self.held_removal_counts.clone(), self.running.clone());
-        let totals = self.fixture.read_rows(move |items| read_queue_totals(items, &answers, &running, &held));
+        let (answers, running) = (self.answers.clone(), self.running.clone());
+        let totals = self.fixture.read_rows(move |items| read_queue_totals(items, &answers, &running));
         let counts = count_queue(&totals, sending);
         (totals, counts)
     }
 
     fn read_kept_back(&self) -> Vec<UnsentEntry> {
-        let (answers, held, running) = (self.answers.clone(), self.held_removal_counts.clone(), self.running.clone());
-        self.fixture.read_rows(move |items| read_kept_back_entries(items, &answers, &running, &held))
+        let (answers, running) = (self.answers.clone(), self.running.clone());
+        self.fixture.read_rows(move |items| read_kept_back_entries(items, &answers, &running))
     }
 
     fn read_paths(&self, entries: Vec<UnsentEntry>) -> BTreeMap<LocalItemId, PathBuf> {
@@ -627,8 +601,10 @@ fn changes_lists_every_unsent_item_once_in_its_state_oldest_first() {
     let queue = QueueFixture::new();
     let changes = queue.read_changes(&queue.conditions(), 0);
     let expected = vec![
-        // The held removal of a directory is one row; the two rows below it are none.
-        word("old", "delete", "held", "mass-delete"),
+        // What was removed with a directory waits for the directory's removal.
+        word("old/a.txt", "delete", "waiting", ""),
+        word("old/b.txt", "delete", "waiting", ""),
+        word("old", "delete", "ready", ""),
         word("docs/created.txt", "create", "ready", ""),
         word("docs/uploading.bin", "create", "running", ""),
         word("docs/moved-here.txt", "move", "waiting", ""),
@@ -646,7 +622,6 @@ fn changes_lists_every_unsent_item_once_in_its_state_oldest_first() {
     ];
     assert_eq!(words(&changes), expected);
     let by_path = |path: &str| changes.iter().find(|change| change.path == format!("/folder/{path}")).expect("a row");
-    assert_eq!((by_path("old").sent, by_path("old").total), (0, 2), "the number of items the removal takes below the directory");
     assert_eq!((by_path("docs/uploading.bin").sent, by_path("docs/uploading.bin").total), (4, 10));
     assert_eq!((by_path("docs/created.txt").sent, by_path("docs/created.txt").total), (0, 5));
     assert_eq!(by_path("docs/changed.txt").next_try, START_TIME + 60);
@@ -665,15 +640,13 @@ fn the_counts_agree_with_the_rows_of_changes() {
     assert_eq!(totals.refused_for_good, [queue.refused]);
     assert_eq!(totals.refused_for_space, [(queue.too_big, 64)]);
     let answered: Vec<LocalItemId> = totals.answered.iter().map(|entry| entry.item.local_item_id).collect();
-    assert!(!answered.contains(&queue.old_a) && !answered.contains(&queue.old_b), "the rows below a held directory are no entries");
-    assert!(answered.contains(&queue.old) && answered.contains(&queue.left_out));
+    assert!(answered.contains(&queue.old) && answered.contains(&queue.old_a) && answered.contains(&queue.left_out));
 
     let changes = queue.read_changes(&sending, 0);
     let count_of = |state: &str| changes.iter().filter(|change| change.state == state).count() as u32;
     assert_eq!(counts.blocked, count_of("blocked"));
-    assert_eq!(counts.held, count_of("held"));
-    assert_eq!(counts.pending, changes.len() as u32 - count_of("blocked") - count_of("held"), "what is pending is every row that is neither blocked nor held");
-    assert_eq!((counts.blocked, counts.held, counts.pending), (2, 1, 10));
+    assert_eq!(counts.pending, changes.len() as u32 - count_of("blocked"), "what is pending is every row that is not blocked");
+    assert_eq!((counts.blocked, counts.pending), (2, 13));
     assert_eq!((counts.too_big, counts.too_big_bytes, counts.space_waiting, counts.space_waiting_bytes), (1, 64, 1, 4));
     // Off the bytes: the file the plan blocks (2 bytes) and the one it leaves out (6).
     assert_eq!(counts.pending_bytes, totals.unsent.bytes - 2 - 6);
@@ -686,7 +659,6 @@ fn what_is_kept_back_agrees_with_the_rows_and_the_counts() {
     let entries = queue.read_kept_back();
     let mut items: Vec<LocalItemId> = entries.iter().map(|entry| entry.item.local_item_id).collect();
     assert!(items.contains(&queue.refused) && items.contains(&queue.too_big), "what the memory refuses, though the plan was not given it");
-    assert!(!items.contains(&queue.old_a), "no row below a held directory");
     let listed = items.len();
     items.dedup();
     assert_eq!(items.len(), listed, "each item once");
@@ -724,8 +696,8 @@ fn a_pause_is_the_word_of_a_row_and_nothing_else() {
     let changes = queue.read_changes(&paused, 0);
     let states: Vec<(&str, &str)> = changes.iter().map(|change| (change.state.as_str(), change.reason.as_str())).collect();
     let kept: Vec<(&str, &str)> = states.iter().copied().filter(|(state, _)| *state != "paused").collect();
-    assert_eq!(kept, [("held", "mass-delete"), ("blocked", "refused: bad"), ("waiting", "being-checked"), ("waiting", "not-read-on-disk"), ("blocked", "name-characters")]);
-    assert_eq!(states.iter().filter(|(state, reason)| *state == "paused" && reason.is_empty()).count(), 8);
+    assert_eq!(kept, [("blocked", "refused: bad"), ("waiting", "being-checked"), ("waiting", "not-read-on-disk"), ("blocked", "name-characters")]);
+    assert_eq!(states.iter().filter(|(state, reason)| *state == "paused" && reason.is_empty()).count(), 11);
     let uploading = changes.iter().find(|change| change.path.ends_with("uploading.bin")).expect("a row");
     assert_eq!((uploading.state.as_str(), uploading.sent, uploading.total), ("paused", 4, 10), "the bytes stay");
 
@@ -735,25 +707,10 @@ fn a_pause_is_the_word_of_a_row_and_nothing_else() {
 }
 
 #[test]
-fn a_small_limit_passes_the_rows_below_a_held_directory() {
-    let queue = QueueFixture::new();
-    let sending = queue.conditions();
-    // The two rows below the held directory are the oldest unsent ones.
-    assert_eq!(words(&queue.read_changes(&sending, 1)), [word("old", "delete", "held", "mass-delete")]);
-    let three = queue.read_changes(&sending, 3);
-    assert_eq!(three, queue.read_changes(&sending, 0)[..3]);
-    // With no directory held the rows below it are rows of their own, and count.
-    let (answers, running) = (BTreeMap::new(), Vec::new());
-    let entries = queue.fixture.read_rows(move |items| read_unsent_entries(items, &answers, &running, &BTreeMap::new(), 2));
-    let items: Vec<LocalItemId> = entries.iter().map(|entry| entry.item.local_item_id).collect();
-    assert_eq!(items, [queue.old_a, queue.old_b]);
-}
-
-#[test]
 fn with_no_running_sync_every_unsent_item_waits_but_what_the_memory_refuses() {
     let queue = QueueFixture::new();
     let stopped = describe_stopped_sync();
-    let entries = queue.fixture.read_rows(|items| read_unsent_entries(items, &BTreeMap::new(), &[], &BTreeMap::new(), 0));
+    let entries = queue.fixture.read_rows(|items| read_unsent_entries(items, &BTreeMap::new(), &[], 0));
     assert_eq!(entries.len() as u64, UNSENT_ROWS);
     let paths = queue.read_paths(entries.clone());
     let changes: Vec<Change> = entries.iter().filter_map(|entry| describe_queue_change(entry, paths.get(&entry.item.local_item_id)?, &stopped, Path::new(FOLDER))).collect();
@@ -796,10 +753,10 @@ fn a_folder_that_shows_all_of_onedrive_has_no_row_of_what_is_not_shown() {
 fn the_properties_are_written_by_the_one_writer_and_emptied_at_a_stop() {
     let state = SyncStateHandle::new(SyncSnapshot::default());
     state.update(|snapshot| snapshot.outbox.note = Some(OutboxNote::Throttled(77)));
-    let counts = QueueCounts { pending: 9, pending_bytes: 900, blocked: 2, held: 1, space_waiting: 3, space_waiting_bytes: 30, too_big: 4, too_big_bytes: 40 };
+    let counts = QueueCounts { pending: 9, pending_bytes: 900, blocked: 2, space_waiting: 3, space_waiting_bytes: 30, too_big: 4, too_big_bytes: 40 };
     publish_queue_status(&state, counts, vec![Transfer { path: "/folder/a".into(), done: 1, total: 2 }], true);
     let outbox = state.get().outbox;
-    assert_eq!((outbox.pending_count, outbox.pending_bytes, outbox.blocked_count, outbox.held_count), (9, 900, 2, 1));
+    assert_eq!((outbox.pending_count, outbox.pending_bytes, outbox.blocked_count), (9, 900, 2));
     assert_eq!((outbox.space_waiting_count, outbox.space_waiting_bytes, outbox.too_big_count, outbox.too_big_bytes), (3, 30, 4, 40));
     assert_eq!(outbox.uploads, [("/folder/a".to_owned(), 1, 2)]);
     assert!(outbox.quota_full);
@@ -807,58 +764,4 @@ fn the_properties_are_written_by_the_one_writer_and_emptied_at_a_stop() {
 
     publish_stopped_queue(&state);
     assert_eq!(state.get().outbox, SyncSnapshot::default().outbox, "every count 0, no upload, not full, no note");
-}
-
-// ---- the user's two answers ----
-
-fn read_confirmed(queue: &QueueFixture) -> Vec<LocalItemId> {
-    queue.fixture.read_rows(|items| items.list_items_with_confirmed_removal(None, 100))
-}
-
-fn read_unsent_removal_items(queue: &QueueFixture) -> Vec<LocalItemId> {
-    queue.fixture.read_rows(|items| Ok(items.list_unsent_removals(None, 100)?.into_iter().map(|item| item.local_item_id).collect()))
-}
-
-#[test]
-fn confirming_and_taking_back_do_nothing_while_no_removal_is_held() {
-    let queue = QueueFixture::new();
-    let rows_before = queue.fixture.list_items();
-    assert_eq!(queue.fixture.write_rows(|store| confirm_removals(store, false)), 0);
-    assert_eq!(queue.fixture.write_rows(|store| restore_removals(store, false)), 0);
-    assert_eq!(read_confirmed(&queue), Vec::new());
-    assert_eq!(queue.fixture.list_items(), rows_before);
-}
-
-#[test]
-fn confirming_writes_the_confirmation_of_every_unsent_removal_as_the_user_was_asked() {
-    let queue = QueueFixture::new();
-    assert!(is_removal_held(&queue.answers));
-    let removals = [queue.old_a, queue.old_b, queue.old, queue.gone];
-    assert_eq!(read_unsent_removal_items(&queue), removals);
-    assert_eq!(queue.fixture.write_rows(|store| confirm_removals(store, true)), 4, "the directory, all below it and the single removal");
-    let mut confirmed = read_confirmed(&queue);
-    confirmed.sort();
-    let mut expected = removals.to_vec();
-    expected.sort();
-    assert_eq!(confirmed, expected);
-    assert_eq!(read_unsent_removal_items(&queue), removals, "the removals stay to be sent");
-    // What was confirmed is not taken back.
-    assert_eq!(queue.fixture.write_rows(|store| restore_removals(store, true)), 0);
-    assert_eq!(read_unsent_removal_items(&queue), removals);
-}
-
-#[test]
-fn taking_removals_back_leaves_each_as_an_item_of_onedrive_the_folder_does_not_show() {
-    let queue = QueueFixture::new();
-    assert_eq!(queue.fixture.write_rows(|store| restore_removals(store, true)), 4);
-    assert_eq!(read_unsent_removal_items(&queue), Vec::new());
-    for item in [queue.old_a, queue.old_b, queue.old, queue.gone] {
-        let row = queue.fixture.find_item(item).expect("the row stays");
-        assert!(row.onedrive.is_some() && row.onedrive_item.is_some(), "OneDrive has it");
-        assert_eq!((row.local, row.synced_place, row.synced_content, row.unsent_since), (None, None, None, None), "the folder never showed it, and nothing is unsent");
-    }
-    // Nothing else of what is unsent was touched.
-    let left = queue.fixture.read_rows(|items| items.count_unsent());
-    assert_eq!(left.count, UNSENT_ROWS - 4);
-    assert_eq!(read_confirmed(&queue), Vec::new());
 }

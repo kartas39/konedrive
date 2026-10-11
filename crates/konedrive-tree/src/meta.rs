@@ -38,12 +38,6 @@ pub(crate) const LISTING_NEXT_LINK: &str = "listing_next_link";
 /// counter of the store, raised by the schema's triggers and never lowered. Its row is made
 /// with the schema.
 pub(crate) const LAST_UNSENT_SINCE: &str = "last_unsent_since";
-/// How many items the removals took from OneDrive that this client sent a short time ago.
-/// Read and written, as the key after it, by the owner of that window alone
-/// (`item_store::sent_removal_window`).
-pub(crate) const SENT_REMOVAL_COUNT: &str = "sent_removal_count";
-/// The time of the last of those removals, in Unix seconds; absent when none is counted.
-pub(crate) const LAST_SENT_REMOVAL_AT: &str = "last_sent_removal_at";
 /// Set while a full listing was asked for and has not begun, to the words of who asked
 /// (`item_store::full_listing_request`, which alone reads and writes it).
 pub(crate) const FULL_LISTING_REQUESTED: &str = "full_listing_requested";

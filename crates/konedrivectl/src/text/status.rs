@@ -77,7 +77,6 @@ pub fn overall_text(overall: &Overall, trouble: &str, not_updated: &str) -> Stri
         Some(Reason::Transferring) => "files are downloading or uploading, or changes wait to upload".to_owned(),
         Some(Reason::Stopped) if trouble.is_empty() => "syncing has stopped".to_owned(),
         Some(Reason::Stopped) => format!("syncing has stopped: {trouble}"),
-        Some(Reason::DeletesHeld) => "deletions made here wait for you: delete them in OneDrive too, or restore them".to_owned(),
         Some(Reason::Conflicts) => "changed files were moved out of the way".to_owned(),
         Some(Reason::QuotaFull) => "OneDrive is full: files wait for space".to_owned(),
         Some(Reason::TooBig) => "files are too big for the space left in OneDrive".to_owned(),
@@ -183,8 +182,6 @@ pub struct FolderStatus {
     pub quota_waiting_bytes: u64,
     /// Files refused as too big for the space left.
     pub too_big: u32,
-    /// Removals held for confirmation.
-    pub held_deletes: u32,
     pub paused: bool,
     /// Unix seconds when the pause ends by itself; 0 until resumed.
     pub paused_until: i64,
@@ -266,15 +263,6 @@ pub fn sync_status_text(status: &FolderStatus, prefix: &str, now: i64) -> String
         }
         if status.too_big > 0 {
             line("Too big for the space:", &format!("{} (see `{prefix} sync outbox`)", status.too_big));
-        }
-        if status.held_deletes > 0 {
-            line(
-                "Held for confirmation:",
-                &format!(
-                    "{} deletions (`{prefix} sync deletes confirm` or `{prefix} sync deletes restore`)",
-                    status.held_deletes
-                ),
-            );
         }
         if status.paused {
             line("Paused until:", &paused_text(status.paused_until, prefix));

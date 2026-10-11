@@ -11,7 +11,7 @@ use konedrivectl::text::transfers::{transfers_text, uploading_line};
 use konedrivectl::text::uploads::{not_uploaded_text, outbox_text, quota_text, PER_FILE_SHOWN};
 
 use super::explain::{absolute_str, explained, fail_if_folder_unhealthy, folder_trouble};
-use crate::cli::{DeletesCmd, FolderCmd, IgnoreCmd};
+use crate::cli::{FolderCmd, IgnoreCmd};
 use crate::daemon::{Chosen, Daemon};
 use crate::{read, Usage};
 
@@ -123,14 +123,6 @@ pub(super) async fn folder_command(
                 files.push((row.reason.clone(), explained(chosen, proxy, action, result).await?));
             }
             print!("{}", not_uploaded_text(&summary, &files, &prefix));
-        }
-        FolderCmd::Deletes { action: DeletesCmd::Confirm } => {
-            let count = explained(chosen, proxy, SyncAction::Deletes, proxy.queue.confirm_deletes().await).await?;
-            println!("{tag}{}", said::deletes_confirmed_text(count));
-        }
-        FolderCmd::Deletes { action: DeletesCmd::Restore } => {
-            let count = explained(chosen, proxy, SyncAction::Deletes, proxy.queue.restore_deletes().await).await?;
-            println!("{tag}{}", said::deletes_restored_text(count));
         }
         FolderCmd::Conflicts => {
             let conflicts = explained(chosen, proxy, SyncAction::Conflicts, proxy.conflicts.list().await).await?;

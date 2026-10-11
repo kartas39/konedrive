@@ -203,14 +203,10 @@ pub(crate) fn input(items: Vec<Item>) -> SyncPlanInput {
         largest_file_size: 250 << 30,
         sending_state: SendingState::ReadWrite,
         computer_name: "pc".to_owned(),
-        shown_item_count: 1000,
-        items_with_confirmed_removal: BTreeSet::new(),
-        unsent_removal_count: 0,
         places_taken_in_onedrive: BTreeMap::new(),
         items_left_by_uploads: BTreeMap::new(),
         temporary_names: BTreeMap::new(),
         own_upload_contents: BTreeMap::new(),
-        sent_removal_count: 0,
         now: 500,
         next_tries: BTreeMap::new(),
         sending_refusals: BTreeMap::new(),
@@ -354,8 +350,8 @@ fn a_name_onedrive_cannot_hold_or_a_file_too_large_waits_for_the_user() {
 fn content_changed_within_the_quiet_time_waits_until_it_ends() {
     let mut given = input(vec![made_file(2, ROOT, "new.txt"), with_content_here(synced_file(3, ROOT, "a.txt"), written_here()), made_directory(4, ROOT, "d")]);
     given.quiet_until = [(id(2), 1002), (id(3), 1001), (id(4), 1003)].into();
-    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::Time { until: 1002, reason: Reason::Changed }));
-    assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::Time { until: 1001, reason: Reason::Changed }));
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::Time { until: 1002, reason: Reason::QuietTime }));
+    assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::Time { until: 1001, reason: Reason::QuietTime }));
     assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::MakeDirectory { item: versions(&given, 4), parent: reference("root"), name: "d".into() }), "a directory has no content");
 }
 

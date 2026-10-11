@@ -87,7 +87,7 @@ fn a_file_the_folder_does_not_show_is_no_candidate() {
 
     // The mark goes with the item's row.
     let planned = crate::sync_plan::ItemVersions::of(&row(&mut store, removed));
-    store.item_store().commit_send_file_removal(&planned, 0).unwrap();
+    store.item_store().commit_send_file_removal(&planned).unwrap();
     write_listing_of_changes(&mut store, &[]);
     assert_eq!(store.item_store().find_item(removed).unwrap(), None);
     assert_eq!(store.conn.query_row("SELECT COUNT(*) FROM thumbnail_marks", [], |row| row.get::<_, i64>(0)).unwrap(), 0);

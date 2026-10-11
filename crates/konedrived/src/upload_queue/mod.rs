@@ -1,4 +1,4 @@
-//! What the bus says of what waits, what is held and what was left out
+//! What the bus says of what waits and what was left out
 //! (`org.konedrive.UploadQueue`, `Transfers.Uploads`, the folder's `Skipped()`): pure
 //! functions of the three sources of design §7 — the plan's answer for each unsent item,
 //! what the steps remember, and the state of the sending as a whole.
@@ -18,8 +18,7 @@
 //! had, and the plan that the change woke publishes the next. Every list is by local item
 //! id, so no item is in one answer twice.
 //!
-//! **Answers for:** the map's MISSING-6.a, 6.c, 6.d, 2.e and the user's two answers to a
-//! held mass removal (1.k, 2.l). The members of the bus, their XML, their row types
+//! **Answers for:** the map's MISSING-6.a, 6.c, 6.d, 2.e. The members of the bus, their XML, their row types
 //! (`konedrive_dbus::rows`) and every word they carry stay today's.
 //!
 //! **Not here:** `Folder.Refresh()` is `SyncTasks::refresh` (`sync_tasks::stop_order`),
@@ -70,8 +69,7 @@
 // test: an_item_with_a_stamp_and_no_kind_is_no_entry_and_stays_pending
 // test: a_wait_for_the_user_whose_reason_ends_by_itself_is_waiting
 // test: a_wait_for_space_is_ready_with_its_reason
-// test: a_removal_the_mass_removal_guard_holds_is_held
-// test: every_entry_that_is_not_blocked_or_held_is_paused_while_the_account_is
+// test: every_entry_that_is_not_blocked_is_paused_while_the_account_is
 // test: a_change_that_sends_content_waits_for_space_while_onedrive_is_full
 // test: a_wait_for_another_item_or_for_a_listing_is_waiting
 // test: an_item_the_last_plan_was_not_given_is_ready_or_what_the_memory_says
@@ -83,17 +81,13 @@
 // test: a_removals_path_is_that_of_its_synced_place
 // test: a_running_upload_is_shown_under_its_items_path
 // test: an_item_not_shown_that_is_still_here_says_its_path_and_what_keeps_it
-// test: a_removal_is_held_when_an_answer_waits_for_the_user_for_a_mass_removal
-// test: confirming_writes_the_confirmation_of_every_unsent_removal_as_the_user_was_asked
-// test: confirming_and_taking_back_do_nothing_while_no_removal_is_held
-// test: taking_removals_back_leaves_each_as_an_item_of_onedrive_the_folder_does_not_show
 #![allow(dead_code, unused_variables, unused_imports)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use konedrive_dbus::rows::{Change, KeptBack, KeptBackFiles, KeptBackReason, NotInFolder, Transfer};
-use konedrive_tree::{ContentVersion, Group, Item, ItemKind, ItemMemory, ItemNotShown, ItemReader, ItemVersions, LocalItemId, Reason, StepCommitOutcome, TreeError, TreeStore, UnsentRemoval, UnsentTotal, WaitReason, WaitsFor, READ_ONLY_FOLDER};
+use konedrive_tree::{ContentVersion, Group, Item, ItemKind, ItemMemory, ItemNotShown, ItemReader, ItemVersions, LocalItemId, Reason, StepCommitOutcome, TreeError, TreeStore, UnsentTotal, WaitReason, WaitsFor, READ_ONLY_FOLDER};
 
 use crate::sync_parts::published_plan::{decide_is_shown_blocked, ItemAnswer, PublishedPlan};
 use crate::sync_parts::running_steps::{RunningStep, RunningSteps, StepClass};
@@ -154,7 +148,7 @@ pub fn decide_unsent_kind(item: &Item) -> Option<UnsentKind> {
     (local.place.as_ref() != Some(synced_place)).then_some(UnsentKind::Move)
 }
 
-/// An entry's state, in the seven words `Changes()` has today.
+/// An entry's state, in the six words of `Changes()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueState {
     Ready,
@@ -162,13 +156,11 @@ pub enum QueueState {
     Retry,
     Waiting,
     Blocked,
-    Held,
     Paused,
 }
 
 impl QueueState {
-    /// The word on the bus: `ready`, `running`, `retry`, `waiting`, `blocked`, `held`,
-    /// `paused`.
+    /// The word on the bus: `ready`, `running`, `retry`, `waiting`, `blocked`, `paused`.
     pub fn as_str(self) -> &'static str {
         match self {
             QueueState::Ready => "ready",
@@ -176,7 +168,6 @@ impl QueueState {
             QueueState::Retry => "retry",
             QueueState::Waiting => "waiting",
             QueueState::Blocked => "blocked",
-            QueueState::Held => "held",
             QueueState::Paused => "paused",
         }
     }
@@ -219,16 +210,11 @@ pub struct UnsentEntry {
     /// What the steps remember of it that its row still says
     /// (`ItemReader::find_item_memory`).
     pub memory: ItemMemory,
-    /// For a directory whose removal the last plan holds for the user: how many items
-    /// the removal takes from OneDrive below it (`PublishedPlan::find_held_removal_count`).
-    /// `None` for every other entry.
-    pub held_items_below: Option<u64>,
 }
 
 /// The state of one entry; `None` for an item the plan leaves out
 /// (`ItemAnswer::Excluded`), which is no entry at all. Pure. The first that holds:
 ///
-/// - `held`: the answer is `WaitReason::User(Reason::MassDelete)`;
 /// - `blocked`, by the one rule the emblem goes by too
 ///   (`sync_parts::published_plan::decide_is_shown_blocked`), which is: the memory keeps a refusal for good of it (`entry.memory.refusal`), given
 ///   to the last plan or not, and whatever the group of its reason — this comes before
@@ -260,9 +246,6 @@ pub fn decide_queue_state(entry: &UnsentEntry, sending: &QueueConditions) -> Opt
     let answer = entry.answer.as_ref();
     if matches!(answer, Some(ItemAnswer::Excluded(_))) {
         return None;
-    }
-    if matches!(answer, Some(ItemAnswer::Waiting(WaitReason::User(Reason::MassDelete)))) {
-        return Some(QueueState::Held);
     }
     if decide_is_shown_blocked(answer, entry.memory.refusal.is_some()) {
         return Some(QueueState::Blocked);
@@ -348,22 +331,13 @@ pub fn decide_queue_reason(kind: UnsentKind, state: QueueState, entry: &UnsentEn
 /// `None` for an item that agrees by now ([`decide_unsent_kind`]) and for one the plan
 /// leaves out ([`decide_queue_state`]). Pure. The caller leaves out an entry
 /// [`read_entry_paths`] has no path for.
-///
-/// A held mass removal of a directory is ONE row, the directory's: `state` is `held`,
-/// `sent` is 0 and `total` is the number of items the removal takes from OneDrive below
-/// it (`entry.held_items_below`) — a count of items there, not of bytes, which the
-/// window says as "N files"; no member of the bus changes for it. The rows below such a
-/// directory are no rows of their own: the reader leaves them out
-/// ([`read_unsent_entries`]).
-// TODO: the number is of every item OneDrive has below the directory, its sub-directories among them, and it is shown as files: whether that is to be files alone (a second count by the plan's reading) or the word is to be "items" is the owner's to say.
 pub fn describe_queue_change(entry: &UnsentEntry, path: &Path, sending: &QueueConditions, folder: &Path) -> Option<Change> {
     let kind = decide_unsent_kind(&entry.item)?;
     let state = decide_queue_state(entry, sending)?;
     let (reason, next_try) = decide_queue_reason(kind, state, entry, sending);
     let own_step = entry.running.as_ref().filter(|step| step.item == entry.item.local_item_id);
-    let (sent, total) = match (state, entry.held_items_below, own_step) {
-        (QueueState::Held, Some(items_below), _) => (0, items_below),
-        (_, _, Some(step)) => (step.sent, step.total),
+    let (sent, total) = match own_step {
+        Some(step) => (step.sent, step.total),
         _ if kind.sends_content() => (entry.memory.upload_session.as_ref().map_or(0, |session| session.next_offset), find_content_size(kind, &entry.item)),
         _ => (0, 0),
     };
@@ -380,14 +354,13 @@ pub fn describe_queue_change(entry: &UnsentEntry, path: &Path, sending: &QueueCo
 }
 
 /// The counts of the queue's properties: `PendingCount`/`Bytes`, `BlockedCount`,
-/// `HeldCount`, `QuotaWaitingCount`/`Bytes`, `TooBigCount`; `too_big_bytes` is on no
+/// `QuotaWaitingCount`/`Bytes`, `TooBigCount`; `too_big_bytes` is on no
 /// member of the bus and is taken off what is left to upload (`status::totals`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct QueueCounts {
     pub pending: u32,
     pub pending_bytes: u64,
     pub blocked: u32,
-    pub held: u32,
     pub space_waiting: u32,
     pub space_waiting_bytes: u64,
     pub too_big: u32,
@@ -415,15 +388,14 @@ pub struct QueueTotals {
 ///
 /// - `blocked`: the items refused for good by the memory, and the answered entries that
 ///   are `blocked` and not among them;
-/// - `held`: the answered entries that are `held`;
 /// - `too_big`, `too_big_bytes`: the files refused for space by the memory, and their
 ///   sizes;
 /// - `space_waiting`, `space_waiting_bytes`: the answered entries whose reason is
 ///   `WaitingForSpace` ([`decide_queue_reason`]) and that are not among the files refused
 ///   for space;
-/// - `pending`: the store's count less `blocked`, `held` and the answered entries the
+/// - `pending`: the store's count less `blocked` and the answered entries the
 ///   plan leaves out; `pending_bytes`: the store's sum less the sizes of the answered
-///   entries that are blocked, held or left out. An item the memory refuses for good that
+///   entries that are blocked or left out. An item the memory refuses for good that
 ///   the last plan was not given is off `pending` and its bytes stay in `pending_bytes`
 ///   until the plan is given it: the memory's list carries no size. What waits for space
 ///   or is too big stays in both, as today (`status::totals` takes it off what is left to
@@ -432,23 +404,11 @@ pub struct QueueTotals {
 /// Each saturates at 0 and at the type's largest. A pause changes none of them: the
 /// states and the reasons are decided under `sending` with a pause taken off, so what
 /// waits for space is counted through a pause as before it.
-///
-/// The owner decided `HeldCount`: a held mass removal of a directory is ONE, the
-/// directory, whatever is below it; the rows below it are counted nowhere while it is
-/// held — not in `held` and not in `pending` — as they are no entries. They are in the
-/// store's sum and not among `answered`, so `pending` is ALSO less the sum of
-/// `held_items_below` of the held entries, and `pending_bytes` less nothing for them (a
-/// removal has no bytes). The number of
-/// files is on the directory's row ([`describe_queue_change`]).
-///
-/// After `ConfirmDeletes()` the window shows what that method answers — the
-/// confirmations written, the directory and all below it — which is another number than
-/// this one, and is meant to be.
 pub fn count_queue(totals: &QueueTotals, sending: &QueueConditions) -> QueueCounts {
     let sending = &describe_conditions_without_pause(sending);
     let refused_for_good: BTreeSet<LocalItemId> = totals.refused_for_good.iter().copied().collect();
     let refused_for_space: BTreeSet<LocalItemId> = totals.refused_for_space.iter().map(|(item, _)| *item).collect();
-    let (mut blocked, mut held, mut space_waiting, mut space_waiting_bytes) = (refused_for_good.len() as u64, 0u64, 0u64, 0u64);
+    let (mut blocked, mut space_waiting, mut space_waiting_bytes) = (refused_for_good.len() as u64, 0u64, 0u64);
     // What is in the store's sum and is not pending: the items, and the bytes of their contents.
     let (mut not_pending, mut not_pending_bytes) = (refused_for_good.len() as u64, 0u64);
     for entry in &totals.answered {
@@ -469,11 +429,6 @@ pub fn count_queue(totals: &QueueTotals, sending: &QueueConditions) -> QueueCoun
                 }
                 not_pending_bytes = not_pending_bytes.saturating_add(size);
             }
-            QueueState::Held => {
-                held = held.saturating_add(1);
-                not_pending = not_pending.saturating_add(1).saturating_add(entry.held_items_below.unwrap_or(0));
-                not_pending_bytes = not_pending_bytes.saturating_add(size);
-            }
             QueueState::Ready | QueueState::Running | QueueState::Retry | QueueState::Waiting | QueueState::Paused => {
                 let (reason, _) = decide_queue_reason(kind, state, entry, sending);
                 if reason == Some(Reason::WaitingForSpace) && !refused_for_space.contains(&item) {
@@ -488,7 +443,6 @@ pub fn count_queue(totals: &QueueTotals, sending: &QueueConditions) -> QueueCoun
         pending: saturate(totals.unsent.count.saturating_sub(not_pending)),
         pending_bytes: totals.unsent.bytes.saturating_sub(not_pending_bytes),
         blocked: saturate(blocked),
-        held: saturate(held),
         space_waiting: saturate(space_waiting),
         space_waiting_bytes,
         too_big: saturate(totals.refused_for_space.len() as u64),
@@ -499,8 +453,7 @@ pub fn count_queue(totals: &QueueTotals, sending: &QueueConditions) -> QueueCoun
 /// The reason an entry is kept back for, when it is: the reason of
 /// [`decide_queue_reason`] for an entry that is `blocked`, `waiting` or `retry` with a
 /// reason, and for a `ready` one whose reason waits for space; `Reason::Blocked` for a
-/// `blocked` one with none. `None` for one that goes up by itself, runs, or is held by
-/// the guard (which has its own question). A pause changes nothing of it: the summary and
+/// `blocked` one with none. `None` for one that goes up by itself or runs. A pause changes nothing of it: the summary and
 /// the two lists give this the state and the conditions as they are with no pause
 /// (`find_kept_back`), so `state` is never `paused` there. Pure. Today's `kept_reason`
 /// (`upload/kept_back.rs:60`).
@@ -510,7 +463,7 @@ pub fn decide_kept_back_reason(kind: UnsentKind, state: QueueState, entry: &Unse
         QueueState::Blocked => Some(reason.unwrap_or(Reason::Blocked)),
         QueueState::Waiting | QueueState::Retry => reason,
         QueueState::Ready => reason.filter(Reason::waits_for_space),
-        QueueState::Running | QueueState::Paused | QueueState::Held => None,
+        QueueState::Running | QueueState::Paused => None,
     }
 }
 
@@ -613,13 +566,6 @@ pub fn describe_item_not_shown(not_shown: &ItemNotShown, local_path: Option<&Pat
     NotInFolder { path, reason, waits: waits.to_string(), here }
 }
 
-/// Whether the last plan holds a removal for the user's confirmation: one of `answers` is
-/// `ItemAnswer::Waiting(WaitReason::User(Reason::MassDelete))`. Pure. What
-/// `ConfirmDeletes()` and `RestoreDeletes()` are given before they write.
-pub fn is_removal_held(answers: &BTreeMap<LocalItemId, ItemAnswer>) -> bool {
-    answers.values().any(|answer| matches!(answer, ItemAnswer::Waiting(WaitReason::User(Reason::MassDelete))))
-}
-
 /// How many rows a reader below asks the store for at a time.
 const READ_PAGE: usize = 500;
 
@@ -679,12 +625,6 @@ fn describe_kept_back(entry: &UnsentEntry, paths: &BTreeMap<LocalItemId, PathBuf
     Some(KeptBack { path: describe_full_path(folder, path), reason: reason.to_string() })
 }
 
-/// Whether the row answered `answer` is part of the one entry of a directory whose
-/// removal the last plan holds: it waits for that directory. Pure.
-fn is_below_held_removal(answer: Option<&ItemAnswer>, held_removal_counts: &BTreeMap<LocalItemId, u64>) -> bool {
-    matches!(answer, Some(ItemAnswer::Waiting(WaitReason::AnotherItem(directory))) if held_removal_counts.contains_key(directory))
-}
-
 // ---- thin: the sources read ----
 
 /// The state of the sending as a whole, now: `SendingHolds::find(now)` and
@@ -696,16 +636,13 @@ pub fn read_queue_conditions(sending_holds: &SendingHolds, onedrive_space: &OneD
 
 /// The entry of `item`: its memory (`ItemReader::find_item_memory`), its answer of
 /// `answers`, and of `running` the step that is of it or carries its row. Called inside
-/// `Store::read_items` by the readers below. `held_items_below` is the count of
-/// `held_removal_counts` for `item`. The same map is given to every reader below, and a
-/// row below a held directory is no entry in any of them.
-fn read_unsent_entry(items: &ItemReader<'_>, item: Item, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>) -> Result<UnsentEntry, TreeError> {
+/// `Store::read_items` by the readers below.
+fn read_unsent_entry(items: &ItemReader<'_>, item: Item, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep]) -> Result<UnsentEntry, TreeError> {
     let id = item.local_item_id;
     Ok(UnsentEntry {
         memory: items.find_item_memory(id)?,
         answer: answers.get(&id).cloned(),
         running: running.iter().find(|step| step.item == id || step.other_items.contains(&id)).cloned(),
-        held_items_below: held_removal_counts.get(&id).copied(),
         item,
     })
 }
@@ -714,18 +651,13 @@ fn read_unsent_entry(items: &ItemReader<'_>, item: Item, answers: &BTreeMap<Loca
 /// be unsent (`ItemReader::list_unsent(None, limit)`; `limit` 0 for all, read in pages by
 /// the stamp), each as [`read_unsent_entry`] reads it. `answers` and `running` are
 /// `PublishedPlan::list_answers` and `RunningSteps::list_steps`, taken by the caller
-/// before the read, `held_removal_counts` `PublishedPlan::list_held_removal_counts`, taken
-/// with them. A row whose answer is `WaitReason::AnotherItem(d)` with `d` a directory of
-/// `held_removal_counts` is left out, and does not count towards `limit`: it is part of
-/// that directory's one entry. Called inside `Store::read_items`: the rows and the memory
+/// before the read. Called inside `Store::read_items`: the rows and the memory
 /// are of one moment, and the bus waits for no writer.
-pub fn read_unsent_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>, limit: usize) -> Result<Vec<UnsentEntry>, TreeError> {
+pub fn read_unsent_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], limit: usize) -> Result<Vec<UnsentEntry>, TreeError> {
     let mut entries = Vec::new();
     let mut after = None;
     loop {
-        // Rows below a held directory are read and left out: a page is then whole
-        // whatever `limit` is, so that passing them costs the same for every `limit`.
-        let wanted = if limit == 0 || !held_removal_counts.is_empty() { READ_PAGE } else { (limit - entries.len()).min(READ_PAGE) };
+        let wanted = if limit == 0 { READ_PAGE } else { (limit - entries.len()).min(READ_PAGE) };
         let page = items.list_unsent(after, wanted)?;
         let Some(last_stamp) = page.last().and_then(|item| item.unsent_since) else { break };
         after = Some(last_stamp);
@@ -733,9 +665,7 @@ pub fn read_unsent_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemI
             if limit != 0 && entries.len() >= limit {
                 break;
             }
-            if !is_below_held_removal(answers.get(&item.local_item_id), held_removal_counts) {
-                entries.push(read_unsent_entry(items, item, answers, running, held_removal_counts)?);
-            }
+            entries.push(read_unsent_entry(items, item, answers, running)?);
         }
         if limit != 0 && entries.len() >= limit {
             break;
@@ -779,11 +709,11 @@ pub fn read_entry_paths(items: &ItemReader<'_>, entries: &[&UnsentEntry]) -> Res
 /// left out when the row is gone, has no stamp `unsent_since` or is left here
 /// (`ItemReader::is_ignored`) — as [`read_unsent_entry`] reads it. Called inside
 /// `Store::read_items`, with `answers` and `running` taken before it.
-pub fn read_queue_totals(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>) -> Result<QueueTotals, TreeError> {
+pub fn read_queue_totals(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep]) -> Result<QueueTotals, TreeError> {
     let unsent = items.count_unsent()?;
     let refused_for_good = items.list_refusal_reasons(None, None, usize::MAX)?.into_iter().map(|refused| refused.item).collect();
     let refused_for_space = items.list_space_refusal_reasons(None, usize::MAX)?.into_iter().map(|refused| (refused.item, refused.reason.sizes().map_or(0, |(size, _)| size))).collect();
-    let answered = read_answered_entries(items, answers, running, held_removal_counts)?.into_values().collect();
+    let answered = read_answered_entries(items, answers, running)?.into_values().collect();
     Ok(QueueTotals { unsent, refused_for_good, refused_for_space, answered })
 }
 
@@ -793,15 +723,15 @@ pub fn read_queue_totals(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId,
 /// (`list_refusal_reasons(None, ..)`, `list_space_refusal_reasons`, both whole) that are
 /// not among them, read the same way. As many rows as the last plan was given and the
 /// memory refuses; no path. Called inside `Store::read_items`.
-pub fn read_kept_back_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>) -> Result<Vec<UnsentEntry>, TreeError> {
-    let mut entries = read_answered_entries(items, answers, running, held_removal_counts)?;
+pub fn read_kept_back_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep]) -> Result<Vec<UnsentEntry>, TreeError> {
+    let mut entries = read_answered_entries(items, answers, running)?;
     let refused_for_good = items.list_refusal_reasons(None, None, usize::MAX)?;
     let refused_for_space = items.list_space_refusal_reasons(None, usize::MAX)?;
     for refused in refused_for_good.iter().chain(&refused_for_space) {
         if entries.contains_key(&refused.item) {
             continue;
         }
-        if let Some(entry) = read_entry_of(items, refused.item, answers, running, held_removal_counts)? {
+        if let Some(entry) = read_entry_of(items, refused.item, answers, running)? {
             entries.insert(refused.item, entry);
         }
     }
@@ -844,7 +774,7 @@ pub fn read_items_not_shown(items: &ItemReader<'_>, answers: &BTreeMap<LocalItem
 }
 
 /// Writes what the properties of the bus are read from, when it changed
-/// (`SyncStateHandle::update_if_changed`): `counts` into `SyncSnapshot::outbox`'s eight
+/// (`SyncStateHandle::update_if_changed`): `counts` into `SyncSnapshot::outbox`'s seven
 /// counts, `uploads` into its `uploads` (path, done, total) and `is_onedrive_full` into
 /// its `quota_full`. The note there is the plan's task's and is left as it is. The one
 /// writer of these fields: the properties' change signals, the folder's overall state
@@ -865,7 +795,6 @@ pub fn publish_queue_status(state: &SyncStateHandle, counts: QueueCounts, upload
         outbox.pending_count = counts.pending;
         outbox.pending_bytes = counts.pending_bytes;
         outbox.blocked_count = counts.blocked;
-        outbox.held_count = counts.held;
         outbox.space_waiting_count = counts.space_waiting;
         outbox.space_waiting_bytes = counts.space_waiting_bytes;
         outbox.too_big_count = counts.too_big;
@@ -887,7 +816,6 @@ pub fn publish_stopped_queue(state: &SyncStateHandle) {
         outbox.pending_count = 0;
         outbox.pending_bytes = 0;
         outbox.blocked_count = 0;
-        outbox.held_count = 0;
         outbox.space_waiting_count = 0;
         outbox.space_waiting_bytes = 0;
         outbox.too_big_count = 0;
@@ -897,101 +825,27 @@ pub fn publish_stopped_queue(state: &SyncStateHandle) {
     });
 }
 
-/// `ConfirmDeletes()`: the user confirms the removals a mass removal holds. Nothing is
-/// done and 0 answered when `is_removal_held` is false ([`is_removal_held`], asked of the
-/// published answers by the caller): as today, with nothing held nothing is confirmed.
-/// Otherwise, in one job of the store's writer: reads every unsent removal
-/// (`ItemReader::list_unsent_removals` over the reader of the writer's connection, `ItemStore::reader`, in pages by the stamp),
-/// builds `UnsentRemoval::of` each — the rows as they are when the user answers — writes
-/// their confirmation (`StepMemory::remember_removals_confirmed`, which answers those it
-/// did not write: rows that are another removal by now, or none, left to be asked about
-/// again), and empties the store's window of sent removals
-/// (`ItemStore::begin_sent_removal_window`: the plan's `sent_removal_count` is counted
-/// from nothing; the window ends by itself otherwise, and nothing else begins one).
-/// Answers how many confirmations were written. The caller then wakes the plan
-/// (`WakeCause::UserAnswered`). A removal made later has another stamp and is asked about
-/// again (the map's F17). MISSING-1.k.
-pub fn confirm_removals(store: &mut TreeStore, is_removal_held: bool) -> Result<usize, TreeError> {
-    if !is_removal_held {
-        return Ok(0);
-    }
-    let removals: Vec<UnsentRemoval> = read_unsent_removals(store)?.iter().filter_map(UnsentRemoval::of).collect();
-    let not_written = store.step_memory().remember_removals_confirmed(&removals)?;
-    store.item_store().begin_sent_removal_window()?;
-    Ok(removals.len().saturating_sub(not_written.len()))
-}
-
-/// `RestoreDeletes()`: the user takes the held removals back. Nothing is done and 0
-/// answered when `is_removal_held` is false, as [`confirm_removals`]. Otherwise, for
-/// every unsent removal (`ItemReader::list_unsent_removals` over `ItemStore::reader`, in pages by the stamp) whose
-/// confirmation the memory does not keep (`ItemReader::find_item_memory`,
-/// `removal_confirmation`), in any order — each write is of one row alone:
-/// `ItemStore::commit_forget_synced_version` with the row's versions as they are
-/// (`ItemVersions::of`). The row is then an item OneDrive has that the folder never
-/// showed, and the plan shows it again, not on disk (`FolderStep::ShowItem`), as today
-/// the entries come back at the next listing. Answers how many rows were written
-/// (`StepCommitOutcome::Written`). One job of the store's writer, run under the folder's
-/// tree lock by the caller, which then wakes the plan (`WakeCause::UserAnswered`).
-/// MISSING-2.l.
-pub fn restore_removals(store: &mut TreeStore, is_removal_held: bool) -> Result<usize, TreeError> {
-    if !is_removal_held {
-        return Ok(0);
-    }
-    let mut written = 0;
-    for item in read_unsent_removals(store)? {
-        if UnsentRemoval::of(&item).is_none() {
-            continue;
-        }
-        let is_confirmed = store.item_store().reader().find_item_memory(item.local_item_id)?.removal_confirmation.is_some();
-        if is_confirmed {
-            continue;
-        }
-        if store.item_store().commit_forget_synced_version(&ItemVersions::of(&item))? == StepCommitOutcome::Written {
-            written += 1;
-        }
-    }
-    Ok(written)
-}
-
 /// The entry of the item `id`, as [`read_unsent_entry`] reads it; `None` when its row is
-/// gone, has no stamp `unsent_since`, is left here (`ItemReader::is_ignored`) or is part
-/// of a held directory's one entry. Called inside `Store::read_items`.
-fn read_entry_of(items: &ItemReader<'_>, id: LocalItemId, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>) -> Result<Option<UnsentEntry>, TreeError> {
-    if is_below_held_removal(answers.get(&id), held_removal_counts) {
-        return Ok(None);
-    }
+/// gone, has no stamp `unsent_since` or is left here (`ItemReader::is_ignored`). Called
+/// inside `Store::read_items`.
+fn read_entry_of(items: &ItemReader<'_>, id: LocalItemId, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep]) -> Result<Option<UnsentEntry>, TreeError> {
     let Some(item) = items.find_item(id)? else { return Ok(None) };
     if item.unsent_since.is_none() || items.is_ignored(id)? {
         return Ok(None);
     }
-    read_unsent_entry(items, item, answers, running, held_removal_counts).map(Some)
+    read_unsent_entry(items, item, answers, running).map(Some)
 }
 
 /// The unsent items the last plan was given, by item: an entry ([`read_entry_of`]) per
 /// item of `answers` that has one. Called inside `Store::read_items`.
-fn read_answered_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>) -> Result<BTreeMap<LocalItemId, UnsentEntry>, TreeError> {
+fn read_answered_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep]) -> Result<BTreeMap<LocalItemId, UnsentEntry>, TreeError> {
     let mut entries = BTreeMap::new();
     for id in answers.keys() {
-        if let Some(entry) = read_entry_of(items, *id, answers, running, held_removal_counts)? {
+        if let Some(entry) = read_entry_of(items, *id, answers, running)? {
             entries.insert(*id, entry);
         }
     }
     Ok(entries)
-}
-
-/// Every unsent removal, in the order they came to be unsent
-/// (`ItemReader::list_unsent_removals` over the reader of the writer's connection, in
-/// pages by the stamp). Called in the job of the store's writer that then writes.
-fn read_unsent_removals(store: &mut TreeStore) -> Result<Vec<Item>, TreeError> {
-    let mut removals = Vec::new();
-    let mut after = None;
-    loop {
-        let page = store.item_store().reader().list_unsent_removals(after, READ_PAGE)?;
-        let Some(last_stamp) = page.last().and_then(|item| item.unsent_since) else { break };
-        after = Some(last_stamp);
-        removals.extend(page);
-    }
-    Ok(removals)
 }
 
 #[cfg(test)]

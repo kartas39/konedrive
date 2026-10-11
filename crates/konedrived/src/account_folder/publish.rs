@@ -61,7 +61,6 @@ pub(super) fn publish(folder: &Folder) -> Published {
         record: folder.acted_on().map(Record::bare),
         down,
         wanted: folder.wanted,
-        tree_lock: folder.acted_on().map(|record| Arc::clone(&record.kept.tree_lock)),
         parts: folder.acted_on().and_then(|_| folder.parts()),
         // Of a running sync alone: with none the queue's answers say them as not known.
         poll: folder.acted_on().and_then(|_| folder.running()).map(|started| started.tasks.poll()),

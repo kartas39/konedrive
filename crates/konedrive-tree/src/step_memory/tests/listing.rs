@@ -130,33 +130,3 @@ fn the_item_an_upload_left_is_void_once_a_listing_says_it_changed_or_is_gone() {
         }
     }
 }
-
-/// The third review's sequence for the confirmation of a mass removal. A directory and the
-/// file in it are removed here and the user confirms both; a listing then brings items
-/// into the directory, and into a directory below it. The confirmation of the directory's
-/// removal was given for what OneDrive had below it: it is void, and the guard asks again.
-/// The confirmation of the file's own removal stays.
-#[test]
-fn the_confirmation_of_a_directorys_removal_is_void_once_a_listing_puts_an_item_below_it() {
-    for into in ["D", "S"] {
-        let (mut store, docs) = store_with_docs();
-        write_listing_of_changes(&mut store, &[listed_file("X", "D", "report", (3, "h-X"), "e-X"), crate::item_store::tests::listed_drive::listed_directory("S", "D", "sub", "e-S")]);
-        let (file, sub) = (show(&mut store, "X"), show(&mut store, "S"));
-        for id in [file, sub, docs] {
-            remove(&mut store, id);
-        }
-        let removals = [unsent_removal(&mut store, docs), unsent_removal(&mut store, file), unsent_removal(&mut store, sub)];
-        assert_eq!(store.step_memory().remember_removals_confirmed(&removals).unwrap(), []);
-        let mut confirmed = vec![docs, file, sub];
-        confirmed.sort();
-        assert_eq!(store.step_memory().list_items_with_confirmed_removal(None, 10).unwrap(), confirmed);
-
-        write_listing_of_changes(&mut store, &[listed_file("X", "D", "report", (3, "h-X"), "e-X2")]);
-        assert_eq!(store.step_memory().list_items_with_confirmed_removal(None, 10).unwrap(), confirmed, "what OneDrive had in it already is listed again: nothing more is removed");
-
-        write_listing_of_changes(&mut store, &[listed_file("Y", into, "new", (3, "h-Y"), "e-Y")]);
-        let still_confirmed: Vec<LocalItemId> = confirmed.iter().copied().filter(|id| *id == file || (*id == sub && into == "D")).collect();
-        assert_eq!(store.step_memory().list_items_with_confirmed_removal(None, 10).unwrap(), still_confirmed, "a new item in {into}");
-        assert_eq!(kept(&store, docs).removal_confirmation, None);
-    }
-}

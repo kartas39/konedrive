@@ -63,8 +63,7 @@ pub async fn staged(service: &SyncService) -> Vec<(u64, Option<u64>)> {
 }
 
 /// The tree store of the folder that is up, for a test that seeds a row only the
-/// worker or the mass-delete guard would write (a blocked row, a held one): what the
-/// readers of the bus read. `None` before the folder's first sync start.
+/// worker would write (a blocked row): what the readers of the bus read. `None` before the folder's first sync start.
 pub fn tree_store(service: &SyncService) -> Option<konedrive_tree::Store> {
     service.tree_store()
 }

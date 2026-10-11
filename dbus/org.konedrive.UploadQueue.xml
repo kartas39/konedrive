@@ -9,41 +9,24 @@
          reason, next try in unix seconds or 0). Kinds: create, mkdir,
          update, move, delete, move-out. States: waiting (not quiet: open
          for writing), ready, running, retry (in backoff until next try),
-         blocked (needs the user; the reason says why), held (a large delete
-         waiting for ConfirmDeletes or RestoreDeletes), paused (while the
-         account is paused, every row that is not blocked or held). Refused Unsupported
+         blocked (needs the user; the reason says why), paused (while the
+         account is paused, every row that is not blocked). Refused Unsupported
          for a folder that is not connected to OneDrive, NoRoot with no folder,
          and NotUp, with why, for a folder that is not up or whose sync has not
-         started; ConfirmDeletes, RestoreDeletes and NotUploaded refuse the
-         same. -->
+         started; NotUploaded refuses the same. -->
     <method name="Changes">
       <arg name="limit" type="u" direction="in"/>
       <arg name="rows" type="a(tsssttsx)" direction="out"/>
       <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveOutboxList"/>
     </method>
-    <!-- A delete of many items (the mass-delete guard: rows held) goes
-         ahead; how many rows were released. Every removal held at the moment
-         of the call goes, one held after the caller last read HeldCount
-         included. -->
     <!-- How many changes made here are not sent to OneDrive: every one,
-         whatever holds it, the rows below a held delete of a folder among
-         them. Answered for a folder in any state, also one that is not up or
+         whatever holds it. Answered for a folder in any state, also one that is not up or
          whose sync does not run (0 with no folder). What a client reads
          before Folder.Unregister and Accounts.Remove, which are never
          refused for it, to warn: "N changes were not sent to OneDrive and
          will stay only on this computer". -->
     <method name="UnsentCount">
       <arg name="count" type="t" direction="out"/>
-    </method>
-    <method name="ConfirmDeletes">
-      <arg name="released" type="u" direction="out"/>
-    </method>
-    <!-- A delete of many items is taken back: the held rows are dropped and
-         the items placed again from OneDrive at once (a cycle with a full
-         reconcile follows); how many rows were dropped. Nothing is deleted in
-         OneDrive. -->
-    <method name="RestoreDeletes">
-      <arg name="dropped" type="u" direction="out"/>
     </method>
     <!-- What stays on this computer and why, as (full path, reason):
          symlink, fifo, socket, device, other-device (on another
@@ -63,8 +46,7 @@
     </method>
     <!-- What is kept back, one row per reason: (group, reason, count, bytes
          of the files). Everything NotUploaded lists, and the changes that
-         wait with a reason (open for writing, locked, ...); removals held by
-         the mass-delete guard are not. Groups, in this order:
+         wait with a reason (open for writing, locked, ...). Groups, in this order:
          one-action (one action fixes every file: waiting-for-space, too-big,
          forbidden; quota-exceeded only for a row an older version blocked),
          per-file (each file needs the user: name-characters, name-spaces,
@@ -92,17 +74,12 @@
       <arg name="total" type="u" direction="out"/>
       <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveSkippedList"/>
     </method>
-    <!-- Changes waiting to be uploaded (neither blocked nor held), and the
+    <!-- Changes waiting to be uploaded (not blocked), and the
          size of the files they send. Coalesced to a few changes a second. -->
     <property name="PendingCount" type="u" access="read"/>
     <property name="PendingBytes" type="t" access="read"/>
     <!-- Changes that need the user before they can go up (see NotUploaded). -->
     <property name="BlockedCount" type="u" access="read"/>
-    <!-- Removals the mass-delete guard holds: a delete of many items (more
-         than 500, or more than 20 % of the folder once 10 or more) waits for
-         ConfirmDeletes or RestoreDeletes. Neither pending nor blocked.
-         Coalesced with the counts above. -->
-    <property name="HeldCount" type="u" access="read"/>
     <!-- OneDrive is full (quota state "exceeded", or less than 1 MiB free):
          no content goes up until Folder.Refresh, or the automatic check
          every 30 minutes, finds space again. Moves, renames, deletes and new

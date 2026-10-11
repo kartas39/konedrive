@@ -325,9 +325,6 @@ pub(super) struct View {
     pub down: Option<String>,
     /// The mode the folder follows.
     pub wanted: Mode,
-    /// The tree lock of the folder, for `RestoreDeletes`, which takes it with no state
-    /// lock.
-    pub tree_lock: Option<Arc<tokio::sync::Mutex<()>>>,
     /// The parts of the folder's sync, running or stopped ([`Folder::parts`]), held as
     /// the one type they are: the store, the mount (with its `Files` interface), the
     /// published plan and the running steps the queue's answers are made over, and the

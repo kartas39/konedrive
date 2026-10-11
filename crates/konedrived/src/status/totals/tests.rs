@@ -74,7 +74,7 @@ fn done_starts_again_when_nothing_is_left() {
     assert_eq!(counter.count(&s, &BTreeMap::new()).up.done_bytes, 7 * MIB, "since the daemon started");
 
     let kept_back = SyncSnapshot {
-        outbox: OutboxStatus { blocked_count: 3, held_count: 1, ..OutboxStatus::default() },
+        outbox: OutboxStatus { blocked_count: 3, ..OutboxStatus::default() },
         transfers: TransferStatus { throughput: s.transfers.throughput, ..TransferStatus::default() },
         ..SyncSnapshot::default()
     };

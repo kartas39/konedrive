@@ -39,7 +39,6 @@ fn what_no_variant_spells_still_has_its_key_and_group() {
     assert_eq!(of("network: connection reset"), ("network".into(), Some(Group::Waiting), Some("connection reset".into())));
     assert_eq!(of("too-big:0300:20"), ("too-big".into(), Some(Group::OneAction), Some("0300:20".into())));
     assert_eq!(of("symlink: odd"), ("symlink".into(), Some(Group::Never), Some("odd".into())));
-    assert_eq!(of("mass-delete: odd"), ("mass-delete: odd".into(), None, None));
     assert_eq!(of("something-new"), ("something-new".into(), None, None));
     assert!(Reason::parse("too-big:0300:20").waits_for_space() && Reason::parse("too-big:x").waits_for_space());
     assert_eq!(Reason::parse("too-big:0300:20").sizes(), Some((300, 20)));
@@ -103,6 +102,7 @@ fn every_key_has_the_group_it_had() {
             &[
                 "open-for-writing",
                 "being-checked",
+                "quiet-time",
                 "locked",
                 "not-found",
                 "not-downloaded",
@@ -133,7 +133,7 @@ fn every_key_has_the_group_it_had() {
                 "not allowed now",
             ],
         ),
-        (None, &["mass-delete", "something-new"]),
+        (None, &["something-new"]),
     ];
     let mut keys = 0;
     for (group, of) in table {

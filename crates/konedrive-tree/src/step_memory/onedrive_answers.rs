@@ -10,7 +10,6 @@
 
 use rusqlite::Connection;
 
-use crate::item_store::find_item;
 use super::memory_row::{self, read_memory};
 use super::mismatched_item_removals::{find_removal, list_files_of};
 use super::{change_kept_memory, forget_mismatched_item};
@@ -79,25 +78,6 @@ pub(crate) fn forget_mismatched_item_listed_changed(conn: &Connection, onedrive_
     };
     if kept.is_some_and(|kept| kept.is_listed_changed(ctag, etag)) {
         forget_mismatched_item(conn, onedrive_item)?;
-    }
-    Ok(())
-}
-
-/// A listing wrote that the item `directory` of OneDrive, or a directory OneDrive has it
-/// below, has an item in it that the rows did not say it had: in the listing's
-/// transaction. The user's confirmation of the removal of each of those directories is
-/// forgotten: it was given for what OneDrive had below the directory then, and the guard
-/// against a mass removal asks again for what it has now. Nothing is read while no
-/// confirmation is kept.
-pub(crate) fn forget_removal_confirmations_above(conn: &Connection, directory: LocalItemId) -> Result<(), TreeError> {
-    if !conn.prepare_cached("SELECT EXISTS (SELECT 1 FROM step_memory WHERE is_removal_confirmed IS NOT NULL)")?.query_row([], |row| row.get::<_, bool>(0))? {
-        return Ok(());
-    }
-    // A directory may be below what is below it between two pages: each is met once.
-    let (mut at, mut met) = (Some(directory), std::collections::BTreeSet::new());
-    while let Some(above) = at.filter(|above| met.insert(*above)) {
-        change_kept_memory(conn, above, |memory| memory.removal_confirmation = None)?;
-        at = find_item(conn, above)?.and_then(|row| row.onedrive).and_then(|onedrive| onedrive.place).map(|place| place.parent_local_item_id);
     }
     Ok(())
 }

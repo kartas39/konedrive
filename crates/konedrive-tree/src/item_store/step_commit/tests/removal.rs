@@ -20,17 +20,16 @@ fn the_removal_of_a_file_is_confirmed_of_the_row_that_has_the_binding_now() {
     let made = store.item_store().apply(&LocalVersionChange::Made { kind: ItemKind::File, place: place(ROOT, "g"), content: content.clone(), is_name_ignored: false, replaced: Some(file) }).unwrap();
     assert_eq!((store.item_store().find_item(file).unwrap(), bound(&mut store, "G").local_item_id), (None, made), "the made file has the binding");
 
-    assert_eq!(store.item_store().commit_send_file_removal(&planned_from, 0).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_send_file_removal(&planned_from).unwrap(), StepCommitOutcome::Written);
     let removed = bound(&mut store, "G");
     assert!(removed.local_item_id != made && is_binding_alone(&removed) && removed.confirmed_at_count > 0, "{removed:?}");
     let made = row(&mut store, made);
     assert_eq!((made.onedrive_item.clone(), made.onedrive.clone(), made.synced_place.clone(), made.synced_content.clone()), (None, None, None, None), "the made file is an item OneDrive does not have");
     assert_eq!(made.local, Some(ItemVersion { place: Some(place(ROOT, "g")), content }));
     assert_eq!(find_broken_rule(&store.item_store().list_items().unwrap(), false), None);
-    assert_eq!(store.item_store().find_sent_removal_window(0).unwrap().removal_count, 1);
 
     // The same commit again finds OneDrive's side changed, whichever row has the binding.
-    assert!(is_left_unwritten(&mut store, |items| items.commit_send_file_removal(&planned_from, 0)));
+    assert!(is_left_unwritten(&mut store, |items| items.commit_send_file_removal(&planned_from)));
 }
 
 /// A directory `d` with the file `f` in it, both shown and then removed here, and the file
@@ -66,8 +65,8 @@ fn the_removal_of_a_directory_can_be_sent_while_all_onedrive_has_below_it_was_re
     assert!(!can_be_sent(&mut store, &outdated, &below));
     assert!(!can_be_sent(&mut store, &planned_from, &[ItemVersions { onedrive_etag: Some("e-outdated".to_owned()), ..below[0].clone() }]));
     assert!(!can_be_sent(&mut store, &planned_from, &[]));
-    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &[], 0)));
-    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below, 0).unwrap(), StepCommitOutcome::Written);
+    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &[])));
+    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below).unwrap(), StepCommitOutcome::Written);
 }
 
 /// A listing moved an item the folder shows into the directory meanwhile: its removal
@@ -78,7 +77,7 @@ fn the_removal_of_a_directory_is_not_sent_while_the_folder_shows_what_onedrive_h
     let (planned_from, below) = (versions(&mut store, directory), [versions(&mut store, inside)]);
     write_listing_of_changes(&mut store, &[listed_file("G", "D", "g", (3, "h-G"), "e-G2")]);
     assert!(!can_be_sent(&mut store, &planned_from, &below));
-    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &below, 0)));
+    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &below)));
     assert!(row(&mut store, kept).onedrive.is_some());
 }
 
@@ -94,7 +93,7 @@ fn the_removal_of_a_directory_is_not_sent_once_onedrive_changed_the_content_of_a
     let below_now = [versions(&mut store, inside)];
     for below in [&below, &below_now] {
         assert!(!can_be_sent(&mut store, &planned_from, below));
-        assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, below, 0)));
+        assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, below)));
     }
     assert!(bound(&mut store, "F").onedrive.is_some());
     // OneDrive renamed it and no more: the removal stands, and is sent with it.
@@ -102,7 +101,7 @@ fn the_removal_of_a_directory_is_not_sent_once_onedrive_changed_the_content_of_a
     write_listing_of_changes(&mut store, &[listed_file("F", "D", "f-renamed", (3, "h-F"), "e-F2")]);
     let (planned_from, below) = (versions(&mut store, directory), [versions(&mut store, inside)]);
     assert!(can_be_sent(&mut store, &planned_from, &below));
-    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below, 0).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below).unwrap(), StepCommitOutcome::Written);
 }
 
 /// The second review's M1 and M3, at the step: a listing brought a file OneDrive made in the
@@ -114,7 +113,7 @@ fn the_removal_of_a_directory_is_not_sent_while_onedrive_has_below_it_what_the_f
     let (planned_from, below) = (versions(&mut store, directory), [versions(&mut store, inside)]);
     write_listing_of_changes(&mut store, &[listed_file("N", "D", "new.txt", (4, "h-N"), "e-N")]);
     assert!(!can_be_sent(&mut store, &planned_from, &below));
-    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &below, 0)));
+    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &below)));
     assert!(bound(&mut store, "N").onedrive.is_some());
 }
 
@@ -154,7 +153,7 @@ fn a_page_fetched_before_a_directory_removal_was_confirmed_puts_nothing_into_the
     let (mut store, [directory, inside, kept]) = store_of_removed_directory();
     let (planned_from, below) = (versions(&mut store, directory), [versions(&mut store, inside)]);
     let listing = store.item_store().begin_delta_listing().unwrap();
-    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below, 0).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below).unwrap(), StepCommitOutcome::Written);
     let page = [listed_file("N", "D", "new.txt", (4, "h-N"), "e-N"), listed_file("G", "D", "g", (3, "h-G"), "e-G2"), listed_file("F", "D", "f", (3, "h-F"), "e-F")];
     let outcome = store.item_store().write_listed_changes(listing.id, &page, listing.began_at_count, &crate::ListingLink::DeltaLink("link".into())).unwrap();
     assert_eq!(outcome.changes, [crate::ListedChangeOutcome::Outdated; 3]);
@@ -199,7 +198,7 @@ fn the_removal_of_a_directory_is_planned_asked_and_committed_with_what_an_upload
     assert!(can_be_sent(&mut store, &planned_from, &below));
     let with_what_was_left = [below[0].clone(), ItemVersions::of(&bound(&mut store, "LEFT"))];
     assert!(!can_be_sent(&mut store, &planned_from, &with_what_was_left), "what was left is not of what is removed here");
-    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below, 0).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below).unwrap(), StepCommitOutcome::Written);
     for item_id in ["D", "F", "LEFT"] {
         assert!(is_binding_alone(&bound(&mut store, item_id)), "{item_id}");
     }
@@ -210,7 +209,7 @@ fn the_removal_of_a_directory_is_planned_asked_and_committed_with_what_an_upload
     store.step_memory().forget_mismatched_item(&reference("LEFT")).unwrap();
     assert_eq!(plan_directory_removal(&mut store, directory), None);
     assert!(!can_be_sent(&mut store, &planned_from, &below));
-    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &below, 0)));
+    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &below)));
     assert!(bound(&mut store, "LEFT").onedrive.is_some());
 }
 
@@ -237,7 +236,7 @@ fn the_removal_of_a_directory_is_planned_asked_and_committed_with_a_file_whose_c
     let below_now = [versions(&mut store, inside)];
     assert_eq!(plan_directory_removal(&mut store, directory), None);
     assert!(!can_be_sent(&mut store, &planned_from, &below_now));
-    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &below_now, 0)));
+    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &below_now)));
 
     let (mut store, [directory, inside, _]) = store_of_removed_directory();
     write_listing_of_changes(&mut store, &[listed_file("F", "D", "f", (5, "h-F2"), "e-F2")]);
@@ -245,7 +244,7 @@ fn the_removal_of_a_directory_is_planned_asked_and_committed_with_a_file_whose_c
     let own_upload = crate::OwnUploadContent { onedrive_content: left.onedrive.as_ref().and_then(|onedrive| onedrive.content.clone()).unwrap(), local_content: left.synced_content.clone().unwrap() };
     store.item_store().remember_own_upload_content(inside, &own_upload).unwrap();
     let (planned_from, below) = plan_directory_removal(&mut store, directory).expect("the plan sends the removal");
-    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below, 0).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below).unwrap(), StepCommitOutcome::Written);
     assert!(is_binding_alone(&bound(&mut store, "D")) && is_binding_alone(&bound(&mut store, "F")));
     assert_eq!(find_broken_rule(&store.item_store().list_items().unwrap(), false), None);
 }

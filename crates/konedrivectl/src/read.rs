@@ -115,7 +115,6 @@ pub(crate) async fn folder_status(daemon: &Daemon, path: &OwnedObjectPath) -> zb
         quota_waiting: said(queue.quota_waiting_count()).await?,
         quota_waiting_bytes: said(queue.quota_waiting_bytes()).await?,
         too_big: said(queue.too_big_count()).await?,
-        held_deletes: said(queue.held_count()).await?,
         paused: said(folder.paused()).await?,
         paused_until: said(folder.paused_until()).await?,
         held_back: said(folder.held_back()).await?,

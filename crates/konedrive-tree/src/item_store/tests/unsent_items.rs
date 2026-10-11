@@ -171,54 +171,6 @@ fn whether_an_item_is_left_here_is_what_the_rows_above_it_say_after_any_sequence
     }
 }
 
-/// The brief's §6, 5: the guard against a mass removal asks of every unsent removal, also
-/// of those a plan was not given.
-#[test]
-fn the_unsent_removals_are_counted_a_removed_directory_with_all_onedrive_has_in_it() {
-    use crate::item_store::tests::listed_drive::{listed_directory, listed_file, reference, store_with_listed_root, write_listing_of_changes};
-    let mut store = store_with_listed_root();
-    write_listing_of_changes(
-        &mut store,
-        &[
-            listed_directory("D", "R", "d", "e"),
-            listed_file("A", "D", "a", (1, "h"), "e"),
-            listed_directory("E", "D", "e", "e"),
-            listed_file("B", "E", "b", (1, "h"), "e"),
-            listed_file("C", "E", "c", (1, "h"), "e"),
-            listed_file("F", "R", "f", (1, "h"), "e"),
-            listed_file("G", "R", "g", (1, "h"), "e"),
-        ],
-    );
-    let [directory, in_directory, inner, in_inner, moved_out, in_root, stays] = ["D", "A", "E", "B", "C", "F", "G"].map(|item_id| {
-        let row = store.item_store().find_bound_item(&reference(item_id)).unwrap().unwrap();
-        store.item_store().commit_show_item(&crate::ItemVersions::of(&row), false).unwrap();
-        row.local_item_id
-    });
-    let none = std::collections::BTreeSet::new();
-    assert_eq!(store.item_store().count_shown_items().unwrap(), 7);
-    assert_eq!(store.item_store().count_unsent_removals(&none).unwrap(), 0);
-
-    // A file of the root; then the directory, out of which one file was moved here first.
-    let removed = |store: &mut TreeStore, item: LocalItemId| store.item_store().apply(&LocalVersionChange::Removed { item }).unwrap();
-    removed(&mut store, in_root);
-    assert_eq!(store.item_store().count_unsent_removals(&none).unwrap(), 1);
-    store.item_store().apply(&LocalVersionChange::Moved { item: moved_out, place: place(ROOT, "c"), is_name_ignored: false }).unwrap();
-    for item in [in_inner, inner, in_directory, directory] {
-        removed(&mut store, item);
-    }
-    assert_eq!(store.item_store().count_shown_items().unwrap(), 2);
-    assert_eq!(store.item_store().count_unsent_removals(&none).unwrap(), 5, "the four of the directory and the file; not what was moved out of it");
-
-    // What OneDrive made in the directory since goes with it, and is counted.
-    write_listing_of_changes(&mut store, &[listed_file("N", "E", "new", (1, "h"), "e")]);
-    assert_eq!(store.item_store().count_unsent_removals(&none).unwrap(), 6);
-
-    // A removal the user confirmed is left out, a directory's with all OneDrive has in it.
-    assert_eq!(store.item_store().count_unsent_removals(&[in_root].into()).unwrap(), 5);
-    assert_eq!(store.item_store().count_unsent_removals(&[directory].into()).unwrap(), 1);
-    assert_eq!(store.item_store().count_unsent_removals(&[inner, stays].into()).unwrap(), 3);
-}
-
 /// Found by the convergence test: an item both sides agree on, whose placement a listing
 /// changed, is in neither index a plan reads from, and stayed in the folder for good.
 #[test]

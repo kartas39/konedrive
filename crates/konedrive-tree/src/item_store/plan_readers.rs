@@ -26,21 +26,18 @@
 //! what one directory holds: what OneDrive changed (`items_changed_in_onedrive`), the
 //! shown items that cannot be shown (`items_shown_against_placement`), what OneDrive has
 //! in a directory and under a folded name there (`items_onedrive_place`,
-//! `items_onedrive_folded_place`), the confirmation count and the sent removals (a key of
-//! `meta` each). Not bounded, and said with each: all OneDrive has below a directory, the
-//! pinned files to download, the count of what the folder shows, the count of the unsent
-//! removals.
+//! `items_onedrive_folded_place`), the confirmation count (a key of `meta`). Not bounded,
+//! and said with each: all OneDrive has below a directory, the pinned files to download.
 //!
 //! **Tested without the rest:**
 // test: each_plan_reader_answers_what_the_item_stores_reader_of_the_same_name_answers
 // test: the_items_whose_writer_has_not_closed_are_those_with_a_content_before_the_write
 
-use std::collections::BTreeSet;
 
 use super::onedrive_versions::read_confirmation_count;
-use super::{item_row, sent_removal_window, ItemReader};
+use super::{item_row, ItemReader};
 use crate::model::{Item, LocalItemId};
-use crate::{FoldedName, SentRemovalWindow, TreeError};
+use crate::{FoldedName, TreeError};
 
 impl ItemReader<'_> {
     /// As `ItemStore::list_changed_in_onedrive`: the items whose OneDrive version is not
@@ -84,29 +81,6 @@ impl ItemReader<'_> {
     /// names in OneDrive.
     pub fn list_children_in_onedrive_with_folded_name(&self, directory: LocalItemId, name: &FoldedName) -> Result<Vec<Item>, TreeError> {
         item_row::list_children_in_onedrive_with_folded_name(self.conn(), directory, name)
-    }
-
-    /// As `ItemStore::count_shown_items`. Counted over the index of local places: one
-    /// read of that index from end to end, no row of the table. A count kept beside the
-    /// rows would need a trigger on every write of a local place; not done while this
-    /// read is one a plan.
-    pub fn count_shown_items(&self) -> Result<u64, TreeError> {
-        item_row::count_shown_items(self.conn())
-    }
-
-    /// As `ItemStore::count_unsent_removals`. From the index of what is unsent — every
-    /// unsent item is passed, not the removals alone — and from each removed directory
-    /// down by the index of places in OneDrive.
-    pub fn count_unsent_removals(&self, confirmed: &BTreeSet<LocalItemId>) -> Result<u64, TreeError> {
-        item_row::count_unsent_removals(self.conn(), confirmed)
-    }
-
-    /// As `ItemStore::find_sent_removal_window`: the removals this client sent a short
-    /// time ago, as of `now`, in Unix seconds; its `removal_count` is the plan's
-    /// `sent_removal_count`, given the same `now`. The window is over by itself; nothing
-    /// is written to read it.
-    pub fn find_sent_removal_window(&self, now: i64) -> Result<SentRemovalWindow, TreeError> {
-        sent_removal_window::find_sent_removal_window(self.conn(), now)
     }
 
     /// As `ItemStore::confirmation_count`: read by the listing before a page is fetched.

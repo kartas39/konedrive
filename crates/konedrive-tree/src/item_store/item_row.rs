@@ -621,35 +621,6 @@ pub(super) fn count_shown_items(conn: &Connection) -> Result<u64, TreeError> {
     Ok(count.max(0) as u64)
 }
 
-/// SQL for "the items of `seeds`, and what the rows say OneDrive has in them and below them
-/// that the folder does not show", as a table `{name}(id)`: what goes from OneDrive with
-/// the removal of each of the seeds. Each item once, also when rows name each other in a
-/// circle.
-fn removed_with_sql(name: &str, seeds: &str) -> String {
-    format!(
-        "{name}(id) AS (
-             {seeds}
-             UNION
-             SELECT child.local_item_id FROM {name} JOIN items child INDEXED BY items_onedrive_place ON child.onedrive_parent_id = {name}.id WHERE child.local_parent_id IS NULL)"
-    )
-}
-
-/// [`ItemStore::count_unsent_removals`](super::ItemStore::count_unsent_removals): the rows
-/// that were removed here and that OneDrive has are found by the index of what is unsent.
-pub(super) fn count_unsent_removals(conn: &Connection, confirmed: &std::collections::BTreeSet<LocalItemId>) -> Result<u64, TreeError> {
-    let removed_here = format!("SELECT local_item_id FROM items INDEXED BY items_unsent WHERE unsent_since IS NOT NULL AND NOT {LEFT_HERE} AND local_parent_id IS NULL AND onedrive_parent_id IS NOT NULL");
-    // Local item ids are numbers: nothing of the caller's is put into the statement as text.
-    let confirmed = confirmed.iter().map(|item| item.as_i64().to_string()).collect::<Vec<_>>().join(", ");
-    let confirmed = format!("SELECT local_item_id FROM items WHERE local_item_id IN ({confirmed})");
-    let sql = format!(
-        "WITH RECURSIVE {}, {} SELECT COUNT(*) FROM removed WHERE id NOT IN (SELECT id FROM confirmed)",
-        removed_with_sql("removed", &removed_here),
-        removed_with_sql("confirmed", &confirmed)
-    );
-    let count: i64 = conn.prepare(&sql)?.query_row([], |row| row.get(0))?;
-    Ok(count.max(0) as u64)
-}
-
 /// Whether a pin holds for `item`: a row from `item` up, by the directories the folder
 /// shows it in, has an item id of OneDrive that is pinned. The way up is as long as every
 /// walk of the rows.

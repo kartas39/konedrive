@@ -251,11 +251,6 @@ pub(crate) enum FolderCmd {
         #[arg(long)]
         all: bool,
     },
-    /// Decide on a large delete held for confirmation
-    Deletes {
-        #[command(subcommand)]
-        action: DeletesCmd,
-    },
     /// List your changed versions that were kept when the file changed or was
     /// removed in OneDrive: moved out of the way, or kept as a copy beside it
     Conflicts,
@@ -324,10 +319,3 @@ pub(crate) enum IgnoreCmd {
     Remove { pattern: String },
 }
 
-#[derive(Subcommand)]
-pub(crate) enum DeletesCmd {
-    /// Delete them in OneDrive too
-    Confirm,
-    /// Keep them in OneDrive: they come back here
-    Restore,
-}

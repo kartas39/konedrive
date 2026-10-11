@@ -25,17 +25,6 @@ impl UploadQueue {
         Ok(self.service.count_unsent().await?)
     }
 
-    /// The removals the mass-delete guard held go ahead; how many.
-    async fn confirm_deletes(&self) -> Result<u32> {
-        Ok(self.service.confirm_deletes().await?)
-    }
-
-    /// The removals the mass-delete guard held are dropped, and their items
-    /// placed again; how many.
-    async fn restore_deletes(&self) -> Result<u32> {
-        Ok(self.service.restore_deletes().await?)
-    }
-
     /// What stays on this computer and why.
     async fn not_uploaded(&self) -> Result<Vec<rows::KeptBack>> {
         Ok(self.service.not_uploaded().await?.into_iter().map(kept_back).collect())
@@ -67,11 +56,6 @@ impl UploadQueue {
     #[zbus(property)]
     async fn blocked_count(&self) -> u32 {
         BLOCKED_COUNT.of(&self.service)
-    }
-
-    #[zbus(property)]
-    async fn held_count(&self) -> u32 {
-        HELD_COUNT.of(&self.service)
     }
 
     #[zbus(property)]

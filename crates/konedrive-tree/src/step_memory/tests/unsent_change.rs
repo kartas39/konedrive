@@ -164,7 +164,6 @@ fn nothing_of_an_unsent_change_is_learnt_of_the_root_or_of_an_item_the_two_sides
             assert_eq!(memory.remember_upload_session(id, unsent_since, &session).unwrap(), Abandoned);
             assert_eq!(memory.remember_failed_try(id, unsent_since, &Reason::Network, Some(60)).unwrap(), ChangeGone);
             assert_eq!(memory.remember_taken_name(id, unsent_since, &taken).unwrap(), VersionGone);
-            assert_eq!(memory.remember_removals_confirmed(&[UnsentRemoval { item: id, unsent_since: 1 }]).unwrap(), [UnsentRemoval { item: id, unsent_since: 1 }]);
             memory.forget_upload_session_cancellation(&address("1")).unwrap();
         }
         assert_eq!((kept(&store, id), store.step_memory().list_timed_waits(10).unwrap()), (ItemMemory::default(), vec![]));

@@ -192,24 +192,6 @@ pub fn not_ignored_text(pattern: &str, prefix: &str) -> String {
     format!("`{pattern}` is not on the list (`{prefix} sync ignore list`)")
 }
 
-/// `sync deletes confirm`, done: how many held removals went ahead.
-pub fn deletes_confirmed_text(count: u32) -> String {
-    match count {
-        0 => NO_DELETE_WAITS.to_owned(),
-        n => format!("Confirmed: {n} change(s) go to OneDrive's recycle bin."),
-    }
-}
-
-/// `sync deletes restore`, done: how many held removals were dropped.
-pub fn deletes_restored_text(count: u32) -> String {
-    match count {
-        0 => NO_DELETE_WAITS.to_owned(),
-        n => format!("Restored: {n} change(s) dropped; the items come back from OneDrive."),
-    }
-}
-
-const NO_DELETE_WAITS: &str = "No delete is waiting for confirmation.";
-
 /// `sync dismiss`, done.
 pub const DISMISSED: &str = "Dismissed. The file was left where it is.";
 

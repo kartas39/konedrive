@@ -10,7 +10,7 @@ fn what_was_published_is_read_back_per_item() {
     assert_eq!(published_plan.find_answer(item(5)), None, "before the first plan");
     assert!(published_plan.list_answers().is_empty());
     let answers = BTreeMap::from([(item(5), ItemAnswer::Planned(StepClass::Content)), (item(6), ItemAnswer::Excluded(ExclusionReason::NameIgnored))]);
-    published_plan.publish(answers.clone(), BTreeMap::new());
+    published_plan.publish(answers.clone());
     assert_eq!(published_plan.find_answer(item(5)), Some(ItemAnswer::Planned(StepClass::Content)));
     assert_eq!(published_plan.find_answer(item(6)), Some(ItemAnswer::Excluded(ExclusionReason::NameIgnored)));
     assert_eq!(published_plan.find_answer(item(7)), None, "an item the plan was not given");
@@ -20,32 +20,11 @@ fn what_was_published_is_read_back_per_item() {
 #[test]
 fn a_new_plan_replaces_the_answers_of_the_one_before() {
     let published_plan = PublishedPlan::new();
-    published_plan.publish(BTreeMap::from([(item(5), ItemAnswer::Planned(StepClass::Content)), (item(6), ItemAnswer::Planned(StepClass::Metadata))]), BTreeMap::new());
+    published_plan.publish(BTreeMap::from([(item(5), ItemAnswer::Planned(StepClass::Content)), (item(6), ItemAnswer::Planned(StepClass::Metadata))]));
     let next = BTreeMap::from([(item(6), ItemAnswer::Excluded(ExclusionReason::CannotBeShown))]);
-    published_plan.publish(next.clone(), BTreeMap::new());
+    published_plan.publish(next.clone());
     assert_eq!(published_plan.find_answer(item(5)), None, "the item is not in the new plan: its answer is gone");
     assert_eq!(published_plan.list_answers(), next);
-}
-
-#[test]
-fn a_new_plans_counts_of_held_removals_replace_those_of_the_one_before() {
-    let published_plan = PublishedPlan::new();
-    assert_eq!(published_plan.find_held_removal_count(item(5)), None, "before the first plan");
-    assert!(published_plan.list_held_removal_counts().is_empty());
-    let held = ItemAnswer::Waiting(WaitReason::User(Reason::MassDelete));
-    let answers = BTreeMap::from([(item(5), held.clone()), (item(6), held.clone())]);
-    let counts = BTreeMap::from([(item(5), 12), (item(6), 0)]);
-    published_plan.publish(answers.clone(), counts.clone());
-    assert_eq!(published_plan.find_held_removal_count(item(5)), Some(12));
-    assert_eq!(published_plan.find_held_removal_count(item(6)), Some(0), "a held directory OneDrive has nothing in");
-    assert_eq!(published_plan.find_held_removal_count(item(7)), None, "no directory whose removal is held");
-    assert_eq!(published_plan.list_held_removal_counts(), counts);
-    assert_eq!(published_plan.list_answers_and_held_removal_counts(), (answers, counts), "both of one plan");
-    // A plan that holds none: the counts of the one before are gone with its answers.
-    let next = BTreeMap::from([(item(5), ItemAnswer::Planned(StepClass::Metadata))]);
-    published_plan.publish(next.clone(), BTreeMap::new());
-    assert_eq!(published_plan.find_held_removal_count(item(5)), None);
-    assert_eq!(published_plan.list_answers_and_held_removal_counts(), (next, BTreeMap::new()));
 }
 
 /// The one rule of "blocked": a case per answer, per wait and per group of a reason.
@@ -82,7 +61,6 @@ fn only_a_refusal_for_good_and_a_wait_for_the_user_that_needs_the_user_are_shown
         (waiting(WaitReason::Listing), false, "a wait for a listing"),
         (waiting(WaitReason::ItemsInDirectoryNotGiven(other)), false, "a directory not given whole"),
         // A wait for the user, by its reason.
-        (user(Reason::MassDelete), false, "held: a state of its own"),
         (user(Reason::NotReadOnDisk), false, "could not be read on disk"),
         (user(Reason::BeingChecked), false, "being checked"),
         (user(Reason::WaitingForSpace), false, "a wait for space"),
