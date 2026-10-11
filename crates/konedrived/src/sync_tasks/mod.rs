@@ -47,7 +47,7 @@
 //!   start's order): a store of an older version is rebuilt.
 //!
 //! **A change of the access mode** (`access_mode_change`): no task is stopped; the mount
-//! is switched and the stamp of the switch written.
+//! is switched and the hold of a read-only folder set or taken off.
 //!
 //! **Tested without the rest** (the tests of each part are listed in its module):
 // test: a_folder_started_and_stopped_leaves_no_task_running
