@@ -1,6 +1,7 @@
 //! Remove: the decision's cases, and each removal over the fixture.
 
 use std::ffi::OsStr;
+use std::sync::Arc;
 
 use konedrive_tree::{ItemPlace, LocalVersionChange};
 
@@ -224,4 +225,134 @@ fn a_file_open_for_writing_is_removed_and_its_writers_close_writes_nothing() {
     operations.close(opened.fh);
     assert_eq!(operations.fixture.list_items(), rows);
     operations.fixture.assert_rows_and_disk_agree();
+}
+
+#[test]
+fn a_directory_with_what_was_never_shown_in_it_is_decided_not_empty_for_an_rmdir_alone() {
+    use konedrive_tree::ItemsNeverShown;
+    let (file, directory) = (make_row(5, ItemKind::File), make_row(6, ItemKind::Directory));
+    let with = |never_shown, item: &Item, asked_kind| RemoveCase { onedrive_items_never_shown: never_shown, ..case(Some(item.clone()), asked_kind) };
+    assert_eq!(decide_remove(&with(ItemsNeverShown::Nothing, &directory, ItemKind::Directory)), Ok(RemoveDecision::SetAsideOnDisk { item: directory.local_item_id }));
+    for never_shown in [ItemsNeverShown::NotShownYet, ItemsNeverShown::CannotBeShown] {
+        assert_eq!(decide_remove(&with(never_shown, &directory, ItemKind::Directory)), Err(Errno::ENOTEMPTY), "{never_shown:?}");
+        // The kind is asked first, as for a directory the folder shows something in.
+        assert_eq!(decide_remove(&with(never_shown, &directory, ItemKind::File)), Err(Errno::EISDIR), "{never_shown:?}");
+        assert_eq!(decide_remove(&with(never_shown, &file, ItemKind::Directory)), Err(Errno::ENOTDIR), "{never_shown:?}");
+        assert_eq!(decide_remove(&RemoveCase { directory: None, ..with(never_shown, &directory, ItemKind::Directory) }), Err(Errno::ENOENT), "{never_shown:?}");
+    }
+}
+
+/// The operations of a fixture whose report keeps the activity of the fixture's folder,
+/// with that activity.
+fn operations_with_activity() -> (OperationsFixture, Arc<crate::status::activity::Activity>) {
+    use crate::status::report::Report;
+    use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
+    let mut kept = None;
+    let operations = OperationsFixture::with_report(|fixture| {
+        let mut snapshot = SyncSnapshot::default();
+        snapshot.folder.root_path = fixture.folder().display().to_string();
+        let state = SyncStateHandle::new(snapshot);
+        let report = Report { activity: Arc::new(crate::status::activity::Activity::new(state.clone())), ..Report::nowhere() };
+        kept = Some(Arc::clone(&report.activity));
+        report
+    });
+    (operations, kept.unwrap())
+}
+
+/// The paths the user was told cannot be removed here, oldest first.
+fn list_told(activity: &crate::status::activity::Activity) -> Vec<String> {
+    let mut events = activity.recent(100).unwrap();
+    events.reverse();
+    assert!(events.iter().all(|event| event.kind == konedrive_tree::ActivityKind::NotRemovedHere), "{events:?}");
+    events.into_iter().map(|event| event.path).collect()
+}
+
+#[test]
+fn a_directory_that_holds_what_cannot_be_shown_is_not_removed_and_the_user_is_told_once() {
+    let (operations, activity) = operations_with_activity();
+    let fixture = &operations.fixture;
+    let mut announced = activity.subscribe();
+    for directory in ["docs", "more"] {
+        fixture.show_onedrive_directory(directory);
+        fixture.list_onedrive_file_not_placed(&format!("{directory}/notes.one"), b"a notebook", konedrive_tree::SkipReason::OneNote);
+    }
+    fixture.show_onedrive_file("docs/shown.txt", b"shown");
+    let docs = fixture.folder().join("docs").display().to_string();
+
+    // While the folder shows something in it, it is not empty as any directory: nothing to tell.
+    assert_eq!(operations.remove("docs", ItemKind::Directory), Err(Errno::ENOTEMPTY));
+    assert_eq!(list_told(&activity), Vec::<String>::new());
+    // The shown file is removed as asked; the directory stays, and the user is told why.
+    assert_eq!(operations.remove("docs/shown.txt", ItemKind::File), Ok(()));
+    assert_eq!(operations.remove("docs", ItemKind::Directory), Err(Errno::ENOTEMPTY));
+    assert_eq!(list_told(&activity), [docs.clone()]);
+    assert_eq!(announced.try_recv().map(|event| (event.kind, event.path)).ok(), Some((konedrive_tree::ActivityKind::NotRemovedHere, docs.clone())), "announced as it is recorded");
+    assert!(fixture.find_item_at("docs").is_some_and(|row| row.local.is_some() && row.unsent_since.is_none()), "the directory is shown as before, and nothing of it is unsent");
+    // A program that tries again is not told again.
+    assert_eq!(operations.remove("docs", ItemKind::Directory), Err(Errno::ENOTEMPTY));
+    assert_eq!(list_told(&activity), [docs.clone()]);
+    assert!(announced.try_recv().is_err());
+
+    // An unlink of such a directory is refused as any directory's, which says why: nothing is told, and the rmdir after it tells.
+    assert_eq!(operations.remove("more", ItemKind::File), Err(Errno::EISDIR));
+    assert_eq!(list_told(&activity), [docs.clone()]);
+    assert_eq!(operations.remove("more", ItemKind::Directory), Err(Errno::ENOTEMPTY));
+    assert_eq!(list_told(&activity), [docs, fixture.folder().join("more").display().to_string()]);
+    assert_eq!(operations.list_records(), [], "nothing was begun on disk");
+}
+
+#[test]
+fn a_directory_with_an_item_not_shown_yet_is_not_removed_and_nothing_is_told() {
+    let (operations, activity) = operations_with_activity();
+    let fixture = &operations.fixture;
+    fixture.show_onedrive_directory("docs");
+    fixture.show_onedrive_directory("docs/sub");
+    // At any depth: a listing brought a file no step has shown yet.
+    fixture.list_onedrive_file("docs/sub/waits.txt", b"new in OneDrive");
+    assert_eq!(operations.remove("docs/sub", ItemKind::Directory), Err(Errno::ENOTEMPTY));
+    assert_eq!(operations.remove("docs/sub", ItemKind::File), Err(Errno::EISDIR));
+    assert!(fixture.find_item_at("docs/sub").is_some());
+    assert_eq!(list_told(&activity), Vec::<String>::new(), "\"cannot be shown here\" would be false: it appears by itself");
+    // Once OneDrive has it no more, the directory goes.
+    fixture.list_onedrive_removal("docs/sub/waits.txt");
+    assert_eq!(operations.remove("docs/sub", ItemKind::Directory), Ok(()));
+    assert_eq!(operations.remove("docs", ItemKind::Directory), Ok(()));
+    assert_eq!(list_told(&activity), Vec::<String>::new());
+}
+
+#[test]
+fn an_item_an_upload_left_in_a_directory_does_not_keep_the_directory() {
+    let (operations, activity) = operations_with_activity();
+    let fixture = &operations.fixture;
+    fixture.show_onedrive_directory("docs");
+    let file = fixture.show_onedrive_file("docs/report.txt", b"sent").local_item_id;
+    // An upload of the file left an item with other content, and a listing brought it: no step shows it.
+    let left = fixture.list_onedrive_file("docs/report 1.txt", b"other content");
+    assert_eq!(operations.remove("docs/report.txt", ItemKind::File), Ok(()));
+    assert_eq!(operations.remove("docs", ItemKind::Directory), Err(Errno::ENOTEMPTY), "before the step memory says whose the item is");
+    let upload = konedrive_tree::MismatchedItem::of_answer(left.onedrive_item.clone().unwrap(), Some("c-other"), None);
+    assert_eq!(fixture.write_rows(move |store| store.step_memory().remember_mismatched_item(file, &upload)), konedrive_tree::MismatchedItemStanding::LeftToRemove);
+    assert_eq!(operations.remove("docs", ItemKind::Directory), Ok(()), "the folder's own leftover goes with the directory");
+    assert!(fixture.find_item_at("docs").is_none());
+    assert_eq!(list_told(&activity), Vec::<String>::new());
+}
+
+#[test]
+fn the_last_rmdir_of_an_rm_r_of_what_onedrive_has_is_not_refused() {
+    let (operations, activity) = operations_with_activity();
+    let fixture = &operations.fixture;
+    let docs = fixture.show_onedrive_directory("docs").local_item_id;
+    let sub = fixture.show_onedrive_directory("docs/sub").local_item_id;
+    let deep = fixture.show_onedrive_file("docs/sub/deep.txt", b"deep").local_item_id;
+    let top = fixture.show_onedrive_file("docs/top.txt", b"top").local_item_id;
+    // As `rm -r docs` asks them: what is in a directory before the directory.
+    assert_eq!(operations.remove("docs/sub/deep.txt", ItemKind::File), Ok(()));
+    assert_eq!(operations.remove("docs/sub", ItemKind::Directory), Ok(()), "what was removed here, its removal unsent, is none the folder never showed");
+    assert_eq!(operations.remove("docs/top.txt", ItemKind::File), Ok(()));
+    assert_eq!(operations.remove("docs", ItemKind::Directory), Ok(()));
+    for item in [docs, sub, deep, top] {
+        let row = fixture.find_item(item).expect("a removal to send keeps its row");
+        assert!(row.local.is_none() && row.unsent_since.is_some() && row.onedrive_item.is_some(), "item {item}");
+    }
+    assert_eq!(list_told(&activity), Vec::<String>::new());
 }

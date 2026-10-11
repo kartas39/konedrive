@@ -30,6 +30,74 @@ pub fn needs_attention_text(root: &str, detail: &str) -> String {
     }
 }
 
+/// What `sync forget` and `account remove` say before they go on of the changes made here
+/// that were not sent to OneDrive: `count` of them, or why the count cannot be read.
+/// `None` for none: nothing is said, and nothing is asked.
+// TODO: wording
+pub fn unsent_warning_text(count: Result<u64, &str>) -> Option<String> {
+    match count {
+        Ok(0) => None,
+        Ok(1) => Some("1 change was not sent to OneDrive and will stay only on this computer.".to_owned()),
+        Ok(count) => Some(format!("{count} changes were not sent to OneDrive and will stay only on this computer.")),
+        Err(why) => Some(format!("Could not read how many changes were not sent to OneDrive ({why}); any that were not will stay only on this computer.")),
+    }
+}
+
+/// What follows the warning of unsent changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsentQuestion {
+    /// The command was given `--yes`: it goes on unasked.
+    Skipped,
+    /// The question is asked on the terminal.
+    Asked,
+    /// There is no terminal to ask on (a script, a pipe, a loop that reads a list):
+    /// nothing is read from the input, and the command fails with [`NO_TERMINAL_TO_ASK`].
+    NoTerminal,
+}
+
+/// What follows the warning: `--yes` skips the question, whatever the input is; without
+/// it the question is asked of a terminal alone. Pure.
+pub fn decide_unsent_question(is_asking_skipped: bool, is_input_terminal: bool) -> UnsentQuestion {
+    match (is_asking_skipped, is_input_terminal) {
+        (true, _) => UnsentQuestion::Skipped,
+        (false, true) => UnsentQuestion::Asked,
+        (false, false) => UnsentQuestion::NoTerminal,
+    }
+}
+
+/// What was answered to the question whether to go on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsentAnswer {
+    /// "y" or "yes", in any case: the command goes on.
+    GoOn,
+    /// Anything else, the empty line among it: nothing is changed.
+    Declined,
+    /// The input ended with no line: the command fails with [`QUESTION_NOT_ANSWERED`].
+    NotAnswered,
+}
+
+/// What `line` answers, the line read after the question; `None` when the input ended
+/// before one. Pure.
+pub fn decide_unsent_answer(line: Option<&str>) -> UnsentAnswer {
+    match line.map(|line| line.trim().to_ascii_lowercase()).as_deref() {
+        None => UnsentAnswer::NotAnswered,
+        Some("y" | "yes") => UnsentAnswer::GoOn,
+        Some(_) => UnsentAnswer::Declined,
+    }
+}
+
+/// The question after the warning of unsent changes.
+pub const GO_ON_QUESTION: &str = "Go on? [y/N] ";
+
+/// The question was declined.
+pub const NOTHING_CHANGED: &str = "Nothing was changed.";
+
+/// The question cannot be asked: the command fails with this.
+pub const NO_TERMINAL_TO_ASK: &str = "Nothing was changed: there is no terminal to ask on. Pass --yes to go on without being asked.";
+
+/// The input ended before the question was answered: the command fails with this.
+pub const QUESTION_NOT_ANSWERED: &str = "Nothing was changed: the question was not answered. Pass --yes to go on without being asked.";
+
 /// `sync forget`, done.
 pub const FORGOTTEN: &str = "Folder forgotten. Local files were left untouched.";
 

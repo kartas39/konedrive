@@ -459,3 +459,136 @@ fn the_unsent_removals_are_read_in_the_order_they_came_to_be_unsent() {
     store.item_store().commit_send_file_removal(&ItemVersions::of(&sent), 0).unwrap();
     assert_eq!(removals(&mut store, None, 10), [inside, directory, first], "a removal that was sent is unsent no more");
 }
+
+#[test]
+fn the_pin_that_holds_for_an_item_is_that_of_the_nearest_directory_above_before_its_own() {
+    let mut store = store_with_listed_root();
+    let a = show_listed_directory(&mut store, "A", "R", "a");
+    let b = show_listed_directory(&mut store, "B", "A", "b");
+    let f = show_listed_file(&mut store, "F", "B", "f", "h1");
+    let made_here = make_file(&mut store, b, "made-here");
+    let beside = show_listed_file(&mut store, "G", "R", "beside", "h2");
+    let gone = show_listed_file(&mut store, "X", "A", "gone", "h3");
+    let holders = |store: &mut TreeStore| {
+        let items = store.item_store();
+        let reader = items.reader();
+        let holders: Vec<Option<LocalItemId>> = [a, b, f, made_here, beside, gone].into_iter().map(|item| reader.find_pin_holder(item).unwrap()).collect();
+        // Whether a pin holds is whether somebody holds it.
+        for (item, holder) in [a, b, f, made_here, beside, gone].into_iter().zip(&holders) {
+            assert_eq!(reader.is_pinned(item).unwrap(), holder.is_some(), "item {item}");
+        }
+        holders
+    };
+    assert_eq!(holders(&mut store), [None; 6], "no pin");
+
+    store.item_store().set_item_pin(f, true).unwrap();
+    assert_eq!(holders(&mut store), [None, None, Some(f), None, None, None], "the file's own pin, and nobody else's");
+
+    store.item_store().set_item_pin(a, true).unwrap();
+    assert_eq!(holders(&mut store), [Some(a), Some(a), Some(a), Some(a), None, Some(a)], "a directory above comes before the item's own pin; a file made here is held by it too");
+
+    store.item_store().set_item_pin(b, true).unwrap();
+    assert_eq!(holders(&mut store), [Some(a), Some(a), Some(b), Some(b), None, Some(a)], "the nearest directory above; a directory with a pin of its own is held by the one above it");
+
+    store.item_store().set_item_pin(a, false).unwrap();
+    assert_eq!(holders(&mut store), [None, Some(b), Some(b), Some(b), None, None]);
+
+    // An item the folder does not show is held by nobody, and neither is an id with no row.
+    store.item_store().set_item_pin(gone, true).unwrap();
+    assert_eq!(holders(&mut store)[5], Some(gone));
+    remove(&mut store, gone);
+    assert_eq!(store.item_store().reader().find_pin_holder(gone).unwrap(), None);
+    assert_eq!(store.item_store().reader().find_pin_holder(LocalItemId::new(999)).unwrap(), None);
+}
+
+fn never_shown_below(store: &mut TreeStore, directory: LocalItemId) -> ItemsNeverShown {
+    store.item_store().reader().find_onedrive_items_never_shown_below(directory).unwrap()
+}
+
+#[test]
+fn what_onedrive_has_below_a_directory_that_was_never_shown_is_told_from_what_was_removed_here() {
+    let mut store = store_with_listed_root();
+    let a = show_listed_directory(&mut store, "A", "R", "a");
+    let sub = show_listed_directory(&mut store, "S", "A", "sub");
+    let f = show_listed_file(&mut store, "F", "A", "f", "h1");
+    let deep = show_listed_file(&mut store, "D", "S", "deep", "h2");
+    let other = show_listed_directory(&mut store, "O", "R", "other");
+    assert_eq!(never_shown_below(&mut store, a), ItemsNeverShown::Nothing, "all OneDrive has in it the folder shows");
+
+    // An ordinary `rm -r`: what was shown and removed here, its removal unsent, is none of it.
+    remove(&mut store, deep);
+    remove(&mut store, sub);
+    remove(&mut store, f);
+    assert_eq!(never_shown_below(&mut store, a), ItemsNeverShown::Nothing, "the last rmdir of an rm -r finds nothing");
+
+    // A listing brings a file no step has shown yet, at any depth.
+    write_listing_of_changes(&mut store, &[listed_file("W", "S", "waits", (3, "h3"), "e-W")]);
+    assert_eq!(never_shown_below(&mut store, a), ItemsNeverShown::NotShownYet);
+    assert_eq!(never_shown_below(&mut store, other), ItemsNeverShown::Nothing, "another directory");
+
+    // And an item the folder cannot show: that one decides.
+    write_listing_of_changes(&mut store, &[not_placed(listed_file("N", "A", "notes.one", (3, "h4"), "e-N"))]);
+    assert_eq!(never_shown_below(&mut store, a), ItemsNeverShown::CannotBeShown);
+    write_listing_of_changes(&mut store, &[listed_gone("N")]);
+    assert_eq!(never_shown_below(&mut store, a), ItemsNeverShown::NotShownYet);
+
+    // What is below a directory that cannot be shown cannot be shown either.
+    write_listing_of_changes(&mut store, &[not_placed(listed_directory("V", "O", "vault", "e-V")), listed_file("VF", "V", "inside", (3, "h5"), "e-VF")]);
+    assert_eq!(never_shown_below(&mut store, other), ItemsNeverShown::CannotBeShown);
+    assert_eq!(never_shown_below(&mut store, f), ItemsNeverShown::Nothing, "nothing is below a file");
+}
+
+#[test]
+fn an_item_an_upload_left_below_a_directory_is_none_the_folder_never_showed() {
+    use crate::step_memory::{MismatchedItem, MismatchedItemStanding};
+    let mut store = store_with_listed_root();
+    let a = show_listed_directory(&mut store, "A", "R", "a");
+    let f = show_listed_file(&mut store, "F", "A", "f", "h1");
+    // A listing brings the item an upload of `f` left with other content: no step shows it.
+    write_listing_of_changes(&mut store, &[listed_file("BAD", "A", "f 1", (4, "h9"), "e-BAD")]);
+    assert_eq!(never_shown_below(&mut store, a), ItemsNeverShown::NotShownYet, "before the step memory says whose it is");
+    let left = MismatchedItem::of_answer(reference("BAD"), Some("c-h9"), None);
+    assert_eq!(store.step_memory().remember_mismatched_item(f, &left).unwrap(), MismatchedItemStanding::LeftToRemove);
+    assert_eq!(never_shown_below(&mut store, a), ItemsNeverShown::Nothing, "the folder's own leftover goes with the directory");
+
+    // Beside it, what was never shown still counts.
+    write_listing_of_changes(&mut store, &[listed_file("W", "A", "waits", (3, "h3"), "e-W")]);
+    assert_eq!(never_shown_below(&mut store, a), ItemsNeverShown::NotShownYet);
+    write_listing_of_changes(&mut store, &[not_placed(listed_file("N", "A", "notes.one", (3, "h4"), "e-N"))]);
+    assert_eq!(never_shown_below(&mut store, a), ItemsNeverShown::CannotBeShown);
+}
+
+#[test]
+fn the_shown_directories_are_read_the_root_first_bounded_and_past_rows_with_no_path() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let d1 = make_directory(&mut store, ROOT, "d1");
+    let d2 = make_directory(&mut store, d1, "d2");
+    make_file(&mut store, d1, "a-file");
+    let orphan = make_directory(&mut store, ROOT, "orphan");
+    let c1 = make_directory(&mut store, orphan, "c1");
+    let c2 = make_directory(&mut store, orphan, "c2");
+    let d3 = make_directory(&mut store, ROOT, "d3");
+    let gone = make_directory(&mut store, ROOT, "gone");
+    remove(&mut store, gone);
+    let list = |store: &mut TreeStore, after, limit| store.item_store().reader().list_shown_directories(after, limit).unwrap();
+    let path = |text: &str| PathBuf::from(text);
+
+    let all = vec![(ROOT, path("")), (d1, path("d1")), (d2, path("d1/d2")), (orphan, path("orphan")), (c1, path("orphan/c1")), (c2, path("orphan/c2")), (d3, path("d3"))];
+    assert_eq!(list(&mut store, None, 100), all, "by local item id, the root first with the empty path; no file, nothing removed here");
+    assert_eq!(list(&mut store, None, 2), all[..2]);
+    assert_eq!(list(&mut store, Some(d1), 2), all[2..4]);
+    assert_eq!(list(&mut store, Some(d3), 2), []);
+
+    // Rows that say a local place below a directory the folder does not show have no path
+    // (no operation leaves such rows: written here past the store's operations). A page
+    // that is all such rows does not end the read: it goes on to the next that has one.
+    store.conn.execute("UPDATE items SET local_parent_id = NULL, local_name = NULL, local_folded_name = NULL WHERE local_item_id = ?1", [orphan.as_i64()]).unwrap();
+    assert_eq!(store.item_store().reader().find_path(c1).unwrap(), None);
+    let shown = vec![(ROOT, path("")), (d1, path("d1")), (d2, path("d1/d2")), (d3, path("d3"))];
+    assert_eq!(list(&mut store, None, 100), shown);
+    assert_eq!(list(&mut store, Some(d2), 1), [(d3, path("d3"))], "the pages of c1 and of c2 are passed over");
+    assert_eq!(list(&mut store, Some(d2), 2), [(d3, path("d3"))]);
+    assert_eq!(list(&mut store, None, 3), shown[..3], "never more than the limit");
+    assert_eq!(list(&mut store, Some(d1), 2), shown[2..]);
+    assert_eq!(list(&mut store, Some(d3), 1), []);
+}

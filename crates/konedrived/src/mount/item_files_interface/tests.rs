@@ -231,3 +231,202 @@ fn what_is_downloaded_below_a_path_is_counted_from_the_rows() {
     assert_eq!(run.block_on(files.count_downloaded_below(&fixture.disk_path("docs/a.txt"))).unwrap(), DownloadedSpace { files: 1, bytes: 100 });
     assert_eq!(run.block_on(files.count_downloaded_below(&fixture.disk_path("docs/remote.txt"))).unwrap(), DownloadedSpace::default());
 }
+
+/// The status of a file with `sync_state`, as far as the state for the menu reads it.
+fn status_with(sync_state: Option<FileSyncState>, is_downloading: bool) -> ItemPathStatus {
+    ItemPathStatus { item: LocalItemId::new(5), kind: if sync_state.is_some() { ItemKind::File } else { ItemKind::Directory }, onedrive_item: ItemFixture::onedrive_reference_of("x"), sync_state, is_pinned: false, pin_holder: PinHolder::Nobody, is_downloading, is_open_for_writing: false }
+}
+
+#[test]
+fn the_state_a_path_is_shown_as_is_what_the_state_attribute_says() {
+    use konedrive_fs::placeholder::State;
+    let cases = [
+        (None, false, None),
+        (None, true, None),
+        (Some(FileSyncState::LocalOnly), false, None),
+        (Some(FileSyncState::LocalOnly), true, None),
+        (Some(FileSyncState::RemoteOnly), false, Some(State::OnlineOnly)),
+        (Some(FileSyncState::Synced), false, Some(State::Hydrated)),
+        (Some(FileSyncState::ModifiedHere), false, Some(State::Hydrated)),
+        (Some(FileSyncState::RemoteOnly), true, Some(State::Hydrating)),
+        (Some(FileSyncState::Synced), true, Some(State::Hydrating)),
+        (Some(FileSyncState::ModifiedHere), true, Some(State::Hydrating)),
+    ];
+    for (sync_state, is_downloading, state) in cases {
+        assert_eq!(status_with(sync_state, is_downloading).find_state_attribute(), state, "{sync_state:?}, downloading: {is_downloading}");
+    }
+
+    // And of the rows: a file not on disk, the same while it is being downloaded, a copy, a directory.
+    let fixture = ItemFixture::new();
+    fixture.show_onedrive_directory("docs");
+    let remote = fixture.show_onedrive_file("docs/remote.txt", b"remote");
+    make_clean_copy(&fixture, "docs/clean.txt", b"clean");
+    let files = make_files_interface(&fixture);
+    let run = fixture.runtime();
+    let state = |path: &str| run.block_on(files.find_path_status(&fixture.disk_path(path))).expect("the status").find_state_attribute();
+    assert_eq!([state("docs"), state("docs/remote.txt"), state("docs/clean.txt")], [None, Some(State::OnlineOnly), Some(State::Hydrated)]);
+    let key = crate::mount::item_download_states::DownloadKey { item: remote.local_item_id, content: remote.local.clone().unwrap().content.unwrap() };
+    let _started = fixture.download_states.start_or_join(&key, &DownloadAsker::Read, None);
+    assert_eq!(state("docs/remote.txt"), Some(State::Hydrating));
+}
+
+fn running_step(item: LocalItemId, class: crate::sync_parts::running_steps::StepClass) -> crate::sync_parts::running_steps::RunningStep {
+    crate::sync_parts::running_steps::RunningStep { class, item, other_items: Vec::new(), destination: None, sent: 0, total: 0 }
+}
+
+#[test]
+fn whose_pin_holds_for_a_path_is_the_nearest_directorys_above_before_its_own() {
+    let fixture = ItemFixture::new();
+    fixture.show_onedrive_directory("docs");
+    fixture.show_onedrive_directory("docs/deep");
+    let file = fixture.show_onedrive_file("docs/deep/report.txt", b"the report");
+    let files = make_files_interface(&fixture);
+    let run = fixture.runtime();
+    let holder = |path: &str| {
+        let status = run.block_on(files.find_path_status(&fixture.disk_path(path))).expect("the status");
+        assert_eq!(status.is_pinned, status.pin_holder != PinHolder::Nobody, "{path}");
+        status.pin_holder
+    };
+    let above = |path: &str| PinHolder::DirectoryAbove { path: fixture.disk_path(path) };
+    assert_eq!(holder("docs/deep/report.txt"), PinHolder::Nobody);
+
+    // The file's own pin; set again, nothing changed. Its change is announced: the emblem is read from the pin.
+    assert!(run.block_on(files.set_pin(&fixture.disk_path("docs/deep/report.txt"), true)).unwrap());
+    assert!(!run.block_on(files.set_pin(&fixture.disk_path("docs/deep/report.txt"), true)).unwrap(), "the pin was there already");
+    let place = file.local.clone().unwrap().place.unwrap();
+    assert_eq!(fixture.inotify_bridge.list_queued(), [vec![ItemAnnouncement::MarksChanged { item: file.local_item_id, place }]], "once: what did not change is not announced");
+    assert_eq!([holder("docs/deep/report.txt"), holder("docs/deep"), holder("docs")], [PinHolder::Itself, PinHolder::Nobody, PinHolder::Nobody]);
+
+    // A directory above comes before the item's own pin: the nearest one, by its full path.
+    assert!(run.block_on(files.set_pin(&fixture.disk_path("docs"), true)).unwrap());
+    assert_eq!([holder("docs/deep/report.txt"), holder("docs/deep"), holder("docs")], [above("docs"), above("docs"), PinHolder::Itself]);
+    assert!(run.block_on(files.set_pin(&fixture.disk_path("docs/deep"), true)).unwrap());
+    assert_eq!([holder("docs/deep/report.txt"), holder("docs/deep")], [above("docs/deep"), above("docs")]);
+
+    // Taken off above: the file's own pin holds again; taken off twice, nothing changed.
+    assert!(run.block_on(files.set_pin(&fixture.disk_path("docs"), false)).unwrap());
+    assert!(!run.block_on(files.set_pin(&fixture.disk_path("docs"), false)).unwrap());
+    assert!(run.block_on(files.set_pin(&fixture.disk_path("docs/deep"), false)).unwrap());
+    assert_eq!([holder("docs/deep/report.txt"), holder("docs/deep"), holder("docs")], [PinHolder::Itself, PinHolder::Nobody, PinHolder::Nobody]);
+}
+
+/// What a free-up would decide is asked for every file, then the free-up runs for each:
+/// the two agree, a case per decision.
+#[test]
+fn what_a_free_up_would_decide_is_what_the_free_up_then_does() {
+    use crate::sync_parts::running_steps::StepClass;
+    let fixture = ItemFixture::new();
+    for directory in ["docs", "kept", "renamed"] {
+        fixture.show_onedrive_directory(directory);
+    }
+    make_clean_copy(&fixture, "docs/clean.txt", b"clean");
+    let changed = make_clean_copy(&fixture, "docs/changed.txt", b"changed");
+    fixture.change_file_here(changed.local_item_id, b"changed here");
+    let own_pin = make_clean_copy(&fixture, "docs/own-pin.txt", b"pinned").local_item_id;
+    make_clean_copy(&fixture, "kept/below-a-pin.txt", b"below");
+    let both_pins = make_clean_copy(&fixture, "kept/both-pins.txt", b"both").local_item_id;
+    let kept = fixture.find_item_at("kept").unwrap().local_item_id;
+    fixture.show_onedrive_file("docs/remote.txt", b"remote");
+    fixture.show_onedrive_file("kept/remote.txt", b"remote below a pin");
+    let downloading = fixture.show_onedrive_file("docs/downloading.txt", b"being downloaded");
+    let sent = make_clean_copy(&fixture, "docs/sent.txt", b"sent").local_item_id;
+    let written = make_clean_copy(&fixture, "docs/written.txt", b"written").local_item_id;
+    let renamed = fixture.find_item_at("renamed").unwrap().local_item_id;
+    fixture.write_rows(move |store| {
+        for item in [own_pin, both_pins, kept] {
+            store.item_store().set_item_pin(item, true)?;
+        }
+        Ok(())
+    });
+    // What runs: a download of a file not on disk, a step towards OneDrive for a copy and for a directory, a writer.
+    let key = crate::mount::item_download_states::DownloadKey { item: downloading.local_item_id, content: downloading.local.clone().unwrap().content.unwrap() };
+    let _started = fixture.download_states.start_or_join(&key, &DownloadAsker::Read, None);
+    assert!(fixture.running_steps.begin(running_step(sent, StepClass::Metadata)) && fixture.running_steps.begin(running_step(renamed, StepClass::Metadata)));
+    let (writer, _) = fixture.item_handles.add_writer(written, Arc::new(fs::File::open(fixture.disk_path("docs/written.txt")).unwrap()));
+    let files = make_files_interface(&fixture);
+    let run = fixture.runtime();
+    let decide = |path: &str, is_own_pin_taken_off| run.block_on(files.decide_free_up(&fixture.disk_path(path), is_own_pin_taken_off)).unwrap_or_else(|refusal| panic!("{path}: {refusal}"));
+
+    // A directory: by the pin that holds for its own row, and nothing else — not a step that runs for it.
+    assert_eq!([decide("docs", false), decide("renamed", false), decide("kept", false), decide("kept", true)], [FreeUpDecision::NothingToFree, FreeUpDecision::NothingToFree, FreeUpDecision::LeavePinned, FreeUpDecision::NothingToFree]);
+    // With the item's own pin taken off first, as `Files.FreeUp` takes it off: a pin above still holds.
+    assert_eq!([decide("docs/own-pin.txt", true), decide("kept/both-pins.txt", true), decide("kept/below-a-pin.txt", true)], [FreeUpDecision::Free, FreeUpDecision::LeavePinned, FreeUpDecision::LeavePinned]);
+
+    let cases = [
+        ("docs/clean.txt", FreeUpDecision::Free),
+        ("docs/changed.txt", FreeUpDecision::LeaveModifiedHere),
+        ("docs/own-pin.txt", FreeUpDecision::LeavePinned),
+        ("kept/below-a-pin.txt", FreeUpDecision::LeavePinned),
+        ("kept/both-pins.txt", FreeUpDecision::LeavePinned),
+        ("docs/sent.txt", FreeUpDecision::LeaveDownloading),
+        ("docs/written.txt", FreeUpDecision::LeaveOpenForWriting),
+        // What is not on disk takes no space, whatever keeps it: a pin above, a download.
+        ("docs/remote.txt", FreeUpDecision::NothingToFree),
+        ("kept/remote.txt", FreeUpDecision::NothingToFree),
+        ("docs/downloading.txt", FreeUpDecision::NothingToFree),
+    ];
+    for (path, decision) in cases {
+        assert_eq!(decide(path, false), decision, "{path}");
+        let freed = run.block_on(files.free_up(&fixture.disk_path(path))).expect("the free-up");
+        let done = match decision {
+            FreeUpDecision::Free => (1, 0),
+            FreeUpDecision::NothingToFree => (0, 0),
+            FreeUpDecision::LeavePinned | FreeUpDecision::LeaveModifiedHere | FreeUpDecision::LeaveOpenForWriting | FreeUpDecision::LeaveDownloading => (0, 1),
+        };
+        assert_eq!((freed.files, freed.kept), done, "the free-up of {path} does what was decided: {decision:?}");
+    }
+    assert_eq!(decide("docs/clean.txt", false), FreeUpDecision::NothingToFree, "freed: nothing more to free");
+    fixture.item_handles.remove_writer(writer);
+
+    // What the folder does not show, and what OneDrive does not have, is refused as every asking by path.
+    fixture.make_own_file("own.txt", b"own");
+    assert!(matches!(run.block_on(files.decide_free_up(&fixture.disk_path("own.txt"), false)), Err(FilesRefusal::NotInOneDrive)));
+    assert!(matches!(run.block_on(files.decide_free_up(&fixture.disk_path("no such name"), false)), Err(FilesRefusal::NotInOneDrive)));
+    assert!(matches!(run.block_on(files.decide_free_up(&fixture.directory.path().join("elsewhere"), false)), Err(FilesRefusal::OutsideFolder)));
+}
+
+#[test]
+fn the_unfinished_downloads_are_listed_by_path_with_their_size_and_checkpoint() {
+    use std::io::Write as _;
+    use konedrive_fs::placeholder::{write_progress, Progress};
+    let fixture = ItemFixture::new();
+    fixture.show_onedrive_directory("docs");
+    let files = make_files_interface(&fixture);
+    let run = fixture.runtime();
+    assert_eq!(run.block_on(files.list_unfinished_downloads()).unwrap(), []);
+
+    // A file a download wrote `written` into, beside the folder: no file of the downloads has a name in it.
+    let unfinished_file = |name: &str, written: &[u8]| {
+        let mut file = fs::OpenOptions::new().create_new(true).read(true).write(true).open(fixture.directory.path().join(name)).unwrap();
+        file.write_all(written).unwrap();
+        Arc::new(file)
+    };
+    let start = |path: &str, content: &[u8]| {
+        let shown = fixture.show_onedrive_file(path, content);
+        let key = crate::mount::item_download_states::DownloadKey { item: shown.local_item_id, content: shown.local.clone().unwrap().content.unwrap() };
+        match fixture.download_states.start_or_join(&key, &DownloadAsker::Read, None) {
+            crate::mount::item_download_states::ItemDownloadStart::Started { run, .. } => (shown.local_item_id, run),
+            _ => panic!("no download of {path} runs"),
+        }
+    };
+    // One that runs, with a checkpoint; one that failed, with none; one that has no file yet; one whose file is whole.
+    let (_, running) = start("docs/running.bin", &[1; 100]);
+    let running_file = unfinished_file("running", &[1; 40]);
+    write_progress(&running_file, &Progress { ctag: "c-running".into(), bytes: 32 }).unwrap();
+    fixture.download_states.begin_writing(&running, running_file);
+    let (_, failed) = start("docs/failed.bin", &[2; 100]);
+    fixture.download_states.begin_writing(&failed, unfinished_file("failed", &[2; 7]));
+    fixture.download_states.finish(&failed, Err(libc::EIO));
+    let _no_file_yet = start("docs/no-file-yet.bin", &[3; 100]);
+    let (_, whole) = start("docs/whole.bin", &[4; 100]);
+    fixture.download_states.begin_writing(&whole, unfinished_file("whole", &[4; 100]));
+    fixture.download_states.end_writing(&whole);
+    // And one whose file the folder shows no more: it has no path to be listed under.
+    let (removed, gone) = start("docs/removed.bin", &[5; 100]);
+    fixture.download_states.begin_writing(&gone, unfinished_file("removed", &[5; 9]));
+    fixture.write_rows(move |store| store.item_store().apply(&konedrive_tree::LocalVersionChange::Removed { item: removed }).map(drop));
+
+    let mut unfinished = run.block_on(files.list_unfinished_downloads()).unwrap();
+    unfinished.sort();
+    assert_eq!(unfinished, [(fixture.disk_path("docs/failed.bin"), 7, None), (fixture.disk_path("docs/running.bin"), 40, Some(32))]);
+}

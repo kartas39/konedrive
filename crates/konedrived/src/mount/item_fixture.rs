@@ -606,6 +606,13 @@ impl ItemFixture {
         self.find_listed(path)
     }
 
+    /// As [`list_onedrive_file`](Self::list_onedrive_file) for a file the folder cannot
+    /// show, for `reason`: no step ever shows it.
+    pub(crate) fn list_onedrive_file_not_placed(&self, path: &str, content: &[u8], reason: konedrive_tree::SkipReason) -> Item {
+        self.write_listing(vec![Change::Upsert(Row { placement: Placement::Skipped(reason), ..self.make_listed_row(path, Kind::File, Some(content)) })]);
+        self.find_listed(path)
+    }
+
     /// As [`list_onedrive_file`](Self::list_onedrive_file) for a directory.
     pub(crate) fn list_onedrive_directory(&self, path: &str) -> Item {
         self.write_listing(vec![Change::Upsert(self.make_listed_row(path, Kind::Folder, None))]);

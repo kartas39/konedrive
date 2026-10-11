@@ -503,3 +503,52 @@ fn the_failure_of_a_download_onedrive_did_not_answer_is_kept_with_what_is_rememb
     download_states.finish(&run, Err(libc::EIO));
     assert_eq!(failed_asking(), None);
 }
+
+#[test]
+fn the_unfinished_files_are_those_of_the_running_downloads_that_are_not_whole_and_of_the_failed_ones() {
+    let download_states = download_states();
+    assert!(download_states.list_unfinished_files().is_empty());
+    // Which of `files` are listed, each with its item.
+    let list = |download_states: &ItemDownloadStates, files: &[(i64, &Arc<File>)]| -> Vec<i64> {
+        let listed = download_states.list_unfinished_files();
+        let known: Vec<i64> = files.iter().filter(|(item, file)| listed.iter().any(|(listed_item, listed_file)| *listed_item == LocalItemId::new(*item) && Arc::ptr_eq(listed_file, file))).map(|(item, _)| *item).collect();
+        assert_eq!(known.len(), listed.len(), "nothing is listed but the files given");
+        known
+    };
+
+    // A running download: nothing before it writes into a file, its file from then on.
+    let running = start_anew(&download_states, &key(5, "c1"));
+    assert!(download_states.list_unfinished_files().is_empty(), "no file yet");
+    let running_file = unnamed_file();
+    download_states.begin_writing(&running, Arc::clone(&running_file));
+    // One that failed with a file written in part: kept, and listed.
+    let failed_file = fail_download(&download_states, &key(6, "c2"));
+    // One whose file is whole and on its way to its landing: not listed.
+    let whole = start_anew(&download_states, &key(7, "c3"));
+    let whole_file = unnamed_file();
+    download_states.begin_writing(&whole, Arc::clone(&whole_file));
+    download_states.end_writing(&whole);
+    // One OneDrive answered with another content: nothing of its file is kept.
+    let another = start_anew(&download_states, &key(8, "c4"));
+    let another_file = unnamed_file();
+    download_states.begin_writing(&another, Arc::clone(&another_file));
+    download_states.finish_as_another_content(&another);
+    let files = [(5, &running_file), (6, &failed_file), (7, &whole_file), (8, &another_file)];
+    assert_eq!(list(&download_states, &files), [5, 6]);
+
+    // The running one landed: gone. The failed one is gone on from: its file is the running download's.
+    download_states.end_writing(&running);
+    download_states.finish(&running, Ok(()));
+    let (again, unfinished_file) = start(&download_states, &key(6, "c2")).expect("no download of it runs");
+    assert!(unfinished_file.is_some_and(|file| Arc::ptr_eq(&file, &failed_file)));
+    assert_eq!(list(&download_states, &files), Vec::<i64>::new(), "a download that goes on has no file before it writes into it");
+    download_states.begin_writing(&again, Arc::clone(&failed_file));
+    assert_eq!(list(&download_states, &files), [6]);
+    // What is kept of an item goes with it: the file of a download that failed, not that of one that runs, which is left to its landing.
+    download_states.forget_item(LocalItemId::new(6));
+    assert_eq!(list(&download_states, &files), [6]);
+    download_states.finish(&again, Err(libc::EIO));
+    assert_eq!(list(&download_states, &files), [6]);
+    download_states.forget_item(LocalItemId::new(6));
+    assert_eq!(list(&download_states, &files), Vec::<i64>::new());
+}

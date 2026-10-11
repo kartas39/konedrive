@@ -110,7 +110,14 @@ fn split(path: &str) -> (&str, &str) {
 
 impl OperationsFixture {
     pub(super) fn new() -> Self {
+        Self::with_report(|_| crate::status::report::Report::nowhere())
+    }
+
+    /// As [`new`](Self::new), the write operations reporting into what `make_report`
+    /// makes for the fixture's folder: for a test that reads what the user was told.
+    pub(super) fn with_report(make_report: impl FnOnce(&ItemFixture) -> crate::status::report::Report) -> Self {
         let fixture = ItemFixture::new();
+        let report = make_report(&fixture);
         let operations = Arc::new(ItemWriteOperations::new(
             Arc::clone(&fixture.place_changes),
             Arc::clone(&fixture.backing_directory),
@@ -123,7 +130,7 @@ impl OperationsFixture {
             Arc::clone(&fixture.running_steps),
             Arc::clone(&fixture.sync_plan_wake),
             Arc::clone(&fixture.mount_take_down),
-            crate::status::report::Report::nowhere(),
+            report,
             fixture.folder(),
         ));
         OperationsFixture { fixture, operations }

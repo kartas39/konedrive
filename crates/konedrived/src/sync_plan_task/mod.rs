@@ -952,3 +952,6 @@ impl SyncPlanTask {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

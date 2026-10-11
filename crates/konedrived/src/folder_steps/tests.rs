@@ -821,3 +821,36 @@ fn a_step_that_writes_nothing_announces_nothing() {
         assert_eq!(list_announced(&fixture), Vec::<Vec<ItemAnnouncement>>::new(), "{case:?}");
     }
 }
+
+/// Called off the runtime, as here, the read is made in the call: what was announced is
+/// queued when it returns.
+#[test]
+fn the_sync_marks_are_announced_for_each_item_the_folder_shows_at_its_place_now() {
+    let fixture = ItemFixture::new();
+    let steps = make_steps(&fixture);
+    let directory = fixture.show_onedrive_directory("docs").local_item_id;
+    let file = fixture.show_onedrive_file("docs/a.txt", b"a").local_item_id;
+    let own = fixture.make_own_file("own.txt", b"own").local_item_id;
+    let removed = fixture.show_onedrive_file("docs/removed.txt", b"gone").local_item_id;
+    fixture.remove_here(removed);
+    let marks_changed = |item, directory: &str, name: &str| vec![ItemAnnouncement::MarksChanged { item, place: place_at(&fixture, directory, name) }];
+
+    steps.announce_marks_changed(Vec::new());
+    assert_eq!(list_announced(&fixture), Vec::<Vec<ItemAnnouncement>>::new());
+
+    // A file, a directory, a file OneDrive never had: each a change of its own, in the order given. The root, an item the folder does not show and an id with no row have no name to touch.
+    steps.announce_marks_changed(vec![file, LocalItemId::ROOT, removed, directory, LocalItemId::new(999), own]);
+    let announced = vec![marks_changed(file, "docs", "a.txt"), marks_changed(directory, "", "docs"), marks_changed(own, "", "own.txt")];
+    assert_eq!(list_announced(&fixture), announced);
+
+    // At the place the folder shows it at NOW: after a move, the new one.
+    fixture.move_here(file, "moved.txt");
+    steps.announce_marks_changed(vec![file]);
+    assert_eq!(list_announced(&fixture)[3..], [marks_changed(file, "", "moved.txt")]);
+
+    // After a take-down was asked the folder is on its way down: nobody is told.
+    let take_down = Arc::clone(&fixture.mount_take_down);
+    fixture.run_on_write_operation_thread(move || take_down.ask(TakeDownCause::StoreFailed { detail: "the test asks".into() }));
+    steps.announce_marks_changed(vec![file, directory]);
+    assert_eq!(list_announced(&fixture).len(), 4);
+}

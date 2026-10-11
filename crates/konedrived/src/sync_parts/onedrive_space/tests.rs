@@ -128,3 +128,51 @@ async fn a_quota_read_less_than_ten_seconds_ago_answers_another_507() {
     assert_eq!(space.refuse_for_space(&unasked, 1000, now).await, StepRefusal::NoSpace { free_space: None });
     assert!(space.is_full());
 }
+
+#[test]
+fn what_is_free_is_what_the_last_quota_applied_said_less_what_went_up_since() {
+    let space = space();
+    assert_eq!(space.find_free_space(), None, "before any quota was applied");
+    // The account's own figures are not this folder's to go by before it applied a quota.
+    space.quota.read_at(&quota(Some(7 * GIBIBYTE), "normal"), NOW);
+    assert_eq!(space.find_free_space(), None);
+    assert_eq!(space.apply_quota(&quota(None, ""), NOW), SpaceChange::NotKnown);
+    assert_eq!(space.find_free_space(), None, "a quota that says nothing of the space is none applied");
+
+    assert_eq!(space.apply_quota(&quota(Some(5 * GIBIBYTE), "normal"), NOW), SpaceChange::HasSpace { free_space: 5 * GIBIBYTE, was_full: false });
+    assert_eq!(space.find_free_space(), Some(5 * GIBIBYTE));
+    space.count_uploaded(GIBIBYTE);
+    assert_eq!(space.find_free_space(), Some(4 * GIBIBYTE), "less what was uploaded since");
+
+    // Full: none, whatever the figure; with space again, that read's.
+    assert_eq!(space.apply_quota(&quota(Some(3 * GIBIBYTE), "exceeded"), NOW + 60), SpaceChange::BecameFull);
+    assert_eq!(space.find_free_space(), None);
+    assert_eq!(space.apply_quota(&quota(Some(2 * GIBIBYTE), "normal"), NOW + 120), SpaceChange::HasSpace { free_space: 2 * GIBIBYTE, was_full: true });
+    assert_eq!(space.find_free_space(), Some(2 * GIBIBYTE));
+}
+
+/// The review's sequence: a read with a state and no `remaining` after one that said 5 GiB.
+#[test]
+fn a_quota_with_a_state_and_no_remaining_leaves_nothing_free_to_fit_into() {
+    let space = space();
+    space.apply_quota(&quota(Some(5 * GIBIBYTE), "normal"), NOW);
+    assert_eq!(space.apply_quota(&quota(None, "nearing"), NOW + 60), SpaceChange::HasSpace { free_space: 0, was_full: false });
+    assert_eq!(read_account_quota(&space), (5 * GIBIBYTE, NOW + 60), "the account's figure stays what the read before said");
+    assert_eq!(space.find_free_space(), Some(0), "and is not what this read said: nothing that waits is taken to fit");
+    // The next read that says what is left is gone by again.
+    space.apply_quota(&quota(Some(GIBIBYTE), "nearing"), NOW + 120);
+    assert_eq!(space.find_free_space(), Some(GIBIBYTE));
+}
+
+#[tokio::test]
+async fn what_is_free_after_a_507_is_what_the_read_it_made_said() {
+    let (_server, drive) = drive(200, serde_json::json!({ "total": 10 * GIBIBYTE, "used": 0, "remaining": 2 * GIBIBYTE, "state": "normal" }), 1).await;
+    let space = space();
+    assert_eq!(space.refuse_for_space(&drive, 3 * GIBIBYTE, NOW).await, StepRefusal::NoSpace { free_space: Some(2 * GIBIBYTE) });
+    assert_eq!(space.find_free_space(), Some(2 * GIBIBYTE), "the file alone was too big");
+    // A 507 with a quota that cannot be read makes OneDrive full: nothing is free.
+    let (_server, drive) = self::drive(404, serde_json::json!({}), 1).await;
+    let space = self::space();
+    assert_eq!(space.refuse_for_space(&drive, 3 * GIBIBYTE, NOW).await, StepRefusal::NoSpace { free_space: None });
+    assert_eq!(space.find_free_space(), None);
+}

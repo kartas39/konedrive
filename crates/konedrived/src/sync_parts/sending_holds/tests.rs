@@ -221,3 +221,36 @@ fn a_read_only_folder_that_still_sends_what_was_unsent_is_not_held_for_being_rea
     assert!(!is_plan_woken(&wake));
     assert!(!holds.is_held(StepClass::Content, NOW) && !holds.is_held(StepClass::Metadata, NOW));
 }
+
+#[test]
+fn a_read_only_folder_holds_what_is_sent_and_no_download_and_is_shown_after_the_accounts_refusal() {
+    let (wake, holds) = sending_holds();
+    holds.set_folder_read_only(true);
+    assert_eq!((holds.find(NOW), is_plan_woken(&wake)), (Some(SendingHold::FolderReadOnly), true));
+    holds.set_folder_read_only(true);
+    assert!(!is_plan_woken(&wake), "what changes nothing wakes nobody");
+    // What is sent is held, a download and what goes towards the folder are not; it ends by nothing.
+    assert_eq!(holds.list_held_classes(NOW), BTreeSet::from([StepClass::Content, StepClass::Metadata]));
+    assert!(holds.is_held(StepClass::Content, NOW) && holds.is_held(StepClass::Metadata, NOW) && !holds.is_held(StepClass::Download, NOW));
+    assert!(decide_is_held(Some(&SendingHold::FolderReadOnly), StepClass::Content) && decide_is_held(Some(&SendingHold::FolderReadOnly), StepClass::Metadata));
+    assert!(!decide_is_held(Some(&SendingHold::FolderReadOnly), StepClass::Download) && !decide_is_held(Some(&SendingHold::FolderReadOnly), StepClass::Folder) && !decide_is_held(Some(&SendingHold::FolderReadOnly), StepClass::Row));
+    assert_eq!(holds.find_end(NOW), None);
+    // Shown before a pause and a throttle, after the account's own refusal.
+    holds.throttle(secs(30), NOW);
+    holds.set_paused(Some(None));
+    assert_eq!(holds.find(NOW), Some(SendingHold::FolderReadOnly));
+    assert!(holds.is_held(StepClass::Download, NOW), "the pause behind it holds the download");
+    holds.set_writes_refusal(Some("no writes".into()));
+    assert_eq!(holds.find(NOW), Some(SendingHold::WritesNotAllowed { reason: "no writes".into() }));
+    // Neither setter clears the other's hold.
+    holds.set_writes_refusal(None);
+    assert_eq!(holds.find(NOW), Some(SendingHold::FolderReadOnly), "the account's refusal ended, the folder is read-only still");
+    holds.set_writes_refusal(Some("no writes".into()));
+    holds.set_paused(None);
+    while is_plan_woken(&wake) {}
+    holds.set_folder_read_only(false);
+    assert_eq!((holds.find(NOW), is_plan_woken(&wake)), (Some(SendingHold::WritesNotAllowed { reason: "no writes".into() }), true), "read-write again: the account's refusal stands, and the plan is woken");
+    holds.set_writes_refusal(None);
+    assert_eq!(holds.find(NOW), Some(SendingHold::Throttled { until: NOW + 30 }));
+    assert_eq!(holds.find(NOW + 30), None);
+}
