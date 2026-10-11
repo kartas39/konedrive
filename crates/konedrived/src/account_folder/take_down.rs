@@ -253,8 +253,7 @@ impl SyncService {
             let mut stopped = me.change().await;
             // The mount that asked: the one the stopped sync kept. A report of a mount that is the folder's no more
             // (forgotten, taken down already, the daemon at its end) takes nothing down.
-            // TODO: contract — `ItemMount` hands out no question "did you ask for your take-down" (`mount/item_mount.rs`): it is asked of the parts of the folder steps, which are handed out for another purpose.
-            let is_asked = stopped.folder().record().and_then(|record| record.kept.parts.as_ref()).is_some_and(|kept| kept.mount.folder_step_parts().mount_take_down.is_asked());
+            let is_asked = stopped.folder().record().and_then(|record| record.kept.parts.as_ref()).is_some_and(|kept| kept.mount.is_take_down_asked());
             let Some(kept) = stopped.folder_mut().record_mut().filter(|_| is_asked).and_then(|record| record.kept.parts.take()) else {
                 me.start_again(&mut stopped).await;
                 return;

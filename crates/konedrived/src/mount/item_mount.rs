@@ -323,6 +323,13 @@ impl ItemMount {
         self.folder_step_parts.clone()
     }
 
+    /// Whether this mount asked for its take-down (`MountTakeDown::is_asked`): what the owner of the folder's
+    /// state asks of the mount it holds when a report of a take-down reaches it, so that a report of a mount
+    /// that is the folder's no more takes nothing down.
+    pub fn is_take_down_asked(&self) -> bool {
+        self.folder_step_parts.mount_take_down.is_asked()
+    }
+
     /// The local contents: the steps towards OneDrive's and the row steps'.
     pub fn item_content_files(&self) -> &Arc<ItemContentFiles> {
         &self.item_content_files
