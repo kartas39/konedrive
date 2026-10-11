@@ -432,6 +432,13 @@ impl ItemFixture {
         GraphAccess { drive: fake_onedrive.client(), drive_id: self.drive_id(), store: self.store.clone(), clock: self.clock() }
     }
 
+    /// The local contents of the folder as a step towards OneDrive reads and marks them,
+    /// over the fixture's own leaves (its place changes and handles): what a runner of
+    /// steps is made with in a test that builds no mount.
+    pub(crate) fn make_content_files(&self) -> Arc<super::item_content_files::ItemContentFiles> {
+        Arc::new(super::item_content_files::ItemContentFiles::new(Arc::clone(&self.place_changes), self.store_path.clone(), Arc::clone(&self.item_handles)))
+    }
+
     /// A poll handle with no poller behind it (`ListingPollHandle::for_tests`), and how
     /// many cycles it was asked for.
     pub(crate) fn poll_handle(&self) -> (ListingPollHandle, Arc<AtomicUsize>) {

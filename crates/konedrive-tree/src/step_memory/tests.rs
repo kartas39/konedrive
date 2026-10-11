@@ -15,6 +15,8 @@ mod enumeration;
 mod listing;
 /// The item an upload left with other content, told by its own id.
 mod mismatched_item;
+/// The requests on record until they are settled.
+mod request_records;
 /// What was learnt of one unsent change, and what is answered of it for the next.
 mod unsent_change;
 

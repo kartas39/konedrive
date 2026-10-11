@@ -115,3 +115,6 @@ fn remove_addresses(text: &str) -> String {
     cleaned.push_str(rest);
     cleaned
 }
+
+#[cfg(test)]
+mod tests;

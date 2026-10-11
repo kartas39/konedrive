@@ -310,6 +310,10 @@ impl ContentUpload {
     /// A 412 of an existing item: one read of the item. The hash of the whole file, there
     /// already, is this step's own earlier upload; anything else is `ItemChanged`.
     async fn follow_changed_item(&self, item: &ItemVersions, target: &ContentTarget, file: &Arc<LocalContentFile>) -> Result<SentContent, StepOutcome> {
+        // A new file has no version that could have changed: nothing to read, and tried again.
+        if let ContentTarget::NewFile(_) = target {
+            return Err(StepOutcome::Refused(StepRefusal::Transient { detail: "OneDrive answered that a new file changed".to_owned() }));
+        }
         let sent_hash = hash_content(file).await?;
         match self.lost_answers.read_request_outcome(item, SentRequest::SendContent { sent_hash: &sent_hash }).await.map_err(FailedRead::into_outcome)? {
             LostAnswerFate::WentThrough(Some(found)) => Ok(Self::describe_found_content(target, found, sent_hash)),
@@ -908,3 +912,6 @@ impl Default for Limits {
         Self { chunk: konedrive_graph::drive::CHUNK_SIZE }
     }
 }
+
+#[cfg(test)]
+mod tests;

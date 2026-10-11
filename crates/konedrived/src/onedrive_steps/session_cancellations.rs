@@ -378,3 +378,6 @@ impl SessionCancellations {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -877,3 +877,6 @@ impl OneDriveSteps {
         }
     }
 }
+
+#[cfg(test)]
+pub(in crate::onedrive_steps) mod tests;

@@ -430,3 +430,6 @@ pub enum SettledRecord {
     /// listing cycle is to be asked for, which brings what OneDrive has.
     LeftToListing,
 }
+
+#[cfg(test)]
+mod tests;

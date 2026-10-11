@@ -106,3 +106,6 @@ pub fn to_confirmed_item(answer: &DriveItem, drive_id: &DriveId) -> Result<Confi
         etag,
     })
 }
+
+#[cfg(test)]
+pub(in crate::onedrive_steps) mod tests;

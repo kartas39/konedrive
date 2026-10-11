@@ -138,6 +138,9 @@ pub struct Cloud {
     /// How long, in seconds from the request, an endpoint lives: `expirationDateTime`.
     /// Left out of the answer while `None`.
     pub socket_lifetime: Option<i64>,
+    /// The drive an item's `parentReference` names; `D` while `None`. A test whose store
+    /// knows another drive sets it, so that an answer is of the store's drive.
+    pub drive_id: Option<String>,
 }
 
 impl Cloud {
@@ -403,7 +406,7 @@ impl Cloud {
             value["createdDateTime"] = json!(format_graph_time(*created));
         }
         match &item.parent {
-            Some(parent) => value["parentReference"] = json!({ "id": parent, "driveId": "D" }),
+            Some(parent) => value["parentReference"] = json!({ "id": parent, "driveId": self.drive_id.as_deref().unwrap_or("D") }),
             None => value["root"] = json!({}),
         }
         if item.folder {

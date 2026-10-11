@@ -92,3 +92,6 @@ impl MadeItems {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -311,3 +311,6 @@ impl NameHolders {
         Ok(self.read_holder(parent, name).await?.map(|holder| holder.name.map_or_else(|| name.to_owned(), OsString::from)))
     }
 }
+
+#[cfg(test)]
+mod tests;
