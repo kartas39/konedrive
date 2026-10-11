@@ -26,8 +26,6 @@ pub enum Refusal {
     InUse,
     /// No folder is registered.
     NoRoot,
-    /// The helper is not connected, and the call needs it.
-    NoHelper,
     /// A file of the user's own, not a OneDrive file.
     NotManaged,
     /// The file is not downloaded.
@@ -83,12 +81,11 @@ pub enum Refusal {
 
 impl Refusal {
     /// Every variant but [`Refusal::Other`].
-    pub const ALL: [Refusal; 28] = [
+    pub const ALL: [Refusal; 27] = [
         Self::NotEmpty,
         Self::Unsupported,
         Self::InUse,
         Self::NoRoot,
-        Self::NoHelper,
         Self::NotManaged,
         Self::NotHydrated,
         Self::ModifiedLocally,
@@ -121,7 +118,6 @@ impl Refusal {
             Self::Unsupported => "org.konedrive.Error.Unsupported",
             Self::InUse => "org.konedrive.Error.InUse",
             Self::NoRoot => "org.konedrive.Error.NoRoot",
-            Self::NoHelper => "org.konedrive.Error.NoHelper",
             Self::NotManaged => "org.konedrive.Error.NotManaged",
             Self::NotHydrated => "org.konedrive.Error.NotHydrated",
             Self::ModifiedLocally => "org.konedrive.Error.ModifiedLocally",

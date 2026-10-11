@@ -139,8 +139,6 @@ private Q_SLOTS:
         QTest::newRow("unchecked, free up kept by a folder above")
             << true << off << disabled << QStringLiteral("pinned-above") << QStringLiteral("sub") << hidden << keepAndFreeUp << false << none << false
             << QStringLiteral("Kept on this device because “sub” is; unpin it first.") << false;
-        QTest::newRow("free up: no helper") << true << off << disabled << QStringLiteral("no-helper") << none << hidden << keepAndFreeUp << false << none << false
-                                            << QStringLiteral("The konedrive helper is not connected. Try again once it is — it reconnects on its own.") << false;
         QTest::newRow("free up: not uploaded") << true << off << disabled << QStringLiteral("not-uploaded") << none << hidden << keepAndFreeUp << false << none << false
                                                << QStringLiteral("Not uploaded yet: freeing it up would lose the changes made here.") << false;
         QTest::newRow("free up: the daemon cannot tell")
@@ -148,14 +146,14 @@ private Q_SLOTS:
             << QStringLiteral("KOneDrive cannot tell yet whether a change here waits to be uploaded. Try again in a moment.") << false;
         // Locked by the folder, and "Free up space" refused for something
         // else first: each entry says its own reason.
-        QTest::newRow("locked by a folder, free up for the helper")
-            << true << QStringLiteral("on-locked") << disabled << QStringLiteral("no-helper") << QStringLiteral("sub") << hidden << keepAndFreeUp << true
+        QTest::newRow("locked by a folder, free up for a change not uploaded")
+            << true << QStringLiteral("on-locked") << disabled << QStringLiteral("not-uploaded") << QStringLiteral("sub") << hidden << keepAndFreeUp << true
             << QStringLiteral("Kept on this device because “sub” is.") << false
-            << QStringLiteral("The konedrive helper is not connected. Try again once it is — it reconnects on its own.") << false;
+            << QStringLiteral("Not uploaded yet: freeing it up would lose the changes made here.") << false;
         QTest::newRow("free up refused for a reason this plugin does not know") << true << off << disabled << QStringLiteral("something-new") << none << hidden << keepAndFreeUp
                                                                                 << false << none << false << none << false;
         // A reason is for a disabled entry alone.
-        QTest::newRow("a reason on an enabled entry") << true << off << enabled << QStringLiteral("no-helper") << none << hidden << keepAndFreeUp << false << none << true << none
+        QTest::newRow("a reason on an enabled entry") << true << off << enabled << QStringLiteral("not-uploaded") << none << hidden << keepAndFreeUp << false << none << true << none
                                                       << false;
         QTest::newRow("not in OneDrive yet") << true << off << hidden << none << none << disabled << QStringList{Section, AlwaysKeep, OpenOnline, SectionEnd} << false << none
                                              << false << none << false;
@@ -756,7 +754,6 @@ private Q_SLOTS:
         const auto named = [](const char *name) {
             return QStringLiteral("org.konedrive.Error.") + QLatin1String(name);
         };
-        QTest::newRow("Always keep: NoHelper") << true << named("NoHelper") << decoy << QStringLiteral("must first have the helper stop letting its opens through unchecked") << false << true;
         QTest::newRow("Always keep: NoRoot") << true << named("NoRoot") << decoy << QStringLiteral("is no longer registered with KOneDrive") << false << true;
         QTest::newRow("Always keep: OutsideRoot") << true << named("OutsideRoot") << decoy << QStringLiteral("is not inside any of KOneDrive's folders") << false << true;
         QTest::newRow("Always keep: NotManaged") << true << named("NotManaged") << decoy << QStringLiteral("nothing for KOneDrive to keep downloaded") << false << true;
@@ -765,7 +762,6 @@ private Q_SLOTS:
         QTest::newRow("Always keep: a name that is not ours")
             << true << QStringLiteral("org.freedesktop.DBus.Error.InUse") << QStringLiteral("something else entirely")
             << QStringLiteral("Keeping “doc.bin” on this device failed: something else entirely") << true << true;
-        QTest::newRow("Free up: NoHelper") << false << named("NoHelper") << decoy << QStringLiteral("must first have the helper take off any mark") << false << true;
         QTest::newRow("Free up: NoRoot") << false << named("NoRoot") << decoy << QStringLiteral("is no longer registered with KOneDrive") << false << true;
         QTest::newRow("Free up: OutsideRoot") << false << named("OutsideRoot") << decoy << QStringLiteral("is not inside any of KOneDrive's folders") << false << true;
         QTest::newRow("Free up: NotManaged") << false << named("NotManaged") << decoy << QStringLiteral("never frees the space of a file it could not download again") << false << true;

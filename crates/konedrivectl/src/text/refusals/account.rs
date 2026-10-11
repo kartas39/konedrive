@@ -44,7 +44,6 @@ fn dev_text(refusal: Option<&Refusal>, detail: &str, prefix: &str) -> String {
         | Refusal::Unsupported
         | Refusal::InUse
         | Refusal::NoRoot
-        | Refusal::NoHelper
         | Refusal::NotManaged
         | Refusal::NotHydrated
         | Refusal::ModifiedLocally
@@ -161,7 +160,6 @@ fn mode_text(label: &str, mode: &str, prefix: &str, refusal: Option<&Refusal>, d
         | Refusal::Unsupported
         | Refusal::InUse
         | Refusal::NoRoot
-        | Refusal::NoHelper
         | Refusal::NotManaged
         | Refusal::NotHydrated
         | Refusal::ModifiedLocally

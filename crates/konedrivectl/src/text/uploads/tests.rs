@@ -84,20 +84,12 @@ fn waiting_for_space_is_one_line_and_too_big_says_what_it_needs() {
 fn the_reasons_the_worker_writes_have_sentences() {
     let keys = [
         "paused",
-        "moved-out-not-opened",
         "upload-session-open",
         "name-held-by-an-upload",
         "changed in OneDrive again and again",
-        "changing in OneDrive again and again",
         "the upload session ended twice",
         "not allowed now",
         "state-unreadable",
-        "no-name",
-        "no-item",
-        "no-guard",
-        "no-handle",
-        "bad-handle",
-        "another-item",
         "blocked",
     ];
     for key in keys {
@@ -107,8 +99,8 @@ fn the_reasons_the_worker_writes_have_sentences() {
         upload_reason_text("not allowed now: the folder is read-only"),
         "Uploads are not allowed now: it goes on when they are (the folder is read-only)."
     );
-    assert!(upload_reason_text("no-guard").contains("(no-guard)"));
-    assert_eq!(upload_reason_text("download-failed: errno 5"), "download-failed: errno 5", "a key with no sentence stays as stored");
+    assert!(upload_reason_text("blocked").contains("(blocked)"));
+    assert_eq!(upload_reason_text("not-found: errno 5"), "not-found: errno 5", "a key with no sentence stays as stored");
 }
 
 /// How a row's reason is stored and sent, written out, and whether
@@ -128,35 +120,15 @@ fn spelled(reason: &Reason) -> (&'static str, bool) {
         Reason::Refused(_) => ("refused", true),
         Reason::Locked => ("locked", true),
         Reason::NotFound => ("not-found", false),
-        Reason::NotLocal => ("not-downloaded", true),
         Reason::Changed => ("changed-while-sending", false),
         Reason::Parent => ("parent-not-in-onedrive", false),
         Reason::Hash => ("hash-mismatch", false),
-        Reason::MoveOut => ("move-out-not-yet", false),
-        Reason::NoHelper => ("waiting-for-the-helper", false),
-        Reason::Unreachable(_) => ("moved-out-unreachable", false),
-        Reason::BackInside => ("back-in-the-folder", false),
-        Reason::PlaceUnknown => ("moved-out-place-unknown", false),
-        Reason::NotOpened(_) => ("moved-out-not-opened", true),
-        Reason::Download(_) => ("download-failed", false),
-        Reason::GoneOnce => ("gone-once", false),
-        Reason::StaleHandle => ("handle-from-another-filesystem", false),
-        Reason::GoneUnproved => ("gone-unproved", false),
-        Reason::NoLease(_) => ("lease-probe-failed", false),
         Reason::Paused => ("paused", true),
         Reason::SessionOpen => ("upload-session-open", true),
         Reason::NameHeld => ("name-held-by-an-upload", true),
         Reason::ChangedAgain => ("changed in OneDrive again and again", true),
-        Reason::ChangingAgain => ("changing in OneDrive again and again", true),
         Reason::SessionEnded => ("the upload session ended twice", true),
         Reason::NotAllowed(_) => ("not allowed now", true),
-        Reason::BadState(_) => ("state-unreadable", true),
-        Reason::NoName => ("no-name", true),
-        Reason::NoItem => ("no-item", true),
-        Reason::NoGuard => ("no-guard", true),
-        Reason::NoHandle => ("no-handle", true),
-        Reason::BadHandle => ("bad-handle", true),
-        Reason::AnotherItem => ("another-item", true),
         Reason::Blocked => ("blocked", true),
         Reason::NotReadOnDisk => ("not-read-on-disk", true),
         Reason::BeingChecked => ("being-checked", true),
@@ -196,7 +168,7 @@ fn skip_spelled(skip: &LocalSkip) -> (&'static str, bool) {
 /// stored where it has no sentence yet. A reworded key fails here.
 #[test]
 fn every_reason_is_stored_under_its_spelling_and_is_worded() {
-    assert_eq!((Reason::ALL.len(), LocalSkip::ALL.len()), (50, 11));
+    assert_eq!((Reason::ALL.len(), LocalSkip::ALL.len()), (30, 11));
     let mut seen = std::collections::BTreeSet::new();
     for reason in Reason::ALL {
         let (spelling, worded) = spelled(&reason);
@@ -210,31 +182,17 @@ fn every_reason_is_stored_under_its_spelling_and_is_worded() {
         assert_eq!((skip.key(), skip.to_string().as_str()), (spelling, spelling));
         assert_eq!(LocalSkip::parse(spelling), skip, "{spelling}");
         assert_eq!(upload_reason_text(spelling) != spelling, worded, "{spelling}");
-        // `not-downloaded` and `state-unreadable` are a row's reasons too, with the same sentence.
-        assert!(seen.insert(spelling) || matches!(skip, LocalSkip::NotDownloaded | LocalSkip::BadState), "{spelling} is spelled twice");
+        assert!(seen.insert(spelling), "{spelling} is spelled twice");
     }
     // The forms with something behind the key, as the daemon writes them.
     let detailed = [
         ("refused: The name is not allowed", Reason::Refused(Some("The name is not allowed".into())), "OneDrive refused it: The name is not allowed"),
         ("too-big:3221225472:1073741824", Reason::TooBig(Some((3221225472, 1073741824))), "Too big: needs 3.0 GiB, 1.0 GiB free."),
         (
-            "moved-out-not-opened: Resource temporarily unavailable",
-            Reason::NotOpened(Some("Resource temporarily unavailable".into())),
-            "Moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later (Resource temporarily unavailable).",
-        ),
-        (
             "not allowed now: the folder is read-only",
             Reason::NotAllowed(Some("the folder is read-only".into())),
             "Uploads are not allowed now: it goes on when they are (the folder is read-only).",
         ),
-        (
-            "state-unreadable: Input/output error (os error 5)",
-            Reason::BadState(Some("Input/output error (os error 5)".into())),
-            "The file's KOneDrive state cannot be read: it stays here until the file is replaced (Input/output error (os error 5)).",
-        ),
-        ("download-failed: errno 5", Reason::Download(Some("errno 5".into())), "download-failed: errno 5"),
-        ("moved-out-unreachable: errno 13", Reason::Unreachable(Some("errno 13".into())), "moved-out-unreachable: errno 13"),
-        ("lease-probe-failed: Function not implemented", Reason::NoLease(Some("Function not implemented".into())), "lease-probe-failed: Function not implemented"),
     ];
     for (stored, reason, text) in detailed {
         assert_eq!(Reason::parse(stored), reason, "{stored}");

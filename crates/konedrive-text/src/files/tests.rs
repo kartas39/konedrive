@@ -88,7 +88,7 @@ fn a_refusal_is_worded_for_its_client() {
     assert_eq!(said(Operation::FreeUp, Refusal::NotAllowed, Client::CommandLine), None);
     // None: told as any failure.
     assert_eq!(said(Operation::Keep, Refusal::NotUp, Client::Desktop), None);
-    assert_eq!(said(Operation::OpenOnline, Refusal::NoHelper, Client::Desktop), None);
+    assert_eq!(said(Operation::OpenOnline, Refusal::NotUp, Client::Desktop), None);
     assert_eq!(said(Operation::Keep, Refusal::Other("org.example.New".to_owned()), Client::Desktop), None);
     assert!(entry(&Refusal::Other("org.example.New".to_owned())).is_none());
     assert_eq!(failed(Operation::Unpin, &told), "Unpinning “/r/a.bin” failed: the daemon's words");

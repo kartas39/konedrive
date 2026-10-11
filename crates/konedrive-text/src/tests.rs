@@ -120,7 +120,7 @@ fn a_stored_reason_is_worded_by_its_key_and_what_stands_behind_it() {
     assert_eq!(said("refused", Client::Desktop), "Refused by OneDrive.");
     assert_eq!(said("refused: bad: name", Client::CommandLine), "OneDrive refused it: bad: name");
     assert_eq!(said("refused: {key}", Client::Desktop), "OneDrive refused it: {key}");
-    assert_eq!(said("no-guard", Client::Desktop), "KOneDrive's record of this change is incomplete (no-guard): it stays here until the file is changed again.");
+    assert_eq!(said("blocked", Client::Desktop), "KOneDrive's record of this change is incomplete (blocked): it stays here until the file is changed again.");
     assert_eq!(said("too-big:300:20", Client::Desktop), "Too big: needs 300 B, 20 B free.");
     assert_eq!(said("too-big:0300:+20", Client::CommandLine), "Too big: needs 300 B, 20 B free.");
     assert_eq!(said("state-unreadable: Input/output error (os error 5)", Client::Desktop), "The file's KOneDrive state cannot be read: it stays here until the file is replaced (Input/output error (os error 5)).");

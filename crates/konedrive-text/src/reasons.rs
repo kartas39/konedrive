@@ -1,6 +1,5 @@
 //! Why a change is not uploaded: the sentence of every key of `Reason` and
-//! `LocalSkip`, which share one table (`not-downloaded` and
-//! `state-unreadable` are in both, with one meaning).
+//! `LocalSkip`, in one table.
 //!
 //! The places of a sentence: `{key}` (the key itself), `{detail}` (what
 //! stands behind `<key>: `), and `{needs}` and `{free}` (the sizes of
@@ -37,12 +36,10 @@ const fn as_stored(key: &'static str) -> ReasonText {
     ReasonText { key, bare: None, detailed: None }
 }
 
-const KEEPS_CHANGING: &str = "It keeps changing in OneDrive: tried again later.";
 const INCOMPLETE: &str = "KOneDrive's record of this change is incomplete ({key}): it stays here until the file is changed again.";
 const NOT_A_FILE: &str = "Not a file or a folder: never uploaded.";
 
-/// Every key of `Reason`, in its order, then those of `LocalSkip` that are
-/// not a row's reasons too.
+/// Every key of `Reason`, in its order, then those of `LocalSkip`, in theirs.
 pub const REASONS: &[ReasonText] = &[
     bare("open-for-writing", "Open for writing in another program: it goes up once closed."),
     bare("name-characters", "A name OneDrive refuses (it holds one of \" * : < > ? \\ |): rename it to upload it."),
@@ -55,45 +52,15 @@ pub const REASONS: &[ReasonText] = &[
     detailed("refused", "Refused by OneDrive.", "OneDrive refused it: {detail}"),
     bare("locked", "Locked in OneDrive (open for co-authoring): tried again later."),
     as_stored("not-found"),
-    // A row's reason and a skip's: the same sentence.
-    bare("not-downloaded", "A file from another OneDrive folder that is not downloaded here."),
     as_stored("changed-while-sending"),
     as_stored("parent-not-in-onedrive"),
     as_stored("hash-mismatch"),
-    as_stored("move-out-not-yet"),
-    as_stored("waiting-for-the-helper"),
-    as_stored("moved-out-unreachable"),
-    as_stored("back-in-the-folder"),
-    as_stored("moved-out-place-unknown"),
-    detailed(
-        "moved-out-not-opened",
-        "Moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later.",
-        "Moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later ({detail}).",
-    ),
-    as_stored("download-failed"),
-    as_stored("gone-once"),
-    as_stored("handle-from-another-filesystem"),
-    as_stored("gone-unproved"),
-    as_stored("lease-probe-failed"),
     bare("paused", "Paused with the account: it goes on when the pause ends."),
     bare("upload-session-open", "Its name in OneDrive is held by an upload of this folder that has not ended: tried again later."),
     bare("name-held-by-an-upload", "Its name in OneDrive is held by an unfinished upload (another device, or one abandoned): tried again later."),
-    bare("changed in OneDrive again and again", KEEPS_CHANGING),
-    bare("changing in OneDrive again and again", KEEPS_CHANGING),
+    bare("changed in OneDrive again and again", "It keeps changing in OneDrive: tried again later."),
     bare("the upload session ended twice", "OneDrive ended the upload twice: tried again later."),
     detailed("not allowed now", "Uploads are not allowed now: it goes on when they are.", "Uploads are not allowed now: it goes on when they are ({detail})."),
-    // A row's reason and a skip's: the same sentence.
-    detailed(
-        "state-unreadable",
-        "The file's KOneDrive state cannot be read: it stays here until the file is replaced.",
-        "The file's KOneDrive state cannot be read: it stays here until the file is replaced ({detail}).",
-    ),
-    bare("no-name", INCOMPLETE),
-    bare("no-item", INCOMPLETE),
-    bare("no-guard", INCOMPLETE),
-    bare("no-handle", INCOMPLETE),
-    bare("bad-handle", INCOMPLETE),
-    bare("another-item", INCOMPLETE),
     bare("blocked", INCOMPLETE),
     // TODO: wording
     bare("not-read-on-disk", "KOneDrive could not read this on disk when it started: nothing of it is uploaded until it can be read at a start."),
@@ -125,8 +92,14 @@ pub const REASONS: &[ReasonText] = &[
     bare("device", NOT_A_FILE),
     bare("reserved-name", "A .konedrive- name, which KOneDrive keeps for itself: never uploaded."),
     bare("hard-link", "A file with other hard links: not uploaded."),
+    bare("not-downloaded", "A file from another OneDrive folder that is not downloaded here."),
     bare("other-device", "On another filesystem mounted inside the folder: never uploaded."),
     bare("unreadable", "Cannot be read: not uploaded, nor anything inside it, until KOneDrive may read it."),
+    detailed(
+        "state-unreadable",
+        "The file's KOneDrive state cannot be read: it stays here until the file is replaced.",
+        "The file's KOneDrive state cannot be read: it stays here until the file is replaced ({detail}).",
+    ),
     as_stored("ignored"),
 ];
 

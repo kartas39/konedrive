@@ -1,5 +1,6 @@
-//! Why a change is kept back: an outbox row's [`Reason`], the
-//! [`LocalSkip`] of what an examination never uploads (`local_skipped`),
+//! Why a change is kept back: the [`Reason`] an unsent item waits or is
+//! refused for (what the sync plan answers, and what the steps remember of a
+//! failed try and of a refusal), the [`LocalSkip`] of what is never uploaded,
 //! and what an item that cannot stay in the folder still [`WaitsFor`].
 //!
 //! Each is stored, and sent over D-Bus, as a string: its **key**, and for
@@ -17,7 +18,7 @@
 //! (`NotUploadedSummary()`).
 //!
 //! A crate of its own, with no dependencies: the store (`konedrive-tree`,
-//! which re-exports it in `outbox`) and the daemon hold these, and
+//! which re-exports them) and the daemon hold these, and
 //! `konedrivectl` words them without linking the store.
 
 use std::fmt;
@@ -54,8 +55,8 @@ impl Group {
     }
 }
 
-/// What an outbox row's `reason` says. The examination writes the first
-/// seven; the outbox worker the rest.
+/// Why an unsent item is not sent now: what the sync plan answers of it, and
+/// what the settlement of a step keeps of a failed try or a refusal.
 ///
 /// A variant with an `Option<String>` is stored `<key>: <detail>` when it
 /// has one, and as the bare key when not.
@@ -86,46 +87,12 @@ pub enum Reason {
     /// The local object is not where the row saw it: the examination
     /// catches up.
     NotFound,
-    /// The file is not downloaded (WR1).
-    NotLocal,
     /// Its size or time moved while it was being sent (§6.3).
     Changed,
     /// The folder it goes into is not in OneDrive (yet, or any more).
     Parent,
     /// OneDrive holds other content than was sent: sent again from zero.
     Hash,
-    /// A move out of the folder, with nothing to reach it by.
-    MoveOut,
-    /// A moved-out object waits for the helper, which alone can reach it by
-    /// its handle.
-    NoHelper,
-    /// A moved-out object the helper will not hand over, or whose place
-    /// cannot be told: kept, never taken for gone. With another errno
-    /// than `EPERM`, `moved-out-unreachable: errno <n>`.
-    Unreachable(Option<String>),
-    /// A moved-out object is back in the folder: the examination's.
-    BackInside,
-    /// Where a moved-out object is cannot be proved: nothing is taken off
-    /// or deleted until it can.
-    PlaceUnknown,
-    /// A moved-out placeholder cannot be opened for writing to download it:
-    /// `moved-out-not-opened: <the error>`. In backoff.
-    NotOpened(Option<String>),
-    /// A moved-out placeholder's download failed: `download-failed: errno
-    /// <n>`. Its item stays in OneDrive.
-    Download(Option<String>),
-    /// `ESTALE` once for a moved-out object: asked again before it is
-    /// believed.
-    GoneOnce,
-    /// `ESTALE` for a handle taken on another filesystem than the folder's
-    /// now: it says nothing, so nothing goes.
-    StaleHandle,
-    /// `ESTALE` twice, but where the object was last proved to be it may
-    /// still stand, or that place is not known: not gone.
-    GoneUnproved,
-    /// A read lease cannot be probed: `lease-probe-failed: <the error>`. A
-    /// writer cannot be ruled out, so nothing is filled.
-    NoLease(Option<String>),
     /// The account is paused: an upload in fragments stopped after the
     /// fragment it was sending, its session kept. Waiting, never a failure.
     Paused,
@@ -139,32 +106,12 @@ pub enum Reason {
     /// The item changed in OneDrive each time its removal was sent: in
     /// backoff.
     ChangedAgain,
-    /// A row rewritten and sent again at once too often in a row: in
-    /// backoff, like a failure.
-    ChangingAgain,
     /// The upload session ended under the upload twice in one run: in
     /// backoff.
     SessionEnded,
     /// The write gate closed between two fragments: `not allowed now:
     /// <why>`. Waiting until it opens; the session is kept.
     NotAllowed(Option<String>),
-    /// The file carries a `user.konedrive.state` no konedrive writes, or
-    /// one that cannot be read: `state-unreadable: <the error>`. Blocked.
-    BadState(Option<String>),
-    /// Blocked: the row's place has no name.
-    NoName,
-    /// Blocked: a change, move or removal whose row names no item, or no
-    /// base.
-    NoItem,
-    /// Blocked: the row's base has neither an eTag nor a cTag to send with.
-    NoGuard,
-    /// Blocked: a moved-out object's row has no handle to find it by.
-    NoHandle,
-    /// Blocked: the helper refuses the handle of a moved-out object.
-    BadHandle,
-    /// Blocked: the object a `move-out` row's handle opens carries another
-    /// item's id.
-    AnotherItem,
     /// What a blocked row with no reason is listed under.
     Blocked,
     /// The check of the folder on disk at the daemon's start could not read the item, and
@@ -203,7 +150,7 @@ const TOO_BIG_KEY: &str = "too-big";
 
 impl Reason {
     /// Every variant but [`Reason::Other`], those with a detail without it.
-    pub const ALL: [Reason; 50] = [
+    pub const ALL: [Reason; 30] = [
         Self::OpenForWriting,
         Self::NameCharacters,
         Self::NameSpaces,
@@ -215,35 +162,15 @@ impl Reason {
         Self::Refused(None),
         Self::Locked,
         Self::NotFound,
-        Self::NotLocal,
         Self::Changed,
         Self::Parent,
         Self::Hash,
-        Self::MoveOut,
-        Self::NoHelper,
-        Self::Unreachable(None),
-        Self::BackInside,
-        Self::PlaceUnknown,
-        Self::NotOpened(None),
-        Self::Download(None),
-        Self::GoneOnce,
-        Self::StaleHandle,
-        Self::GoneUnproved,
-        Self::NoLease(None),
         Self::Paused,
         Self::SessionOpen,
         Self::NameHeld,
         Self::ChangedAgain,
-        Self::ChangingAgain,
         Self::SessionEnded,
         Self::NotAllowed(None),
-        Self::BadState(None),
-        Self::NoName,
-        Self::NoItem,
-        Self::NoGuard,
-        Self::NoHandle,
-        Self::BadHandle,
-        Self::AnotherItem,
         Self::Blocked,
         Self::NotReadOnDisk,
         Self::BeingChecked,
@@ -272,35 +199,15 @@ impl Reason {
             Self::Refused(_) => "refused",
             Self::Locked => "locked",
             Self::NotFound => "not-found",
-            Self::NotLocal => "not-downloaded",
             Self::Changed => "changed-while-sending",
             Self::Parent => "parent-not-in-onedrive",
             Self::Hash => "hash-mismatch",
-            Self::MoveOut => "move-out-not-yet",
-            Self::NoHelper => "waiting-for-the-helper",
-            Self::Unreachable(_) => "moved-out-unreachable",
-            Self::BackInside => "back-in-the-folder",
-            Self::PlaceUnknown => "moved-out-place-unknown",
-            Self::NotOpened(_) => "moved-out-not-opened",
-            Self::Download(_) => "download-failed",
-            Self::GoneOnce => "gone-once",
-            Self::StaleHandle => "handle-from-another-filesystem",
-            Self::GoneUnproved => "gone-unproved",
-            Self::NoLease(_) => "lease-probe-failed",
             Self::Paused => "paused",
             Self::SessionOpen => "upload-session-open",
             Self::NameHeld => "name-held-by-an-upload",
             Self::ChangedAgain => "changed in OneDrive again and again",
-            Self::ChangingAgain => "changing in OneDrive again and again",
             Self::SessionEnded => "the upload session ended twice",
             Self::NotAllowed(_) => "not allowed now",
-            Self::BadState(_) => "state-unreadable",
-            Self::NoName => "no-name",
-            Self::NoItem => "no-item",
-            Self::NoGuard => "no-guard",
-            Self::NoHandle => "no-handle",
-            Self::BadHandle => "bad-handle",
-            Self::AnotherItem => "another-item",
             Self::Blocked => "blocked",
             Self::NotReadOnDisk => "not-read-on-disk",
             Self::BeingChecked => "being-checked",
@@ -320,12 +227,7 @@ impl Reason {
     pub fn detail(&self) -> Option<String> {
         match self {
             Self::Refused(detail)
-            | Self::Unreachable(detail)
-            | Self::NotOpened(detail)
-            | Self::Download(detail)
-            | Self::NoLease(detail)
-            | Self::NotAllowed(detail)
-            | Self::BadState(detail) => detail.clone(),
+            | Self::NotAllowed(detail) => detail.clone(),
             Self::TooBig(sizes) => sizes.map(|(needs, free)| format!("{needs}:{free}")),
             Self::Other(stored) => detail_of(stored),
             _ => None,
@@ -338,12 +240,7 @@ impl Reason {
         let detail = Some(detail.to_owned());
         Some(match self {
             Self::Refused(_) => Self::Refused(detail),
-            Self::Unreachable(_) => Self::Unreachable(detail),
-            Self::NotOpened(_) => Self::NotOpened(detail),
-            Self::Download(_) => Self::Download(detail),
-            Self::NoLease(_) => Self::NoLease(detail),
             Self::NotAllowed(_) => Self::NotAllowed(detail),
-            Self::BadState(_) => Self::BadState(detail),
             _ => return None,
         })
     }
@@ -384,44 +281,24 @@ impl Reason {
             }
             // What the worker blocks a row with beside those: the row itself, or the
             // file's state, is not what a step can work with. `Blocked`: no reason at all.
-            Self::NoName
-            | Self::NoItem
-            | Self::NoGuard
-            | Self::NoHandle
-            | Self::BadHandle
-            | Self::AnotherItem
-            | Self::BadState(_)
-            | Self::NotReadOnDisk
+            Self::NotReadOnDisk
             | Self::Blocked => Group::PerFile,
             Self::OpenForWriting
             | Self::BeingChecked
             | Self::QuietTime
             | Self::Locked
             | Self::NotFound
-            | Self::NotLocal
             | Self::Changed
             | Self::Parent
             | Self::Hash
-            | Self::MoveOut
-            | Self::NoHelper
-            | Self::Unreachable(_)
-            | Self::BackInside
-            | Self::PlaceUnknown
-            | Self::Download(_)
-            | Self::GoneOnce
-            | Self::StaleHandle
-            | Self::GoneUnproved
-            | Self::NoLease(_)
             | Self::Network
             | Self::LocalIo
             | Self::Store
             | Self::Failed
-            | Self::NotOpened(_)
             | Self::Paused
             | Self::SessionOpen
             | Self::NameHeld
             | Self::ChangedAgain
-            | Self::ChangingAgain
             | Self::SessionEnded
             | Self::NotAllowed(_) => Group::Waiting,
             Self::Other(stored) => return known_group(key_of(stored)),
@@ -501,8 +378,7 @@ pub enum LocalSkip {
     /// anything inside it is uploaded until it can be read.
     Unreadable,
     /// A file that carries an item id and no state konedrive can read: it
-    /// is left alone. Spelled as a row's [`Reason::BadState`], which the
-    /// worker blocks a row with for the same trouble.
+    /// is left alone.
     BadState,
     /// In the table of groups, written by no code.
     Ignored,
@@ -562,9 +438,7 @@ impl LocalSkip {
     }
 
     /// The group it is listed in; `None` for a string in no table.
-    /// `not-downloaded` and `state-unreadable` are also a row's reasons
-    /// ([`Reason::NotLocal`], [`Reason::BadState`]), and are grouped as
-    /// those are. What cannot be read needs the user, file by file.
+    /// What cannot be read needs the user, file by file.
     pub fn group(&self) -> Option<Group> {
         Some(match self {
             Self::Symlink | Self::Fifo | Self::Socket | Self::Device | Self::OtherDevice | Self::ReservedName | Self::HardLink | Self::Ignored => {

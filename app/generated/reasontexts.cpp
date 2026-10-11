@@ -49,35 +49,15 @@ bool takesDetail(QStringView key)
         QLatin1String("refused"),
         QLatin1String("locked"),
         QLatin1String("not-found"),
-        QLatin1String("not-downloaded"),
         QLatin1String("changed-while-sending"),
         QLatin1String("parent-not-in-onedrive"),
         QLatin1String("hash-mismatch"),
-        QLatin1String("move-out-not-yet"),
-        QLatin1String("waiting-for-the-helper"),
-        QLatin1String("moved-out-unreachable"),
-        QLatin1String("back-in-the-folder"),
-        QLatin1String("moved-out-place-unknown"),
-        QLatin1String("moved-out-not-opened"),
-        QLatin1String("download-failed"),
-        QLatin1String("gone-once"),
-        QLatin1String("handle-from-another-filesystem"),
-        QLatin1String("gone-unproved"),
-        QLatin1String("lease-probe-failed"),
         QLatin1String("paused"),
         QLatin1String("upload-session-open"),
         QLatin1String("name-held-by-an-upload"),
         QLatin1String("changed in OneDrive again and again"),
-        QLatin1String("changing in OneDrive again and again"),
         QLatin1String("the upload session ended twice"),
         QLatin1String("not allowed now"),
-        QLatin1String("state-unreadable"),
-        QLatin1String("no-name"),
-        QLatin1String("no-item"),
-        QLatin1String("no-guard"),
-        QLatin1String("no-handle"),
-        QLatin1String("bad-handle"),
-        QLatin1String("another-item"),
         QLatin1String("blocked"),
         QLatin1String("not-read-on-disk"),
         QLatin1String("being-checked"),
@@ -94,8 +74,10 @@ bool takesDetail(QStringView key)
         QLatin1String("device"),
         QLatin1String("reserved-name"),
         QLatin1String("hard-link"),
+        QLatin1String("not-downloaded"),
         QLatin1String("other-device"),
         QLatin1String("unreadable"),
+        QLatin1String("state-unreadable"),
         QLatin1String("ignored"),
     };
     for (const QLatin1String known : keys) {
@@ -194,21 +176,6 @@ QString reasonSentence(const ReasonParts &parts, const QString &needs, const QSt
         }
         return QString();
     }
-    if (parts.key == QLatin1String("not-downloaded")) {
-        if (!parts.hasDetail) {
-            return i18n("A file from another OneDrive folder that is not downloaded here.");
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("moved-out-not-opened")) {
-        if (!parts.hasDetail) {
-            return i18n("Moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later.");
-        }
-        if (parts.hasDetail) {
-            return i18n("Moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later (%1).", parts.detail);
-        }
-        return QString();
-    }
     if (parts.key == QLatin1String("paused")) {
         if (!parts.hasDetail) {
             return i18n("Paused with the account: it goes on when the pause ends.");
@@ -233,12 +200,6 @@ QString reasonSentence(const ReasonParts &parts, const QString &needs, const QSt
         }
         return QString();
     }
-    if (parts.key == QLatin1String("changing in OneDrive again and again")) {
-        if (!parts.hasDetail) {
-            return i18n("It keeps changing in OneDrive: tried again later.");
-        }
-        return QString();
-    }
     if (parts.key == QLatin1String("the upload session ended twice")) {
         if (!parts.hasDetail) {
             return i18n("OneDrive ended the upload twice: tried again later.");
@@ -251,51 +212,6 @@ QString reasonSentence(const ReasonParts &parts, const QString &needs, const QSt
         }
         if (parts.hasDetail) {
             return i18n("Uploads are not allowed now: it goes on when they are (%1).", parts.detail);
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("state-unreadable")) {
-        if (!parts.hasDetail) {
-            return i18n("The file's KOneDrive state cannot be read: it stays here until the file is replaced.");
-        }
-        if (parts.hasDetail) {
-            return i18n("The file's KOneDrive state cannot be read: it stays here until the file is replaced (%1).", parts.detail);
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("no-name")) {
-        if (!parts.hasDetail) {
-            return i18n("KOneDrive's record of this change is incomplete (%1): it stays here until the file is changed again.", parts.key);
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("no-item")) {
-        if (!parts.hasDetail) {
-            return i18n("KOneDrive's record of this change is incomplete (%1): it stays here until the file is changed again.", parts.key);
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("no-guard")) {
-        if (!parts.hasDetail) {
-            return i18n("KOneDrive's record of this change is incomplete (%1): it stays here until the file is changed again.", parts.key);
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("no-handle")) {
-        if (!parts.hasDetail) {
-            return i18n("KOneDrive's record of this change is incomplete (%1): it stays here until the file is changed again.", parts.key);
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("bad-handle")) {
-        if (!parts.hasDetail) {
-            return i18n("KOneDrive's record of this change is incomplete (%1): it stays here until the file is changed again.", parts.key);
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("another-item")) {
-        if (!parts.hasDetail) {
-            return i18n("KOneDrive's record of this change is incomplete (%1): it stays here until the file is changed again.", parts.key);
         }
         return QString();
     }
@@ -398,6 +314,12 @@ QString reasonSentence(const ReasonParts &parts, const QString &needs, const QSt
         }
         return QString();
     }
+    if (parts.key == QLatin1String("not-downloaded")) {
+        if (!parts.hasDetail) {
+            return i18n("A file from another OneDrive folder that is not downloaded here.");
+        }
+        return QString();
+    }
     if (parts.key == QLatin1String("other-device")) {
         if (!parts.hasDetail) {
             return i18n("On another filesystem mounted inside the folder: never uploaded.");
@@ -407,6 +329,15 @@ QString reasonSentence(const ReasonParts &parts, const QString &needs, const QSt
     if (parts.key == QLatin1String("unreadable")) {
         if (!parts.hasDetail) {
             return i18n("Cannot be read: not uploaded, nor anything inside it, until KOneDrive may read it.");
+        }
+        return QString();
+    }
+    if (parts.key == QLatin1String("state-unreadable")) {
+        if (!parts.hasDetail) {
+            return i18n("The file's KOneDrive state cannot be read: it stays here until the file is replaced.");
+        }
+        if (parts.hasDetail) {
+            return i18n("The file's KOneDrive state cannot be read: it stays here until the file is replaced (%1).", parts.detail);
         }
         return QString();
     }

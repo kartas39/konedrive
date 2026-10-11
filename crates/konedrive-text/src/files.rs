@@ -141,7 +141,7 @@ const OUTSIDE: Sentence = Each {
 const NOT_ALLOWED_KEPT: Sentence = Desktop("Could not change what is kept on this device: {detail}");
 
 /// Every name of [`Refusal`], in its order.
-pub static REFUSALS: [RefusalText; 28] = [
+pub static REFUSALS: [RefusalText; 27] = [
     as_failed(Refusal::NotEmpty),
     as_failed(Refusal::Unsupported),
     every_listed(
@@ -151,28 +151,6 @@ pub static REFUSALS: [RefusalText; 28] = [
     ),
     // The command line says how to register a folder, as for any of its commands.
     every(Refusal::NoRoot, Desktop("The folder holding “{file}” is no longer registered with KOneDrive, so nothing was done with it.")),
-    RefusalText {
-        refusal: Refusal::NoHelper,
-        sentence: ByOperation {
-            // The command line has no sentence for `sync pin` and `sync unpin`
-            // without the helper: it says what it says of a registration.
-            keep: Some(Desktop(
-                "The konedrive helper is not connected, so nothing was changed. Keeping “{file}” on this device must first have the helper stop letting its opens through unchecked — a download that failed partway would otherwise leave it reading as zeros. Try again once the helper is back (“konedrivectl sync status” shows when it is).",
-            )),
-            unpin: Some(Desktop(
-                "The konedrive helper is not connected, so nothing was changed. Unpinning “{file}” needs the helper too, the same as any other change under KOneDrive's watch. Try again once KOneDrive is connected to the helper again — it reconnects on its own.",
-            )),
-            // `sync free` takes several paths, and may have freed some.
-            free_up: Some(Each {
-                desktop: "The konedrive helper is not connected, so nothing was changed. Freeing up “{file}” must first have the helper take off any mark that lets the file's opens through unchecked, or the emptied file could read as zeros from then on. Try again once KOneDrive is connected to the helper again — it reconnects on its own.",
-                command_line: "The konedrive helper is not connected, so nothing more was freed up. Freeing up a file must first have the helper take off any mark that lets the file's opens through unchecked, or the emptied file could read as zeros from then on; try again once the daemon is connected to the helper again — it reconnects on its own.",
-            }),
-            // WebUrl needs no helper.
-            open_online: None,
-        },
-        without_detail: None,
-        several: OF_ONE,
-    },
     RefusalText {
         refusal: Refusal::NotManaged,
         sentence: ByOperation {

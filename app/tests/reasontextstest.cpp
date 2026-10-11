@@ -52,17 +52,11 @@ private Q_SLOTS:
         row("refused", QStringLiteral("Refused by OneDrive."));
         row("refused: The name is not allowed", QStringLiteral("OneDrive refused it: The name is not allowed"));
         row("refused: ", QStringLiteral("OneDrive refused it: "));
-        row("moved-out-not-opened",
-            QStringLiteral("Moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later."));
-        row("moved-out-not-opened: Resource temporarily unavailable",
-            QStringLiteral("Moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later (Resource temporarily "
-                           "unavailable)."));
         row("paused", QStringLiteral("Paused with the account: it goes on when the pause ends."));
         row("upload-session-open", QStringLiteral("Its name in OneDrive is held by an upload of this folder that has not ended: tried again later."));
         row("name-held-by-an-upload",
             QStringLiteral("Its name in OneDrive is held by an unfinished upload (another device, or one abandoned): tried again later."));
         row("changed in OneDrive again and again", keepsChanging);
-        row("changing in OneDrive again and again", keepsChanging);
         row("the upload session ended twice", QStringLiteral("OneDrive ended the upload twice: tried again later."));
         row("not allowed now", QStringLiteral("Uploads are not allowed now: it goes on when they are."));
         row("not allowed now: the folder is read-only: for now",
@@ -70,9 +64,7 @@ private Q_SLOTS:
         row("state-unreadable", QStringLiteral("The file's KOneDrive state cannot be read: it stays here until the file is replaced."));
         row("state-unreadable: Input/output error (os error 5)",
             QStringLiteral("The file's KOneDrive state cannot be read: it stays here until the file is replaced (Input/output error (os error 5))."));
-        for (const char *key : {"no-name", "no-item", "no-guard", "no-handle", "bad-handle", "another-item", "blocked"}) {
-            row(key, incomplete.arg(QString::fromUtf8(key)));
-        }
+        row("blocked", incomplete.arg(QStringLiteral("blocked")));
         row("not-read-on-disk", QStringLiteral("KOneDrive could not read this on disk when it started: nothing of it is uploaded until it can be read at a start."));
         row("being-checked", QStringLiteral("Being checked: KOneDrive is asking OneDrive for the whole folder again, and goes on by itself."));
         row("quiet-time", QStringLiteral("Changed a moment ago: it goes up once it has been left alone for a moment."));
@@ -90,19 +82,7 @@ private Q_SLOTS:
                                    "changed-while-sending",
                                    "parent-not-in-onedrive",
                                    "hash-mismatch",
-                                   "move-out-not-yet",
-                                   "waiting-for-the-helper",
-                                   "moved-out-unreachable",
-                                   "moved-out-unreachable: errno 13",
-                                   "back-in-the-folder",
-                                   "moved-out-place-unknown",
-                                   "download-failed",
-                                   "download-failed: errno 5",
-                                   "gone-once",
-                                   "handle-from-another-filesystem",
-                                   "gone-unproved",
-                                   "lease-probe-failed",
-                                   "lease-probe-failed: Function not implemented",
+                                   "not-found: errno 5",
                                    "ignored",
                                    "something-new",
                                    "network: connection reset",

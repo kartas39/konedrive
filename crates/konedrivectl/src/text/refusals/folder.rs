@@ -247,9 +247,7 @@ fn shared(told: &Told<'_>, refusal: &Refusal) -> String {
              shows its state; `{prefix} sync forget` takes the folder away, and leaves its files as they are",
             detail.strip_prefix("the folder is not up: ").unwrap_or(detail)
         ),
-        // No helper is used any more: an older daemon's refusal has the daemon's own words.
-        Refusal::NoHelper
-        | Refusal::Failed
+        Refusal::Failed
         | Refusal::WritesNotAllowed
         | Refusal::ModeNotGranted
         | Refusal::InvalidArgs
@@ -292,7 +290,6 @@ fn forget(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownInterface
         | Refusal::NotUp
         | Refusal::Internal
-        | Refusal::NoHelper
         | Refusal::Other(_) => shared(told, refusal),
     }
 }
@@ -331,7 +328,6 @@ fn remove(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownInterface
         | Refusal::NotUp
         | Refusal::Internal
-        | Refusal::NoHelper
         | Refusal::Other(_) => shared(told, refusal),
     }
 }
@@ -368,7 +364,6 @@ fn refresh(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownInterface
         | Refusal::NotUp
         | Refusal::Internal
-        | Refusal::NoHelper
         | Refusal::Other(_) => shared(told, refusal),
     }
 }
@@ -407,7 +402,6 @@ fn hydrate(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownInterface
         | Refusal::NotUp
         | Refusal::Internal
-        | Refusal::NoHelper
         | Refusal::Other(_) => shared(told, refusal),
     }
 }
@@ -442,7 +436,6 @@ fn dehydrate(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownInterface
         | Refusal::NotUp
         | Refusal::Internal
-        | Refusal::NoHelper
         | Refusal::Other(_) => shared(told, refusal),
     }
 }
@@ -477,7 +470,6 @@ fn free_up_space(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownInterface
         | Refusal::NotUp
         | Refusal::Internal
-        | Refusal::NoHelper
         | Refusal::Other(_) => shared(told, refusal),
     }
 }
@@ -507,7 +499,6 @@ fn uploads(told: &Told<'_>, refusal: &Refusal) -> String {
         Refusal::NoRoot
         | Refusal::NotEmpty
         | Refusal::InUse
-        | Refusal::NoHelper
         | Refusal::NotManaged
         | Refusal::NotHydrated
         | Refusal::ModifiedLocally
@@ -542,7 +533,6 @@ fn settings(told: &Told<'_>, refusal: &Refusal) -> String {
         Refusal::NotEmpty
         | Refusal::InUse
         | Refusal::NoRoot
-        | Refusal::NoHelper
         | Refusal::NotManaged
         | Refusal::NotHydrated
         | Refusal::ModifiedLocally

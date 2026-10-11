@@ -74,7 +74,6 @@ struct MenuAnswer {
         NotSaid,
         /// A folder above keeps an item pinned: `blockedBy`.
         PinnedAbove,
-        NoHelper,
         NotUploaded,
         /// The daemon cannot tell now whether a change waits to be uploaded.
         Unknown,
