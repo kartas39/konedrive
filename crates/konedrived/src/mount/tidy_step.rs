@@ -41,8 +41,8 @@ fn lists_fuse_mount_at(mounts: &str, folder: &Path) -> bool {
     })
 }
 
-/// Whether a FUSE mount lies over `folder` now.
-fn is_mounted(folder: &Path) -> bool {
+/// Whether a FUSE mount lies over `folder` now, served or stale.
+pub(super) fn is_mounted(folder: &Path) -> bool {
     lists_fuse_mount_at(&fs::read_to_string("/proc/self/mounts").unwrap_or_default(), folder)
 }
 

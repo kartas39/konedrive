@@ -210,7 +210,7 @@ dead_mount_is_taken_off_at_once_after_a_kill() {
     register_folder read-only
     download downloaded.txt
     kill_service
-    tidy_folder_at_once
+    tidy_folder
     check "the dead mount is off the folder" "$(mounted "$F" && echo mounted || echo off)" off
     check "the folder itself shows the downloaded file" "$($U cat "$F/downloaded.txt" 2>&1 | sed 's/.*: //')" downloaded
 }

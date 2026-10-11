@@ -166,17 +166,9 @@ stop_service() {
     sed -n 's/^stopped: //p' "$LOGS/service.out"
 }
 
-# What the unit runs after the daemon's end: the dead mount goes and the folder is locked.
-tidy_folder_at_once() { $U "$bin/fuse-service" --tidy "$F"; }
-
-# The same, once the kernel has forgotten what it remembered of the folder under the dead
-# mount, which is a second: a scenario that is not about that second waits it out here, and
-# `dead_mount_is_taken_off_at_once_after_a_kill` (daemon_restarts.sh) is about it.
-tidy_folder() {
-    wait_for 5 dead_mount_is_seen
-    tidy_folder_at_once
-}
-dead_mount_is_seen() { ! mounted "$F" || $U stat "$F" 2>&1 | grep -q 'not connected'; }
+# What the unit runs after the daemon's end, run as the unit runs it, at once: the dead mount
+# goes and the folder is locked.
+tidy_folder() { $U "$bin/fuse-service" --tidy "$F"; }
 
 # The service started again over the same state, and its folder waited for.
 restart_service() {
