@@ -52,12 +52,9 @@ fn a_file_not_on_disk_whose_content_onedrive_changed_shows_onedrives_content() {
     assert_eq!(answer(&given, 2), folder_step(FolderStep::TakeOneDriveContent { item: versions(&given, 2) }));
 }
 
-/// C4 and C5. C4 agrees with today (`what_the_outbox_holds_is_skipped`,
-/// `fuse/cycle_step/tests.rs`; `a_onedrive_file_closed_untouched_is_said_to_be_where_it_is_as_it_was`,
-/// `fuse/detections/file_written/tests.rs`). C5 differs from today, as the design says: a
-/// read-only folder today makes a conflict copy at once
-/// (`a_copy_a_program_writes_is_moved_aside_when_its_file_has_new_content`,
-/// `fuse/cycle_step/tests.rs`); one rule now. Closed unchanged, the file follows OneDrive.
+/// C4 and C5. While a program holds the file open for writing nothing is planned for
+/// it, whatever OneDrive changed. Closed unchanged, the file follows OneDrive; one rule,
+/// whatever the folder's access mode.
 #[test]
 fn a_file_held_open_for_writing_whose_content_onedrive_changed_is_not_planned_until_it_is_closed() {
     // Open: the row has the content of the open, and what it was before.
@@ -102,10 +99,8 @@ fn content_changed_here_is_sent_with_the_etag_onedrive_has_now() {
     assert_eq!(answer(&given, 3), folder_step(FolderStep::MoveItem { item: versions(&given, 3) }));
 }
 
-/// C10. Today: `an_answer_the_folder_cannot_hold_waits_and_the_item_keeps_its_place` and
-/// `an_answer_in_a_folder_the_base_does_not_place_waits_and_the_row_behind_keeps_the_place`
-/// (`outbox/tests.rs`): the content is sent into the item where OneDrive has it, and the
-/// item stays here.
+/// C10: the content is sent into the item where OneDrive has it, and the item stays
+/// here.
 #[test]
 fn content_changed_here_is_sent_into_an_item_the_folder_cannot_show_where_onedrive_has_it() {
     let mut given = input(vec![synced_directory(3, ROOT, "vault"), moved_in_onedrive(with_content_here(synced_file(2, ROOT, "a.txt"), written_here()), id(3), "a.txt")]);

@@ -116,8 +116,7 @@ fn a_move_made_here_is_sent() {
     assert_eq!(answer(&given, 5), onedrive_step(OneDriveStep::SendMove { item: versions(&given, 5), parent: reference("I3"), name: "e".into() }));
 }
 
-/// P7, the map's "a move into a directory being made" (`T/outbox/pick.rs:204-222`). Today:
-/// `a_mkdir_at_the_end_of_the_queue_runs_first` (`outbox/pick/tests.rs`).
+/// P7, the map's "a move into a directory being made": the directory is made first.
 #[test]
 fn a_move_made_here_waits_for_its_directory_to_be_in_onedrive() {
     let given = input(vec![made_directory(3, ROOT, "d"), moved_here(synced_file(2, ROOT, "a.txt"), id(3), "a.txt")]);

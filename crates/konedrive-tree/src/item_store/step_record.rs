@@ -2,8 +2,7 @@
 //! the event of the activity log, in the transaction of its commit.
 //!
 //! **State owned:** none: the tables `conflicts` and `activity` are their own modules'.
-//! This module only puts their rows into the transaction of a step's commit, as today's
-//! `outbox_copied` and `outbox_commit` do (`outbox/worker.rs:426-431`, `outbox.rs:509`), so
+//! This module only puts their rows into the transaction of a step's commit, so
 //! that a stop never leaves a conflict copy nothing knows of.
 //! One transaction for the conflict's record, where a loss costs the user the notice of
 //! a copy ([`add_conflicts_in`], the form of `TreeStore::add_conflicts` over a

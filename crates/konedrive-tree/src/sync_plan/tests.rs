@@ -289,7 +289,7 @@ fn items_the_two_sides_agree_on_are_in_no_part_of_the_answer() {
 /// The map's E12 (a partial file at the path, today `not-downloaded` for 30 s, no test):
 /// differs from today. The rows have no "being filled": a download is a step that is
 /// running, and whatever the rows say of the item, it waits for that step. Also the map's
-/// "one step per item at a time" (`T/outbox/pick.rs:186-196`).
+/// "one step per item at a time".
 #[test]
 fn an_item_with_a_step_running_waits_for_it() {
     let mut given = input(vec![removed_in_onedrive(moved_here(synced_file(2, ROOT, "a.txt"), ROOT, "b.txt")), made_file(3, ROOT, "new.txt")]);

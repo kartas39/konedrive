@@ -170,9 +170,8 @@ fn a_directory_made_here_is_made_in_onedrive() {
     assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::MakeDirectory { item: versions(&given, 2), parent: reference("root"), name: "d".into() }));
 }
 
-/// E13 and E14, the map's "a parent not in OneDrive yet" (`T/outbox/pick.rs:204-222`, the
-/// reason `parent-not-in-onedrive`). Today: `a_mkdir_at_the_end_of_the_queue_runs_first`
-/// (`outbox/pick/tests.rs`). The step carries the binding of the directory, so it waits
+/// E13 and E14, the map's "a parent not in OneDrive yet" (the reason
+/// `parent-not-in-onedrive`): the directory is made first. The step carries the binding of the directory, so it waits
 /// for the directory to have one; and for a listing while the root itself has none.
 #[test]
 fn an_item_made_here_waits_for_its_directory_to_be_in_onedrive() {

@@ -20,8 +20,7 @@ fn waits_for(number: i64) -> Answer {
 
 // -- names
 
-/// B1a. Today: rule 4 of `outbox/pick.rs` (`a_taker_waits_for_what_frees_its_name`,
-/// `outbox/pick/tests.rs`): a taker waits for every freer of its name, lower-cased.
+/// B1a: a taker waits for every freer of its name, as OneDrive compares names.
 #[test]
 fn what_frees_a_name_in_onedrive_goes_before_what_takes_it() {
     let given = input(vec![
@@ -403,8 +402,7 @@ fn a_directory_removed_here_with_all_in_it_is_one_removal_in_onedrive() {
     }
 }
 
-/// The map's rule beside B8 (`a_folders_removal_waits_for_what_is_moved_out_of_it`,
-/// `outbox/pick/tests.rs`): a directory's removal waits for every unsent change of what
+/// The map's rule beside B8: a directory's removal waits for every unsent change of what
 /// OneDrive has below it, so that an item moved out of it is not removed with it.
 #[test]
 fn the_removal_of_a_directory_waits_for_what_was_moved_out_of_it() {
@@ -568,8 +566,7 @@ fn the_steps_are_in_the_order_the_items_came_to_be_unsent() {
     assert_eq!(plan.steps.iter().map(SyncStep::local_item_id).collect::<Vec<_>>(), [id(4), id(5), id(7), id(3)]);
 }
 
-/// The invariant of today's `outbox/pick.rs` ("nothing runnable says why";
-/// `a_stall_is_reported`, `outbox/pick/tests.rs`), carried over: an item that waits for
+/// The invariant "nothing runnable says why": an item that waits for
 /// another item, where nothing the plan answers ends the wait, is a fault the plan says.
 #[test]
 fn a_wait_that_nothing_ends_is_a_fault_the_plan_says() {

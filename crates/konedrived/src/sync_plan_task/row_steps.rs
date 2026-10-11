@@ -114,8 +114,7 @@ impl RowSteps {
 
     /// `GiveUpBinding`: `commit_give_up_binding(item, is_name_ignored)` under the tree
     /// lock; then the OneDrive marks taken off what the item has on disk
-    /// (`ItemContentFiles::remove_onedrive_marks`). Replaces `outbox_orphan` and
-    /// `upload_as_new` (`upload/steps/shared.rs:591`). The upload session the item had
+    /// (`ItemContentFiles::remove_onedrive_marks`). The upload session the item had
     /// is abandoned by the store, with the binding.
     async fn run_give_up_binding(&self, item: &ItemVersions) -> StepOutcome {
         let name = item.local.as_ref().and_then(|local| local.place.as_ref()).map(|place| place.name.clone());
