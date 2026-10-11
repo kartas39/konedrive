@@ -207,7 +207,23 @@ async fn ignore(chosen: &Chosen, proxy: &FolderProxies<'_>, action: IgnoreCmd) -
 /// asks whether to go on (a `--yes` of the command answers it). Whether the caller goes
 /// on; `true` at once for 0. A count that cannot be read is said, and asked about too.
 // TODO: wording
-#[allow(unused_variables)]
 pub(crate) async fn warn_of_unsent_changes(proxy: &FolderProxies<'_>) -> anyhow::Result<bool> {
-    todo!()
+    use std::io::Write as _;
+    let warning = match proxy.queue.unsent_count().await {
+        Ok(0) => return Ok(true),
+        Ok(1) => "1 change was not sent to OneDrive and will stay only on this computer.".to_owned(),
+        Ok(count) => format!("{count} changes were not sent to OneDrive and will stay only on this computer."),
+        Err(error) => format!("Could not read how many changes were not sent to OneDrive ({error}); any that were not will stay only on this computer."),
+    };
+    // TODO: contract — neither `sync forget` nor `account remove` has a `--yes` (`crates/konedrivectl/src/cli.rs`), and this function is given none: the question is always asked, and input that ends without an answer (a script) is a no.
+    eprintln!("{warning}");
+    eprint!("Go on? [y/N] ");
+    std::io::stderr().flush().context("cannot write the question")?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer).context("cannot read the answer")?;
+    let goes_on = matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+    if !goes_on {
+        eprintln!("Nothing was changed.");
+    }
+    Ok(goes_on)
 }

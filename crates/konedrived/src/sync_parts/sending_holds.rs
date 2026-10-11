@@ -77,6 +77,7 @@ struct Holds {
     is_stopping: bool,
     is_signed_out: bool,
     writes_refusal: Option<String>,
+    is_folder_read_only: bool,
     paused_until: Option<Option<i64>>,
     throttled_until: Option<i64>,
     /// Whether the end of the throttle is one chosen here: OneDrive named none.
@@ -94,6 +95,7 @@ impl Holds {
             self.is_stopping.then_some(SendingHold::Stopping),
             self.is_signed_out.then_some(SendingHold::SignedOut),
             self.writes_refusal.clone().map(|reason| SendingHold::WritesNotAllowed { reason }),
+            self.is_folder_read_only.then_some(SendingHold::FolderReadOnly),
             paused.map(|until| SendingHold::Paused { until }),
             self.find_throttle_end(now).map(|until| SendingHold::Throttled { until }),
             (!self.has_listing_ended).then_some(SendingHold::FirstListingNotEnded),
@@ -210,9 +212,8 @@ impl SendingHolds {
     /// `sync_tasks::access_mode_change` alone — at a switch, and at a start for a folder
     /// wanted read-only — which is its one setter: the account's own refusal is
     /// `set_writes_refusal`'s, and neither clears the other.
-    #[allow(unused_variables)]
     pub fn set_folder_read_only(&self, is_read_only: bool) {
-        todo!()
+        self.change(|holds| holds.is_folder_read_only = is_read_only);
     }
 
     /// OneDrive throttled a step, naming `retry_after` or nothing: today's rules

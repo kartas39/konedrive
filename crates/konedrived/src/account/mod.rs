@@ -231,9 +231,26 @@ impl FolderAccount for AccountService {
         AccountService::drive_seen(self, drive);
     }
 
-    #[allow(unused_variables)]
     fn tell_unsent_count(&self, unsent: u64) {
-        todo!()
+        // The note is there for as long as the wish stands (`keep_read_only_wish`, `recompute_mode`): an account that shows none keeps no wish.
+        let shown = match self.state.get().mode_note {
+            Some(ModeNote::SwitchingToReadOnly { unsent: shown }) => shown,
+            Some(ModeNote::WiderGrant(_) | ModeNote::ConfigUnreadable | ModeNote::NoDriveRecorded | ModeNote::DriveMismatch { .. } | ModeNote::SignInToWrite | ModeNote::DriveNotSeen) | None => return,
+        };
+        if shown != unsent {
+            // Asked again inside the write: a wish taken back meanwhile gets no note from here.
+            self.state.update(|snapshot| {
+                if let Some(ModeNote::SwitchingToReadOnly { unsent: shown }) = &mut snapshot.mode_note {
+                    *shown = unsent;
+                }
+            });
+        }
+        if unsent == 0 {
+            // The switch awaits the folder and the token: a task of its own, never the caller's.
+            if let Some(account) = self.own.upgrade() {
+                tokio::spawn(async move { account.switch_to_read_only_when_sent().await });
+            }
+        }
     }
 }
 
@@ -281,6 +298,9 @@ pub struct AccountService {
     siblings: std::sync::Mutex<Option<Arc<Siblings>>>,
     /// Set by `Accounts.Remove`: no sign-in is begun or stored from then on.
     retired: std::sync::atomic::AtomicBool,
+    /// This account itself, for the task it starts of its own: the switch to read-only
+    /// once nothing is unsent (`FolderAccount::tell_unsent_count`).
+    own: Weak<AccountService>,
 }
 
 /// An account's own attempt ([`attempt`]): what interrupts its wait for the browser, and
@@ -316,7 +336,7 @@ impl AccountService {
         let graph = DriveClient::new(endpoints.graph.clone(), Arc::clone(&tokens) as Arc<dyn konedrive_graph::token::TokenSource>)?;
         let cache_lock = Arc::new(std::sync::Mutex::new(()));
         let quota = Quota::new(state.clone(), Some(keep_quota(paths.account_cache.clone(), Arc::clone(&cache_lock))));
-        let service = Arc::new(Self {
+        let service = Arc::new_cyclic(|own| Self {
             id: id.clone(),
             config,
             state,
@@ -333,6 +353,7 @@ impl AccountService {
             session: Mutex::new(Session { generation: 0, cancel: None }),
             siblings: std::sync::Mutex::new(None),
             retired: std::sync::atomic::AtomicBool::new(false),
+            own: Weak::clone(own),
         });
         service.install_oauth(&client_id);
         // Every refresh says what its token is valid for (`docs/design/writes.md` §2). Weak: the token

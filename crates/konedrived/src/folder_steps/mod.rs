@@ -249,9 +249,34 @@ impl FolderSteps {
     /// published plan, for the items whose answer turned to or from what the mark shows
     /// as blocked. Never waits for the kernel: the bridge's queue takes them. The pin's
     /// change is announced by who sets it (`ItemFilesInterface::set_pin`).
-    #[allow(unused_variables)]
     pub fn announce_marks_changed(&self, items: Vec<LocalItemId>) {
-        todo!()
+        if items.is_empty() {
+            return;
+        }
+        let read = move |rows: &konedrive_tree::ItemReader<'_>| {
+            let mut announcements = Vec::new();
+            for item in items {
+                // The root has no place, and an item the folder does not show no local version: neither has a name to touch.
+                if let Some(place) = rows.find_item(item)?.and_then(|row| row.local).and_then(|local| local.place) {
+                    announcements.push(ItemAnnouncement::MarksChanged { item, place });
+                }
+            }
+            Ok(announcements)
+        };
+        // Each item is a change of its own to the bridge: none is held up by another's.
+        let announce = |inotify_bridge: &ItemInotifyBridge, announcements: Result<Vec<ItemAnnouncement>, TreeError>| match announcements {
+            Ok(announcements) => announcements.into_iter().for_each(|announcement| inotify_bridge.announce(vec![announcement])),
+            Err(error) => tracing::warn!("cannot read the places of the items whose sync mark changed: {error}"),
+        };
+        // The caller, the plan's loop, waits neither for the read nor for the kernel: the read is a task of its own on the store's reading connection.
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                let (store, inotify_bridge) = (self.store.clone(), Arc::clone(&self.inotify_bridge));
+                runtime.spawn(async move { announce(&inotify_bridge, store.read_items(read).await) });
+            }
+            // Called off the runtime: the read is made here.
+            Err(_) => announce(&self.inotify_bridge, self.store.read_items_blocking(read)),
+        }
     }
 
     /// Runs `step` and answers what came of it: total over the cases. A `ShowItem` goes

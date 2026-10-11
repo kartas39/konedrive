@@ -52,6 +52,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::item_row::{self, item_from, name_value, CONTENT_COLUMNS, ITEM_COLUMNS, LEFT_HERE};
 use super::{find_folder_visibility, find_path, is_ignored, list_rows_up_in_onedrive, refuse};
 use crate::model::{FolderVisibility, Item, ItemKind, LocalItemId, OneDriveItemId, OneDriveItemReference, Placement, SkipReason};
+use crate::step_memory::find_mismatched_item;
 use crate::sync_plan::SendingState;
 use crate::{FoldedName, ListingUnderWay, Store, TreeError, TreeStore, MAX_CHAIN};
 
@@ -307,9 +308,18 @@ impl ItemReader<'_> {
     /// the pin an unpin or a free-up of the item cannot take off. By the local places, as
     /// [`is_pinned`](Self::is_pinned), which answers whether this is some. Called by the
     /// mount's `Files` interface for the status of a path (`PinHolder`).
-    #[allow(unused_variables)]
     pub fn find_pin_holder(&self, item: LocalItemId) -> Result<Option<LocalItemId>, TreeError> {
-        todo!()
+        // The way up is the one of `item_row::find_is_pinned`; of the rows on it that have a pin, a directory above comes before the item, the nearest first.
+        let sql = format!(
+            "WITH RECURSIVE above(id, depth) AS (
+                 SELECT local_item_id, 0 FROM items WHERE local_item_id = ?1 AND local_parent_id IS NOT NULL
+                 UNION ALL
+                 SELECT items.local_parent_id, above.depth + 1 FROM above JOIN items ON items.local_item_id = above.id WHERE items.local_parent_id IS NOT NULL AND above.depth <= {MAX_CHAIN})
+             SELECT above.id FROM above JOIN items ON items.local_item_id = above.id JOIN pins ON pins.id = items.onedrive_item_id
+             ORDER BY above.depth = 0, above.depth LIMIT 1"
+        );
+        let holder = self.conn().prepare_cached(&sql)?.query_row([item.as_i64()], |row| row.get::<_, i64>(0)).optional()?;
+        Ok(holder.map(LocalItemId::new))
     }
 
     /// What OneDrive has in `directory`, at any depth, that the folder NEVER showed: a row
@@ -322,18 +332,59 @@ impl ItemReader<'_> {
     /// By the OneDrive places, as `list_below_in_onedrive`. Called by the mount's `rmdir`,
     /// in the job that reads its case: a directory for which this is not `Nothing` is not
     /// removed here (`ENOTEMPTY`).
-    #[allow(unused_variables)]
+    ///
+    /// An item an upload of this folder left there with other content than was sent, as
+    /// the step memory says it now (`step_memory::find_mismatched_item` of the row's
+    /// binding), is none of these either: it is the folder's own leftover and goes with
+    /// the directory, as the removal's own check has it
+    /// (`step_commit::is_directory_removal_as_planned`), so it does not make `rmdir`
+    /// answer `ENOTEMPTY`.
     pub fn find_onedrive_items_never_shown_below(&self, directory: LocalItemId) -> Result<ItemsNeverShown, TreeError> {
-        todo!()
+        let mut never_shown = ItemsNeverShown::Nothing;
+        for row in item_row::list_below_in_onedrive(self.conn(), directory)? {
+            // What the folder shows, and what the two sides agreed on (removed here, the removal unsent), was shown.
+            if row.local.is_some() || row.synced_place.is_some() || row.synced_content.is_some() {
+                continue;
+            }
+            let is_left_by_upload = match row.onedrive_item.as_ref() {
+                Some(onedrive_item) => find_mismatched_item(self.conn(), onedrive_item)?.is_some(),
+                None => false,
+            };
+            if is_left_by_upload {
+                continue;
+            }
+            match find_folder_visibility(self.conn(), row.local_item_id)? {
+                FolderVisibility::CannotBeShown => return Ok(ItemsNeverShown::CannotBeShown),
+                FolderVisibility::CanBeShown | FolderVisibility::NotKnownYet | FolderVisibility::NotInOneDrive => never_shown = ItemsNeverShown::NotShownYet,
+            }
+        }
+        Ok(never_shown)
     }
 
     /// The directories the folder shows, the root first, each with its path relative to
     /// the root, by local item id, after the directory `after`, at most `limit`. By the
     /// local places. Called to tell the desktop's programs to list them again
     /// (`desktop::dirnotify::read_folder_again`), in pages.
-    #[allow(unused_variables)]
     pub fn list_shown_directories(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<(LocalItemId, std::path::PathBuf)>, TreeError> {
-        todo!()
+        // The root has no local place and the smallest id: it is the first of the first page.
+        let sql = format!(
+            "SELECT local_item_id FROM items WHERE kind = '{}' AND (local_parent_id IS NOT NULL OR local_item_id = {}) AND local_item_id > ?1 ORDER BY local_item_id LIMIT ?2",
+            ItemKind::Directory.as_str(),
+            LocalItemId::ROOT.as_i64()
+        );
+        let ids = {
+            let mut statement = self.conn().prepare_cached(&sql)?;
+            let ids = statement.query_map(params![after.map_or(0, LocalItemId::as_i64), limit as i64], |row| row.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?;
+            ids
+        };
+        let mut directories = Vec::with_capacity(ids.len());
+        for id in ids.into_iter().map(LocalItemId::new) {
+            // A row with a local place whose directories above do not show it has no path: it is passed over.
+            if let Some(path) = find_path(self.conn(), id)? {
+                directories.push((id, path));
+            }
+        }
+        Ok(directories)
     }
 
     /// The files the folder shows below `directory`, at any depth, by local item id, after

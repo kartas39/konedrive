@@ -76,9 +76,8 @@ impl PlanSettings {
     /// conflict copy's name holds it), the largest file OneDrive takes
     /// (`local::names::MAX_FILE_SIZE`), [`QUIET_TIME`] and [`ITEMS_READ_AT_ONCE`]. What
     /// the owner of the folder's state gives a start (`FolderStartInput::settings`).
-    #[allow(unused_variables)]
     pub fn of(computer_name: String) -> Self {
-        todo!()
+        PlanSettings { computer_name, largest_file_size: crate::local::names::MAX_FILE_SIZE, quiet_time: QUIET_TIME, items_read_at_once: ITEMS_READ_AT_ONCE }
     }
 }
 

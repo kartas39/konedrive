@@ -176,7 +176,6 @@ pub struct SyncPlanTaskParts {
 
 /// How often the bytes of the uploads that run are published while one runs, in seconds
 /// (`SyncPlanTask::publish_queue_status` on the task's tick).
-#[allow(dead_code)]
 const UPLOAD_PROGRESS_PUBLISHED_EVERY: i64 = 1;
 
 /// How long after the old openings of upload sessions were forgotten they are forgotten
@@ -220,6 +219,9 @@ pub struct SyncPlanTask {
     /// The task that cancels upload sessions and removes the items uploads left, when one
     /// was started: one at a time, and awaited by the loop before it returns at a stop.
     session_cancellations_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The counts of the queue as the task last read and published them: what the tick's
+    /// round, which reads no count, publishes the bytes of the uploads with.
+    queue_counts: std::sync::Mutex<crate::upload_queue::QueueCounts>,
 }
 
 /// A step that ended, as its task hands it to the loop.
@@ -291,9 +293,12 @@ pub fn decide_outcome_of_ended_task(is_cancelled: bool, detail: String) -> Optio
 /// again — unless the plan's own time ([`decide_next_wake`]) was reached too. The loop
 /// tells the two apart itself, by the times (it kept both): for a wake at the tick alone
 /// it does not ask [`decide_round`], whose three cases stay as they are. Pure.
-#[allow(unused_variables)]
 pub fn decide_progress_tick(running: &[RunningStep], now: i64) -> Option<i64> {
-    todo!()
+    let is_content_sent = running.iter().any(|step| match step.class {
+        StepClass::Content => true,
+        StepClass::Metadata | StepClass::Download | StepClass::Folder | StepClass::Row => false,
+    });
+    is_content_sent.then_some(now.saturating_add(UPLOAD_PROGRESS_PUBLISHED_EVERY))
 }
 
 /// When the task wakes by itself next, Unix seconds: the soonest of the plan's waits
@@ -309,7 +314,7 @@ pub fn decide_next_wake(plan: &SyncPlan, hold_end: Option<i64>, next_quota_read:
 impl SyncPlanTask {
     /// Made by the folder's start (`sync_tasks::start_order::start_sync_tasks`).
     pub fn new(parts: SyncPlanTaskParts) -> Arc<Self> {
-        Arc::new(SyncPlanTask { parts, logged_since_listing_ended: AtomicUsize::new(0), local_step_tries: std::sync::Mutex::new(LocalStepTries::default()), ended_steps: std::sync::Mutex::default(), told_faults: std::sync::Mutex::default(), full_listings_asked: std::sync::Mutex::default(), plan_count: AtomicU64::new(0), quota_read_failed_at: std::sync::Mutex::new(None), session_cancellations_task: std::sync::Mutex::new(None) })
+        Arc::new(SyncPlanTask { parts, logged_since_listing_ended: AtomicUsize::new(0), local_step_tries: std::sync::Mutex::new(LocalStepTries::default()), ended_steps: std::sync::Mutex::default(), told_faults: std::sync::Mutex::default(), full_listings_asked: std::sync::Mutex::default(), plan_count: AtomicU64::new(0), quota_read_failed_at: std::sync::Mutex::new(None), session_cancellations_task: std::sync::Mutex::new(None), queue_counts: std::sync::Mutex::default() })
     }
 
     /// Runs the loop until `stop`, then ends its steps as the module's doc says, and
@@ -514,15 +519,45 @@ impl SyncPlanTask {
     /// published answers and the running steps taken before it
     /// (`upload_queue::read_queue_totals`, `count_queue`, `read_running_upload_paths`,
     /// `describe_running_uploads`), `read_queue_conditions` taken before the read too.
+    /// The plan's counts of the held removals (`PublishedPlan::list_held_removal_counts`)
+    /// are taken with the answers and given to `read_queue_totals`: without them
+    /// `PendingCount` would count the rows below a held directory.
     /// With `is_counts_read` false only the bytes of the running uploads are published,
     /// with the counts as they were last read: the tick's round, which reads no row but
     /// the paths of the uploads. The task is the ONE writer of these fields. Called by
     /// the loop after every plan it published, after every round in which a step was
     /// settled, and at the tick ([`decide_progress_tick`]); a read that fails is a warning
     /// and publishes nothing.
-    #[allow(unused_variables)]
     async fn publish_queue_status(&self, is_counts_read: bool) {
-        todo!()
+        let parts = &self.parts;
+        let conditions = crate::upload_queue::read_queue_conditions(&parts.sending_holds, &parts.onedrive_space, (parts.clock)());
+        let answers = parts.published_plan.list_answers();
+        let held_removal_counts = parts.published_plan.list_held_removal_counts();
+        let running = parts.running_steps.list_steps();
+        let read = {
+            let running = running.clone();
+            move |items: &konedrive_tree::ItemReader<'_>| {
+                let totals = if is_counts_read { Some(crate::upload_queue::read_queue_totals(items, &answers, &running, &held_removal_counts)?) } else { None };
+                Ok((totals, crate::upload_queue::read_running_upload_paths(items, &running)?))
+            }
+        };
+        let (totals, upload_paths) = match parts.store.read_items(read).await {
+            Ok(read) => read,
+            Err(error) => {
+                tracing::warn!("cannot read the upload queue of {}: {error}", parts.folder.display());
+                return;
+            }
+        };
+        let counts = {
+            let mut queue_counts = crate::panic::lock(&self.queue_counts);
+            if let Some(totals) = totals {
+                *queue_counts = crate::upload_queue::count_queue(&totals, &conditions);
+            }
+            *queue_counts
+        };
+        // The bytes are those the steps said before the read: a step that began since is published with the next round.
+        let uploads = crate::upload_queue::describe_running_uploads(&running, &upload_paths, &parts.folder);
+        crate::upload_queue::publish_queue_status(&parts.state, counts, uploads, conditions.is_onedrive_full);
     }
 
     /// Announces what a round's settlement wrote and changed: each event written
@@ -531,10 +566,43 @@ impl SyncPlanTask {
     /// items of the steps towards OneDrive that were settled (`marks_announcer`); the
     /// thumbnail filler nudged when a step towards the folder was written
     /// (`after_folder_steps`). Called by [`settle_steps`](Self::settle_steps) after the
-    /// job of the store, with the rows that job wrote.
-    #[allow(unused_variables)]
-    fn announce_settled_steps(&self, settled: &[(SyncStep, StepSettlement)], written: &[konedrive_tree::ActivityRow]) {
-        todo!()
+    /// job of the store, with the rows that job wrote, and after each of the steps was
+    /// ended (`RunningSteps::end`): who reads a mark again on the announcement must not
+    /// find the step still running.
+    async fn announce_settled_steps(&self, settled: &[(SyncStep, StepSettlement)], written: &[konedrive_tree::ActivityRow]) {
+        let parts = &self.parts;
+        for row in written {
+            parts.activity.announce(row.clone());
+        }
+        if written.iter().any(|row| row.kind == konedrive_tree::ActivityKind::Conflict) {
+            // `Activity::prune` reads the store and asks the disk: off the loop's thread, and waited for.
+            let activity = Arc::clone(&parts.activity);
+            if let Err(error) = tokio::task::spawn_blocking(move || activity.prune()).await {
+                tracing::warn!("the task that counts the conflicts ended: {error}");
+            }
+        }
+        let sent_items: Vec<LocalItemId> = settled
+            .iter()
+            .filter(|(step, _)| match step {
+                SyncStep::OneDrive(_) => true,
+                SyncStep::Folder(_) | SyncStep::Row(_) => false,
+            })
+            .flat_map(|(step, _)| {
+                let running_step = step_choice::describe_running_step(step);
+                std::iter::once(running_step.item).chain(running_step.other_items)
+            })
+            .collect();
+        if !sent_items.is_empty() {
+            (parts.marks_announcer)(sent_items);
+        }
+        // A step towards the folder that was written is the one whose tries are forgotten (`decide_step_settlement`): the settlement keeps no outcome.
+        let is_folder_step_written = settled.iter().any(|(step, settlement)| match step {
+            SyncStep::Folder(_) => settlement.local_step_tries == step_settlement::LocalStepTriesChange::Forgotten,
+            SyncStep::OneDrive(_) | SyncStep::Row(_) => false,
+        });
+        if let (true, Some(after_folder_steps)) = (is_folder_step_written, &parts.after_folder_steps) {
+            after_folder_steps.notify_one();
+        }
     }
 
     /// What the daemon knows beside the rows, as values, read now: the items with a
@@ -738,8 +806,6 @@ impl SyncPlanTask {
                 Vec::new()
             }
         };
-        // What was written and changed is said: the events, the sync marks of what was sent, the thumbnail filler.
-        self.announce_settled_steps(&settled, &written);
         for ((_, outcome), (_, settlement)) in ended.iter().zip(&settled) {
             match (&settlement.hold, outcome) {
                 (Some(SendingHold::Throttled { .. }), StepOutcome::Refused(StepRefusal::Throttled { retry_after })) => parts.sending_holds.throttle(*retry_after, now),
@@ -762,6 +828,8 @@ impl SyncPlanTask {
         for (step, _) in &settled {
             parts.running_steps.end(step.local_item_id());
         }
+        // What was written and changed is said, once no step of these runs: the events, the sync marks of what was sent, the thumbnail filler.
+        self.announce_settled_steps(&settled, &written).await;
         let has_change = ended.iter().zip(&settled).any(|((_, outcome), (_, settlement))| step_settlement::has_changed_anything(outcome, settlement));
         SettledSteps { has_change, is_plan_made_since_start }
     }
