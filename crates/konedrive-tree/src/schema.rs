@@ -1,6 +1,6 @@
-//! The store's schema: its version, what a new store is created with, how
-//! a store of an earlier version would be brought to it ([`migrations`]),
-//! and when a store is rebuilt.
+//! The store's schema: its version, what a new store is created with, and
+//! when a store is rebuilt ([`old_store`]): one of another version always is,
+//! and none is brought to this one in place.
 
 use std::path::Path;
 
@@ -11,7 +11,6 @@ use crate::item_store::{own_upload_contents_schema, place_change_records_schema,
 use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK, PLACED};
 use crate::{meta, outbox, TreeError, TreeStore};
 
-mod migrations;
 /// What becomes of a store an older version of the daemon left.
 mod old_store;
 
@@ -20,7 +19,7 @@ pub use old_store::{decide_old_store, OldStoreDecision, RebuildLoss, StoreOrigin
 /// The schema this daemon reads and writes, kept in `meta` as
 /// `schema_version`. A store of any other version — an earlier one, or a newer
 /// daemon's — is rebuilt from a full listing and never brought to this one in
-/// place ([`decide_old_store`]); no step of [`migrations`] exists.
+/// place ([`decide_old_store`]).
 ///
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
@@ -28,7 +27,7 @@ pub use old_store::{decide_old_store, OldStoreDecision, RebuildLoss, StoreOrigin
 pub const SCHEMA_VERSION: &str = "20";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
-/// is created with, and what every migrated store ends as.
+/// is created with.
 ///
 /// - `items`: one row per item, keyed by its local item id ([`crate::item_store`]).
 ///   `AUTOINCREMENT`: an id is never handed out twice, so the kernel's node id of an item
@@ -392,11 +391,10 @@ impl TreeStore {
         Ok(self.conn.query_row("PRAGMA data_version", [], |row| row.get(0))?)
     }
 
-    /// Brings what `conn` holds to [`SCHEMA_VERSION`]: a store with no
-    /// table at all gets the schema, an older one its migrations, each in a
-    /// transaction of its own. A store with tables and no `meta` (a crash
-    /// of a build that did not create them in one transaction) reads as one
-    /// of unknown version, and is rebuilt.
+    /// The store over `conn`, which holds [`SCHEMA_VERSION`] or nothing: a
+    /// store with no table at all gets the schema, in one transaction. One of
+    /// another version, or with tables and no `meta`, is an error here: what
+    /// becomes of it is decided before ([`TreeStore::open_with_origin`]).
     fn prepare(conn: Connection) -> Result<Self, TreeError> {
         let tables: i64 = conn.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table'", [], |row| row.get(0))?;
         if tables == 0 {
@@ -407,13 +405,7 @@ impl TreeStore {
         if has_meta == 0 {
             return Err(TreeError::Schema(None));
         }
-        let stored = |conn: &Connection| meta::get(conn, meta::SCHEMA_VERSION);
-        let mut version = stored(&conn)?;
-        while let Some(step) = migrations::from(version.as_deref()) {
-            at_version(&conn, step.to, step.run)?;
-            tracing::info!("the tree store is at version {}: {}", step.to, step.what);
-            version = stored(&conn)?;
-        }
+        let version = meta::get(&conn, meta::SCHEMA_VERSION)?;
         if version.as_deref() != Some(SCHEMA_VERSION) {
             return Err(TreeError::Schema(version));
         }

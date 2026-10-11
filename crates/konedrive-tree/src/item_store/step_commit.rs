@@ -334,7 +334,7 @@ impl ItemStore<'_> {
 
 /// The commit of a step towards the folder, or of the rows alone, answered `outcome` for
 /// `item`: written, the failed tries of a step for what OneDrive has of the item are over.
-fn forget_tries_when_written(tx: &Transaction<'_>, item: &ItemVersions, outcome: StepCommitOutcome) -> Result<StepCommitOutcome, TreeError> {
+pub(super) fn forget_tries_when_written(tx: &Transaction<'_>, item: &ItemVersions, outcome: StepCommitOutcome) -> Result<StepCommitOutcome, TreeError> {
     if outcome == StepCommitOutcome::Written {
         forget_tries_of_onedrive_version(tx, item.local_item_id)?;
     }

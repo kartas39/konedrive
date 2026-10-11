@@ -28,8 +28,7 @@ use rusqlite::Connection;
 
 use super::item_row::{find_item, set_content_presence, write_item};
 use super::place_change_records::{forget_place_change_record, forget_place_change_record_when_written};
-use super::step_commit::commit_show_item;
-use super::step_memory::forget_tries_of_onedrive_version;
+use super::step_commit::{commit_show_item, forget_tries_when_written};
 use super::{apply_change, make, refuse, ItemStore, PlaceChangeRecordId, StepCommitOutcome};
 use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, LocalItemId, LocalVersionChange};
 use crate::sync_plan::ItemVersions;
@@ -74,6 +73,13 @@ impl ItemStore<'_> {
     /// (`write_operations/write.rs:183-191`): the row's local content and the content
     /// agreed on stay one, so nothing is unsent and the copy can still be freed, as the
     /// content with the time that was set. OneDrive's content keeps OneDrive's time.
+    // OPEN: the time set on a clean copy is taken back by the next plan. The row is then
+    // among those changed in OneDrive (`onedrive_mtime IS NOT synced_mtime`), and the
+    // plan's cell "its content", same on both sides (`sync_plan::item_decision::decide_content`,
+    // the `(Same, Same)` arm), asks `local == onedrive` exactly: it answers
+    // `RowStep::AgreeOnContent`, whose commit writes OneDrive's content, with OneDrive's
+    // time, as the local and the synced one. The backing file keeps the time that was set.
+    // To be settled in the plan's comparison, not here.
     pub fn set_local_modified_time(&mut self, item: LocalItemId, mtime: i64, mtime_nsec: u32) -> Result<(), TreeError> {
         self.write(|tx| {
             let mut row = find_item(tx, item)?.ok_or_else(|| refuse(format!("item {item} has no row")))?;
@@ -200,13 +206,7 @@ impl ItemStore<'_> {
         self.write(|tx| {
             let mut outcomes = Vec::with_capacity(items.len());
             for (item, is_name_ignored) in items {
-                let outcome = commit_show_item(tx, item, *is_name_ignored)?;
-                // As the commit of one step towards the folder: written, the failed tries
-                // of a step for what OneDrive has of the item are over.
-                if outcome == StepCommitOutcome::Written {
-                    forget_tries_of_onedrive_version(tx, item.local_item_id)?;
-                }
-                outcomes.push(outcome);
+                outcomes.push(forget_tries_when_written(tx, item, commit_show_item(tx, item, *is_name_ignored)?)?);
             }
             Ok(outcomes)
         })
