@@ -4,8 +4,9 @@
 #
 # The groups: `service`, the daemon's service command by command, whose lines are read by a
 # person; `mounted_folder`, `file_writes`, `file_reads` and `daemon_restarts` (a file each),
-# scenarios with checks; `cli`, `konedrivectl`'s tests of a mounted folder. ONLY, when set, names the
-# scenarios to run of the groups asked for.
+# scenarios with checks; `cli`, `konedrivectl`'s tests of a mounted folder. By name only:
+# `kio_trash`, what KIO does when a file of the folder is moved to the trash. ONLY, when set,
+# names the scenarios to run of the groups asked for.
 set -u
 bin=$1
 shift
@@ -17,6 +18,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/file_writes.sh"
 . "$here/file_reads.sh"
 . "$here/daemon_restarts.sh"
+. "$here/kio_trash.sh"
 
 modprobe loop
 modprobe fuse 2>/dev/null

@@ -18,9 +18,21 @@ case " ${*:-cli} " in
         [ -x "$cli_test" ] || { echo "the tests of crates/konedrivectl/tests/sync_cli were not built"; exit 1; }
         ;;
 esac
+# The probe of KIO's trash (tests/kio/trash_probe.cpp), built here when the `kio_trash` group is
+# asked for, which it is by name only: it needs the development packages of Qt 6 and KDE
+# Frameworks 6 on the host, and the guest runs it with the host's libraries.
+trash_probe=
+case " $* " in
+    *" kio_trash "*)
+        cmake -S "$here/../kio" -B "$here/target/kio-probe" -DCMAKE_BUILD_TYPE=RelWithDebInfo > /dev/null
+        cmake --build "$here/target/kio-probe" --target trash_probe > /dev/null
+        trash_probe=$here/target/kio-probe/trash_probe
+        ;;
+esac
 {
     echo '#!/bin/sh'
     echo "export CLI_TEST='$cli_test'"
+    echo "export TRASH_PROBE='$trash_probe'"
     echo "export ONLY='${ONLY:-}'"
     # For a person who reads a failure: the level of the daemon's log, and how much of it a failed scenario prints.
     echo "export SERVICE_LOG='${SERVICE_LOG:-info}'"

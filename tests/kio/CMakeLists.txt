@@ -11,3 +11,8 @@ find_package(KF6 6.8 REQUIRED COMPONENTS KIO CoreAddons)
 
 add_executable(kio_probe kio_probe.cpp)
 target_link_libraries(kio_probe PRIVATE Qt6::Core Qt6::Gui KF6::KIOCore KF6::KIOGui KF6::CoreAddons)
+
+# What KIO does when a file of a served sync folder is moved to the trash: run by the VM suite's
+# group `kio_trash` (tests/fuse-probe/guest.sh).
+add_executable(trash_probe trash_probe.cpp)
+target_link_libraries(trash_probe PRIVATE Qt6::Core Qt6::Gui KF6::KIOCore KF6::KIOWidgets KF6::CoreAddons)
