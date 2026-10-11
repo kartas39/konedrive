@@ -49,15 +49,6 @@ void KNotificationSink::send(const Notice &notice)
     notification->setComponentName(QStringLiteral("konedrive"));
     notification->setTitle(notice.title);
     notification->setText(notice.text);
-    for (const NoticeAction &button : notice.actions) {
-        KNotificationAction *action = notification->addAction(button.label);
-        const std::function<void()> run = button.run;
-        QObject::connect(action, &KNotificationAction::activated, notification, [run] {
-            if (run) {
-                run();
-            }
-        });
-    }
     if (!notice.showPath.isEmpty()) {
         const QString path = notice.showPath;
         KNotificationAction *show = notification->addAction(i18nc("@action:button", "Show in Folder"));
@@ -66,14 +57,7 @@ void KNotificationSink::send(const Notice &notice)
             KIO::highlightInFileManager({QUrl::fromLocalFile(path)}, notification->xdgActivationToken().toUtf8());
         });
     }
-    if (notice.defaultAction) {
-        // A click on the notification itself takes the safe choice.
-        KNotificationAction *safe = notification->addDefaultAction(notice.actions.isEmpty() ? QString() : notice.actions.constFirst().label);
-        const std::function<void()> run = notice.defaultAction;
-        QObject::connect(safe, &KNotificationAction::activated, notification, [run] {
-            run();
-        });
-    } else if (m_openWindow) {
+    if (m_openWindow) {
         KNotificationAction *open = notification->addDefaultAction(i18nc("@action", "Open KOneDrive"));
         const std::function<void(const QString &)> openWindow = m_openWindow;
         const QString account = notice.account;

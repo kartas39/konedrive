@@ -88,9 +88,6 @@ FormCard.FormCardPage {
             if (Daemon.removeNeedsHelper) {
                 return i18n("The account was not removed: its folder can be forgotten only through the konedrive helper, which is not available. %1", Daemon.helperInstruction);
             }
-            if (Daemon.removeWaitsForUploads) {
-                return i18n("The account was not removed: changes made on this computer have not been uploaded yet, and removing it now would lose them. Wait until they are uploaded, or turn uploading off for this account and choose not to upload them; then remove it.");
-            }
             return i18n("The account was not removed: %1", Daemon.removeError);
         }
         visible: page.available && page.account !== null && Daemon.removeFailedPath === page.account.path

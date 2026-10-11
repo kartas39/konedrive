@@ -11,12 +11,6 @@ class AccountController;
 class SyncController;
 class QTimer;
 
-/// A button on a notification, beyond "Show in Folder".
-struct NoticeAction {
-    QString label;
-    std::function<void()> run;
-};
-
 /// One desktop notification, as the Notifier decides it.
 struct Notice {
     /// The event in konedrive.notifyrc: signedOut, diskFull, downloadFailed,
@@ -30,11 +24,6 @@ struct Notice {
     int count = 1;
     /// The account's object path: a click on the notification opens the window on it.
     QString account = QString();
-    /// Buttons, in order.
-    QList<NoticeAction> actions = {};
-    /// When set, a click on the notification itself runs this rather than
-    /// opening the window.
-    std::function<void()> defaultAction = {};
 };
 
 /// Where notices go. The app sends them through KNotification

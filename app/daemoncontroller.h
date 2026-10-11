@@ -47,8 +47,6 @@ class DaemonController : public QObject
     Q_PROPERTY(QString removeError READ removeError NOTIFY removeChanged)
     /// That refusal was NoHelper: the folder can be forgotten only through the helper.
     Q_PROPERTY(bool removeNeedsHelper READ removeNeedsHelper NOTIFY removeChanged)
-    /// That refusal was PendingUploads: changes made here would be lost with the account.
-    Q_PROPERTY(bool removeWaitsForUploads READ removeWaitsForUploads NOTIFY removeChanged)
     /// This window's build (CMakeLists.txt, docs/releasing.md): X.Y.Z,
     /// X.Y.Z-dev.N or X.Y.Z-dev, and the full hash of its commit or "unknown".
     Q_PROPERTY(QString version READ version CONSTANT)
@@ -86,7 +84,6 @@ public:
     QString removeFailedPath() const { return m_removeFailedPath; }
     QString removeError() const { return m_removeError; }
     bool removeNeedsHelper() const { return m_removeNeedsHelper; }
-    bool removeWaitsForUploads() const { return m_removeWaitsForUploads; }
     QString version() const { return m_version; }
     QString commit() const { return m_commit; }
     QString versionLine() const;
@@ -156,7 +153,6 @@ private:
     QString m_removeFailedPath;
     QString m_removeError;
     bool m_removeNeedsHelper = false;
-    bool m_removeWaitsForUploads = false;
     const QString m_version;
     const QString m_commit;
     QString m_daemonVersion;
