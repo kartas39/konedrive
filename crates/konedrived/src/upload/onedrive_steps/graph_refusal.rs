@@ -13,7 +13,7 @@
 // test: a_423_is_locked_and_tried_again
 // test: a_403_is_forbidden_and_a_400_refused_for_good_with_its_message
 // test: a_signed_out_account_is_said_so
-// test: the_network_and_everything_else_is_transient_and_carries_no_address
+// test: the_network_and_everything_else_is_an_answer_lost_and_carries_no_address
 #![allow(dead_code, unused_variables)]
 
 use konedrive_graph::drive::WriteError;
@@ -32,14 +32,25 @@ pub enum RefusedRequest {
     NotFound,
     /// The upload session is gone (`content_upload` asks whether the content is there).
     SessionGone,
-    /// 507: the quota is read (`OneDriveSpace::refuse_for_space`).
+    /// 507: the quota is read (`OneDriveSpace::refuse_for_space`, by the content upload
+    /// for a content and by the runner for any other request).
     NoSpace,
+    /// `WriteError::Transient` and `Failed`: the network, a timeout, a 5xx other than
+    /// 503, an answer that could not be read. Nothing says whether the request reached
+    /// OneDrive: a step whose request changes OneDrive reads what became of it before it
+    /// ends (`LostAnswers::settle_lost_answer`), and answers
+    /// `StepRefusal::Transient { detail }` only for a request that changed nothing; a
+    /// request that only reads answers it at once.
+    AnswerLost { detail: String },
     /// Nothing more to look at: the answer of the step.
     Settled(StepRefusal),
 }
 
-/// What `error` leaves a step to do. Pure. The text of a transient failure is kept
-/// without any address in it (`engine/outcome.rs:158`, `without_urls`).
+/// What `error` leaves a step to do. Pure. Settled at once: 429 and 503 `Throttled`, 423
+/// `Locked`, 403 `Forbidden`, 400 `RefusedForGood` with OneDrive's message, a signed-out
+/// account `SignedOut` — each a certain answer that the request changed nothing. The
+/// text of a lost answer is kept without any address in it (`engine/outcome.rs:158`,
+/// `without_urls`).
 pub fn decide_refusal(error: &WriteError) -> RefusedRequest {
     todo!()
 }

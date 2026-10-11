@@ -30,7 +30,7 @@
 //! | `Failed(UndoFailed)` | — | the mount's take-down was asked for by the runner |
 //! | `Failed(Store)` | `remember_failed_try(Store, next)` | the journal |
 //! | `Failed(Disk)` | `remember_failed_try(LocalIo, next)` | the journal |
-//! | `Failed(AnswerUnreadable)` | `remember_failed_try(Failed, next)` | the journal |
+//! | `Failed(AnswerUnreadable \| RunnerPanicked)` | `remember_failed_try(Failed, next)` | the journal |
 //!
 //! **Whose the failed tries are.** `remember_failed_try` in the table is two things, by
 //! the direction of the step. A step towards OneDrive: the store's
@@ -263,7 +263,7 @@ pub fn decide_step_settlement(step: &SyncStep, outcome: &StepOutcome, tries: u32
         StepOutcome::Failed(StepFailure::UndoFailed { .. }) => {}
         StepOutcome::Failed(StepFailure::Store { .. }) => count_failed_try(&mut settlement, Reason::Store),
         StepOutcome::Failed(StepFailure::Disk { .. }) => count_failed_try(&mut settlement, Reason::LocalIo),
-        StepOutcome::Failed(StepFailure::AnswerUnreadable { .. }) => count_failed_try(&mut settlement, Reason::Failed),
+        StepOutcome::Failed(StepFailure::AnswerUnreadable { .. } | StepFailure::RunnerPanicked { .. }) => count_failed_try(&mut settlement, Reason::Failed),
     }
     settlement
 }

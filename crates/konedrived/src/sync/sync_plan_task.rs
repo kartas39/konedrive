@@ -253,8 +253,7 @@ pub fn decide_round(causes: &BTreeSet<WakeCause>, settled: SettledSteps, steps_l
 /// already), a failure for any other end — a panic of the runner —, so that the step
 /// ends, counts a try and waits. Pure.
 pub fn decide_outcome_of_ended_task(is_cancelled: bool, detail: String) -> Option<StepOutcome> {
-    // TODO: `StepFailure` has no case for a runner that panicked; `Store` is said in its place, and the reason kept is the store's. Check whether a case of its own is wanted, and fix if needed.
-    (!is_cancelled).then_some(StepOutcome::Failed(StepFailure::Store { detail }))
+    (!is_cancelled).then_some(StepOutcome::Failed(StepFailure::RunnerPanicked { detail }))
 }
 
 /// When the task wakes by itself next, Unix seconds: the soonest of the plan's waits
@@ -433,9 +432,9 @@ impl SyncPlanTask {
                         break;
                     }
                 };
-                // TODO: one of each is asked at a time, the one left first first, so that the stop is heard between two requests: a session that cannot be cancelled keeps those behind it from being asked. And nothing waits between tries that fail (the review's Q5): a round that gets nothing through ends this task, and the next plan starts it again. Check whether `SessionCancellations` is to keep a next try and to pass over what failed, and fix if needed.
-                let is_cancelled = has_cancellation && cancellations.cancel_sessions(1).await == 0;
-                let is_removed = has_removal && !stop.is_cancelled() && cancellations.remove_mismatched_items(1).await == 0;
+                // One of each at a time, so that the stop is heard between two requests. What failed waits for its next try and is passed over by `SessionCancellations`, which keeps the tries: a round that gets nothing through ends this task, and a later plan starts it again.
+                let is_cancelled = has_cancellation && cancellations.cancel_sessions(1).await.done_count > 0;
+                let is_removed = has_removal && !stop.is_cancelled() && cancellations.remove_mismatched_items(1).await.done_count > 0;
                 if !is_cancelled && !is_removed {
                     break;
                 }
@@ -450,7 +449,7 @@ impl SyncPlanTask {
     /// writing is NOT gathered here: it is read from the rows of the plan's own moment.
     fn gather_daemon_facts(&self) -> DaemonFacts {
         let parts = &self.parts;
-        // TODO: the facts name the running steps alone (the review's Q1). `DaemonFacts` says they hold a request whose answer was lost, and one a stop left, until its item was read from OneDrive: nothing here keeps such an item or its destination once its step ended (`Refused(Transient)` ends it). Check whether `OneDriveSteps` keeps the step running until then, and fix if needed.
+        // The running steps alone, and that is all there is: a step towards OneDrive whose request may have gone through does not end before it read what became of it (`upload::onedrive_steps::lost_answers`), so a request whose answer was lost is a running step here; and what a stop left is settled by the first listing of the next start, before which nothing is sent (`SendingHold::FirstListingNotEnded`).
         DaemonFacts {
             items_with_running_step: parts.running_steps.list_items(),
             destinations_of_running_steps: parts.running_steps.list_destinations(),

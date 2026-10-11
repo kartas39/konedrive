@@ -65,15 +65,17 @@ pub struct PlanSettings {
 /// What the daemon knows beside the rows when a plan is made, as values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonFacts {
-    /// Every item a step runs for, and every item a request to OneDrive that is not
-    /// settled yet is about: also one whose answer was lost, and one on record from before
-    /// a stop, until its item was read from OneDrive (the plan's
-    /// `items_with_running_step`).
+    /// Every item a step runs for (`RunningSteps::list_items`): the plan's
+    /// `items_with_running_step`. A request to OneDrive that is not settled yet is among
+    /// them by that alone: the step of a request whose answer was lost runs until it read
+    /// what became of it (`upload::onedrive_steps::lost_answers`, which names the owner:
+    /// `RunningSteps`). Nothing is kept across a stop: the next start sends nothing
+    /// before a listing of its own ended.
     pub items_with_running_step: BTreeSet<LocalItemId>,
     /// The directories of OneDrive the `MakeDirectory`, `SendNewFile` and `SendMove`
-    /// requests that are not settled yet send into (`RunningStep::destination`, and the
-    /// records of requests whose answer was lost or that a stop left): their rows are the
-    /// plan's `destinations_of_running_steps`.
+    /// requests that are not settled yet send into (`RunningSteps::list_destinations`:
+    /// `RunningStep::destination` of each running step, one whose answer was lost among
+    /// them): their rows are the plan's `destinations_of_running_steps`.
     pub destinations_of_running_steps: Vec<OneDriveItemReference>,
     pub is_onedrive_full: bool,
     /// Unix seconds: the plan's `now`.
@@ -385,7 +387,6 @@ pub fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Sy
     for destination in &facts.destinations_of_running_steps {
         destinations_of_running_steps.extend(items.find_bound_item(destination)?.map(|row| row.local_item_id));
     }
-    // TODO: nothing here asks `ItemReader::find_mismatched_item` of an item a listing brought (the review's Q2): an item an upload left with other content, listed at the file's own name, is another item under that name to the plan; check whether the plan is to be told, and fix if needed.
     Ok(SyncPlanInput {
         items: Vec::new(),
         folder_visibility: BTreeMap::new(),
@@ -405,6 +406,8 @@ pub fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Sy
         unsent_removal_count: items.count_unsent_removals(&items_with_confirmed_removal)?,
         items_with_confirmed_removal,
         places_taken_in_onedrive: BTreeMap::new(),
+        items_left_by_uploads: BTreeMap::new(),
+        temporary_names: BTreeMap::new(),
         sent_removal_count: items.find_sent_removal_window(facts.now)?.removal_count,
         now: facts.now,
         next_tries: BTreeMap::new(),
@@ -420,7 +423,10 @@ pub fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Sy
 /// whether it is left here, whether a pin holds for it); what the row itself says is open
 /// for writing (`content_before_write` set); what the step memory says of it — the names
 /// OneDrive answered are taken in it (`list_taken_names` of each directory given), and
-/// its memory, kept in `given`; and what `facts` say of it: left by the check, its quiet
+/// its memory, kept in `given`, with the temporary name it keeps
+/// (`SyncPlanInput::temporary_names`), and whether it is an item an upload left with other
+/// content (`ItemReader::find_mismatched_item` of its binding:
+/// `SyncPlanInput::items_left_by_uploads`); and what `facts` say of it: left by the check, its quiet
 /// time ([`decide_quiet_until`]), a name OneDrive cannot hold ([`find_name_refusal`]).
 /// Then, of everything given so far: the rows by their id, the counts of the directories
 /// given whole, the next tries ([`describe_next_tries`], with `local_step_tries`: the
@@ -428,7 +434,13 @@ pub fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Sy
 pub fn describe_given_items(items: &ItemReader<'_>, facts: &DaemonFacts, local_step_tries: &LocalStepTries, given: &mut GivenItems, input: &mut SyncPlanInput) -> Result<(), TreeError> {
     for item in std::mem::take(&mut given.undescribed) {
         let Some(row) = given.rows.get(&item).cloned() else { continue };
-        given.find_memory(items, item)?;
+        if let Some(temporary_name) = given.find_memory(items, item)?.temporary_name.clone() {
+            input.temporary_names.insert(item, temporary_name);
+        }
+        // An item of OneDrive an upload of this folder left with other content, which a listing brought.
+        if let Some(upload) = row.onedrive_item.as_ref().map(|onedrive_item| items.find_mismatched_item(onedrive_item)).transpose()?.flatten() {
+            input.items_left_by_uploads.insert(item, upload.file);
+        }
         if row.onedrive.is_some() {
             input.folder_visibility.insert(item, items.find_folder_visibility(item)?);
         }

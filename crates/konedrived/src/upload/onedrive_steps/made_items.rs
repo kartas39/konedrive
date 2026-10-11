@@ -53,11 +53,7 @@ pub enum ListedFileOrigin {
 /// Whose `listed` is: `OwnLeftUpload` when it is a file no local version was ever agreed
 /// on for, made in OneDrive within one of `opening_windows` (the clock's slack as for an
 /// empty file), and no row the folder shows asks for that place. Pure.
-// OPEN: the review's S26, the map's F2. What is done with `OwnLeftUpload` removes a file
-// in OneDrive that the user removed here before it was confirmed — or shows it again,
-// not downloaded, as today. Written as decided here and ACTED ON by nobody yet: the
-// plan's task calls `find_left_upload` for a `ShowItem` of a file at a place with a
-// window, and what follows is the owner's (remove it there; or show it).
+// TODO: the owner's (the review's S26, the map's F2): what is done with `OwnLeftUpload` — the file is removed in OneDrive, since the user removed it here before it was confirmed, or shown again, not downloaded, as today. Written as decided here and ACTED ON by nobody: the plan's task does not call `find_left_upload` until that is said.
 pub fn decide_listed_file_origin(listed: &Item, created_at: i64, opening_windows: &[OpeningWindow], has_local_claimant: bool, now: i64) -> ListedFileOrigin {
     todo!()
 }
@@ -77,8 +73,10 @@ impl MadeItems {
     /// [`decide_made_item_fate`], and removes what was made (`delete_item`,
     /// `G/write.rs:140`, guarded by the eTag of the answer; `delete_folder`, `:153`, for
     /// a directory) or asks for a cycle. Called with NO lock held: the tree lock of the
-    /// commit was let go. Today: `landed_away` (`upload/steps/shared.rs:663`) and
-    /// `never_uploaded` (`:632`).
+    /// commit was let go. Answers `MadeItemRemoved` for an item removed or found gone,
+    /// `MadeItemLeft` for a removal OneDrive did not carry out (a 412: another changed it
+    /// since; any failure), `CycleWanted` for a row that is still there. Today:
+    /// `landed_away` (`upload/steps/shared.rs:663`) and `never_uploaded` (`:632`).
     pub async fn follow_up_new_item(&self, item: &ItemVersions, made: &ConfirmedItem) -> RowsChangedFollowUp {
         todo!()
     }

@@ -172,6 +172,13 @@ impl OneDriveSpace {
         }
     }
 
+    /// An upload of `bytes` was committed: they come off what the account's quota says is
+    /// left, until the next read (`Quota::uploaded`; today `space.rs:149`, `space_used`).
+    /// Called by the steps that send content, after their commit was written.
+    pub fn count_uploaded(&self, bytes: u64) {
+        self.quota.uploaded(bytes);
+    }
+
     /// When the quota is to be read next by itself, Unix seconds: every 30 minutes while
     /// full or while a file waits as too big. Called by the plan's task for its timer.
     ///

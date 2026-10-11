@@ -40,6 +40,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use konedrive_reason::Reason;
 
 use crate::model::{FolderVisibility, Item, ItemKind, ItemPlace, LocalItemId};
+use crate::TemporaryName;
 
 /// The name of a conflict copy.
 mod conflict_copy_name;
@@ -185,15 +186,16 @@ pub struct SyncPlanInput {
     /// is not settled yet, and every item a step towards the folder or of the rows is
     /// running for. A request is not settled until its outcome is known — its commit was
     /// written, OneDrive refused it, or the item was read from OneDrive after it — and so
-    /// also while its answer is lost, and across a stop of the daemon: each request is on
-    /// record before it leaves, and at start, before the first plan, the caller settles
-    /// each record that stands by reading its item (the design's §7). One step per item:
+    /// also while its answer is lost: the caller owes that the step of such a request
+    /// goes on running until the item was read. Across a stop of the daemon the caller
+    /// keeps nothing, and owes instead that no plan's step towards OneDrive is started
+    /// before a listing that began after the start has ended: that listing names what a
+    /// request that was under way changed. One step per item:
     /// an item left out gets a second step beside the one that runs.
     pub items_with_running_step: BTreeSet<LocalItemId>,
     /// The directories the requests that are not settled yet send their items into: where
     /// a new directory is made, a new file sent, an item moved — as long as the request is
-    /// not settled, as `items_with_running_step` says it, also when its answer is lost and
-    /// across a stop. The rows say such an item is there only once the step's commit is
+    /// not settled, as `items_with_running_step` says it, also when its answer is lost. The rows say such an item is there only once the step's commit is
     /// written; until then no removal of that directory, or of one above it, is sent, as
     /// it would take the item with it. A directory left out, with the item's own row
     /// agreeing on everything (it was moved back here meanwhile), is removed with the item
@@ -230,6 +232,27 @@ pub struct SyncPlanInput {
     /// that place here, its name there is another item's to the plan, whatever the plan's
     /// own rule for comparing names says.
     pub places_taken_in_onedrive: BTreeMap<LocalItemId, ItemPlace>,
+    /// The items of OneDrive, each by the row a listing made for it, that an upload of
+    /// this folder left with other content than was sent, with the file whose upload left
+    /// it — none when that file's row went
+    /// ([`ItemReader::find_mismatched_item`](crate::ItemReader::find_mismatched_item), asked
+    /// by the caller of the binding of every row it gives; an item the folder has by now
+    /// is not among them). Such an item is no item of another's: it is not shown, no file
+    /// is merged with it or renamed to a conflict copy for it, and its name is not taken
+    /// to the file it was left by. It waits to be removed in OneDrive, which is not the
+    /// plan's: the step that sends the file again removes it first, and what is left when
+    /// the file's row went is removed by the daemon by itself.
+    // TODO: `make_sync_plan` does not read this yet: an item named here is still planned as any item a listing brought. Fill with the plan (the review's Q2), with a test per sentence above.
+    pub items_left_by_uploads: BTreeMap<LocalItemId, Option<LocalItemId>>,
+    /// What the steps remember of a temporary name an item goes through in OneDrive
+    /// ([`ItemMemory::temporary_name`](crate::ItemMemory)), for every item given that
+    /// keeps one: the name, and the local place the item was on its way to. An item
+    /// OneDrive has under its temporary name ([`TemporaryName::is_at`]) is there by this
+    /// folder's own request: the folder is not moved to that name (`MoveItem`), and the
+    /// item is sent on to its local place (`SendMove`) — also for a new item whose row
+    /// was merged with the one a listing made of it under the temporary name.
+    // TODO: `make_sync_plan` does not read this yet: such a row is still planned as `MoveItem` to the temporary name. Fill with the plan (the notes of the step memory's rework, §5), with a test.
+    pub temporary_names: BTreeMap<LocalItemId, TemporaryName>,
     /// How many items the removals took from OneDrive that this client sent a short time
     /// ago: what the store counted, as of `now`
     /// ([`ItemStore::find_sent_removal_window`](crate::ItemStore::find_sent_removal_window),

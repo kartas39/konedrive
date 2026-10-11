@@ -127,6 +127,13 @@ pub enum StepFailure {
     UndoFailed { path: PathBuf },
     /// Graph answered what cannot be read as the item asked for.
     AnswerUnreadable { detail: String },
+    /// The runner's task ended by a panic: a fault of the daemon, of no part the step
+    /// went through. Answered by the plan's task for a step whose task ended so
+    /// (`sync::sync_plan_task::decide_outcome_of_ended_task`), never by a runner. Settled
+    /// as a failed try for `Reason::Failed`, so that the step ends, waits and is tried
+    /// again, and said in the journal; whether the step's request left is not known, and
+    /// its next try finds out as after a stop (`upload::onedrive_steps::lost_answers`).
+    RunnerPanicked { detail: String },
 }
 
 /// One thing a step did, as the activity log says it.

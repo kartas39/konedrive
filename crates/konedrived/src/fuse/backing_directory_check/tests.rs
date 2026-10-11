@@ -351,6 +351,8 @@ impl Folder {
             unsent_removal_count: items.count_unsent_removals(&not_shown).unwrap(),
             items_with_confirmed_removal: not_shown,
             places_taken_in_onedrive: Default::default(),
+            items_left_by_uploads: Default::default(),
+            temporary_names: Default::default(),
             sent_removal_count: 0,
             now: 0,
             next_tries: Default::default(),
