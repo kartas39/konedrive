@@ -208,7 +208,9 @@ impl ItemFact {
         let content_here = item.local.as_ref().and_then(|local| local.content.as_ref());
         match self {
             ItemFact::StepRunning | ItemFact::LeftByStartUpCheck => true,
-            ItemFact::TriedAgainLater | ItemFact::SendingRefused => item.unsent_since.is_some(),
+            // A next try of what is sent is the caller's to tell of any item: the store's of an unsent change, the caller's own of a step sent from a row that is not unsent.
+            ItemFact::TriedAgainLater => true,
+            ItemFact::SendingRefused => item.unsent_since.is_some(),
             ItemFact::OpenForWriting => item.kind == ItemKind::File && item.local.is_some(),
             ItemFact::InQuietTime => content_here.is_some() && content_here != item.synced_content.as_ref(),
             ItemFact::NameRefused => item.local.is_some(),
