@@ -79,6 +79,7 @@
 // test: a_read_of_a_small_file_not_on_disk_downloads_it_once_all_of_it_was_read
 // test: a_read_through_a_handle_whose_content_onedrive_changed_is_stale
 // test: a_file_not_on_disk_is_downloaded_before_it_is_opened_for_writing
+// test: a_download_that_fails_refuses_the_open_for_writing_and_the_truncation_with_its_errno
 // test: a_truncation_to_nothing_of_a_file_not_on_disk_downloads_nothing
 // test: a_truncation_of_a_file_not_on_disk_downloads_it_first
 // test: a_created_file_written_and_closed_is_one_unsent_item_with_its_bytes

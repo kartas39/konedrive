@@ -14,7 +14,7 @@ use super::*;
 use crate::folder::disk::HOLDING;
 use crate::fuse::item_attributes::to_node_id;
 use crate::fuse::item_download_landing::ItemDownloadLanding;
-use crate::fuse::item_fixture::{onedrive_id_of, ItemFixture, DOWNLOAD_AFTER, START_TIME};
+use crate::fuse::item_fixture::{onedrive_id_of, ContentRefusal, ItemFixture, DOWNLOAD_AFTER, START_TIME};
 use crate::fuse::mount_take_down::TakeDownCause;
 use crate::status::report::Report;
 
@@ -546,6 +546,24 @@ fn a_file_not_on_disk_is_downloaded_before_it_is_opened_for_writing() {
     let closed = mount.row(file);
     assert_eq!((local_content(&closed), closed.content_before_write, closed.unsent_since), (local_content(&row), None, None), "closed with nothing written: the content of before");
     mount.fixture.assert_rows_and_disk_agree();
+}
+
+#[test]
+fn a_download_that_fails_refuses_the_open_for_writing_and_the_truncation_with_its_errno() {
+    let mount = Requests::new();
+    let file = mount.fixture.show_onedrive_file("w.txt", b"0123456789").local_item_id;
+    // OneDrive does not have the content any more: stale, as the waiters of a download hear it.
+    mount.fixture.refuse_content(file, Some(ContentRefusal::NotFound));
+    assert_eq!(mount.open_to_write(file).err(), Some(Errno::ESTALE));
+    assert_eq!(mount.truncate(file, None, 3).err(), Some(Errno::ESTALE));
+    // The network: the request failed.
+    mount.fixture.refuse_content(file, Some(ContentRefusal::Transient));
+    assert_eq!(mount.open_to_write(file).err(), Some(Errno::EIO));
+    let row = mount.row(file);
+    assert!(row.content_presence == ContentPresence::NotOnDisk && row.content_before_write.is_none() && row.unsent_since.is_none(), "no row was written: {row:?}");
+    assert!(!mount.fixture.item_handles.is_open_for_writing(file) && mount.fixture.read_disk_file("w.txt").is_none());
+    // Cut to nothing, it needs no download.
+    assert_eq!(mount.truncate(file, None, 0).unwrap().size, 0);
 }
 
 #[test]
