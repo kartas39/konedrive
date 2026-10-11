@@ -199,14 +199,27 @@ impl ItemStore<'_> {
     /// showed, and none a file whose content OneDrive changed since it was removed here.
     ///
     /// What the rows do not say, the caller gives, as it gives it to the plan
-    /// ([`SyncPlanInput`](crate::SyncPlanInput)): `items_with_running_step`, the items a
-    /// request of this client that is not settled is about, and
-    /// `destinations_of_running_steps`, the directories such a request sends an item
-    /// into. The removal is not sent while the directory or anything below it is among
-    /// either: an entry the plan was not given is then no removal.
+    /// ([`SyncPlanInput`](crate::SyncPlanInput)) and with nothing taken out:
+    /// `items_with_running_step`, the items a request of this client that is not settled
+    /// is about, and `destinations_of_running_steps`, the directories such a request
+    /// sends an item into. The removal that asks is such a request itself once it is on
+    /// record, about the directory and each of `below`: those are left out of
+    /// `items_with_running_step` here, so that the removal is not held back by itself.
+    /// It sends nothing into a directory, so nothing is left out of
+    /// `destinations_of_running_steps`: the removal is not sent while another request
+    /// sends an item into the directory or into a directory below it — an entry the plan
+    /// was not given is then no removal.
+    ///
+    /// What that costs: another request about the directory or one of `below` that is not
+    /// settled reads as the removal's own. The plan gives no removal while one stands
+    /// (such an item is held back, and the directory waits for it), and one step runs for
+    /// an item at a time, so none is made between the plan and this question. And an item
+    /// below the directory that is not of `below` holds the removal whatever is said of
+    /// it: the rows are then not as planned.
     pub fn can_directory_removal_be_sent(&self, item: &ItemVersions, below: &[ItemVersions], items_with_running_step: &BTreeSet<LocalItemId>, destinations_of_running_steps: &BTreeSet<LocalItemId>) -> Result<bool, TreeError> {
         let conn = &self.store.conn;
-        let is_held_back = |item: LocalItemId| items_with_running_step.contains(&item) || destinations_of_running_steps.contains(&item);
+        let is_of_this_removal = |asked: LocalItemId| asked == item.local_item_id || below.iter().any(|removed| removed.local_item_id == asked);
+        let is_held_back = |asked: LocalItemId| (items_with_running_step.contains(&asked) && !is_of_this_removal(asked)) || destinations_of_running_steps.contains(&asked);
         Ok(!is_held_back(item.local_item_id) && is_directory_removal_as_planned(conn, item, below, ListingUnderWay::find(conn)?.is_some(), &is_held_back)?)
     }
 

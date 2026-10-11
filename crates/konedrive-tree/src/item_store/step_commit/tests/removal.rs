@@ -119,20 +119,26 @@ fn the_removal_of_a_directory_is_not_sent_while_onedrive_has_below_it_what_the_f
 }
 
 /// The second review's M2 and S5, at the step: a request of this client that is not
-/// settled sends an item into the directory, or is about an item below it; the caller says
-/// so, and the removal is not sent. Nor while a listing is under way. The commit asks the
-/// rows alone: once the request went through there is nothing to hold back.
+/// settled sends an item into the directory or into one below it; the caller says so, and
+/// the removal is not sent. Nor while a listing is under way. The commit asks the rows
+/// alone: once the request went through there is nothing to hold back.
+///
+/// The third review's S6: the removal's own request is on record before it leaves, and
+/// names the directory and what is removed with it. The caller gives the sets as it gives
+/// them to the plan, that record in them, and the removal is not held back by itself.
 #[test]
-fn the_removal_of_a_directory_is_not_sent_while_a_request_not_settled_is_about_it_or_a_listing_is_under_way() {
-    let (mut store, [directory, inside, _]) = store_of_removed_directory();
+fn the_removal_of_a_directory_is_not_sent_while_a_request_not_settled_sends_into_it_or_a_listing_is_under_way() {
+    let (mut store, [directory, inside, kept]) = store_of_removed_directory();
     let (planned_from, below) = (versions(&mut store, directory), [versions(&mut store, inside)]);
     let can_be_sent = |store: &mut TreeStore, running: &[LocalItemId], destinations: &[LocalItemId]| {
         store.item_store().can_directory_removal_be_sent(&planned_from, &below, &running.iter().copied().collect(), &destinations.iter().copied().collect()).unwrap()
     };
     assert!(can_be_sent(&mut store, &[], &[]));
     assert!(!can_be_sent(&mut store, &[], &[directory]), "an item is sent into it");
-    assert!(!can_be_sent(&mut store, &[inside], &[]), "a step runs for what is below it");
-    assert!(!can_be_sent(&mut store, &[directory], &[]));
+    assert!(can_be_sent(&mut store, &[directory], &[]), "the removal's own request names the directory");
+    assert!(can_be_sent(&mut store, &[inside], &[]), "and what is removed with it");
+    assert!(can_be_sent(&mut store, &[directory, inside, kept], &[kept]), "what is said of an item elsewhere holds nothing");
+    assert!(!can_be_sent(&mut store, &[directory, inside], &[directory]), "its own request sends nothing into it: another one does");
     let listing = store.item_store().begin_delta_listing().unwrap();
     assert!(!can_be_sent(&mut store, &[], &[]), "a listing is under way");
     store.item_store().write_listed_changes(listing.id, &[], listing.began_at_count, &crate::ListingLink::DeltaLink("link".into())).unwrap();
