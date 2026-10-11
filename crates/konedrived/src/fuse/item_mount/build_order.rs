@@ -182,6 +182,9 @@ fn build_over(backing_directory: Arc<BackingDirectory>, setup: ItemMountSetup, r
         Arc::clone(&download_states),
         range_fetcher,
         free_up,
+        Arc::clone(&access_mode_switch),
+        store.clone(),
+        mount_started_at,
         runtime,
     );
     let mount = ItemMount {
