@@ -18,7 +18,7 @@ use konedrive_dbus::error_name;
 use konedrive_dbus::testing::TestBus;
 use konedrived::account::state::{ReadOnlyWish, SignInState};
 use konedrived::account::{
-    AccountService, FolderAccount, HeldUnsentChanges, PendingUploads, CONFIG_UNREADABLE, DRIVE_NOT_KNOWN, DRIVE_NOT_SEEN, SIGN_IN_TO_WRITE,
+    AccountService, FolderAccount, HeldUnsentChanges, AccountFolder, CONFIG_UNREADABLE, DRIVE_NOT_KNOWN, DRIVE_NOT_SEEN, SIGN_IN_TO_WRITE,
 };
 use konedrived::account::cache::AccountInfo;
 use konedrived::config::{AccountId, ConfigError, ConfigStore, DriveId, Mode, Paths};
@@ -360,7 +360,7 @@ async fn a_switch_of_an_account_with_no_recorded_drive_learns_it_or_is_refused_b
     assert_eq!(s.refresh_token().as_deref(), Some("RT1"));
 }
 
-/// An account's folder as the switch between the modes asks it (`PendingUploads`), faked
+/// An account's folder as the switch between the modes asks it (`AccountFolder`), faked
 /// here: how many changes are unsent, whether a request that changes OneDrive is in
 /// flight, and whether it was told to hold what is unsent. It drops nothing: what is
 /// unsent stays unsent when it is held.
@@ -380,8 +380,8 @@ impl UnsentFolder {
 }
 
 #[async_trait::async_trait]
-impl PendingUploads for UnsentFolder {
-    async fn pending_uploads(&self) -> u64 {
+impl AccountFolder for UnsentFolder {
+    async fn count_unsent_to_send(&self) -> u64 {
         self.unsent.load(Ordering::SeqCst)
     }
 
@@ -523,7 +523,7 @@ async fn a_forced_switch_to_read_only_is_made_at_once_and_what_is_unsent_stays_h
     assert_eq!((f.svc.configured_mode(), f.svc.mode()), (Mode::ReadOnly, Mode::ReadOnly));
     assert!(!keeps_wish(&f));
     assert!(folder.is_held.load(Ordering::SeqCst), "the folder holds what is unsent");
-    assert_eq!(folder.pending_uploads().await, 3, "nothing is dropped");
+    assert_eq!(folder.count_unsent_to_send().await, 3, "nothing is dropped");
     assert_eq!((f.svc.state().get().read_only_wish, f.svc.state().get().mode_note), (None, None));
 }
 
@@ -539,7 +539,7 @@ async fn a_kept_wish_asked_again_with_force_switches_at_once() {
     assert_eq!(f.svc.configured_mode(), Mode::ReadOnly);
     assert!(!keeps_wish(&f));
     assert!(folder.is_held.load(Ordering::SeqCst));
-    assert_eq!(folder.pending_uploads().await, 3, "nothing is dropped");
+    assert_eq!(folder.count_unsent_to_send().await, 3, "nothing is dropped");
 }
 
 /// Read-only already, with changes that were unsent at the switch: a switch to read-only
@@ -556,7 +556,7 @@ async fn a_switch_to_read_only_of_a_read_only_account_holds_again_and_drops_noth
         assert_eq!(f.svc.set_mode("read-only", force).await.unwrap(), "");
         assert!(folder.is_held.load(Ordering::SeqCst), "force {force}: the folder is told again");
         assert!(!keeps_wish(&f), "force {force}");
-        assert_eq!(folder.pending_uploads().await, 2, "force {force}: nothing is dropped");
+        assert_eq!(folder.count_unsent_to_send().await, 2, "force {force}: nothing is dropped");
         assert_eq!(f.svc.configured_mode(), Mode::ReadOnly);
     }
 }

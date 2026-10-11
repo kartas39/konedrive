@@ -163,7 +163,7 @@ pub struct SyncService {
     /// Taken for writing only by [`change`](Self::change), by everything that changes
     /// which folder is registered, how, in which mode, or whether the account takes one —
     /// for the whole of the change, with the folder's sync stopped. Taken for reading by
-    /// what reads the tree store outside the sync (`skipped`, `pending_uploads`), and by a
+    /// what reads the tree store outside the sync (`skipped`, `count_unsent_to_send`), and by a
     /// reconcile, through the lease its listing is given, while it changes the folder.
     ///
     /// zbus runs every method call in a task of its own, so without it two

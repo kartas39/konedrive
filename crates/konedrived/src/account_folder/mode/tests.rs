@@ -3,7 +3,7 @@ use std::sync::Arc;
 use konedrive_graph::drive::DriveQuota;
 
 use super::*;
-use crate::account::PendingUploads;
+use crate::account::AccountFolder;
 use crate::account_folder::staged_folder::{make_kept_parts, make_service, publish_running_view, read_sync, stage_folder};
 use crate::account_folder::testing::parts;
 use crate::config::DriveId;
@@ -82,7 +82,12 @@ fn a_folder_whose_sync_does_not_run_holds_what_is_unsent_by_switching_its_kept_m
         assert_eq!(service.mode(), Mode::ReadOnly);
         assert!(!mount.access_mode_switch().is_read_write(), "the kept mount refuses new writes");
         assert!(!service.writable(), "and the bus says so");
-        assert_eq!(service.pending_uploads().await, 2);
+        assert_eq!(service.count_unsent_to_send().await, 2);
+        // What the last plan answered will not be sent by itself is left out, as in the count the plan reports.
+        service.view().parts.expect("the kept parts").published_plan.publish_unsent_not_to_send_count(1);
+        assert_eq!(service.count_unsent_to_send().await, 1);
+        service.view().parts.expect("the kept parts").published_plan.publish_unsent_not_to_send_count(5);
+        assert_eq!(service.count_unsent_to_send().await, 0, "never below nothing");
         end_scene(&service, mount).await;
     });
 }
@@ -122,7 +127,7 @@ async fn a_folder_that_is_not_up_only_takes_the_mode() {
     let held = service.hold_unsent_changes().await;
     assert_eq!((held.unsent, held.is_request_in_flight), (0, false));
     assert_eq!(service.mode(), Mode::ReadOnly);
-    assert_eq!(service.pending_uploads().await, 0);
+    assert_eq!(service.count_unsent_to_send().await, 0);
     assert!(!service.has_request_in_flight());
 }
 

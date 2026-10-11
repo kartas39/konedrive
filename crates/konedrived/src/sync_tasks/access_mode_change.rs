@@ -23,7 +23,7 @@
 //!   the answer says ([`StepsTowardsOneDrive::StillRunning`]) —, BEFORE
 //!   [`switch_to_read_only`] returns, and
 //!   the account gives its token up only after it returned
-//!   (`PendingUploads::hold_unsent_changes`; the account's order is `config.toml`, its
+//!   (`AccountFolder::hold_unsent_changes`; the account's order is `config.toml`, its
 //!   mode worked out again, this switch awaited, the token). So no 403 comes from a switch, and nothing
 //!   is kept as refused for good because of one.
 //!
@@ -81,7 +81,7 @@ fn has_step_towards_onedrive(steps: &[RunningStep]) -> bool {
 
 /// Switches the folder to read-only: the order of the module's doc. Answers when the
 /// folder takes no change, sends nothing, and no step towards OneDrive runs. The tasks go
-/// on. Called by the owner of the folder's state (`PendingUploads::hold_unsent_changes`,
+/// on. Called by the owner of the folder's state (`AccountFolder::hold_unsent_changes`,
 /// and `follow_mode` for a folder that follows an account that turned read-only for a
 /// cause of its own), with the parts of the running sync; how many changes stay unsent is
 /// the caller's to count afterwards (`ItemReader::count_unsent`). `Err` when the mount's

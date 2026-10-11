@@ -131,7 +131,7 @@ impl OneDriveSpace {
     /// that is due, and the one of a refresh the user asked for: [`decide_is_quota_read`]),
     /// the folder's start (`sync_tasks::start_order::read_quota_before_first_plan`), and
     /// the owner of the folder's state for the account's read
-    /// (`PendingUploads::quota_read`). A caller that is not the plan's task then wakes it
+    /// (`AccountFolder::quota_read`). A caller that is not the plan's task then wakes it
     /// (`WakeCause::QuotaRead`); the task asks nothing of OneDrive on that cause: it takes
     /// what is free from here ([`find_free_space`](Self::find_free_space)), calls
     /// `StepMemory::forget_fitting_space_refusals` with it and makes the plan again.

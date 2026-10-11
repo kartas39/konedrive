@@ -15,7 +15,7 @@
 //!    `session` by `forget`, `seed_as` and `commit_as`, and alone by every refresh. What a
 //!    refresh calls back (`note_granted`) and what `commit_as` runs under it take only the
 //!    locks below, never `session`.
-//!    - The account's folder is asked under `session` too (`PendingUploads::quota_read`, from
+//!    - The account's folder is asked under `session` too (`AccountFolder::quota_read`, from
 //!      `refresh_account_info`): what answers there never calls back into what takes
 //!      `session` (a sign-out, a switch of the mode).
 //!    - Between accounts: no account's `session` is held while another account is asked.
@@ -156,7 +156,7 @@ const DRIVE_MISMATCH: &str = "this account's sign-in reaches the OneDrive drive"
 const WIDER_GRANT: &str = "Microsoft answered a request for read-only access with a token that can";
 
 /// What a folder answers that was told to hold what is unsent
-/// ([`PendingUploads::hold_unsent_changes`]).
+/// ([`AccountFolder::hold_unsent_changes`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HeldUnsentChanges {
     /// How many changes stay here unsent.
@@ -166,14 +166,18 @@ pub struct HeldUnsentChanges {
     pub is_request_in_flight: bool,
 }
 
-/// What the switch between the modes asks of the account's folder: how many changes are
-/// unsent, and holding them here when a switch to read-only is forced. Nothing is ever
+/// What the account asks of its folder: at a switch between the modes, how many changes
+/// are left to send, and holding what is unsent here when the switch is made; and that a
+/// quota it read is applied. Nothing is ever
 /// dropped. The account's `SyncService` answers (`crate::account_folder::mode`).
 #[async_trait::async_trait]
-pub trait PendingUploads: Send + Sync {
-    /// How many changes made here are unsent now (`ItemReader::count_unsent`). 0 for an
-    /// account with no folder.
-    async fn pending_uploads(&self) -> u64;
+pub trait AccountFolder: Send + Sync {
+    /// How many changes made here are unsent now and will be sent without the user doing
+    /// anything: the count the folder's plan reports
+    /// ([`FolderAccount::tell_unsent_count`]) — every unsent change but those OneDrive
+    /// refuses for good and those the check at start left. What a switch to read-only
+    /// waits for. 0 for an account with no folder.
+    async fn count_unsent_to_send(&self) -> u64;
     /// The account switches to read-only now: from this call on the folder sends nothing
     /// (`SendingHolds::set_folder_read_only(true)`, the hold `SendingHold::FolderReadOnly`)
     /// and takes no change (the mount's switch). Returns when both hold, and says whether
@@ -300,7 +304,7 @@ pub struct AccountService {
     quota: Quota,
     /// The account's folder, as the mode switch asks it about waiting uploads. Empty until
     /// the accounts manager wires the folder up, and in tests without one.
-    uploads: std::sync::Mutex<Option<Weak<dyn PendingUploads>>>,
+    uploads: std::sync::Mutex<Option<Weak<dyn AccountFolder>>>,
     endpoints: Endpoints,
     http: reqwest::Client,
     /// Graph, for [`Self::graph`]. Its own transfer pool, which nothing else uses.
@@ -412,7 +416,7 @@ impl AccountService {
     }
 
     /// The account's folder, for the mode switch's question about waiting uploads.
-    pub fn set_uploads(&self, uploads: Weak<dyn PendingUploads>) {
+    pub fn set_uploads(&self, uploads: Weak<dyn AccountFolder>) {
         *crate::panic::lock(&self.uploads) = Some(uploads);
     }
 

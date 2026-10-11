@@ -232,6 +232,10 @@ pub struct PlannedRound {
     /// what a kept wish for read-only waits for to be 0. NOT the count a Forget warns
     /// with (`SyncService::count_unsent`), which is of every unsent change.
     pub unsent_to_send_count: u64,
+    /// How many unsent items this plan answers will not be sent by themselves
+    /// ([`count_unsent_not_to_send`]): what the task publishes with the answers
+    /// (`PublishedPlan::publish_unsent_not_to_send_count`).
+    pub unsent_not_to_send_count: u64,
     /// What the reading answered of the pinned files: what the task ends its asking by
     /// (`MissingPinnedFiles::note_reading`).
     pub pinned_files_reading: PinnedFilesReading,
@@ -403,8 +407,9 @@ pub fn plan_next_steps(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Pl
             continue;
         }
         {
-            let unsent_to_send_count = unsent_count.saturating_sub(count_unsent_not_to_send(&input, &plan, &given.memories));
-            return Ok(PlannedRound { input, plan, memories: given.memories, local_step_tries, is_all_read, item_counts, unsent_to_send_count, pinned_files_reading });
+            let unsent_not_to_send_count = count_unsent_not_to_send(&input, &plan, &given.memories);
+            let unsent_to_send_count = unsent_count.saturating_sub(unsent_not_to_send_count);
+            return Ok(PlannedRound { input, plan, memories: given.memories, local_step_tries, is_all_read, item_counts, unsent_to_send_count, unsent_not_to_send_count, pinned_files_reading });
         }
     }
 }

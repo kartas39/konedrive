@@ -1,7 +1,8 @@
 //! What the plan's task last answered for each item it planned: what the bus and the
 //! mount read of the plan without asking the task.
 //!
-//! **State owned:** the last plan's answer per item, and nothing else: which steps run is
+//! **State owned:** the last plan's answer per item, with how many unsent items that plan
+//! answered will not be sent by themselves, and nothing else: which steps run is
 //! `RunningSteps`', what holds all sending is `SendingHolds`'. Written by the plan's task
 //! alone ([`PublishedPlan::publish`]); read by the queue's answers
 //! (`upload_queue`) and by the mount's `user.konedrive.sync`. It is here,
@@ -14,6 +15,7 @@
 //! **Tested without the rest:**
 // test: what_was_published_is_read_back_per_item
 // test: a_new_plan_replaces_the_answers_of_the_one_before
+// test: the_count_of_what_will_not_be_sent_is_the_last_plans
 #![allow(dead_code, unused_variables)]
 
 use std::collections::BTreeMap;
@@ -98,19 +100,36 @@ fn decide_is_reason_shown_blocked(reason: &Reason) -> bool {
 /// The plan's answers of one folder.
 pub struct PublishedPlan {
     answers: std::sync::RwLock<BTreeMap<LocalItemId, ItemAnswer>>,
+    /// How many unsent items the last plan answered will not be sent by themselves
+    /// (`plan_input::count_unsent_not_to_send`); 0 before the first plan.
+    unsent_not_to_send_count: std::sync::atomic::AtomicU64,
 }
 
 impl PublishedPlan {
     /// Nothing published: before the first plan. Made by the folder's start and given to
     /// the mount's setup and to the plan's task.
     pub fn new() -> Self {
-        PublishedPlan { answers: std::sync::RwLock::default() }
+        PublishedPlan { answers: std::sync::RwLock::default(), unsent_not_to_send_count: std::sync::atomic::AtomicU64::new(0) }
     }
 
     /// The answers of the plan made now replace those of the one before. Called by the
     /// plan's task after each plan.
     pub fn publish(&self, answers: BTreeMap<LocalItemId, ItemAnswer>) {
         *crate::panic::write(&self.answers) = answers;
+    }
+
+    /// The last plan answered that `count` unsent items will not be sent by themselves.
+    /// Called by the plan's task with the answers of each plan.
+    pub fn publish_unsent_not_to_send_count(&self, count: u64) {
+        self.unsent_not_to_send_count.store(count, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// How many unsent items the last plan answered will not be sent by themselves: what
+    /// the folder takes off every unsent change when its account asks how many are left
+    /// to send (`AccountFolder::count_unsent_to_send`), so that the account asks the count
+    /// the plan reports.
+    pub fn count_unsent_not_to_send(&self) -> u64 {
+        self.unsent_not_to_send_count.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The answer for `item`, when the last plan was given it. Called by the queue's

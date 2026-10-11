@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::account::state::{AccountSnapshot, SignInState};
-use crate::account::PendingUploads;
+use crate::account::AccountFolder;
 use crate::account_folder::folder::{Sync, SyncView, Why};
 use crate::account_folder::staged_folder::{end_running_sync, make_service_with_drive, read_sync, stage_running_sync};
 use crate::account_folder::testing::parts;
@@ -177,7 +177,7 @@ fn a_running_sync_holds_what_is_unsent_and_says_that_nothing_is_in_flight() {
         assert_eq!(service.mode(), Mode::ReadOnly);
         assert!(!mount.access_mode_switch().is_read_write());
         assert_eq!(service.view().sending_holds.unwrap().find(clock.now()), Some(SendingHold::FolderReadOnly));
-        assert_eq!(service.pending_uploads().await, 2, "nothing is dropped");
+        assert_eq!(service.count_unsent_to_send().await, 2, "nothing is dropped");
         assert!(service.running().is_some(), "the sync runs on");
         end_running_sync(&service).await;
     });

@@ -943,6 +943,7 @@ impl SyncPlanTask {
             .filter(|item| decide_is_shown_blocked(answers_before.get(item), has_refusal_for_good(item)) != decide_is_shown_blocked(answers.get(item), has_refusal_for_good(item)))
             .collect();
         parts.published_plan.publish(answers);
+        parts.published_plan.publish_unsent_not_to_send_count(round.unsent_not_to_send_count);
         if !marks_changed.is_empty() {
             (parts.marks_announcer)(marks_changed);
         }

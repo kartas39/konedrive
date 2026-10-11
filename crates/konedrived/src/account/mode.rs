@@ -21,7 +21,7 @@ impl AccountService {
     ///     the mode worked out again (`recompute_mode`: the snapshot says read-only from
     ///     here on, so the folder's watcher cannot turn the folder back); the folder told
     ///     to hold what is unsent and to take no change, and awaited
-    ///     (`PendingUploads::hold_unsent_changes`); THEN the token that could write
+    ///     (`AccountFolder::hold_unsent_changes`); THEN the token that could write
     ///     dropped, and the next refresh
     ///     asks for `Files.Read`, a subset of the grant: no sign-in. What was unsent
     ///     stays here, not sent and not lost, and is sent when the account is read-write
@@ -266,7 +266,7 @@ impl AccountService {
     /// The folder's plan counted nothing unsent (`FolderAccount::tell_unsent_count(0)`): an
     /// account that keeps a wish for read-only switches now, as a forced switch does and
     /// in its order ([`set_mode`](Self::set_mode)): `config.toml`, the mode worked out
-    /// again, the folder told and awaited (`PendingUploads::hold_unsent_changes`, which
+    /// again, the folder told and awaited (`AccountFolder::hold_unsent_changes`, which
     /// answers how many are unsent at that moment), then the token. A change made here between the plan's
     /// reading and the hold stays here unsent, under the hold, as after a forced switch:
     /// the switch is not put off again for it. Nothing for an account with no wish.
@@ -317,7 +317,7 @@ impl AccountService {
             return Ok(());
         }
         if let Some(uploads) = &uploads {
-            let pending = uploads.pending_uploads().await;
+            let pending = uploads.count_unsent_to_send().await;
             // Asked while something is unsent and not forced, the switch is neither made nor refused: the wish is kept, and the switch is made when the folder says nothing is unsent.
             if let ReadOnlySwitch::KeepWish { unsent } = decide_read_only_switch(pending, force) {
                 return self.keep_read_only_wish(unsent).await;
@@ -339,7 +339,7 @@ impl AccountService {
     /// the mode is worked out again, so that the snapshot says read-only before the folder is told and its
     /// watcher cannot turn it back; the folder holds what is unsent and takes no change, awaited; and only then
     /// the token goes — at once, or when no request that changes OneDrive is in flight any more.
-    async fn end_switch_to_read_only(&self, uploads: Option<Arc<dyn PendingUploads>>) {
+    async fn end_switch_to_read_only(&self, uploads: Option<Arc<dyn AccountFolder>>) {
         self.recompute_mode();
         if let Some(uploads) = &uploads {
             let held = uploads.hold_unsent_changes().await;
@@ -369,13 +369,13 @@ impl AccountService {
 
     /// The end of a switch to read-only whose folder answered that a request that changes
     /// OneDrive was still in flight: the folder is asked again
-    /// (`PendingUploads::has_request_in_flight`, which holds no door of the folder), after a short wait
+    /// (`AccountFolder::has_request_in_flight`, which holds no door of the folder), after a short wait
     /// ([`REQUEST_IN_FLIGHT_ASKED_AGAIN_AFTER`]), until it answers that none is, and only
     /// then the token goes ([`give_write_token_up`](Self::give_write_token_up)). The
     /// account is read-only meanwhile, and shows nothing of it. Ends without giving the
     /// token up when `config.toml` says read-write again (the user switched back), when
     /// the account is retired, and when the folder is gone — then nothing sends.
-    async fn give_write_token_up_when_sent(&self, folder: Weak<dyn PendingUploads>) {
+    async fn give_write_token_up_when_sent(&self, folder: Weak<dyn AccountFolder>) {
         loop {
             tokio::time::sleep(REQUEST_IN_FLIGHT_ASKED_AGAIN_AFTER).await;
             if self.is_retired() || self.configured_mode() != Mode::ReadOnly {

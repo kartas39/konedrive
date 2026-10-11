@@ -34,7 +34,7 @@ use fuse_probe::fake_onedrive_commands::FakeOneDriveCommands;
 use konedrive_graph::drive::{DriveClient, RetryPolicy};
 use konedrive_graph::token::StaticToken;
 use konedrived::account::state::{AccountSnapshot, SignInState, StateHandle};
-use konedrived::account::PendingUploads;
+use konedrived::account::AccountFolder;
 use futures_util::FutureExt;
 use konedrived::config::{ConfigError, DriveId, Mode};
 use konedrived::daemon::stop;

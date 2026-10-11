@@ -6,7 +6,7 @@
 //! A read-only folder's mount refuses every change, and nothing of it is sent; a
 //! read-write one's takes them, and they are sent. A switch stops no task of the sync
 //! (`sync_tasks::access_mode_change`). What the account asks of the folder for a switch
-//! is [`PendingUploads`]: how many changes are unsent, and to hold them here at the
+//! is [`AccountFolder`]: how many changes are unsent, and to hold them here at the
 //! switch itself. Nothing is ever dropped.
 
 use std::sync::{Arc, Weak};
@@ -16,7 +16,7 @@ use tokio::sync::watch;
 use super::folder::{Standing, Sync, Why};
 use super::SyncService;
 use crate::account::state::{AccountSnapshot, SignInState};
-use crate::account::{HeldUnsentChanges, PendingUploads};
+use crate::account::{HeldUnsentChanges, AccountFolder};
 use crate::config::{Mode, WriteStanding};
 use crate::sync_parts::sending_holds::SendingHold;
 use crate::sync_parts::sync_plan_wake::WakeCause;
@@ -199,7 +199,7 @@ impl SyncService {
 }
 
 #[async_trait::async_trait]
-impl PendingUploads for SyncService {
+impl AccountFolder for SyncService {
     /// `RefreshInfo` read the quota: applied to the running sync's `OneDriveSpace`
     /// (`apply_quota(quota, now)`: who reads the quota applies it), and then the plan's
     /// task woken (`WakeCause::QuotaRead`), which takes what is free from `OneDriveSpace`
@@ -220,17 +220,19 @@ impl PendingUploads for SyncService {
         parts.running_steps.list_steps().iter().any(|step| matches!(step.class, StepClass::Content | StepClass::Metadata))
     }
 
-    /// How many changes made here are unsent, every one (`ItemReader::count_unsent`). A
-    /// change saved a moment ago counts: the folder's mount writes each one before it
-    /// answers the program that made it. 0 for an account with no folder and for a folder
-    /// whose store is not open. With only changes unsent that will not be sent by
-    /// themselves (refused for good, left by the check at start) this is not 0 while the
-    /// plan's report is (`SyncPlanTaskParts::unsent_count_report`): a wish for read-only
-    /// asked then is kept, and the plan's next report makes the switch.
-    async fn pending_uploads(&self) -> u64 {
+    /// How many changes made here are unsent and will be sent without the user doing
+    /// anything: the count the plan's task reports
+    /// (`SyncPlanTaskParts::unsent_count_report`), asked now. Every unsent change
+    /// (`ItemReader::count_unsent`: one saved a moment ago counts, as the folder's mount
+    /// writes each before it answers the program that made it) but those the last plan
+    /// answered will not be sent by themselves (`PublishedPlan::count_unsent_not_to_send`:
+    /// refused for good, left by the check at start). 0 for an account with no folder and
+    /// for a folder whose store is not open.
+    async fn count_unsent_to_send(&self) -> u64 {
         let Some(store) = self.tree_store() else { return 0 };
+        let not_to_send = self.view().parts.map_or(0, |parts| parts.published_plan.count_unsent_not_to_send());
         match store.read_items(|reader| reader.count_unsent()).await {
-            Ok(unsent) => unsent.count,
+            Ok(unsent) => unsent.count.saturating_sub(not_to_send),
             Err(error) => {
                 tracing::warn!("what is unsent could not be counted: {error}");
                 0
