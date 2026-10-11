@@ -139,7 +139,7 @@ class SyncController : public QObject
     Q_PROPERTY(QVariantList activeDownloadsHistory READ activeDownloadsHistory NOTIFY historyChanged)
     Q_PROPERTY(QVariantList activeUploadsHistory READ activeUploadsHistory NOTIFY historyChanged)
     /// What is kept back, one entry per reason: {group, reason, count, bytes, why}
-    /// (NotUploadedSummary()), groups in the order one-action, per-file, never, waiting.
+    /// (NotUploadedSummary()), groups in the order one-action, per-file, waiting.
     Q_PROPERTY(QVariantList notUploadedSummary READ notUploadedSummary NOTIFY notUploadedChanged)
     /// Whether the summary has been read since the daemon appeared.
     Q_PROPERTY(bool notUploadedKnown READ notUploadedKnown NOTIFY notUploadedChanged)

@@ -1,17 +1,17 @@
 //! Why a change is kept back: the [`Reason`] an unsent item waits or is
 //! refused for (what the sync plan answers, and what the steps remember of a
-//! failed try and of a refusal), the [`LocalSkip`] of what is never uploaded,
-//! and what an item that cannot stay in the folder still [`WaitsFor`].
+//! failed try and of a refusal), and what an item that cannot stay in the
+//! folder still [`WaitsFor`].
 //!
 //! Each is stored, and sent over D-Bus, as a string: its **key**, and for
 //! some a **detail** behind it — `<key>: <detail>` (`refused: <the service's
-//! message>`, `download-failed: errno 5`), or `too-big:<needs>:<free>`. The
+//! message>`), or `too-big:<needs>:<free>`. The
 //! spellings are the contract with the database and with the clients (the
-//! window's and Dolphin's tables are keyed by them): [`Reason::key`] and
-//! [`LocalSkip::key`] are the one place they are written.
+//! window's and Dolphin's tables are keyed by them): [`Reason::key`] is the
+//! one place they are written.
 //!
 //! A string the tables do not know — an older version's, a damaged one — is
-//! kept as it is ([`Reason::Other`], [`LocalSkip::Other`]) and written back
+//! kept as it is ([`Reason::Other`]) and written back
 //! unchanged.
 //!
 //! Every key has its [`Group`]: what the user can do about it
@@ -32,20 +32,17 @@ pub enum Group {
     /// Each file needs the user: a name OneDrive refuses, a file too large,
     /// refused by OneDrive with a message.
     PerFile,
-    /// Never uploaded, and nothing to do: symbolic links, pipes, another device.
-    Never,
     /// Goes up by itself.
     Waiting,
 }
 
 impl Group {
-    pub const ALL: [Group; 4] = [Self::OneAction, Self::PerFile, Self::Never, Self::Waiting];
+    pub const ALL: [Group; 3] = [Self::OneAction, Self::PerFile, Self::Waiting];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OneAction => "one-action",
             Self::PerFile => "per-file",
-            Self::Never => "never",
             Self::Waiting => "waiting",
         }
     }
@@ -356,156 +353,20 @@ impl From<String> for Reason {
     }
 }
 
-/// Why an examination never uploads something (`local_skipped`, §4.2 rule 2).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum LocalSkip {
-    Symlink,
-    Fifo,
-    Socket,
-    Device,
-    /// A `.konedrive-` name, which the daemon keeps for itself.
-    ReservedName,
-    /// Another name of an object OneDrive can hold only once.
-    HardLink,
-    /// A file from another OneDrive folder, or a copy, that is not
-    /// downloaded here: it cannot be read to be uploaded as new.
-    NotDownloaded,
-    /// On another device than the folder (a nested Btrfs subvolume, a
-    /// mount): never uploaded (F72).
-    OtherDevice,
-    /// The daemon is refused to read it (another user's file, a directory
-    /// closed to it), or reading it failed: not examined, so neither it nor
-    /// anything inside it is uploaded until it can be read.
-    Unreadable,
-    /// A file that carries an item id and no state konedrive can read: it
-    /// is left alone.
-    BadState,
-    /// In the table of groups, written by no code.
-    Ignored,
-    /// A string no variant spells: kept and written back as it is.
-    Other(String),
-}
-
-impl LocalSkip {
-    /// Every variant but [`LocalSkip::Other`].
-    pub const ALL: [LocalSkip; 11] = [
-        Self::Symlink,
-        Self::Fifo,
-        Self::Socket,
-        Self::Device,
-        Self::ReservedName,
-        Self::HardLink,
-        Self::NotDownloaded,
-        Self::OtherDevice,
-        Self::Unreadable,
-        Self::BadState,
-        Self::Ignored,
-    ];
-
-    /// The stored spelling: what it is summed under. For
-    /// [`LocalSkip::Other`], what [`key_of`] makes of the string.
-    pub fn key(&self) -> &str {
-        match self {
-            Self::Symlink => "symlink",
-            Self::Fifo => "fifo",
-            Self::Socket => "socket",
-            Self::Device => "device",
-            Self::ReservedName => "reserved-name",
-            Self::HardLink => "hard-link",
-            Self::NotDownloaded => "not-downloaded",
-            Self::OtherDevice => "other-device",
-            Self::Unreadable => "unreadable",
-            Self::BadState => "state-unreadable",
-            Self::Ignored => "ignored",
-            Self::Other(stored) => key_of(stored),
-        }
-    }
-
-    /// The part behind the key. No skip the daemon writes has one.
-    pub fn detail(&self) -> Option<String> {
-        match self {
-            Self::Other(stored) => detail_of(stored),
-            _ => None,
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.iter().find(|skip| skip.key() == key).cloned()
-    }
-
-    pub fn parse(stored: &str) -> Self {
-        Self::from_key(stored).unwrap_or_else(|| Self::Other(stored.to_owned()))
-    }
-
-    /// The group it is listed in; `None` for a string in no table.
-    /// What cannot be read needs the user, file by file.
-    pub fn group(&self) -> Option<Group> {
-        Some(match self {
-            Self::Symlink | Self::Fifo | Self::Socket | Self::Device | Self::OtherDevice | Self::ReservedName | Self::HardLink | Self::Ignored => {
-                Group::Never
-            }
-            Self::NotDownloaded => Group::Waiting,
-            Self::Unreadable | Self::BadState => Group::PerFile,
-            Self::Other(stored) => return known_group(key_of(stored)),
-        })
-    }
-}
-
-impl fmt::Display for LocalSkip {
-    /// The stored spelling.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Other(stored) => f.write_str(stored),
-            _ => f.write_str(self.key()),
-        }
-    }
-}
-
-impl From<&str> for LocalSkip {
-    fn from(stored: &str) -> Self {
-        Self::parse(stored)
-    }
-}
-
-impl From<String> for LocalSkip {
-    fn from(stored: String) -> Self {
-        Self::parse(&stored)
-    }
-}
-
-/// What keeps an item on this computer that the folder cannot hold any more
-/// (a name too long, the Personal Vault...): it leaves the disk in the first
-/// cycle that finds nothing of these in it. The third field of a line of
-/// `Skipped()`, stored with the item's deferred change.
+/// What keeps an item in the folder that OneDrive has where the folder cannot show it
+/// any more (a name too long, the Personal Vault...): it leaves the folder once nothing of
+/// these holds. The third field of a line of `Skipped()`.
 ///
-/// Stored as `<key>:<detail>`: the number of changes, or the path of the
-/// first thing found, relative to the folder. A line of an item that is not
-/// on this computer has the empty string.
+/// Sent as `<key>:<detail>`: the number of changes, or the full path of the file. A line
+/// of an item that is not on this computer has the empty string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum WaitsFor {
-    /// It is still here, and no cycle has looked at it yet.
+    /// It is still here, and no plan has looked at it yet.
     Cycle,
-    /// So many changes at or below it wait in the upload queue.
+    /// So many changes of it wait to be sent.
     Uploads(u64),
-    /// Something at this path differs from what OneDrive has, and is still
-    /// to be recorded: made, changed, moved, renamed or deleted here.
-    Changes(String),
     /// A file a program has open for writing.
     OpenForWriting(String),
-    /// A file of ours whose state cannot be read.
-    UnknownState(String),
-    /// A file that is not downloaded and is not where the base has its item:
-    /// from elsewhere, a copy, or renamed here and not recorded yet.
-    NotDownloaded(String),
-    /// A file or a directory whose name is on the ignore list: it is only on
-    /// this computer, and is never uploaded.
-    LocalOnly(String),
-    /// Another filesystem mounted inside.
-    MountedInside(String),
-    /// An item OneDrive moved out of it, which could not be put where it
-    /// belongs yet (its name there is held by something made here), and
-    /// stays where it was meanwhile.
-    MovedAway(String),
     /// A string no variant spells.
     Other(String),
 }
@@ -515,69 +376,38 @@ impl WaitsFor {
         match self {
             Self::Cycle => "cycle",
             Self::Uploads(_) => "uploads",
-            Self::Changes(_) => "changes",
             Self::OpenForWriting(_) => "open-for-writing",
-            Self::UnknownState(_) => "unknown-state",
-            Self::NotDownloaded(_) => "not-downloaded",
-            Self::LocalOnly(_) => "local-only",
-            Self::MountedInside(_) => "mounted-inside",
-            Self::MovedAway(_) => "moved-in-onedrive",
             Self::Other(stored) => stored.split_once(':').map_or(stored.as_str(), |(key, _)| key),
         }
     }
 
-    /// The path of what keeps it, relative to the folder; none for the
-    /// variants without one.
+    /// The path of what keeps it; none for the variants without one.
     pub fn path(&self) -> Option<&str> {
         match self {
-            Self::Changes(path) | Self::OpenForWriting(path) | Self::UnknownState(path) | Self::NotDownloaded(path) | Self::LocalOnly(path) | Self::MountedInside(path) | Self::MovedAway(path) => {
-                Some(path)
-            }
+            Self::OpenForWriting(path) => Some(path),
             _ => None,
-        }
-    }
-
-    /// This, with its path below `root`: what `Skipped()` sends.
-    pub fn under(self, root: &str) -> Self {
-        let full = |path: String| format!("{}/{path}", root.trim_end_matches('/'));
-        match self {
-            Self::Changes(path) => Self::Changes(full(path)),
-            Self::OpenForWriting(path) => Self::OpenForWriting(full(path)),
-            Self::UnknownState(path) => Self::UnknownState(full(path)),
-            Self::NotDownloaded(path) => Self::NotDownloaded(full(path)),
-            Self::LocalOnly(path) => Self::LocalOnly(full(path)),
-            Self::MountedInside(path) => Self::MountedInside(full(path)),
-            Self::MovedAway(path) => Self::MovedAway(full(path)),
-            other => other,
         }
     }
 
     pub fn parse(stored: &str) -> Self {
         let (key, detail) = stored.split_once(':').unwrap_or((stored, ""));
-        let path = || detail.to_owned();
         match key {
             "cycle" if detail.is_empty() => Self::Cycle,
             "uploads" => detail.parse().map_or_else(|_| Self::Other(stored.to_owned()), Self::Uploads),
-            "changes" => Self::Changes(path()),
-            "open-for-writing" => Self::OpenForWriting(path()),
-            "unknown-state" => Self::UnknownState(path()),
-            "not-downloaded" => Self::NotDownloaded(path()),
-            "local-only" => Self::LocalOnly(path()),
-            "mounted-inside" => Self::MountedInside(path()),
-            "moved-in-onedrive" => Self::MovedAway(path()),
+            "open-for-writing" => Self::OpenForWriting(detail.to_owned()),
             _ => Self::Other(stored.to_owned()),
         }
     }
 }
 
 impl fmt::Display for WaitsFor {
-    /// The stored spelling.
+    /// The spelling as sent.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Cycle => f.write_str("cycle"),
             Self::Uploads(n) => write!(f, "uploads:{n}"),
+            Self::OpenForWriting(path) => write!(f, "open-for-writing:{path}"),
             Self::Other(stored) => f.write_str(stored),
-            _ => write!(f, "{}:{}", self.key(), self.path().unwrap_or_default()),
         }
     }
 }
@@ -588,9 +418,9 @@ fn too_big_sizes(stored: &str) -> Option<(u64, u64)> {
     Some((needs.parse().ok()?, free.parse().ok()?))
 }
 
-/// The key a stored reason, a row's or a skip's, is summed under: its key;
+/// The key a stored reason is summed under: its key;
 /// the key of a reason that carries a detail behind it, `<key>: <detail>`,
-/// for every key of the two tables; and `too-big` for every
+/// for every key of the table; and `too-big` for every
 /// `too-big:<needs>:<free>`. A string in no table is its own key.
 pub fn key_of(stored: &str) -> &str {
     if too_big_sizes(stored).is_some() {
@@ -608,13 +438,9 @@ fn detail_of(stored: &str) -> Option<String> {
     rest.strip_prefix(": ").or_else(|| rest.strip_prefix(':')).map(str::to_owned)
 }
 
-/// The group of a key ([`key_of`]) of either table; `None` for one no code
-/// of the daemon writes.
+/// The group of a key ([`key_of`]); `None` for one no code of the daemon writes.
 pub fn known_group(key: &str) -> Option<Group> {
-    match Reason::from_key(key) {
-        Some(reason) => reason.group(),
-        None => LocalSkip::from_key(key)?.group(),
-    }
+    Reason::from_key(key)?.group()
 }
 
 #[cfg(test)]

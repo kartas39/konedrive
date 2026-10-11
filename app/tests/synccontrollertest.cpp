@@ -46,11 +46,11 @@ private Q_SLOTS:
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         m_fake->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/OneDrive")},
-                             {QStringLiteral("State"), QStringLiteral("listing")},
+                             {QStringLiteral("State"), QStringLiteral("ready")},
                              {QStringLiteral("Source"), QStringLiteral("onedrive")},
                              {QStringLiteral("ItemsListed"), QVariant::fromValue<qulonglong>(12480)}});
         QTRY_COMPARE(controller.itemsListed(), 12480ULL);
-        QCOMPARE(controller.rootState(), QStringLiteral("listing"));
+        QCOMPARE(controller.rootState(), QStringLiteral("ready"));
         QCOMPARE(controller.rootSource(), QStringLiteral("onedrive"));
     }
 
@@ -97,11 +97,11 @@ private Q_SLOTS:
     {
         startFake();
         const QString root = QStringLiteral("/home/u/OneDrive");
-        m_fake->upload_queueRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("running"), 5, 10, QString(), 0},
+        m_fake->uploadQueueRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("running"), 5, 10, QString(), 0},
                               {2, QStringLiteral("create"), root + QStringLiteral("/a:b"), QStringLiteral("blocked"), 0, 3, QStringLiteral("name-characters"), 0}};
         m_fake->keptBack = {{QStringLiteral("one-action"), QStringLiteral("quota-exceeded"), 5000, 7ULL << 30},
                             {QStringLiteral("per-file"), QStringLiteral("name-characters"), 1, 3},
-                            {QStringLiteral("never"), QStringLiteral("symlink"), 1, 0}};
+                            {QStringLiteral("waiting"), QStringLiteral("locked"), 1, 0}};
         m_fake->keptBackFiles.insert(QStringLiteral("name-characters"), {{root + QStringLiteral("/a:b"), QStringLiteral("name-characters")}});
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
@@ -131,7 +131,7 @@ private Q_SLOTS:
         controller.loadNotUploaded();
         QTRY_VERIFY(controller.notUploadedKnown());
         QCOMPARE(controller.notUploadedSummary().size(), 3);
-        QCOMPARE(controller.notUploadedSummary().at(2).toMap().value(QStringLiteral("why")).toString(), QStringLiteral("A symbolic link: never uploaded."));
+        QCOMPARE(controller.notUploadedSummary().at(2).toMap().value(QStringLiteral("why")).toString(), QStringLiteral("Locked in OneDrive (open for co-authoring): tried again later."));
         QCOMPARE(controller.blockedBytes(), (7ULL << 30) + 3);
         QVERIFY(controller.notUploadedFiles().isEmpty());
         controller.setNotUploadedFilesShown(QStringLiteral("name-characters"), true);
@@ -210,7 +210,7 @@ private Q_SLOTS:
         startFake();
         m_fake->skippedList = {
             {QStringLiteral("/home/u/OneDrive/long"), QStringLiteral("name-too-long"), QStringLiteral("uploads:2"), QStringLiteral("/home/u/OneDrive/docs-fedora")},
-            {QStringLiteral("/home/u/OneDrive/other"), QStringLiteral("name-too-long"), QStringLiteral("local-only:/home/u/OneDrive/docs/a.txt~"), QStringLiteral("/home/u/OneDrive/docs")},
+            {QStringLiteral("/home/u/OneDrive/other"), QStringLiteral("name-too-long"), QStringLiteral("open-for-writing:/home/u/OneDrive/docs/a.txt"), QStringLiteral("/home/u/OneDrive/docs")},
             {QStringLiteral("/home/u/OneDrive/newer"), QStringLiteral("name-too-long"), QStringLiteral("a-word-of-a-newer-daemon"), QStringLiteral("/home/u/OneDrive/n")},
         };
         SyncController controller(fake::FirstAccount);
@@ -219,7 +219,7 @@ private Q_SLOTS:
         QTRY_COMPARE(controller.skipped().size(), 3);
         const auto why = [&controller](int row) { return controller.skipped().at(row).toMap().value(QStringLiteral("why")).toString(); };
         QCOMPARE(why(0), QStringLiteral("The name is longer than Linux allows (255 bytes; a Cyrillic letter takes two). Still on this computer: 2 changes in it wait to be uploaded. It is at /home/u/OneDrive/docs-fedora."));
-        QVERIFY2(why(1).endsWith(QStringLiteral("Still on this computer: /home/u/OneDrive/docs/a.txt~ is only here (its name is on the ignore list). Move it out of the folder or delete it. It is at /home/u/OneDrive/docs.")), qPrintable(why(1)));
+        QVERIFY2(why(1).endsWith(QStringLiteral("Still on this computer: /home/u/OneDrive/docs/a.txt is open in a program. It is at /home/u/OneDrive/docs.")), qPrintable(why(1)));
         QVERIFY2(why(2).endsWith(QStringLiteral("Still on this computer: it leaves once nothing in it waits to be uploaded. It is at /home/u/OneDrive/n.")), qPrintable(why(2)));
     }
 
@@ -255,7 +255,7 @@ private Q_SLOTS:
     {
         startFake();
         const QString root = QStringLiteral("/home/u/OneDrive");
-        m_fake->upload_queueRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("running"), 5, 10, QString(), 0},
+        m_fake->uploadQueueRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("running"), 5, 10, QString(), 0},
                               {2, QStringLiteral("create"), root + QStringLiteral("/b.odt"), QStringLiteral("pending"), 0, 10, QString(), 0}};
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());

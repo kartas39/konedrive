@@ -621,7 +621,7 @@ public:
     qulonglong freedBytes = 0;
     uint busyFiles = 0;
     /// Changes(), oldest first.
-    KonedriveUploadQueueList upload_queueRows;
+    KonedriveUploadQueueList uploadQueueRows;
     /// NotUploaded().
     KonedriveSkippedList notUploadedList;
     /// NotUploadedSummary(), and NotUploadedFiles() by reason.
@@ -658,7 +658,7 @@ inline void FakeFolder::Register(const QString &path, const QDBusMessage &messag
         m_sync->bus.send(message.createErrorReply(QStringLiteral("org.konedrive.Error.NotEmpty"), m_sync->registerRefused));
         return;
     }
-    set({{QStringLiteral("Path"), path}, {QStringLiteral("State"), QStringLiteral("listing")}, {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+    set({{QStringLiteral("Path"), path}, {QStringLiteral("State"), QStringLiteral("ready")}, {QStringLiteral("Source"), QStringLiteral("onedrive")}});
 }
 
 inline void FakeFolder::Unregister()
@@ -731,13 +731,13 @@ inline void FakeFolder::SetThumbnails(bool on)
 inline KonedriveUploadQueueList FakeUploadQueue::Changes(uint limit)
 {
     m_sync->calls << QStringLiteral("Changes");
-    return limit == 0 ? m_sync->upload_queueRows : m_sync->upload_queueRows.mid(0, int(limit));
+    return limit == 0 ? m_sync->uploadQueueRows : m_sync->uploadQueueRows.mid(0, int(limit));
 }
 
 inline qulonglong FakeUploadQueue::UnsentCount()
 {
     m_sync->calls << QStringLiteral("UnsentCount");
-    return qulonglong(m_sync->upload_queueRows.size());
+    return qulonglong(m_sync->uploadQueueRows.size());
 }
 
 inline KonedriveSkippedList FakeUploadQueue::NotUploaded()

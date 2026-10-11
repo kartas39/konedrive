@@ -96,7 +96,6 @@ fn kept_back_group_text(group: &str) -> &str {
     match Group::parse(group) {
         Some(Group::OneAction) => "Needs you: one action fixes them all",
         Some(Group::PerFile) => "Needs you: each file",
-        Some(Group::Never) => "Never uploaded",
         Some(Group::Waiting) => "Waiting: these go up by themselves",
         None => group,
     }

@@ -7,7 +7,7 @@
 //! when one in git differs; run with `KONEDRIVE_UPDATE_GENERATED=1` it
 //! rewrites them instead.
 
-use konedrive_reason::{known_group, LocalSkip, Reason, TOO_BIG_PREFIX};
+use konedrive_reason::{known_group, Reason, TOO_BIG_PREFIX};
 
 use crate::reasons::{takes_sizes, ReasonText, REASONS};
 use crate::waits::{WaitSentence, STILL_HERE, WAITS};
@@ -102,12 +102,10 @@ fn translated(opening: &str, sentence: &str, expression: &dyn Fn(&str) -> &'stat
 }
 
 /// The keys behind which `: <detail>` is read as a detail (`key_of`): those
-/// of either table that have a group.
+/// that have a group.
 fn keys_with_a_detail() -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
-    let reasons = Reason::ALL.iter().map(|reason| reason.key().to_owned());
-    let skips = LocalSkip::ALL.iter().map(|skip| skip.key().to_owned());
-    for key in reasons.chain(skips) {
+    for key in Reason::ALL.iter().map(|reason| reason.key().to_owned()) {
         if known_group(&key).is_some() && !keys.contains(&key) {
             keys.push(key);
         }

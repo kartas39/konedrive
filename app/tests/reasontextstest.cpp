@@ -24,7 +24,6 @@ private Q_SLOTS:
             QTest::newRow(stored) << QString::fromUtf8(stored) << text;
         };
         const QString incomplete = QStringLiteral("KOneDrive's record of this change is incomplete (%1): it stays here until the file is changed again.");
-        const QString notAFile = QStringLiteral("Not a file or a folder: never uploaded.");
         const QString keepsChanging = QStringLiteral("It keeps changing in OneDrive: tried again later.");
 
         row("name-characters", QStringLiteral("A name OneDrive refuses (it holds one of \" * : < > ? \\ |): rename it to upload it."));
@@ -35,15 +34,6 @@ private Q_SLOTS:
         row("quota-exceeded", QStringLiteral("OneDrive is full: free some space in OneDrive."));
         row("forbidden", QStringLiteral("This sign-in does not allow uploads: sign in again."));
         row("open-for-writing", QStringLiteral("Open for writing in another program: it goes up once closed."));
-        row("symlink", QStringLiteral("A symbolic link: never uploaded."));
-        row("fifo", notAFile);
-        row("socket", notAFile);
-        row("device", notAFile);
-        row("reserved-name", QStringLiteral("A .konedrive- name, which KOneDrive keeps for itself: never uploaded."));
-        row("not-downloaded", QStringLiteral("A file from another OneDrive folder that is not downloaded here."));
-        row("other-device", QStringLiteral("On another filesystem mounted inside the folder: never uploaded."));
-        row("hard-link", QStringLiteral("A file with other hard links: not uploaded."));
-        row("unreadable", QStringLiteral("Cannot be read: not uploaded, nor anything inside it, until KOneDrive may read it."));
         row("locked", QStringLiteral("Locked in OneDrive (open for co-authoring): tried again later."));
         row("network", QStringLiteral("OneDrive could not be reached: tried again later."));
         row("local-error", QStringLiteral("The local file could not be read: tried again later."));
@@ -61,9 +51,6 @@ private Q_SLOTS:
         row("not allowed now", QStringLiteral("Uploads are not allowed now: it goes on when they are."));
         row("not allowed now: the folder is read-only: for now",
             QStringLiteral("Uploads are not allowed now: it goes on when they are (the folder is read-only: for now)."));
-        row("state-unreadable", QStringLiteral("The file's KOneDrive state cannot be read: it stays here until the file is replaced."));
-        row("state-unreadable: Input/output error (os error 5)",
-            QStringLiteral("The file's KOneDrive state cannot be read: it stays here until the file is replaced (Input/output error (os error 5))."));
         row("blocked", incomplete.arg(QStringLiteral("blocked")));
         row("not-read-on-disk", QStringLiteral("KOneDrive could not read this on disk when it started: nothing of it is uploaded until it can be read at a start."));
         row("being-checked", QStringLiteral("Being checked: KOneDrive is asking OneDrive for the whole folder again, and goes on by itself."));
@@ -83,7 +70,8 @@ private Q_SLOTS:
                                    "parent-not-in-onedrive",
                                    "hash-mismatch",
                                    "not-found: errno 5",
-                                   "ignored",
+                                   "symlink",
+                                   "state-unreadable: Input/output error (os error 5)",
                                    "something-new",
                                    "network: connection reset",
                                    "symlink: of some kind",
@@ -119,19 +107,9 @@ private Q_SLOTS:
         row("uploads:12", QStringLiteral("Still on this computer: 12 changes in it wait to be uploaded."));
         row("uploads:0", QStringLiteral("Still on this computer: 0 changes in it wait to be uploaded."));
         row("uploads:many", plain);
-        row("changes:/home/u/OneDrive/docs/a.txt",
-            QStringLiteral("Still on this computer: what was done at /home/u/OneDrive/docs/a.txt on this computer has not reached OneDrive yet."));
         row("open-for-writing:/home/u/OneDrive/docs/a.txt", QStringLiteral("Still on this computer: /home/u/OneDrive/docs/a.txt is open in a program."));
-        row("unknown-state:/home/u/OneDrive/a:b",
-            QStringLiteral("Still on this computer: whether /home/u/OneDrive/a:b holds changes cannot be read. Move it out of the folder or delete it."));
-        row("not-downloaded:/home/u/OneDrive/a.txt",
-            QStringLiteral("Still on this computer: /home/u/OneDrive/a.txt is not downloaded and is not where OneDrive has it. Move it out of the folder."));
-        row("local-only:/home/u/OneDrive/.git",
-            QStringLiteral("Still on this computer: /home/u/OneDrive/.git is only here (its name is on the ignore list). Move it out of the folder or delete it."));
-        row("mounted-inside:/home/u/OneDrive/docs/sub", QStringLiteral("Still on this computer: another filesystem is mounted at /home/u/OneDrive/docs/sub. Unmount it."));
-        row("moved-in-onedrive:/home/u/OneDrive/docs/a.txt",
-            QStringLiteral("Still on this computer: /home/u/OneDrive/docs/a.txt was moved in OneDrive, and the name it has there is taken on this computer. Rename "
-                           "or move what has that name."));
+        // A key of an older daemon: nothing can be named.
+        row("mounted-inside:/home/u/OneDrive/docs/sub", plain);
         row("something-new:1", plain);
     }
 

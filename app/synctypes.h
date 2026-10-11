@@ -151,7 +151,7 @@ inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveU
 }
 
 /// One row of NotUploadedSummary(): (group, reason, count, bytes). Groups:
-/// one-action, per-file, never, waiting.
+/// one-action, per-file, waiting.
 struct KonedriveKeptBack {
     QString group;
     QString reason;

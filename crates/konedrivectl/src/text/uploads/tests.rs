@@ -1,5 +1,5 @@
 use konedrive_dbus::rows::{Change, KeptBack, KeptBackFiles, KeptBackReason};
-use konedrive_reason::{Group, LocalSkip, Reason};
+use konedrive_reason::{Group, Reason};
 
 use super::{not_uploaded_text, upload_queue_text, quota_text, space_waiting_text, upload_reason_text};
 
@@ -29,11 +29,10 @@ fn upload_queue_lines_say_what_waits_and_why() {
 #[test]
 fn not_uploaded_lists_reasons_then_the_files_of_per_file_ones() {
     let row = |group: &str, reason: &str, count, bytes| KeptBackReason { group: group.to_owned(), reason: reason.to_owned(), count, bytes };
-    let summary = vec![row("one-action", "quota-exceeded", 5000, 3 << 30), row("per-file", "refused", 25, 0), row("never", "symlink", 1, 0)];
+    let summary = vec![row("one-action", "quota-exceeded", 5000, 3 << 30), row("per-file", "refused", 25, 0)];
     let items: Vec<KeptBack> = (0..20).map(|i| KeptBack { path: format!("/f/{i}"), reason: "refused: bad name".to_owned() }).collect();
     let text = not_uploaded_text(&summary, &[("refused".to_owned(), KeptBackFiles { items, total: 25 })], "konedrivectl");
     assert!(text.starts_with("Needs you: one action fixes them all:\n  5000, 3.0 GiB: OneDrive is full: free some space in OneDrive.\n"), "{text}");
-    assert!(text.contains("Never uploaded:\n  1: A symbolic link: never uploaded.\n"), "{text}");
     assert!(text.contains("\nRefused by OneDrive.\n  /f/0  (OneDrive refused it: bad name)\n"), "{text}");
     assert!(!text.contains("/f/20"), "{text}");
     assert!(text.ends_with("… and 5 more: `konedrivectl sync not-uploaded --all` lists them all\n"), "{text}");
@@ -48,13 +47,13 @@ fn a_reason_in_brackets_has_no_full_stop_and_one_without_a_sentence_keeps_its_co
     let item = |path: &str, reason: &str| KeptBack { path: path.to_owned(), reason: reason.to_owned() };
     let files = vec![
         ("download-failed".to_owned(), KeptBackFiles { items: vec![item("/f/a", "download-failed: errno 5."), item("/f/b", "download-failed")], total: 2 }),
-        ("network".to_owned(), KeptBackFiles { items: vec![item("/f/c", "state-unreadable: errno 5")], total: 1 }),
+        ("network".to_owned(), KeptBackFiles { items: vec![item("/f/c", "not allowed now: errno 5")], total: 1 }),
     ];
     let text = not_uploaded_text(&[row("download-failed"), row("network")], &files, "konedrivectl");
     assert!(text.contains("\ndownload-failed:\n  /f/a  (download-failed: errno 5.)\n  /f/b\n"), "{text}");
     assert!(
         text.contains(
-            "\nOneDrive could not be reached: tried again later.\n  /f/c  (The file's KOneDrive state cannot be read: it stays here until the file is replaced (errno 5))\n"
+            "\nOneDrive could not be reached: tried again later.\n  /f/c  (Uploads are not allowed now: it goes on when they are (errno 5))\n"
         ),
         "{text}"
     );
@@ -70,8 +69,6 @@ fn waiting_for_space_is_one_line_and_too_big_says_what_it_needs() {
     assert_eq!(upload_reason_text("too-big"), "Too big for the space left in OneDrive: free up space there, then `sync refresh`.");
     assert_eq!(upload_reason_text("network"), "OneDrive could not be reached: tried again later.");
     assert_eq!(upload_reason_text("local-error"), "The local file could not be read: tried again later.");
-    assert_eq!(upload_reason_text("unreadable"), "Cannot be read: not uploaded, nor anything inside it, until KOneDrive may read it.");
-    assert_eq!(upload_reason_text("state-unreadable"), "The file's KOneDrive state cannot be read: it stays here until the file is replaced.");
     assert_eq!(upload_reason_text("index-error"), "KOneDrive's local index failed: tried again later.");
     assert_eq!(upload_reason_text("upload-error"), "The upload failed: tried again later.");
     assert_eq!(quota_text("nearing", 5 << 30, false), "OneDrive: 5.0 GiB free (quota nearing).\n");
@@ -89,7 +86,6 @@ fn the_reasons_the_worker_writes_have_sentences() {
         "changed in OneDrive again and again",
         "the upload session ended twice",
         "not allowed now",
-        "state-unreadable",
         "blocked",
     ];
     for key in keys {
@@ -143,24 +139,6 @@ fn spelled(reason: &Reason) -> (&'static str, bool) {
     }
 }
 
-/// The same for what an examination never uploads.
-fn skip_spelled(skip: &LocalSkip) -> (&'static str, bool) {
-    match skip {
-        LocalSkip::Symlink => ("symlink", true),
-        LocalSkip::Fifo => ("fifo", true),
-        LocalSkip::Socket => ("socket", true),
-        LocalSkip::Device => ("device", true),
-        LocalSkip::ReservedName => ("reserved-name", true),
-        LocalSkip::HardLink => ("hard-link", true),
-        LocalSkip::NotDownloaded => ("not-downloaded", true),
-        LocalSkip::OtherDevice => ("other-device", true),
-        LocalSkip::Unreadable => ("unreadable", true),
-        LocalSkip::BadState => ("state-unreadable", true),
-        LocalSkip::Ignored => ("ignored", false),
-        LocalSkip::Other(_) => unreachable!("not a spelling of its own"),
-    }
-}
-
 /// Quality finding `X1`: the spellings stored in the upload queue and sent over
 /// D-Bus are the contract with the database and with the window's and
 /// Dolphin's tables. Each one, written out here, is its variant's key and
@@ -168,19 +146,12 @@ fn skip_spelled(skip: &LocalSkip) -> (&'static str, bool) {
 /// stored where it has no sentence yet. A reworded key fails here.
 #[test]
 fn every_reason_is_stored_under_its_spelling_and_is_worded() {
-    assert_eq!((Reason::ALL.len(), LocalSkip::ALL.len()), (30, 11));
+    assert_eq!(Reason::ALL.len(), 30);
     let mut seen = std::collections::BTreeSet::new();
     for reason in Reason::ALL {
         let (spelling, worded) = spelled(&reason);
         assert_eq!((reason.key(), reason.to_string().as_str()), (spelling, spelling));
         assert_eq!(Reason::parse(spelling), reason, "{spelling}");
-        assert_eq!(upload_reason_text(spelling) != spelling, worded, "{spelling}");
-        assert!(seen.insert(spelling), "{spelling} is spelled twice");
-    }
-    for skip in LocalSkip::ALL {
-        let (spelling, worded) = skip_spelled(&skip);
-        assert_eq!((skip.key(), skip.to_string().as_str()), (spelling, spelling));
-        assert_eq!(LocalSkip::parse(spelling), skip, "{spelling}");
         assert_eq!(upload_reason_text(spelling) != spelling, worded, "{spelling}");
         assert!(seen.insert(spelling), "{spelling} is spelled twice");
     }
@@ -205,5 +176,5 @@ fn every_reason_is_stored_under_its_spelling_and_is_worded() {
     }
     assert_eq!(upload_reason_text("too-big:03:1"), "Too big: needs 3 B, 1 B free.");
     let groups: Vec<&str> = Group::ALL.iter().map(|g| g.as_str()).collect();
-    assert_eq!(groups, ["one-action", "per-file", "never", "waiting"]);
+    assert_eq!(groups, ["one-action", "per-file", "waiting"]);
 }

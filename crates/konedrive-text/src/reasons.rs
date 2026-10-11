@@ -1,5 +1,4 @@
-//! Why a change is not uploaded: the sentence of every key of `Reason` and
-//! `LocalSkip`, in one table.
+//! Why a change is not uploaded: the sentence of every key of `Reason`.
 //!
 //! The places of a sentence: `{key}` (the key itself), `{detail}` (what
 //! stands behind `<key>: `), and `{needs}` and `{free}` (the sizes of
@@ -37,9 +36,8 @@ const fn as_stored(key: &'static str) -> ReasonText {
 }
 
 const INCOMPLETE: &str = "KOneDrive's record of this change is incomplete ({key}): it stays here until the file is changed again.";
-const NOT_A_FILE: &str = "Not a file or a folder: never uploaded.";
 
-/// Every key of `Reason`, in its order, then those of `LocalSkip`, in theirs.
+/// Every key of `Reason`, in its order.
 pub const REASONS: &[ReasonText] = &[
     bare("open-for-writing", "Open for writing in another program: it goes up once closed."),
     bare("name-characters", "A name OneDrive refuses (it holds one of \" * : < > ? \\ |): rename it to upload it."),
@@ -86,21 +84,6 @@ pub const REASONS: &[ReasonText] = &[
         }),
         detailed: Some(Same("Too big: needs {needs}, {free} free.")),
     },
-    bare("symlink", "A symbolic link: never uploaded."),
-    bare("fifo", NOT_A_FILE),
-    bare("socket", NOT_A_FILE),
-    bare("device", NOT_A_FILE),
-    bare("reserved-name", "A .konedrive- name, which KOneDrive keeps for itself: never uploaded."),
-    bare("hard-link", "A file with other hard links: not uploaded."),
-    bare("not-downloaded", "A file from another OneDrive folder that is not downloaded here."),
-    bare("other-device", "On another filesystem mounted inside the folder: never uploaded."),
-    bare("unreadable", "Cannot be read: not uploaded, nor anything inside it, until KOneDrive may read it."),
-    detailed(
-        "state-unreadable",
-        "The file's KOneDrive state cannot be read: it stays here until the file is replaced.",
-        "The file's KOneDrive state cannot be read: it stays here until the file is replaced ({detail}).",
-    ),
-    as_stored("ignored"),
 ];
 
 /// The entry of a key.

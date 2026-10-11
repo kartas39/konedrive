@@ -75,9 +75,7 @@ private Q_SLOTS:
         QCOMPARE(at(activity, 1, ActivityModel::TextRole).toString(), QStringLiteral("Changed on both sides: both versions kept"));
         QCOMPARE(at(activity, 1, ActivityModel::IconRole).toString(), QStringLiteral("document-duplicate"));
         QCOMPARE(at(activity, 2, ActivityModel::IconRole).toString(), QStringLiteral("edit-delete"));
-        QCOMPARE(uploadReasonText(QStringLiteral("other-device")), QStringLiteral("On another filesystem mounted inside the folder: never uploaded."));
-        QCOMPARE(uploadReasonText(QStringLiteral("unreadable")), QStringLiteral("Cannot be read: not uploaded, nor anything inside it, until KOneDrive may read it."));
-        QCOMPARE(uploadReasonText(QStringLiteral("state-unreadable")), QStringLiteral("The file's KOneDrive state cannot be read: it stays here until the file is replaced."));
+        QCOMPARE(uploadReasonText(QStringLiteral("too-large")), QStringLiteral("Larger than OneDrive takes (250 GB)."));
         QCOMPARE(uploadReasonText(QStringLiteral("paused")), QStringLiteral("Paused with the account: it goes on when the pause ends."));
         QCOMPARE(uploadReasonText(QStringLiteral("blocked")), QStringLiteral("KOneDrive's record of this change is incomplete (blocked): it stays here until the file is changed again."));
         QCOMPARE(uploadReasonText(QStringLiteral("not allowed now: the folder is read-only")), QStringLiteral("Uploads are not allowed now: it goes on when they are (the folder is read-only)."));

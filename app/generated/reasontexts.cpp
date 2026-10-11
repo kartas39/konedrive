@@ -68,17 +68,6 @@ bool takesDetail(QStringView key)
         QLatin1String("upload-error"),
         QLatin1String("waiting-for-space"),
         QLatin1String("too-big"),
-        QLatin1String("symlink"),
-        QLatin1String("fifo"),
-        QLatin1String("socket"),
-        QLatin1String("device"),
-        QLatin1String("reserved-name"),
-        QLatin1String("hard-link"),
-        QLatin1String("not-downloaded"),
-        QLatin1String("other-device"),
-        QLatin1String("unreadable"),
-        QLatin1String("state-unreadable"),
-        QLatin1String("ignored"),
     };
     for (const QLatin1String known : keys) {
         if (key == known) {
@@ -278,69 +267,6 @@ QString reasonSentence(const ReasonParts &parts, const QString &needs, const QSt
         }
         return QString();
     }
-    if (parts.key == QLatin1String("symlink")) {
-        if (!parts.hasDetail) {
-            return i18n("A symbolic link: never uploaded.");
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("fifo")) {
-        if (!parts.hasDetail) {
-            return i18n("Not a file or a folder: never uploaded.");
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("socket")) {
-        if (!parts.hasDetail) {
-            return i18n("Not a file or a folder: never uploaded.");
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("device")) {
-        if (!parts.hasDetail) {
-            return i18n("Not a file or a folder: never uploaded.");
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("reserved-name")) {
-        if (!parts.hasDetail) {
-            return i18n("A .konedrive- name, which KOneDrive keeps for itself: never uploaded.");
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("hard-link")) {
-        if (!parts.hasDetail) {
-            return i18n("A file with other hard links: not uploaded.");
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("not-downloaded")) {
-        if (!parts.hasDetail) {
-            return i18n("A file from another OneDrive folder that is not downloaded here.");
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("other-device")) {
-        if (!parts.hasDetail) {
-            return i18n("On another filesystem mounted inside the folder: never uploaded.");
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("unreadable")) {
-        if (!parts.hasDetail) {
-            return i18n("Cannot be read: not uploaded, nor anything inside it, until KOneDrive may read it.");
-        }
-        return QString();
-    }
-    if (parts.key == QLatin1String("state-unreadable")) {
-        if (!parts.hasDetail) {
-            return i18n("The file's KOneDrive state cannot be read: it stays here until the file is replaced.");
-        }
-        if (parts.hasDetail) {
-            return i18n("The file's KOneDrive state cannot be read: it stays here until the file is replaced (%1).", parts.detail);
-        }
-        return QString();
-    }
     Q_UNUSED(needs)
     Q_UNUSED(free)
     return QString();
@@ -360,26 +286,8 @@ QString stillHereSentence(const QString &waits)
             return i18np("Still on this computer: 1 change in it waits to be uploaded.", "Still on this computer: %1 changes in it wait to be uploaded.", count);
         }
     }
-    if (key == QLatin1String("changes")) {
-        return i18n("Still on this computer: what was done at %1 on this computer has not reached OneDrive yet.", detail);
-    }
     if (key == QLatin1String("open-for-writing")) {
         return i18n("Still on this computer: %1 is open in a program.", detail);
-    }
-    if (key == QLatin1String("unknown-state")) {
-        return i18n("Still on this computer: whether %1 holds changes cannot be read. Move it out of the folder or delete it.", detail);
-    }
-    if (key == QLatin1String("not-downloaded")) {
-        return i18n("Still on this computer: %1 is not downloaded and is not where OneDrive has it. Move it out of the folder.", detail);
-    }
-    if (key == QLatin1String("local-only")) {
-        return i18n("Still on this computer: %1 is only here (its name is on the ignore list). Move it out of the folder or delete it.", detail);
-    }
-    if (key == QLatin1String("mounted-inside")) {
-        return i18n("Still on this computer: another filesystem is mounted at %1. Unmount it.", detail);
-    }
-    if (key == QLatin1String("moved-in-onedrive")) {
-        return i18n("Still on this computer: %1 was moved in OneDrive, and the name it has there is taken on this computer. Rename or move what has that name.", detail);
     }
     return i18n("Still on this computer: it leaves once nothing in it waits to be uploaded.");
 }

@@ -167,7 +167,7 @@ private Q_SLOTS:
     void listingIsSyncing()
     {
         startSynced();
-        decide("syncing", "listing", {{QStringLiteral("State"), QStringLiteral("listing")}, {QStringLiteral("ItemsListed"), QVariant::fromValue<qulonglong>(12)}});
+        decide("syncing", "listing", {{QStringLiteral("ItemsListed"), QVariant::fromValue<qulonglong>(12)}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("syncing"));
         QCOMPARE(m_status->iconName(), QStringLiteral("state-sync"));
         QCOMPARE(m_status->text(), QStringLiteral("Listing your OneDrive: 12 items so far"));

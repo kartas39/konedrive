@@ -175,7 +175,8 @@ void AccountStatus::update()
         // The line under the folder: what the account is doing, in words, from the counts
         // and the times. The trouble that does not stop the folder is said first, whatever
         // the reason is (a pause).
-        const bool listing = m_sync->rootState() == QLatin1String("listing");
+        // The first listing of the drive runs: the daemon says so as the reason (Folder.State has no such word).
+        const bool listing = reason == QLatin1String("listing");
         const int uploads = m_sync->uploads()->count();
         const uint pending = m_sync->pendingCount();
         const QString heldBack = m_sync->heldBack();

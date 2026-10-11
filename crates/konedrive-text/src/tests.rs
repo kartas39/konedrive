@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use konedrive_reason::{LocalSkip, Reason, WaitsFor};
+use konedrive_reason::{Reason, WaitsFor};
 
 use super::reasons::{self, REASONS};
 use super::waits::{self, WaitSentence, STILL_HERE, WAITS};
@@ -17,8 +17,8 @@ fn said(stored: &str, client: Client) -> String {
 /// Every key of `konedrive-reason` has an entry, and every entry is a key:
 /// a new code without words, or with no decision that it has none, fails here.
 #[test]
-fn every_key_of_a_reason_and_a_skip_has_an_entry() {
-    let keys: BTreeSet<&str> = Reason::ALL.iter().map(Reason::key).chain(LocalSkip::ALL.iter().map(LocalSkip::key)).collect();
+fn every_key_of_a_reason_has_an_entry() {
+    let keys: BTreeSet<&str> = Reason::ALL.iter().map(Reason::key).collect();
     let entries: Vec<&str> = REASONS.iter().map(|entry| entry.key).collect();
     let unique: BTreeSet<&str> = entries.iter().copied().collect();
     assert_eq!(unique.len(), entries.len(), "a key has two entries");
@@ -32,25 +32,13 @@ fn every_wait() -> Vec<WaitsFor> {
     let all = vec![
         WaitsFor::Cycle,
         WaitsFor::Uploads(3),
-        WaitsFor::Changes(path()),
         WaitsFor::OpenForWriting(path()),
-        WaitsFor::UnknownState(path()),
-        WaitsFor::NotDownloaded(path()),
-        WaitsFor::LocalOnly(path()),
-        WaitsFor::MountedInside(path()),
-        WaitsFor::MovedAway(path()),
     ];
     for waits in &all {
         match waits {
             WaitsFor::Cycle
             | WaitsFor::Uploads(_)
-            | WaitsFor::Changes(_)
-            | WaitsFor::OpenForWriting(_)
-            | WaitsFor::UnknownState(_)
-            | WaitsFor::NotDownloaded(_)
-            | WaitsFor::LocalOnly(_)
-            | WaitsFor::MountedInside(_)
-            | WaitsFor::MovedAway(_) => {}
+            | WaitsFor::OpenForWriting(_) => {}
             WaitsFor::Other(_) => unreachable!("not a key of its own"),
         }
     }
@@ -123,7 +111,7 @@ fn a_stored_reason_is_worded_by_its_key_and_what_stands_behind_it() {
     assert_eq!(said("blocked", Client::Desktop), "KOneDrive's record of this change is incomplete (blocked): it stays here until the file is changed again.");
     assert_eq!(said("too-big:300:20", Client::Desktop), "Too big: needs 300 B, 20 B free.");
     assert_eq!(said("too-big:0300:+20", Client::CommandLine), "Too big: needs 300 B, 20 B free.");
-    assert_eq!(said("state-unreadable: Input/output error (os error 5)", Client::Desktop), "The file's KOneDrive state cannot be read: it stays here until the file is replaced (Input/output error (os error 5)).");
+    assert_eq!(said("not allowed now: the folder is read-only", Client::Desktop), "Uploads are not allowed now: it goes on when they are (the folder is read-only).");
     for stored in ["download-failed", "download-failed: errno 5", "network: connection reset", "symlink: x", "too-big: x", "too-big:x:1", "too-big:", "ignored", "something-new", ""] {
         for client in [Client::Desktop, Client::CommandLine] {
             assert_eq!(said(stored, client), stored);

@@ -34,11 +34,10 @@ fn only_a_refusal_for_good_and_a_wait_for_the_user_that_needs_the_user_are_shown
     let waiting = |reason: WaitReason| Some(ItemAnswer::Waiting(reason));
     let user = |reason: Reason| waiting(WaitReason::User(reason));
     // A reason of each group, as the test relies on them.
-    let never = Reason::parse("symlink");
     let in_no_table = Reason::parse("a reason no table has");
     assert_eq!(
-        [Reason::Forbidden.group(), Reason::NameCharacters.group(), never.group(), Reason::Locked.group(), in_no_table.group()],
-        [Some(Group::OneAction), Some(Group::PerFile), Some(Group::Never), Some(Group::Waiting), None]
+        [Reason::Forbidden.group(), Reason::NameCharacters.group(), Reason::Locked.group(), in_no_table.group()],
+        [Some(Group::OneAction), Some(Group::PerFile), Some(Group::Waiting), None]
     );
     assert_eq!((Reason::NotReadOnDisk.group(), Reason::BeingChecked.group()), (Some(Group::PerFile), Some(Group::Waiting)), "the two the owner decided come before their groups");
     let cases: Vec<(Option<ItemAnswer>, bool, &str)> = vec![
@@ -71,7 +70,6 @@ fn only_a_refusal_for_good_and_a_wait_for_the_user_that_needs_the_user_are_shown
         (user(Reason::TooBig(None)), true, "one action, and no wait for space"),
         (user(Reason::NameCharacters), true, "per file: a name"),
         (user(Reason::Refused(Some("no".into()))), true, "per file: refused with a message"),
-        (user(never), true, "never"),
         (user(in_no_table), true, "a reason in no table"),
     ];
     for (answer, is_blocked, what) in &cases {

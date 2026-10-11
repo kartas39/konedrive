@@ -177,24 +177,6 @@ FormCard.FormCardPage {
         }
     }
 
-    // Never uploaded: one line per reason, nothing to do.
-    FormCard.FormHeader {
-        visible: page.rowsOf("never").length > 0
-        title: i18nc("@title:group", "Never Uploaded")
-    }
-    FormCard.FormCard {
-        objectName: "neverGroup"
-        visible: page.rowsOf("never").length > 0
-
-        Repeater {
-            model: page.rowsOf("never")
-            delegate: FormCard.FormTextDelegate {
-                required property var modelData
-                text: i18np("1 item: %2", "%1 items: %2", modelData.count, modelData.why)
-            }
-        }
-    }
-
     // Waiting: goes up by itself; one line, its reasons when opened.
     FormCard.FormHeader {
         visible: page.rowsOf("waiting").length > 0

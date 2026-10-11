@@ -91,7 +91,6 @@ fn decide_is_reason_shown_blocked(reason: &Reason) -> bool {
         Some(Group::Waiting) => false,
         Some(Group::OneAction) => true,
         Some(Group::PerFile) => true,
-        Some(Group::Never) => true,
         // A reason in no table needs the user: nothing says it goes up by itself.
         None => true,
     }

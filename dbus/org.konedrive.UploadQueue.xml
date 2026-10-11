@@ -28,18 +28,12 @@
     <method name="UnsentCount">
       <arg name="count" type="t" direction="out"/>
     </method>
-    <!-- What stays on this computer and why, as (full path, reason):
-         symlink, fifo, socket, device, other-device (on another
-         filesystem mounted inside the folder, or a nested Btrfs subvolume),
-         reserved-name, not-downloaded (a
-         file from elsewhere that is not downloaded), hard-link, unreadable
-         (the daemon may not read it, or reading it failed), state-unreadable
-         (a file with an item id and no state the daemon can read); and every
-         blocked change with its reason: name-characters, name-spaces,
-         name-reserved, name-not-utf8, too-large, forbidden,
-         "refused: <OneDrive's message>". A blocked change
-         whose reason is the one the first list gives for the same path is
-         left out: such a file is listed once. -->
+    <!-- The changes made here that need the user before they can go up,
+         as (full path, reason), by path: every blocked change with its
+         reason — name-characters, name-spaces, name-reserved,
+         name-not-utf8, too-large, forbidden, "refused: <OneDrive's
+         message>", not-read-on-disk, blocked. A file left here by the list
+         of ignored names is in no list. -->
     <method name="NotUploaded">
       <arg name="items" type="a(ss)" direction="out"/>
       <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveSkippedList"/>
@@ -48,17 +42,15 @@
          of the files). Everything NotUploaded lists, and the changes that
          wait with a reason (open for writing, locked, ...). Groups, in this order:
          one-action (one action fixes every file: waiting-for-space, too-big,
-         forbidden; quota-exceeded only for a row an older version blocked),
+         forbidden, quota-exceeded),
          per-file (each file needs the user: name-characters, name-spaces,
-         name-reserved, name-not-utf8, too-large, unreadable,
-         state-unreadable, refused — every
-         "refused: <message>" is summed as refused, and so is every reason
-         with a detail behind its key, "<key>: <detail>"; also every
+         name-reserved, name-not-utf8, too-large, not-read-on-disk, refused
+         — every "refused: <message>" is summed as refused, and so is every
+         reason with a detail behind its key, "<key>: <detail>"; also every
          blocked change whose reason is none of another group's, whatever
-         the reason), never (never uploaded: symlink, fifo, socket, device,
-         other-device, reserved-name, hard-link), waiting (goes up by
-         itself; also every reason the daemon does not know, of a change
-         that is not blocked). Refused as NotUploaded is. -->
+         the reason), waiting (goes up by itself; also every reason the
+         daemon does not know, of a change that is not blocked). Refused as
+         NotUploaded is. -->
     <method name="NotUploadedSummary">
       <arg name="reasons" type="a(ssut)" direction="out"/>
       <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveKeptBackList"/>
