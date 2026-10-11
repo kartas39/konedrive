@@ -246,6 +246,24 @@ fn what_the_folder_shows_in_a_directory_that_gives_up_a_guessed_binding_waits_fo
     }
 }
 
+/// Found by the larger convergence run (seed 106, requests in flight): two directories
+/// OneDrive removed, each holding the user's own; the folder shows the first in the second,
+/// and the two sides agreed the second is in the first. Only what is sent into a
+/// directory waits for it to give up its binding: a directory that is shown in it and
+/// gives up its own binding does not, or the two would wait for each other without end.
+#[test]
+fn a_directory_shown_in_one_that_gives_up_its_binding_gives_up_its_own_without_waiting_for_it() {
+    let given = input(vec![
+        removed_in_onedrive(moved_here(synced_directory(3, ROOT, "g"), id(5), "b")),
+        removed_in_onedrive(moved_here(synced_directory(5, id(3), "f"), ROOT, "B")),
+        made_file(7, id(3), "own"),
+        made_file(9, id(5), "e.txt"),
+    ]);
+    assert_eq!(make_sync_plan(&given).faults, [], "no item waits without end");
+    assert_eq!(answer(&given, 3), row_step(RowStep::GiveUpBinding { item: versions(&given, 3) }));
+    assert_eq!(answer(&given, 5), Answer::Wait(WaitReason::AnotherItem(id(3))), "what was agreed to be in it follows its binding first");
+}
+
 /// The design's "a name OneDrive cannot hold is not sent and not altered": also the name a
 /// move gives. Today: `a_name_onedrive_refuses_or_a_file_too_large_waits_for_the_user`
 /// (`fuse/detections/entry_created/tests.rs`) is of a new item; a rename to such a name is
