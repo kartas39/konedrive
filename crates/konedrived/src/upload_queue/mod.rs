@@ -89,14 +89,14 @@
 // test: taking_removals_back_leaves_each_as_an_item_of_onedrive_the_folder_does_not_show
 #![allow(dead_code, unused_variables, unused_imports)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use konedrive_dbus::rows::{Change, KeptBack, KeptBackFiles, KeptBackReason, NotInFolder, Transfer};
-use konedrive_tree::{Item, ItemMemory, ItemNotShown, ItemReader, LocalItemId, Reason, TreeError, TreeStore, UnsentTotal};
+use konedrive_tree::{ContentVersion, Item, ItemKind, ItemMemory, ItemNotShown, ItemReader, ItemVersions, LocalItemId, Reason, StepCommitOutcome, TreeError, TreeStore, UnsentRemoval, UnsentTotal, WaitReason, WaitsFor};
 
-use crate::sync_parts::published_plan::{ItemAnswer, PublishedPlan};
-use crate::sync_parts::running_steps::{RunningStep, RunningSteps};
+use crate::sync_parts::published_plan::{decide_is_shown_blocked, ItemAnswer, PublishedPlan};
+use crate::sync_parts::running_steps::{RunningStep, RunningSteps, StepClass};
 use crate::status::snapshot::SyncStateHandle;
 use crate::sync_parts::onedrive_space::OneDriveSpace;
 use crate::sync_parts::sending_holds::{SendingHold, SendingHolds};
@@ -114,12 +114,18 @@ pub enum UnsentKind {
 impl UnsentKind {
     /// The word on the bus: `mkdir`, `create`, `update`, `move`, `delete`.
     pub fn as_str(self) -> &'static str {
-        todo!()
+        match self {
+            UnsentKind::Mkdir => "mkdir",
+            UnsentKind::Create => "create",
+            UnsentKind::Update => "update",
+            UnsentKind::Move => "move",
+            UnsentKind::Delete => "delete",
+        }
     }
 
     /// Whether sending it sends a file's content: `Create` and `Update`.
     pub fn sends_content(self) -> bool {
-        todo!()
+        matches!(self, UnsentKind::Create | UnsentKind::Update)
     }
 }
 
@@ -134,7 +140,18 @@ impl UnsentKind {
 /// below: it is in no list, no summary and none of the counts made from the answers, and
 /// it stays in `pending`, where the store's sum counted it.
 pub fn decide_unsent_kind(item: &Item) -> Option<UnsentKind> {
-    todo!()
+    item.unsent_since?;
+    let Some(local) = &item.local else { return Some(UnsentKind::Delete) };
+    let Some(synced_place) = &item.synced_place else {
+        return Some(match item.kind {
+            ItemKind::Directory => UnsentKind::Mkdir,
+            ItemKind::File => UnsentKind::Create,
+        });
+    };
+    if item.kind == ItemKind::File && local.content != item.synced_content {
+        return Some(UnsentKind::Update);
+    }
+    (local.place.as_ref() != Some(synced_place)).then_some(UnsentKind::Move)
 }
 
 /// An entry's state, in the seven words `Changes()` has today.
@@ -153,7 +170,15 @@ impl QueueState {
     /// The word on the bus: `ready`, `running`, `retry`, `waiting`, `blocked`, `held`,
     /// `paused`.
     pub fn as_str(self) -> &'static str {
-        todo!()
+        match self {
+            QueueState::Ready => "ready",
+            QueueState::Running => "running",
+            QueueState::Retry => "retry",
+            QueueState::Waiting => "waiting",
+            QueueState::Blocked => "blocked",
+            QueueState::Held => "held",
+            QueueState::Paused => "paused",
+        }
     }
 }
 
@@ -178,7 +203,7 @@ pub struct QueueConditions {
 /// [`read_queue_conditions`] when it has no `SendingHolds` and no `OneDriveSpace` to ask,
 /// with empty answers and no running step. Pure.
 pub fn describe_stopped_sync() -> QueueConditions {
-    todo!()
+    QueueConditions { hold: None, is_onedrive_full: false, is_sync_running: false }
 }
 
 /// An unsent item with the sources read for it. It has no path: the counts need none,
@@ -232,7 +257,35 @@ pub struct UnsentEntry {
 ///   space (`WaitingForSpace`, `TooBig`), which is kept back and stays in its place, as
 ///   today; and an item the last plan was not given.
 pub fn decide_queue_state(entry: &UnsentEntry, sending: &QueueConditions) -> Option<QueueState> {
-    todo!()
+    let answer = entry.answer.as_ref();
+    if matches!(answer, Some(ItemAnswer::Excluded(_))) {
+        return None;
+    }
+    if matches!(answer, Some(ItemAnswer::Waiting(WaitReason::User(Reason::MassDelete)))) {
+        return Some(QueueState::Held);
+    }
+    if decide_is_shown_blocked(answer, entry.memory.refusal.is_some()) {
+        return Some(QueueState::Blocked);
+    }
+    if matches!(answer, Some(ItemAnswer::Waiting(WaitReason::StartUpCheck) | ItemAnswer::Fault(_))) {
+        return Some(QueueState::Waiting);
+    }
+    if !sending.is_sync_running || sending.hold == Some(SendingHold::FolderReadOnly) {
+        return Some(QueueState::Waiting);
+    }
+    if matches!(sending.hold, Some(SendingHold::Paused { .. })) {
+        return Some(QueueState::Paused);
+    }
+    if entry.running.is_some() {
+        return Some(QueueState::Running);
+    }
+    Some(match answer {
+        Some(ItemAnswer::Waiting(WaitReason::Time { .. })) if entry.memory.failed_tries.is_some() => QueueState::Retry,
+        Some(ItemAnswer::Waiting(WaitReason::User(reason))) if reason.waits_for_space() => QueueState::Ready,
+        Some(ItemAnswer::Waiting(_)) => QueueState::Waiting,
+        // An excluded item and a fault were answered above.
+        Some(ItemAnswer::Planned(_) | ItemAnswer::Excluded(_) | ItemAnswer::Fault(_)) | None => QueueState::Ready,
+    })
 }
 
 /// The reason an entry of `state` carries and the time of its next try (0 for none).
@@ -258,7 +311,32 @@ pub fn decide_queue_state(entry: &UnsentEntry, sending: &QueueConditions) -> Opt
 /// at fault about "being checked" (the daemon asks a full listing by itself): the two
 /// reasons above, whose state reads `waiting`, not `blocked`.
 pub fn decide_queue_reason(kind: UnsentKind, state: QueueState, entry: &UnsentEntry, sending: &QueueConditions) -> (Option<Reason>, i64) {
-    todo!()
+    if matches!(state, QueueState::Paused | QueueState::Running) {
+        return (None, 0);
+    }
+    let said = if let Some(refusal) = &entry.memory.refusal {
+        (Some(refusal.reason.clone()), 0)
+    } else {
+        match &entry.answer {
+            Some(ItemAnswer::Waiting(WaitReason::Time { until, reason })) => (Some(reason.clone()), *until),
+            Some(ItemAnswer::Waiting(WaitReason::User(reason))) => (Some(reason.clone()), 0),
+            Some(ItemAnswer::Waiting(WaitReason::StartUpCheck)) => (Some(Reason::NotReadOnDisk), 0),
+            Some(ItemAnswer::Fault(_)) => (Some(Reason::BeingChecked), 0),
+            None => (entry.memory.space_refusal.as_ref().map(|refusal| Reason::TooBig(Some((refusal.content.size(), refusal.free_space)))), 0),
+            Some(ItemAnswer::Waiting(_) | ItemAnswer::Planned(_) | ItemAnswer::Excluded(_)) => (None, 0),
+        }
+    };
+    if said.0.is_some() {
+        return said;
+    }
+    if sending.hold == Some(SendingHold::FolderReadOnly) && state == QueueState::Waiting {
+        // TODO: contract — the reason of a read-only folder's wait is `konedrive-tree`'s `READ_ONLY_FOLDER` (crates/konedrive-tree/src/sync_plan/item_decision.rs:448), which is `pub(crate)`: its text is repeated in `FOLDER_READ_ONLY`.
+        return (Some(Reason::NotAllowed(Some(FOLDER_READ_ONLY.to_owned()))), 0);
+    }
+    if sending.is_onedrive_full && kind.sends_content() {
+        return (Some(Reason::WaitingForSpace), 0);
+    }
+    (None, 0)
 }
 
 /// `Changes()`'s row of one entry: `seq` is the item's `unsent_since`, `kind` and `state`
@@ -280,7 +358,26 @@ pub fn decide_queue_reason(kind: UnsentKind, state: QueueState, entry: &UnsentEn
 /// ([`read_unsent_entries`]).
 // TODO: the number is of every item OneDrive has below the directory, its sub-directories among them, and it is shown as files: whether that is to be files alone (a second count by the plan's reading) or the word is to be "items" is the owner's to say.
 pub fn describe_queue_change(entry: &UnsentEntry, path: &Path, sending: &QueueConditions, folder: &Path) -> Option<Change> {
-    todo!()
+    let kind = decide_unsent_kind(&entry.item)?;
+    let state = decide_queue_state(entry, sending)?;
+    let (reason, next_try) = decide_queue_reason(kind, state, entry, sending);
+    let own_step = entry.running.as_ref().filter(|step| step.item == entry.item.local_item_id);
+    let (sent, total) = match (state, entry.held_items_below, own_step) {
+        (QueueState::Held, Some(items_below), _) => (0, items_below),
+        (_, _, Some(step)) => (step.sent, step.total),
+        _ if kind.sends_content() => (entry.memory.upload_session.as_ref().map_or(0, |session| session.next_offset), find_content_size(kind, &entry.item)),
+        _ => (0, 0),
+    };
+    Some(Change {
+        seq: entry.item.unsent_since.unwrap_or(0),
+        kind: kind.as_str().to_owned(),
+        path: describe_full_path(folder, path),
+        state: state.as_str().to_owned(),
+        sent,
+        total,
+        reason: reason.map(|reason| reason.to_string()).unwrap_or_default(),
+        next_try,
+    })
 }
 
 /// The counts of the queue's properties: `PendingCount`/`Bytes`, `BlockedCount`,
@@ -347,7 +444,54 @@ pub struct QueueTotals {
 /// confirmations written, the directory and all below it — which is another number than
 /// this one, and is meant to be.
 pub fn count_queue(totals: &QueueTotals, sending: &QueueConditions) -> QueueCounts {
-    todo!()
+    let refused_for_good: BTreeSet<LocalItemId> = totals.refused_for_good.iter().copied().collect();
+    let refused_for_space: BTreeSet<LocalItemId> = totals.refused_for_space.iter().map(|(item, _)| *item).collect();
+    let (mut blocked, mut held, mut space_waiting, mut space_waiting_bytes) = (refused_for_good.len() as u64, 0u64, 0u64, 0u64);
+    // What is in the store's sum and is not pending: the items, and the bytes of their contents.
+    let (mut not_pending, mut not_pending_bytes) = (refused_for_good.len() as u64, 0u64);
+    for entry in &totals.answered {
+        let item = entry.item.local_item_id;
+        let Some(kind) = decide_unsent_kind(&entry.item) else { continue };
+        let size = find_content_size(kind, &entry.item);
+        let Some(state) = decide_queue_state(entry, sending) else {
+            // The plan leaves it out.
+            not_pending = not_pending.saturating_add(1);
+            not_pending_bytes = not_pending_bytes.saturating_add(size);
+            continue;
+        };
+        match state {
+            QueueState::Blocked => {
+                if !refused_for_good.contains(&item) {
+                    blocked = blocked.saturating_add(1);
+                    not_pending = not_pending.saturating_add(1);
+                }
+                not_pending_bytes = not_pending_bytes.saturating_add(size);
+            }
+            QueueState::Held => {
+                held = held.saturating_add(1);
+                not_pending = not_pending.saturating_add(1).saturating_add(entry.held_items_below.unwrap_or(0));
+                not_pending_bytes = not_pending_bytes.saturating_add(size);
+            }
+            QueueState::Ready | QueueState::Running | QueueState::Retry | QueueState::Waiting | QueueState::Paused => {
+                let (reason, _) = decide_queue_reason(kind, state, entry, sending);
+                if reason == Some(Reason::WaitingForSpace) && !refused_for_space.contains(&item) {
+                    space_waiting = space_waiting.saturating_add(1);
+                    space_waiting_bytes = space_waiting_bytes.saturating_add(size);
+                }
+            }
+        }
+    }
+    let too_big_bytes = totals.refused_for_space.iter().fold(0u64, |sum, (_, size)| sum.saturating_add(*size));
+    QueueCounts {
+        pending: saturate(totals.unsent.count.saturating_sub(not_pending)),
+        pending_bytes: totals.unsent.bytes.saturating_sub(not_pending_bytes),
+        blocked: saturate(blocked),
+        held: saturate(held),
+        space_waiting: saturate(space_waiting),
+        space_waiting_bytes,
+        too_big: saturate(totals.refused_for_space.len() as u64),
+        too_big_bytes,
+    }
 }
 
 /// The reason an entry is kept back for, when it is: the reason of
@@ -357,7 +501,13 @@ pub fn count_queue(totals: &QueueTotals, sending: &QueueConditions) -> QueueCoun
 /// held by the guard (which has its own question). Pure. Today's `kept_reason`
 /// (`upload/kept_back.rs:60`).
 pub fn decide_kept_back_reason(kind: UnsentKind, state: QueueState, entry: &UnsentEntry, sending: &QueueConditions) -> Option<Reason> {
-    todo!()
+    let (reason, _) = decide_queue_reason(kind, state, entry, sending);
+    match state {
+        QueueState::Blocked => Some(reason.unwrap_or(Reason::Blocked)),
+        QueueState::Waiting | QueueState::Retry => reason,
+        QueueState::Ready => reason.filter(Reason::waits_for_space),
+        QueueState::Running | QueueState::Paused | QueueState::Held => None,
+    }
 }
 
 /// `NotUploadedSummary()`: one row per key of a reason ([`decide_kept_back_reason`],
@@ -367,13 +517,21 @@ pub fn decide_kept_back_reason(kind: UnsentKind, state: QueueState, entry: &Unse
 /// `waiting` or of none. Pure. The groups and the keys are `konedrive-reason`'s,
 /// unchanged.
 pub fn summarize_kept_back(entries: &[UnsentEntry], sending: &QueueConditions) -> Vec<KeptBackReason> {
-    todo!()
+    // By the group's place in the order, then by key: how many, and their bytes.
+    let mut sums: BTreeMap<(usize, String), (u64, u64)> = BTreeMap::new();
+    for entry in entries {
+        let Some((kind, state, reason)) = find_kept_back(entry, sending) else { continue };
+        let sum = sums.entry((decide_group_rank(&reason, state == QueueState::Blocked), reason.key().to_owned())).or_default();
+        sum.0 = sum.0.saturating_add(1);
+        sum.1 = sum.1.saturating_add(find_content_size(kind, &entry.item));
+    }
+    sums.into_iter().map(|((rank, reason), (count, bytes))| KeptBackReason { group: GROUP_WORDS[rank].to_owned(), reason, count: saturate(count), bytes }).collect()
 }
 
 /// The entries of `entries` that `NotUploaded()` lists: those whose state is `blocked`.
 /// Pure. What the thin part reads the paths of.
 pub fn list_blocked_entries<'a>(entries: &'a [UnsentEntry], sending: &QueueConditions) -> Vec<&'a UnsentEntry> {
-    todo!()
+    entries.iter().filter(|entry| decide_unsent_kind(&entry.item).is_some() && decide_queue_state(entry, sending) == Some(QueueState::Blocked)).collect()
 }
 
 /// The entries of `entries` kept back for the reason of key `reason`
@@ -381,7 +539,9 @@ pub fn list_blocked_entries<'a>(entries: &'a [UnsentEntry], sending: &QueueCondi
 /// the thin part reads the paths of the first `limit` of them (of all for 0), and of no
 /// other.
 pub fn list_entries_kept_back_for<'a>(entries: &'a [UnsentEntry], sending: &QueueConditions, reason: &str) -> Vec<&'a UnsentEntry> {
-    todo!()
+    let mut kept_back: Vec<&UnsentEntry> = entries.iter().filter(|entry| find_kept_back(entry, sending).is_some_and(|(_, _, why)| why.key() == reason)).collect();
+    kept_back.sort_by_key(|entry| entry.item.local_item_id);
+    kept_back
 }
 
 /// `NotUploaded()`: the files that need the user ([`list_blocked_entries`]), each with
@@ -389,7 +549,9 @@ pub fn list_entries_kept_back_for<'a>(entries: &'a [UnsentEntry], sending: &Queu
 /// `paths` has no path for is left out. Pure. As today, what is left here (an ignored
 /// name) is not among them.
 pub fn list_not_uploaded(entries: &[UnsentEntry], paths: &BTreeMap<LocalItemId, PathBuf>, sending: &QueueConditions, folder: &Path) -> Vec<KeptBack> {
-    todo!()
+    let mut files: Vec<KeptBack> = list_blocked_entries(entries, sending).into_iter().filter_map(|entry| describe_kept_back(entry, paths, sending, folder)).collect();
+    files.sort_by(|a, b| (&a.path, &a.reason).cmp(&(&b.path, &b.reason)));
+    files
 }
 
 /// `NotUploadedFiles(reason, limit)`: the files kept back for the reason of key `reason`
@@ -399,14 +561,23 @@ pub fn list_not_uploaded(entries: &[UnsentEntry], paths: &BTreeMap<LocalItemId, 
 /// themselves; one `paths` has no path for is left out. `total` is how many entries are
 /// kept back for the reason, whatever `limit` and whatever `paths` holds. Pure.
 pub fn list_kept_back_files(entries: &[UnsentEntry], paths: &BTreeMap<LocalItemId, PathBuf>, sending: &QueueConditions, reason: &str, limit: u32, folder: &Path) -> KeptBackFiles {
-    todo!()
+    let kept_back = list_entries_kept_back_for(entries, sending, reason);
+    let total = saturate(kept_back.len() as u64);
+    let listed = if limit == 0 { kept_back.len() } else { limit as usize };
+    let mut items: Vec<KeptBack> = kept_back.into_iter().take(listed).filter_map(|entry| describe_kept_back(entry, paths, sending, folder)).collect();
+    items.sort_by(|a, b| (&a.path, &a.reason).cmp(&(&b.path, &b.reason)));
+    KeptBackFiles { items, total }
 }
 
 /// `Transfers.Uploads`: one row per running step of the class `StepClass::Content`,
 /// under the full path of its item (`paths`, under `folder`), with `sent` and `total`. A
 /// step `paths` has no path for is left out. Pure.
 pub fn describe_running_uploads(running: &[RunningStep], paths: &BTreeMap<LocalItemId, PathBuf>, folder: &Path) -> Vec<Transfer> {
-    todo!()
+    running
+        .iter()
+        .filter(|step| step.class == StepClass::Content)
+        .filter_map(|step| paths.get(&step.item).map(|path| Transfer { path: describe_full_path(folder, path), done: step.sent, total: step.total }))
+        .collect()
 }
 
 /// `Folder.Skipped()`'s row of an item the folder cannot show: its full path in OneDrive
@@ -426,14 +597,90 @@ pub fn describe_running_uploads(running: &[RunningStep], paths: &BTreeMap<LocalI
 /// removed here: the rows of what it holds that cannot be shown
 /// (`mount`'s `rmdir` answers `ENOTEMPTY` for it and says so once in the activity log).
 pub fn describe_item_not_shown(not_shown: &ItemNotShown, local_path: Option<&Path>, answer: Option<&ItemAnswer>, folder: &Path) -> NotInFolder {
-    todo!()
+    let path = describe_full_path(folder, &not_shown.onedrive_path);
+    let reason = not_shown.reason.as_str().to_owned();
+    let Some(local_path) = local_path else { return NotInFolder { path, reason, waits: String::new(), here: String::new() } };
+    let here = describe_full_path(folder, local_path);
+    let waits = match answer {
+        Some(ItemAnswer::Waiting(WaitReason::User(Reason::OpenForWriting))) => WaitsFor::OpenForWriting(here.clone()),
+        None | Some(ItemAnswer::Waiting(WaitReason::Listing) | ItemAnswer::Planned(_) | ItemAnswer::Excluded(_) | ItemAnswer::Fault(_)) => WaitsFor::Cycle,
+        Some(ItemAnswer::Waiting(_)) => WaitsFor::Uploads(1),
+    };
+    NotInFolder { path, reason, waits: waits.to_string(), here }
 }
 
 /// Whether the last plan holds a removal for the user's confirmation: one of `answers` is
 /// `ItemAnswer::Waiting(WaitReason::User(Reason::MassDelete))`. Pure. What
 /// `ConfirmDeletes()` and `RestoreDeletes()` are given before they write.
 pub fn is_removal_held(answers: &BTreeMap<LocalItemId, ItemAnswer>) -> bool {
-    todo!()
+    answers.values().any(|answer| matches!(answer, ItemAnswer::Waiting(WaitReason::User(Reason::MassDelete))))
+}
+
+/// How many rows a reader below asks the store for at a time.
+const READ_PAGE: usize = 500;
+
+/// The words of the groups of what is kept back, in the order the window shows them:
+/// `konedrive_reason::Group::ALL`, as `Group::as_str` spells each.
+// TODO: contract — `konedrive-tree` names `Reason` for the daemon and not `konedrive_reason::Group` (crates/konedrive-tree/src/lib.rs:50), and the daemon does not depend on `konedrive-reason`: the groups' words and their order are repeated here.
+const GROUP_WORDS: [&str; 4] = ["one-action", "per-file", "never", "waiting"];
+const PER_FILE_GROUP: usize = 1;
+const WAITING_GROUP: usize = 3;
+
+/// The detail of the reason of an entry that waits because the folder is read-only: the
+/// plan's own text for that wait.
+const FOLDER_READ_ONLY: &str = "the folder is read-only";
+
+/// The place in [`GROUP_WORDS`] of the group what is kept back for `reason` is shown in:
+/// the reason's (`Reason::group`), `waiting` for a reason of no group, and `per-file`
+/// for a `blocked` entry whose reason is of the group `waiting` or of none. Pure.
+fn decide_group_rank(reason: &Reason, is_blocked: bool) -> usize {
+    let of_reason = reason.group().and_then(|group| GROUP_WORDS.iter().position(|word| *word == group.as_str()));
+    match of_reason {
+        Some(WAITING_GROUP) | None if is_blocked => PER_FILE_GROUP,
+        Some(rank) => rank,
+        None => WAITING_GROUP,
+    }
+}
+
+/// A count as the bus carries it: the type's largest for one beyond it.
+fn saturate(count: u64) -> u32 {
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
+/// `path`, relative to the root, as the full path under `folder` that the bus carries.
+fn describe_full_path(folder: &Path, path: &Path) -> String {
+    folder.join(path).display().to_string()
+}
+
+/// The size of the local content of `item` where `kind` sends content; 0 otherwise.
+fn find_content_size(kind: UnsentKind, item: &Item) -> u64 {
+    if !kind.sends_content() {
+        return 0;
+    }
+    item.local.as_ref().and_then(|local| local.content.as_ref()).map_or(0, ContentVersion::size)
+}
+
+/// The kind, the state and the reason `entry` is kept back for; `None` for one that is no
+/// entry or is not kept back ([`decide_kept_back_reason`]). Pure.
+fn find_kept_back(entry: &UnsentEntry, sending: &QueueConditions) -> Option<(UnsentKind, QueueState, Reason)> {
+    let kind = decide_unsent_kind(&entry.item)?;
+    let state = decide_queue_state(entry, sending)?;
+    let reason = decide_kept_back_reason(kind, state, entry, sending)?;
+    Some((kind, state, reason))
+}
+
+/// The row of a file kept back: its full path and its reason as stored; `None` for an
+/// entry `paths` has no path for, and for one that is not kept back. Pure.
+fn describe_kept_back(entry: &UnsentEntry, paths: &BTreeMap<LocalItemId, PathBuf>, sending: &QueueConditions, folder: &Path) -> Option<KeptBack> {
+    let (_, _, reason) = find_kept_back(entry, sending)?;
+    let path = paths.get(&entry.item.local_item_id)?;
+    Some(KeptBack { path: describe_full_path(folder, path), reason: reason.to_string() })
+}
+
+/// Whether the row answered `answer` is part of the one entry of a directory whose
+/// removal the last plan holds: it waits for that directory. Pure.
+fn is_below_held_removal(answer: Option<&ItemAnswer>, held_removal_counts: &BTreeMap<LocalItemId, u64>) -> bool {
+    matches!(answer, Some(ItemAnswer::Waiting(WaitReason::AnotherItem(directory))) if held_removal_counts.contains_key(directory))
 }
 
 // ---- thin: the sources read ----
@@ -442,7 +689,7 @@ pub fn is_removal_held(answers: &BTreeMap<LocalItemId, ItemAnswer>) -> bool {
 /// `OneDriveSpace::is_full`. The one reader of it for the bus. Called before
 /// `Store::read_items`, never inside it.
 pub fn read_queue_conditions(sending_holds: &SendingHolds, onedrive_space: &OneDriveSpace, now: i64) -> QueueConditions {
-    todo!()
+    QueueConditions { hold: sending_holds.find(now), is_onedrive_full: onedrive_space.is_full(), is_sync_running: true }
 }
 
 /// The entry of `item`: its memory (`ItemReader::find_item_memory`), its answer of
@@ -451,7 +698,14 @@ pub fn read_queue_conditions(sending_holds: &SendingHolds, onedrive_space: &OneD
 /// `held_removal_counts` for `item`. The same map is given to every reader below, and a
 /// row below a held directory is no entry in any of them.
 fn read_unsent_entry(items: &ItemReader<'_>, item: Item, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>) -> Result<UnsentEntry, TreeError> {
-    todo!()
+    let id = item.local_item_id;
+    Ok(UnsentEntry {
+        memory: items.find_item_memory(id)?,
+        answer: answers.get(&id).cloned(),
+        running: running.iter().find(|step| step.item == id || step.other_items.contains(&id)).cloned(),
+        held_items_below: held_removal_counts.get(&id).copied(),
+        item,
+    })
 }
 
 /// `Changes(limit)`'s entries: the first `limit` unsent items in the order they came to
@@ -464,7 +718,23 @@ fn read_unsent_entry(items: &ItemReader<'_>, item: Item, answers: &BTreeMap<Loca
 /// that directory's one entry. Called inside `Store::read_items`: the rows and the memory
 /// are of one moment, and the bus waits for no writer.
 pub fn read_unsent_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>, limit: usize) -> Result<Vec<UnsentEntry>, TreeError> {
-    todo!()
+    let mut entries = Vec::new();
+    let mut after = None;
+    loop {
+        let wanted = if limit == 0 { READ_PAGE } else { (limit - entries.len()).min(READ_PAGE) };
+        let page = items.list_unsent(after, wanted)?;
+        let Some(last_stamp) = page.last().and_then(|item| item.unsent_since) else { break };
+        after = Some(last_stamp);
+        for item in page {
+            if !is_below_held_removal(answers.get(&item.local_item_id), held_removal_counts) {
+                entries.push(read_unsent_entry(items, item, answers, running, held_removal_counts)?);
+            }
+        }
+        if limit != 0 && entries.len() >= limit {
+            break;
+        }
+    }
+    Ok(entries)
 }
 
 /// The path of each of `entries`, relative to the root, by item: its local path
@@ -473,7 +743,16 @@ pub fn read_unsent_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemI
 /// path here. Called inside the `Store::read_items` that read the entries, for those of
 /// them a list of files names.
 pub fn read_entry_paths(items: &ItemReader<'_>, entries: &[&UnsentEntry]) -> Result<BTreeMap<LocalItemId, PathBuf>, TreeError> {
-    todo!()
+    let mut paths = BTreeMap::new();
+    for entry in entries {
+        let id = entry.item.local_item_id;
+        // TODO: check whether `find_synced_path`'s refusal (the directories a removal was agreed to be below end at none the folder shows) is to fail the whole answer of the bus, as here, or to leave the one entry without a path, and fix if needed.
+        let path = if entry.item.local.is_some() { items.find_path(id)? } else { items.find_synced_path(id)? };
+        if let Some(path) = path {
+            paths.insert(id, path);
+        }
+    }
+    Ok(paths)
 }
 
 /// What the counts are made of: `ItemReader::count_unsent`; the memory's two lists of
@@ -482,7 +761,11 @@ pub fn read_entry_paths(items: &ItemReader<'_>, entries: &[&UnsentEntry]) -> Res
 /// (`ItemReader::is_ignored`) — as [`read_unsent_entry`] reads it. Called inside
 /// `Store::read_items`, with `answers` and `running` taken before it.
 pub fn read_queue_totals(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>) -> Result<QueueTotals, TreeError> {
-    todo!()
+    let unsent = items.count_unsent()?;
+    let refused_for_good = items.list_refusal_reasons(None, None, usize::MAX)?.into_iter().map(|refused| refused.item).collect();
+    let refused_for_space = items.list_space_refusal_reasons(None, usize::MAX)?.into_iter().map(|refused| (refused.item, refused.reason.sizes().map_or(0, |(size, _)| size))).collect();
+    let answered = read_answered_entries(items, answers, running, held_removal_counts)?.into_values().collect();
+    Ok(QueueTotals { unsent, refused_for_good, refused_for_space, answered })
 }
 
 /// The entries the summaries and the lists of what is kept back are made of, each item
@@ -492,7 +775,18 @@ pub fn read_queue_totals(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId,
 /// not among them, read the same way. As many rows as the last plan was given and the
 /// memory refuses; no path. Called inside `Store::read_items`.
 pub fn read_kept_back_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>) -> Result<Vec<UnsentEntry>, TreeError> {
-    todo!()
+    let mut entries = read_answered_entries(items, answers, running, held_removal_counts)?;
+    let refused_for_good = items.list_refusal_reasons(None, None, usize::MAX)?;
+    let refused_for_space = items.list_space_refusal_reasons(None, usize::MAX)?;
+    for refused in refused_for_good.iter().chain(&refused_for_space) {
+        if entries.contains_key(&refused.item) {
+            continue;
+        }
+        if let Some(entry) = read_entry_of(items, refused.item, answers, running, held_removal_counts)? {
+            entries.insert(refused.item, entry);
+        }
+    }
+    Ok(entries.into_values().collect())
 }
 
 /// The path of the item of each step of `running` that sends content
@@ -500,7 +794,13 @@ pub fn read_kept_back_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalIt
 /// [`describe_running_uploads`] is given. As many reads as uploads run. Called inside
 /// `Store::read_items`.
 pub fn read_running_upload_paths(items: &ItemReader<'_>, running: &[RunningStep]) -> Result<BTreeMap<LocalItemId, PathBuf>, TreeError> {
-    todo!()
+    let mut paths = BTreeMap::new();
+    for step in running.iter().filter(|step| step.class == StepClass::Content) {
+        if let Some(path) = items.find_path(step.item)? {
+            paths.insert(step.item, path);
+        }
+    }
+    Ok(paths)
 }
 
 /// `Folder.Skipped()`: a row ([`describe_item_not_shown`]) per item OneDrive has that the
@@ -509,7 +809,19 @@ pub fn read_running_upload_paths(items: &ItemReader<'_>, running: &[RunningStep]
 /// answer of `answers`. Called inside `Store::read_items`, with `answers` taken before
 /// it.
 pub fn read_items_not_shown(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, folder: &Path) -> Result<Vec<NotInFolder>, TreeError> {
-    todo!()
+    let mut rows = Vec::new();
+    let mut after = None;
+    loop {
+        let page = items.list_items_not_shown(after, READ_PAGE)?;
+        let Some(last) = page.last() else { break };
+        after = Some(last.item.local_item_id);
+        for not_shown in &page {
+            let id = not_shown.item.local_item_id;
+            let local_path = if not_shown.item.local.is_some() { items.find_path(id)? } else { None };
+            rows.push(describe_item_not_shown(not_shown, local_path.as_deref(), answers.get(&id), folder));
+        }
+    }
+    Ok(rows)
 }
 
 /// Writes what the properties of the bus are read from, when it changed
@@ -528,7 +840,20 @@ pub fn read_items_not_shown(items: &ItemReader<'_>, answers: &BTreeMap<LocalItem
 /// (`RunningSteps::tell_progress` wakes nobody). The stop of a folder's sync publishes
 /// through [`publish_stopped_queue`].
 pub fn publish_queue_status(state: &SyncStateHandle, counts: QueueCounts, uploads: Vec<Transfer>, is_onedrive_full: bool) {
-    todo!()
+    let uploads: Vec<(String, u64, u64)> = uploads.into_iter().map(|upload| (upload.path, upload.done, upload.total)).collect();
+    state.update_if_changed(|snapshot| {
+        let outbox = &mut snapshot.outbox;
+        outbox.pending_count = counts.pending;
+        outbox.pending_bytes = counts.pending_bytes;
+        outbox.blocked_count = counts.blocked;
+        outbox.held_count = counts.held;
+        outbox.space_waiting_count = counts.space_waiting;
+        outbox.space_waiting_bytes = counts.space_waiting_bytes;
+        outbox.too_big_count = counts.too_big;
+        outbox.too_big_bytes = counts.too_big_bytes;
+        outbox.uploads = uploads;
+        outbox.quota_full = is_onedrive_full;
+    });
 }
 
 /// Publishes the queue of a sync that stopped: every count 0, no upload, OneDrive not
@@ -537,7 +862,20 @@ pub fn publish_queue_status(state: &SyncStateHandle, counts: QueueCounts, upload
 /// (`SyncPlanTask::run`), so by the one writer of these fields; and by nobody else: a
 /// Forget finds them empty.
 pub fn publish_stopped_queue(state: &SyncStateHandle) {
-    todo!()
+    state.update_if_changed(|snapshot| {
+        let outbox = &mut snapshot.outbox;
+        outbox.note = None;
+        outbox.pending_count = 0;
+        outbox.pending_bytes = 0;
+        outbox.blocked_count = 0;
+        outbox.held_count = 0;
+        outbox.space_waiting_count = 0;
+        outbox.space_waiting_bytes = 0;
+        outbox.too_big_count = 0;
+        outbox.too_big_bytes = 0;
+        outbox.uploads.clear();
+        outbox.quota_full = false;
+    });
 }
 
 /// `ConfirmDeletes()`: the user confirms the removals a mass removal holds. Nothing is
@@ -555,7 +893,13 @@ pub fn publish_stopped_queue(state: &SyncStateHandle) {
 /// (`WakeCause::UserAnswered`). A removal made later has another stamp and is asked about
 /// again (the map's F17). MISSING-1.k.
 pub fn confirm_removals(store: &mut TreeStore, is_removal_held: bool) -> Result<usize, TreeError> {
-    todo!()
+    if !is_removal_held {
+        return Ok(0);
+    }
+    let removals: Vec<UnsentRemoval> = read_unsent_removals(store)?.iter().filter_map(UnsentRemoval::of).collect();
+    let not_written = store.step_memory().remember_removals_confirmed(&removals)?;
+    store.item_store().begin_sent_removal_window()?;
+    Ok(removals.len().saturating_sub(not_written.len()))
 }
 
 /// `RestoreDeletes()`: the user takes the held removals back. Nothing is done and 0
@@ -571,5 +915,62 @@ pub fn confirm_removals(store: &mut TreeStore, is_removal_held: bool) -> Result<
 /// tree lock by the caller, which then wakes the plan (`WakeCause::UserAnswered`).
 /// MISSING-2.l.
 pub fn restore_removals(store: &mut TreeStore, is_removal_held: bool) -> Result<usize, TreeError> {
-    todo!()
+    if !is_removal_held {
+        return Ok(0);
+    }
+    let mut written = 0;
+    for item in read_unsent_removals(store)? {
+        if UnsentRemoval::of(&item).is_none() {
+            continue;
+        }
+        let is_confirmed = store.item_store().reader().find_item_memory(item.local_item_id)?.removal_confirmation.is_some();
+        if is_confirmed {
+            continue;
+        }
+        if store.item_store().commit_forget_synced_version(&ItemVersions::of(&item))? == StepCommitOutcome::Written {
+            written += 1;
+        }
+    }
+    Ok(written)
+}
+
+/// The entry of the item `id`, as [`read_unsent_entry`] reads it; `None` when its row is
+/// gone, has no stamp `unsent_since`, is left here (`ItemReader::is_ignored`) or is part
+/// of a held directory's one entry. Called inside `Store::read_items`.
+fn read_entry_of(items: &ItemReader<'_>, id: LocalItemId, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>) -> Result<Option<UnsentEntry>, TreeError> {
+    if is_below_held_removal(answers.get(&id), held_removal_counts) {
+        return Ok(None);
+    }
+    let Some(item) = items.find_item(id)? else { return Ok(None) };
+    if item.unsent_since.is_none() || items.is_ignored(id)? {
+        return Ok(None);
+    }
+    read_unsent_entry(items, item, answers, running, held_removal_counts).map(Some)
+}
+
+/// The unsent items the last plan was given, by item: an entry ([`read_entry_of`]) per
+/// item of `answers` that has one. Called inside `Store::read_items`.
+fn read_answered_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>) -> Result<BTreeMap<LocalItemId, UnsentEntry>, TreeError> {
+    let mut entries = BTreeMap::new();
+    for id in answers.keys() {
+        if let Some(entry) = read_entry_of(items, *id, answers, running, held_removal_counts)? {
+            entries.insert(*id, entry);
+        }
+    }
+    Ok(entries)
+}
+
+/// Every unsent removal, in the order they came to be unsent
+/// (`ItemReader::list_unsent_removals` over the reader of the writer's connection, in
+/// pages by the stamp). Called in the job of the store's writer that then writes.
+fn read_unsent_removals(store: &mut TreeStore) -> Result<Vec<Item>, TreeError> {
+    let mut removals = Vec::new();
+    let mut after = None;
+    loop {
+        let page = store.item_store().reader().list_unsent_removals(after, READ_PAGE)?;
+        let Some(last_stamp) = page.last().and_then(|item| item.unsent_since) else { break };
+        after = Some(last_stamp);
+        removals.extend(page);
+    }
+    Ok(removals)
 }
