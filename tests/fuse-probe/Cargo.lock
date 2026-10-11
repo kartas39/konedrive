@@ -470,6 +470,7 @@ dependencies = [
 name = "fuse-probe"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "konedrive-graph",
  "konedrived",
  "libc",

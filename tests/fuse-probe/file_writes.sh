@@ -480,8 +480,6 @@ unsent_changes_wait_while_the_folder_is_read_only() {
     onedrive outage on > /dev/null
     user "printf 'changed here' > a.txt && printf 'made here' > new.txt && mkdir made && printf 'inside' > made/inside.txt"
     wait_for 10 outbox_has_rows
-    check_holds "the user's switch to read-only is refused while changes wait" "$(daemon mode read-only)" "refused: PendingUploads"
-    check "the folder still takes changes after the refusal" "$(errno_of "os.close(os.open('second.txt', os.O_WRONLY | os.O_CREAT, 0o644))")" none
     check "read-only, the changes kept" "$(daemon mode read-only keep)" read-only
     check "a change is refused" "$(errno_of "os.close(os.open('third.txt', os.O_WRONLY | os.O_CREAT, 0o644))")" EROFS
     check "a write to a file with an unsent change is refused" "$(errno_of "os.close(os.open('new.txt', os.O_WRONLY))")" EROFS
@@ -498,15 +496,15 @@ unsent_changes_wait_while_the_folder_is_read_only() {
     check_onedrive_holds a.txt 'changed here' 60
     check_onedrive_holds new.txt 'made here' 60
     check_onedrive_holds made/inside.txt 'inside' 60
-    check_within 20 "the file made after the refusal arrives too" onedrive_has second.txt
     check_sent
     check "the same item of OneDrive was updated" "$(onedrive id a.txt)" A
     check "OneDrive holds what the folder holds" "$(onedrive paths)" "$(listing)"
 }
 
-# The user's forced switch: the changes that were not sent are dropped from the outbox, and
-# the files stay as they are.
-forced_switch_to_read_only_drops_unsent_changes_and_keeps_the_files() {
+# The user's forced switch (the owner's decision of 2026-10-11 on a switch to read-only with
+# unsent changes): it goes through at once, the changes that were not sent stay in the folder,
+# are not sent while it is read-only, and go once it is read-write again. Nothing is dropped.
+forced_switch_to_read_only_keeps_unsent_changes_and_sends_them_once_read_write() {
     begin_folder
     seed_file A R a.txt 'the first version'
     register_folder
@@ -514,19 +512,24 @@ forced_switch_to_read_only_drops_unsent_changes_and_keeps_the_files() {
     onedrive outage on > /dev/null
     user "printf 'changed here' > a.txt && printf 'made here' > new.txt"
     wait_for 10 outbox_has_rows
-    check "read-only, forced" "$(daemon mode read-only force)" read-only
-    check "nothing waits to be uploaded" "$(daemon outbox)" ""
+    check "read-only, forced" "$(daemon mode read-only)" read-only
+    check "a change is refused" "$(errno_of "os.close(os.open('third.txt', os.O_WRONLY | os.O_CREAT, 0o644))")" EROFS
     onedrive outage off > /dev/null
     daemon refresh > /dev/null
     sleep 3
     check "nothing was sent" "$(onedrive changes)" 0
+    check_holds "the new file still waits" "$(daemon outbox)" "new.txt"
+    check_holds "the changed file still waits" "$(daemon outbox)" "a.txt"
+    check_holds "and the queue says why" "$(daemon outbox)" "the folder is read-only"
     check_folder_holds new.txt 'made here'
-    check_holds "the content changed here is still in the folder" "$(user "cat *")" 'changed here'
+    check_folder_holds a.txt 'changed here'
     check "read-write again" "$(daemon mode read-write)" read-write
     check_onedrive_holds new.txt 'made here'
+    check_onedrive_holds a.txt 'changed here'
+    check "the same item of OneDrive was updated" "$(onedrive id a.txt)" A
     check_sent
     check_folder_holds new.txt 'made here'
-    check_holds "the content changed here is still in the folder" "$(user "cat *")" 'changed here'
+    check_folder_holds a.txt 'changed here'
 }
 
 # A program holds a file open for writing when the switch is forced, and OneDrive changes the
@@ -544,7 +547,7 @@ time.sleep(6)
 os.close(f)" "$F/a.txt" &
     local writer=$!
     sleep 1
-    check "read-only, forced" "$(daemon mode read-only force)" read-only
+    check "read-only, forced" "$(daemon mode read-only)" read-only
     printf 'the version of OneDrive' > "$SRC/theirs"
     onedrive edit A "$SRC/theirs" > /dev/null
     daemon refresh > /dev/null
@@ -805,7 +808,7 @@ file_writes() {
         file_changed_in_onedrive_while_removed_here_comes_back \
         read_only_folder_refuses_every_change \
         unsent_changes_wait_while_the_folder_is_read_only \
-        forced_switch_to_read_only_drops_unsent_changes_and_keeps_the_files \
+        forced_switch_to_read_only_keeps_unsent_changes_and_sends_them_once_read_write \
         file_held_open_for_writing_across_a_forced_switch_to_read_only_keeps_what_was_written \
         pinned_file_stays_downloaded \
         pinned_directory_keeps_what_is_in_it_downloaded \

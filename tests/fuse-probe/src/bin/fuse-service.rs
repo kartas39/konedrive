@@ -2,6 +2,7 @@
 //! OneDrive: `fuse-service <state directory> [--onedrive <address>] [--read-write]`. It prints
 //! `ready` and then takes one command a line on its input, answering each with
 //! `done <line>: <what came of it>`.
+//! SIGTERM stops it as it stops the daemon: it prints `stopped: <how the stop ended>` and exits.
 //!
 //! The fake OneDrive is the service's own, and takes its commands here
 //! (`fuse_probe::fake_onedrive_commands`), unless `--onedrive` names one that runs as a process
@@ -15,12 +16,13 @@
 //! `free-up <path>`, `free-up-space`, `pin <path>`, `unpin <path>`, `state <path>`,
 //! `menu <path>`, `status`, `activity`, `staged` (the downloads that never ended).
 //!
-//! The account's mode: `mode read-write`; `mode read-only`, refused while changes wait to be
-//! uploaded, and `mode read-only force`, which drops them, both as `Account.SetMode` goes;
-//! `mode read-only keep`, the mode the account runs in turned alone, as a sign-out or a
-//! narrower grant turns it: the changes wait.
+//! The account's mode: `mode read-write`; `mode read-only`, the switch as the account makes it at
+//! once (with nothing unsent, or forced): what is unsent stays in the folder, held, and is sent
+//! when the account is read-write again; `mode read-only keep`, the mode the account runs in
+//! turned alone, as a sign-out or a narrower grant turns it. The switch that waits for what is
+//! unsent is the account's own (`AccountService`), which this program has none of.
 //!
-//! The outbox: `outbox` (its rows), `outbox-status` (its counts), `not-uploaded`,
+//! What is unsent: `outbox` (the upload queue's entries), `outbox-status` (its counts), `not-uploaded`,
 //! `conflicts`, `confirm-deletes`, `restore-deletes`, `pause`, `resume`.
 
 use std::path::{Path, PathBuf};
@@ -33,17 +35,19 @@ use konedrive_graph::drive::{DriveClient, RetryPolicy};
 use konedrive_graph::token::StaticToken;
 use konedrived::account::state::{AccountSnapshot, SignInState, StateHandle};
 use konedrived::account::PendingUploads;
+use futures_util::FutureExt;
 use konedrived::config::{ConfigError, DriveId, Mode};
-use konedrived::sync::SyncService;
-use konedrived::sync::testing;
-use konedrived::sync::wiring::SyncPaths;
+use konedrived::daemon::stop;
+use konedrived::account_folder::SyncService;
+use konedrived::account_folder::testing;
+use konedrived::account_folder::wiring::SyncPaths;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[tokio::main]
 async fn main() {
     // `fuse-service --tidy <folder>`: what the unit runs after the daemon's end.
     if std::env::args().nth(1).as_deref() == Some("--tidy") {
-        konedrived::fuse::tidy_folder(Path::new(&std::env::args().nth(2).expect("a folder")));
+        konedrived::mount::tidy_folder(Path::new(&std::env::args().nth(2).expect("a folder")));
         return;
     }
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -91,9 +95,23 @@ async fn main() {
     // has it.
     service.follow_mode(mode).await;
     service.resume().await;
+    // From now on SIGTERM stops the service as it stops the daemon (`konedrived`'s `main`): the one call of the
+    // daemon's end for the account's folder, within the stop's bound.
+    let mut signals = stop::Signals::install().expect("the handlers of the signals");
     println!("ready");
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
+    loop {
+        let line = tokio::select! {
+            _ = signals.next() => {
+                let ended = stop::wind_down(service.end_at_daemon_stop().map(drop), stop::STOP_BOUND, std::future::pending()).await;
+                println!("stopped: {ended:?}");
+                std::process::exit(0);
+            }
+            line = lines.next_line() => match line {
+                Ok(Some(line)) => line,
+                _ => break,
+            },
+        };
         let words: Vec<&str> = line.split_whitespace().collect();
         let said = |r: Result<String, String>| r.unwrap_or_else(|e| format!("refused: {e}"));
         let path = |p: &&str| Path::new(*p).to_owned();
@@ -104,7 +122,7 @@ async fn main() {
             }
         }
         let answer = match words.as_slice() {
-            ["staged"] => format!("{:?}", testing::staged(&service)),
+            ["staged"] => format!("{:?}", testing::staged(&service).await),
             ["register", p] => said(service.register_root(&path(p)).await.map(|()| "registered".into()).map_err(|e| e.to_string())),
             ["forget"] => said(service.unregister_root().await.map(|()| "forgotten".into()).map_err(|e| e.to_string())),
             ["refresh"] => said(service.refresh().await.map(|()| "refreshed".into()).map_err(|e| e.to_string())),
@@ -126,25 +144,18 @@ async fn main() {
                     s.folder.root_state, s.cycle.items_listed, s.cycle.items_placed, s.local.pinned_count, s.local.local_bytes, s.cycle.last_checked > 0, s.folder.last_error
                 )
             }
-            ["activity"] => {
-                let recent = service.recent_activity(20).await;
-                recent.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(" | ")
-            }
+            ["activity"] => said(service.recent_activity(20).await.map(|recent| recent.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(" | ")).map_err(|e| e.to_string())),
             ["mode", "read-write"] => {
                 record_mode(Mode::ReadWrite);
                 follow(&service, &account, Mode::ReadWrite).await
             }
-            ["mode", "read-only"] => match service.pending_uploads().await {
-                0 => {
-                    record_mode(Mode::ReadOnly);
-                    follow(&service, &account, Mode::ReadOnly).await
-                }
-                pending => format!("refused: PendingUploads: {pending} changes made here have not been uploaded yet"),
-            },
-            ["mode", "read-only", "force"] => {
+            // As the account makes its switch, at once (nothing unsent, or forced): `config.toml`, its state, and
+            // then the folder told to hold what is unsent.
+            ["mode", "read-only"] => {
                 record_mode(Mode::ReadOnly);
-                service.drop_pending_uploads().await;
-                follow(&service, &account, Mode::ReadOnly).await
+                account.update(|snapshot| snapshot.mode = Mode::ReadOnly);
+                service.hold_unsent_changes().await;
+                service.mode().as_str().to_owned()
             }
             ["mode", "read-only", "keep"] => follow(&service, &account, Mode::ReadOnly).await,
             ["outbox"] => said(

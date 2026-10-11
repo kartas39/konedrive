@@ -18,6 +18,8 @@ url = "2"
 # The daemon's log, when a scenario asks for it.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std"] }
+# The stop on SIGTERM, bounded as the daemon's.
+futures-util = "0.3"
 # A scripted answer of the fake OneDrive: a download cut short.
 wiremock = "0.6"
 

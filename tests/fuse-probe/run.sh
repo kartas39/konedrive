@@ -22,6 +22,9 @@ esac
     echo '#!/bin/sh'
     echo "export CLI_TEST='$cli_test'"
     echo "export ONLY='${ONLY:-}'"
+    # For a person who reads a failure: the level of the daemon's log, and how much of it a failed scenario prints.
+    echo "export SERVICE_LOG='${SERVICE_LOG:-info}'"
+    echo "export EVIDENCE_LOG_LINES='${EVIDENCE_LOG_LINES:-25}'"
     echo "bash '$here/guest.sh' '$here/target/release' $*"
 } > "$work/inner.sh"
 chmod +x "$work/inner.sh"

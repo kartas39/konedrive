@@ -66,11 +66,12 @@ async fn the_folder_follows_the_accounts_mode() {
     assert!(!f.proxy.folder.writable().await.unwrap());
 }
 
-/// `sync status` says how the local scan goes: a read-only folder has none.
-/// (How a read-write folder's scan reads is `text::status::local_scan_text`'s test.)
+/// `sync status` says how the local scan goes: for a read-only folder too it is the check at
+/// start, which every start of a sync runs (`sync_tasks::start_order`, stage 3).
+/// (How each state of it reads is `text::status::local_scan_text`'s test.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "mounts a filesystem: run in the VM"]
-async fn binary_status_says_a_read_only_folder_has_no_local_scan() {
+async fn binary_status_says_when_the_check_at_start_of_a_read_only_folder_finished() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
@@ -78,7 +79,7 @@ async fn binary_status_says_a_read_only_folder_has_no_local_scan() {
     wait_for(|| root.join("docs/f.txt").is_file()).await;
     let text = out_text(&run(f._bus.address(), &["sync", "status"]));
     let line = text.lines().find(|l| l.starts_with("Local scan:")).unwrap_or_else(|| panic!("{text}"));
-    assert_eq!(line, "Local scan:             none — read-only");
+    assert!(line.starts_with("Local scan:             last finished ") && line.contains(" ago (took "), "{line}");
 }
 
 /// `sync skipped` with no folder registered at all: there is nothing to be

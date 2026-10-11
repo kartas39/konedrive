@@ -112,8 +112,15 @@ async fn harness_showing(graph: &wiremock::MockServer) -> Harness {
         std::sync::Arc::new(konedrive_graph::token::StaticToken::new("T")),
     )
     .unwrap();
-    build_harness_showing(true, Arc::new(move |_| Ok(Some(drive.clone())))).await
+    let harness = build_harness_showing(true, Arc::new(move |_| Ok(Some(drive.clone())))).await;
+    // A sync starts only for a drive that is known: the one a sign-in saw its token reach, which here is
+    // the mocked Graph's.
+    harness.account.state().update(|s| s.live_drive = MOCKED_DRIVE.into());
+    harness
 }
+
+/// The drive the mocked Graph of [`harness_onedrive`] answers `GET /me/drive` with.
+const MOCKED_DRIVE: &str = "D1";
 
 /// A signed-in harness with a drive on a mocked Graph whose listing holds
 /// one folder, one file inside it, and the Personal Vault (skipped) — the
@@ -125,7 +132,7 @@ async fn harness_onedrive() -> (Harness, wiremock::MockServer) {
     let graph = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/me/drive"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "D1"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": MOCKED_DRIVE})))
         .mount(&graph)
         .await;
     Mock::given(method("GET"))

@@ -195,8 +195,8 @@ cli() {
             *) echo "  expected to fail  $name: $why"; EXPECTED_FAILURES+=("$name") ;;
         esac
     done < <(grep -E '^test .* \.\.\. (ok|FAILED)$' $W/logs/cli.out)
-    # What the failed tests said, and the binary's own count.
-    sed -n '/^failures:$/,$p' $W/logs/cli.out | head -150
+    # What the failed tests said, with the lines of the tests themselves alone of their backtraces, and the binary's own count.
+    sed -n '/^failures:$/,$p' $W/logs/cli.out | grep -Ev '^ +[0-9]+: |^ +at /' | cut -c1-2000 | head -150
     grep -q '^test result:' $W/logs/cli.out || { echo "  FAILED  the tests did not run to their end: $(tail -5 $W/logs/cli.out)"; FAILED_SCENARIOS+=("cli"); }
     grep '^test result:' $W/logs/cli.out
 }
