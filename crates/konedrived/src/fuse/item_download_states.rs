@@ -23,7 +23,10 @@
 //! is asked: the next download of the key carries it while it runs, until its source
 //! accepts an answer as of the key's content
 //! ([`forget_another_content`](ItemDownloadStates::forget_another_content)); a download
-//! that ends with no such answer leaves it as it was; and `forget_item` forgets it. It
+//! that ends with no such answer leaves it as it was, and where it failed, the errno it
+//! failed with is kept with it ([`AnotherContentFact`]): the failure that stands
+//! for the key, which whoever tells of downloads tells once; and `forget_item` forgets
+//! it. It
 //! answers no request by itself: a read of a remembered key asks for the whole download,
 //! or joins the one that runs and has no answer yet, which asks OneDrive anew
 //! (`item_kernel_requests`). Only an answer that states a version or a size
@@ -47,6 +50,7 @@
 // test: a_download_of_the_plans_is_told_when_anything_else_asks_for_it
 // test: the_count_of_bytes_read_as_ranges_starts_over_once_it_reached_the_threshold
 // test: no_more_than_the_latest_contents_onedrive_answered_with_another_are_remembered
+// test: the_failure_of_a_download_onedrive_did_not_answer_is_kept_with_what_is_remembered_of_its_key
 #![allow(dead_code, unused_variables)]
 
 use std::collections::HashMap;
@@ -136,18 +140,31 @@ enum State {
         /// Whether anything but the plan's pin asked for it, with a waiter or without;
         /// the download's task waits on it while it waits for the plan's slot.
         is_asked_beyond_plan: tokio::sync::watch::Sender<bool>,
-        /// The number of the download of the key before this one, when OneDrive stated
-        /// another content in its answer to that one and this one's source has accepted
-        /// no answer yet: the key is remembered as before
+        /// What was remembered of the key when this download started, while its source
+        /// has accepted no answer yet: the key is remembered as before
         /// (`State::AnotherContent`) until OneDrive has answered again.
-        another_content: Option<u64>,
+        another_content: Option<AnotherContentFact>,
     },
     Failed { unfinished_file: Arc<File>, failure_number: u64 },
-    /// OneDrive stated another content than the key's in its answer to the download
-    /// `number`, the last of the key that was answered: a read through a handle opened
-    /// as this content asks for the whole download, until the next download of the key
-    /// accepts an answer or the item is forgotten.
-    AnotherContent { number: u64 },
+    /// OneDrive stated another content than the key's in the last answer it gave to a
+    /// download of the key: a read through a handle opened as this content asks for the
+    /// whole download, until the next download of the key accepts an answer or the item
+    /// is forgotten.
+    AnotherContent { fact: AnotherContentFact },
+}
+
+/// The fact that OneDrive stated another content than a key's, as it is remembered of
+/// the key: from which answer, and what became of the askings since.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct AnotherContentFact {
+    /// The download of the key OneDrive answered so, the last it gave an answer about
+    /// the content to: the latest [`ANOTHER_CONTENTS_REMEMBERED`] are kept by it.
+    number: u64,
+    /// The errno the last download of the key since then ended with, having got no
+    /// answer of OneDrive about the content (it was offline, signed out, held back; the
+    /// item was not there): the failure that stands for the key. `None` when OneDrive
+    /// answered the last download of the key, with another content.
+    pub(super) failed_asking: Option<i32>,
 }
 
 /// The downloads by what each is of, and whether the mount stopped.
@@ -167,7 +184,7 @@ struct TakenDownload {
     abort: Option<tokio::task::AbortHandle>,
     /// The number of the download OneDrive answered with another content of the key,
     /// when this one carried that word to its end: no answer of its own was accepted.
-    another_content: Option<u64>,
+    another_content: Option<AnotherContentFact>,
 }
 
 impl TakenDownload {
@@ -212,13 +229,15 @@ fn keep_unfinished_file(states: &mut HashMap<DownloadKey, State>, key: &Download
     states.remove(&oldest);
 }
 
-/// A download of `key` failed or was given up, and `taken` is what it left: the word that
-/// OneDrive stated another content, when the download carried it to its end — no answer
-/// was accepted, so its file holds nothing to go on from —, is remembered as before;
+/// A download of `key` failed with `failed_asking`, or was given up (`None`), and `taken`
+/// is what it left: the word that OneDrive stated another content, when the download
+/// carried it to its end — no answer was accepted, so its file holds nothing to go on
+/// from —, is remembered as before, with the errno of this failure where it failed;
 /// else its unfinished file is kept.
-fn keep_left_by_download(states: &mut HashMap<DownloadKey, State>, key: &DownloadKey, taken: &TakenDownload) {
+fn keep_left_by_download(states: &mut HashMap<DownloadKey, State>, key: &DownloadKey, taken: &TakenDownload, failed_asking: Option<i32>) {
     match (taken.another_content, &taken.unfinished_file) {
-        (Some(number), _) => remember_another_content(states, key, number),
+        // A download that was given up failed with nothing: the failure before it stands.
+        (Some(fact), _) => remember_another_content(states, key, AnotherContentFact { failed_asking: failed_asking.or(fact.failed_asking), ..fact }),
         (None, Some(file)) => keep_unfinished_file(states, key, Arc::clone(file)),
         (None, None) => {}
     }
@@ -232,11 +251,10 @@ fn list_failure_numbers(states: &HashMap<DownloadKey, State>) -> impl Iterator<I
     })
 }
 
-/// OneDrive stated another content than `key`'s in its answer to the download `number`
-/// of it: remembered, and the oldest such word beyond [`ANOTHER_CONTENTS_REMEMBERED`] is
-/// forgotten.
-fn remember_another_content(states: &mut HashMap<DownloadKey, State>, key: &DownloadKey, number: u64) {
-    states.insert(key.clone(), State::AnotherContent { number });
+/// OneDrive stated another content than `key`'s, as `fact` says: remembered, and
+/// the oldest such word beyond [`ANOTHER_CONTENTS_REMEMBERED`] is forgotten.
+fn remember_another_content(states: &mut HashMap<DownloadKey, State>, key: &DownloadKey, fact: AnotherContentFact) {
+    states.insert(key.clone(), State::AnotherContent { fact });
     if list_another_content_numbers(states).count() <= ANOTHER_CONTENTS_REMEMBERED {
         return;
     }
@@ -248,7 +266,7 @@ fn remember_another_content(states: &mut HashMap<DownloadKey, State>, key: &Down
 /// answered so.
 fn list_another_content_numbers(states: &HashMap<DownloadKey, State>) -> impl Iterator<Item = (&DownloadKey, u64)> {
     states.iter().filter_map(|(key, state)| match state {
-        State::AnotherContent { number } => Some((key, *number)),
+        State::AnotherContent { fact } => Some((key, fact.number)),
         State::Running { .. } | State::Failed { .. } => None,
     })
 }
@@ -300,7 +318,7 @@ impl ItemDownloadStates {
         let number = self.last_run_number.fetch_add(1, Ordering::SeqCst) + 1;
         let (unfinished_file, another_content) = match states.by_key.remove(key) {
             Some(State::Failed { unfinished_file, .. }) => (Some(unfinished_file), None),
-            Some(State::AnotherContent { number }) => (None, Some(number)),
+            Some(State::AnotherContent { fact }) => (None, Some(fact)),
             Some(State::Running { .. }) | None => (None, None),
         };
         let running = State::Running {
@@ -368,7 +386,7 @@ impl ItemDownloadStates {
                 return false;
             }
             let Some(taken) = take_running(&mut states.by_key, key) else { return false };
-            keep_left_by_download(&mut states.by_key, key, &taken);
+            keep_left_by_download(&mut states.by_key, key, &taken, None);
             taken
         };
         taken.abort();
@@ -434,8 +452,10 @@ impl ItemDownloadStates {
     /// failure); a failure keeps the unfinished file, unless it is whole
     /// ([`end_writing`](Self::end_writing)) — or, where the download accepted no answer
     /// of OneDrive, what was remembered of the key before it
-    /// ([`is_another_content`](Self::is_another_content)). Nothing for a download that
-    /// runs no more — it was aborted, or this is said twice.
+    /// ([`is_another_content`](Self::is_another_content)), with this failure's errno as
+    /// the failure that stands for the key
+    /// ([`find_another_content`](Self::find_another_content)). Nothing for a download
+    /// that runs no more — it was aborted, or this is said twice.
     pub(super) fn finish(&self, run: &DownloadRun, outcome: Result<(), i32>) {
         let key = &run.key;
         let waiters = {
@@ -444,8 +464,8 @@ impl ItemDownloadStates {
                 return;
             }
             let Some(taken) = take_running(&mut states.by_key, key) else { return };
-            if outcome.is_err() {
-                keep_left_by_download(&mut states.by_key, key, &taken);
+            if let Err(errno) = outcome {
+                keep_left_by_download(&mut states.by_key, key, &taken, Some(errno));
             }
             taken.waiters
         };
@@ -472,7 +492,7 @@ impl ItemDownloadStates {
                 return;
             }
             let Some(taken) = take_running(&mut states.by_key, &run.key) else { return };
-            remember_another_content(&mut states.by_key, &run.key, run.number);
+            remember_another_content(&mut states.by_key, &run.key, AnotherContentFact { number: run.number, failed_asking: None });
             taken.waiters
         };
         for waiter in waiters {
@@ -491,7 +511,20 @@ impl ItemDownloadStates {
     /// [`ANOTHER_CONTENTS_REMEMBERED`] is remembered no more. Called by read, and by the
     /// downloader for what it tells of a download.
     pub(super) fn is_another_content(&self, key: &DownloadKey) -> bool {
-        matches!(crate::panic::lock(&self.states).by_key.get(key), Some(State::AnotherContent { .. } | State::Running { another_content: Some(_), .. }))
+        self.find_another_content(key).is_some()
+    }
+
+    /// What is remembered of `key` when OneDrive stated another content for it
+    /// ([`is_another_content`](Self::is_another_content)): with the failure that stands
+    /// for the key since, when its last download got no answer of OneDrive. Called by
+    /// the downloader, before it tells the states of a download's end, for whether
+    /// that end is news (`item_downloader::decide_end_news`).
+    pub(super) fn find_another_content(&self, key: &DownloadKey) -> Option<AnotherContentFact> {
+        match crate::panic::lock(&self.states).by_key.get(key) {
+            Some(State::AnotherContent { fact }) => Some(*fact),
+            Some(State::Running { another_content, .. }) => *another_content,
+            Some(State::Failed { .. }) | None => None,
+        }
     }
 
     /// OneDrive answered the download `run` with the content of its key: what was
@@ -520,8 +553,8 @@ impl ItemDownloadStates {
                 return;
             }
             let taken = take_running(&mut states.by_key, &run.key);
-            if let Some(number) = taken.as_ref().and_then(|taken| taken.another_content) {
-                remember_another_content(&mut states.by_key, &run.key, number);
+            if let Some(fact) = taken.as_ref().and_then(|taken| taken.another_content) {
+                remember_another_content(&mut states.by_key, &run.key, fact);
             }
             taken
         };

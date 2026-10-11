@@ -903,16 +903,108 @@ fn what_was_remembered_of_a_key_is_void_at_the_first_answer_its_next_download_ac
     assert!(!download_states.is_another_content(&key));
 }
 
+/// What the states remember of a key OneDrive stated another content for, after its
+/// downloads since failed with `failures`, in turn.
+fn remember_after(failures: &[i32]) -> Option<AnotherContentFact> {
+    let (download_states, first) = start_download_alone(&ItemFixture::onedrive_content_of(b"the content"));
+    let key = first.key().clone();
+    download_states.finish_as_another_content(&first);
+    for errno in failures {
+        match download_states.start_or_join(&key, &DownloadAsker::Read, None) {
+            ItemDownloadStart::Started { run, .. } => download_states.finish(&run, Err(*errno)),
+            ItemDownloadStart::Joined | ItemDownloadStart::Stopped => panic!("no download of it runs"),
+        }
+    }
+    download_states.find_another_content(&key)
+}
+
 #[test]
 fn the_end_of_a_download_is_news_per_case() {
     let another_content: DownloadEnd = Err(DownloadRefusal::AnotherContent);
-    assert_eq!(decide_end_news(&another_content, false), DownloadEndNews::Changed, "the first time OneDrive states another content");
-    assert_eq!(decide_end_news(&another_content, true), DownloadEndNews::AnotherContentAgain, "OneDrive states what is remembered of the key");
-    // Whatever else it ended as is told, also where OneDrive did not answer about the content.
-    for end in [Ok(ItemLandingOutcome::RowsChanged), Ok(ItemLandingOutcome::Failed { errno: libc::EIO }), Err(DownloadRefusal::ItemGone), Err(DownloadRefusal::SignedOut), Err(DownloadRefusal::Transient { detail: "no network".into() })] {
-        assert_eq!(decide_end_news(&end, true), DownloadEndNews::Changed, "{end:?}");
-        assert_eq!(decide_end_news(&end, false), DownloadEndNews::Changed, "{end:?}");
+    let (remembered, failed_with_eio, failed_with_estale) = (remember_after(&[]), remember_after(&[libc::EIO]), remember_after(&[libc::ESTALE]));
+    assert_eq!(decide_end_news(&another_content, None), DownloadEndNews::Changed, "the first time OneDrive states another content");
+    assert_eq!(decide_end_news(&another_content, remembered), DownloadEndNews::AnotherContentAgain, "OneDrive states what is remembered of the key");
+    assert_eq!(decide_end_news(&another_content, failed_with_eio), DownloadEndNews::AnotherContentAgain, "also after a failure between");
+
+    let failures = [
+        (Err(DownloadRefusal::SignedOut), libc::EIO),
+        (Err(DownloadRefusal::Throttled { retry_after: None }), libc::EIO),
+        (Err(DownloadRefusal::Transient { detail: "no network".into() }), libc::EIO),
+        (Err(DownloadRefusal::ItemGone), libc::ESTALE),
+        (Ok(ItemLandingOutcome::Failed { errno: libc::EIO }), libc::EIO),
+        (Ok(ItemLandingOutcome::Failed { errno: libc::ENOSPC }), libc::ENOSPC),
+    ];
+    for (end, errno) in failures {
+        // Nothing is remembered of the key: a failure is told each time.
+        assert_eq!(decide_end_news(&end, None), DownloadEndNews::Changed, "{end:?}");
+        // Remembered, and OneDrive answered the download before this one: the first such failure.
+        assert_eq!(decide_end_news(&end, remembered), DownloadEndNews::Changed, "{end:?}");
+        // Remembered, and the download before this one failed: news unless by the same errno.
+        for (stands, stood_as) in [(failed_with_eio, libc::EIO), (failed_with_estale, libc::ESTALE)] {
+            let expected = if errno == stood_as { DownloadEndNews::SameFailureAgain } else { DownloadEndNews::Changed };
+            assert_eq!(decide_end_news(&end, stands), expected, "{end:?} after a failure with {stood_as}");
+        }
     }
+    // What the landing answered of the rows, the place or the step is no failure of the
+    // asking: told, whatever is remembered and whatever errno its waiters hear.
+    for end in [Ok(ItemLandingOutcome::RowsChanged), Ok(ItemLandingOutcome::PlaceHeld { path: "a".into() }), Ok(ItemLandingOutcome::StepStopped)] {
+        for remembered in [None, remembered, failed_with_eio, failed_with_estale] {
+            assert_eq!(decide_end_news(&end, remembered), DownloadEndNews::Changed, "{end:?}");
+        }
+    }
+}
+
+/// The same noise as a content OneDrive keeps stating another one for: while that is
+/// remembered and the asking fails otherwise, each read asks, and one failure is told.
+#[test]
+fn a_failure_that_stands_for_a_content_onedrive_stated_another_one_for_is_told_once() {
+    let fixture = ItemFixture::new();
+    let shown = fixture.show_onedrive_file("report.txt", b"the report");
+    let item = shown.local_item_id;
+    fixture.serve_content(item, b"THE REPORT");
+    let (source, report) = (HeldSource::open(&fixture), make_report(&fixture));
+    let (downloader, _) = make_downloader_reporting_to(&fixture, Arc::clone(&source) as Arc<dyn ContentSource>, report.clone());
+    let count_events = |kind: EventKind| report.activity.recent(100).expect("the activity kept in memory").iter().filter(|event| event.kind == kind).count();
+    let count_announcements = || fixture.inotify_bridge.list_queued().iter().flatten().filter(|announcement| matches!(announcement, ItemAnnouncement::ContentChanged { item: announced, .. } if *announced == item)).count();
+    let announced_before = count_announcements();
+    let told = || (count_events(EventKind::Failed), count_announcements() - announced_before);
+    let read = || hear(ask(&downloader, &shown, DownloadAsker::Read));
+    let transfers = report.transfers.subscribe();
+
+    // OneDrive states another content: told, and remembered.
+    assert_eq!(read(), Err(libc::ESTALE));
+    assert_eq!(told(), (1, 2));
+
+    // The account is signed out: the first read's failure is told, by its end alone.
+    source.refuse(Some(|| SourceError::SignedOut("401".into())));
+    assert_eq!(read(), Err(libc::EIO));
+    assert_eq!(told(), (2, 3), "the first failure since OneDrive answered");
+    for _read in 0..3 {
+        assert_eq!(read(), Err(libc::EIO));
+    }
+    assert_eq!(told(), (2, 3), "the same failure stands: each read asks, none is told");
+    assert!(fixture.download_states.is_another_content(&key_of(&shown)), "no answer voided what is remembered");
+
+    // Another failure, by the errno the reads hear: told, once.
+    source.refuse(Some(|| SourceError::NotFound("404".into())));
+    assert_eq!((read(), read()), (Err(libc::ESTALE), Err(libc::ESTALE)));
+    assert_eq!(told(), (3, 4));
+
+    // OneDrive answers, with another content again: no news. The failure that comes
+    // after that answer is told again.
+    source.refuse(None);
+    assert_eq!(read(), Err(libc::ESTALE));
+    assert_eq!(told(), (3, 4));
+    source.refuse(Some(|| SourceError::NotFound("404".into())));
+    assert_eq!((read(), read()), (Err(libc::ESTALE), Err(libc::ESTALE)));
+    assert_eq!(told(), (4, 5));
+    assert!(!transfers.has_changed().unwrap(), "none of these downloads was a transfer");
+
+    // OneDrive states the asked content again: told as any download.
+    source.refuse(None);
+    fixture.serve_content(item, b"the report");
+    assert_eq!(read(), Ok(()));
+    assert_eq!((count_events(EventKind::Failed), count_events(EventKind::Downloaded), count_announcements() - announced_before), (4, 1, 6));
 }
 
 #[test]

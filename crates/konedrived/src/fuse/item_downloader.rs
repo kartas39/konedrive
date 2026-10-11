@@ -39,6 +39,10 @@
 //! answer on, not from its asking: it is not announced as being downloaded at its start,
 //! and where its first answer states another content again, its end is no news
 //! ([`decide_end_news`]) — no activity event, no count of the space, no announcement.
+//! Where OneDrive gives it no answer about the content — the account is offline, signed
+//! out, held back, the item is not there —, its failure is news once: while the downloads
+//! of the key keep failing with the same errno and OneDrive has answered none of them,
+//! nothing more is told (`AnotherContentFact::failed_asking`).
 //! The first time a content is found to be another one, everything is told. `Transfers`
 //! shows a download from the first answer its source accepts on (`hydration::tracked`,
 //! which fetches through `download_source`): one that ends at an answer of another
@@ -104,6 +108,7 @@
 // test: what_was_remembered_of_a_key_is_void_at_the_first_answer_its_next_download_accepts
 // test: the_end_of_a_download_is_news_per_case
 // test: a_content_onedrive_keeps_stating_another_one_for_is_told_once
+// test: a_failure_that_stands_for_a_content_onedrive_stated_another_one_for_is_told_once
 #![allow(dead_code)]
 
 use std::fs::File;
@@ -120,7 +125,7 @@ use super::download_states::Waiter;
 use super::item_announcements::ItemAnnouncement;
 use super::item_content_files::{to_content_time, write_whole_copy_marks};
 use super::item_download_landing::{ItemDownloadLanding, ItemLandingOutcome, LandingCondition};
-use super::item_download_states::{DownloadAsker, DownloadKey, DownloadRun, ItemDownloadStart, ItemDownloadStates};
+use super::item_download_states::{AnotherContentFact, DownloadAsker, DownloadKey, DownloadRun, ItemDownloadStart, ItemDownloadStates};
 use super::item_inotify_bridge::ItemInotifyBridge;
 use super::write_operation_thread::WriteOperationThread;
 use crate::hydration::source::{download_staged, ContentSource, Share, Split, Version};
@@ -225,16 +230,35 @@ pub(super) enum DownloadEndNews {
     /// key the download states remembered so already. Nothing changed since that was
     /// told.
     AnotherContentAgain,
+    /// It is not: a download of a key remembered so got no answer of OneDrive about the
+    /// content, and failed with the errno the last download of the key failed with, which
+    /// was told then. The same failure stands.
+    SameFailureAgain,
 }
 
-/// Whether a download that ended as `end` is news, by whether the download states still
-/// remember its key as another content then (`is_another_content_remembered`:
-/// `ItemDownloadStates::is_another_content`, asked before the end is told to them — an
+/// Whether a download that ended as `end` is news, by what the download states still
+/// remember of its key as another content then (`fact`:
+/// `ItemDownloadStates::find_another_content`, asked before the end is told to them — an
 /// answer the download accepted would have voided it). Pure.
-pub(super) fn decide_end_news(end: &DownloadEnd, is_another_content_remembered: bool) -> DownloadEndNews {
-    match end {
-        Err(DownloadRefusal::AnotherContent) if is_another_content_remembered => DownloadEndNews::AnotherContentAgain,
-        Ok(_) | Err(_) => DownloadEndNews::Changed,
+///
+/// - Nothing is remembered of the key: news, whatever the end.
+/// - Remembered, and OneDrive stated another content again: no news.
+/// - Remembered, and the download failed otherwise — the source refused, or the download
+///   ended with an errno; OneDrive gave no answer about the content —: news the first
+///   time, and when the errno its waiters hear
+///   ([`decide_waiters_answer`]) is another one than the last such download of the key
+///   failed with; no news while it is the same. An answer of OneDrive between two
+///   failures — another content again — ends that: the failure after it is told.
+pub(super) fn decide_end_news(end: &DownloadEnd, fact: Option<AnotherContentFact>) -> DownloadEndNews {
+    match (end, fact) {
+        (_, None) => DownloadEndNews::Changed,
+        (Err(DownloadRefusal::AnotherContent), Some(_)) => DownloadEndNews::AnotherContentAgain,
+        (Err(_) | Ok(ItemLandingOutcome::Failed { .. }), Some(fact)) => match decide_waiters_answer(end) {
+            Err(errno) if fact.failed_asking == Some(errno) => DownloadEndNews::SameFailureAgain,
+            Ok(()) | Err(_) => DownloadEndNews::Changed,
+        },
+        // What the landing answered: no failure of the asking.
+        (Ok(ItemLandingOutcome::Landed { .. } | ItemLandingOutcome::RowsChanged | ItemLandingOutcome::PlaceHeld { .. } | ItemLandingOutcome::StepStopped), Some(_)) => DownloadEndNews::Changed,
     }
 }
 
@@ -378,7 +402,8 @@ impl ItemDownloader {
     /// A download of a key remembered as another content
     /// (`ItemDownloadStates::is_another_content`) is not announced at its start: it asks
     /// OneDrive anew, and nothing is known to change yet. Where it ends as
-    /// [`DownloadEndNews::AnotherContentAgain`], nothing is told at its end either.
+    /// [`DownloadEndNews::AnotherContentAgain`] or [`DownloadEndNews::SameFailureAgain`],
+    /// nothing is told at its end either.
     async fn run_download(self: &Arc<Self>, file: &ItemToDownload, asker: &DownloadAsker, run: &DownloadRun, unfinished_file: Option<Arc<File>>) -> DownloadEnd {
         let Some((place, path)) = self.download_landing.find_shown_place(file.item).await else { return Ok(ItemLandingOutcome::RowsChanged) };
         let shown_path = self.folder.join(&path).display().to_string();
@@ -387,8 +412,9 @@ impl ItemDownloader {
         }
         let end = self.fetch_and_land(file, asker, run, unfinished_file, &shown_path).await;
         // Asked before the end is told to the states, which remember the key anew then.
-        if decide_end_news(&end, self.download_states.is_another_content(run.key())) == DownloadEndNews::AnotherContentAgain {
-            return end;
+        match decide_end_news(&end, self.download_states.find_another_content(run.key())) {
+            DownloadEndNews::AnotherContentAgain | DownloadEndNews::SameFailureAgain => return end,
+            DownloadEndNews::Changed => {}
         }
         if !matches!(asker, DownloadAsker::PlanPin { .. }) {
             let event = match (&end, decide_waiters_answer(&end)) {

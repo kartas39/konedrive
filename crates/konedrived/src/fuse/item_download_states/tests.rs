@@ -463,3 +463,43 @@ fn no_more_than_the_latest_contents_onedrive_answered_with_another_are_remembere
     assert!(Arc::ptr_eq(&start(&download_states, &key(900, "c1")).unwrap().1.unwrap(), &failed));
     assert_eq!(count_remembered(0..kept + 3), ANOTHER_CONTENTS_REMEMBERED);
 }
+
+#[test]
+fn the_failure_of_a_download_onedrive_did_not_answer_is_kept_with_what_is_remembered_of_its_key() {
+    let download_states = download_states();
+    let key = key(5, "c1");
+    let failed_asking = || download_states.find_another_content(&key).map(|remembered| remembered.failed_asking);
+    assert_eq!(failed_asking(), None, "nothing is remembered of the key");
+    download_states.finish_as_another_content(&start_anew(&download_states, &key));
+    assert_eq!(failed_asking(), Some(None), "OneDrive answered its last download");
+
+    // A download that fails with no answer: its errno stands for the key, also while
+    // the next one runs and has no answer.
+    download_states.finish(&start_anew(&download_states, &key), Err(libc::EIO));
+    assert_eq!(failed_asking(), Some(Some(libc::EIO)));
+    let run = start_anew(&download_states, &key);
+    assert_eq!(failed_asking(), Some(Some(libc::EIO)), "what the running download is held against at its end");
+    download_states.finish(&run, Err(libc::ESTALE));
+    assert_eq!(failed_asking(), Some(Some(libc::ESTALE)), "the last failure");
+
+    // A download that was given up or dropped failed with nothing: as before it.
+    let run = start_anew(&download_states, &key);
+    download_states.abandon(&run);
+    assert_eq!(failed_asking(), Some(Some(libc::ESTALE)));
+    start_as(&download_states, &key, plan_pin(), None).unwrap();
+    assert!(download_states.abort_if_plan_alone_asked(&key));
+    assert_eq!(failed_asking(), Some(Some(libc::ESTALE)));
+
+    // OneDrive answers with another content again: no failure stands.
+    download_states.finish_as_another_content(&start_anew(&download_states, &key));
+    assert_eq!(failed_asking(), Some(None));
+
+    // An answer of the key's content voids all of it; a failure after it is of a key
+    // nothing is remembered of.
+    download_states.finish(&start_anew(&download_states, &key), Err(libc::EIO));
+    let run = start_anew(&download_states, &key);
+    download_states.forget_another_content(&run);
+    assert_eq!(failed_asking(), None);
+    download_states.finish(&run, Err(libc::EIO));
+    assert_eq!(failed_asking(), None);
+}

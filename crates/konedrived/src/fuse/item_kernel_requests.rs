@@ -641,7 +641,9 @@ impl ItemKernelRequests {
     /// unread where the metadata states another content — in one slot of the pool's open
     /// class, given back when the download ends; reads that come before OneDrive has
     /// answered it join it. While OneDrive states another content again, nothing but
-    /// the first such answer is told (`item_downloader::decide_end_news`).
+    /// the first such answer is told, and while it gives no answer and the asking keeps
+    /// failing the same way, nothing but the first such failure
+    /// (`item_downloader::decide_end_news`).
     /// Nothing but the program's own reads bounds how often: a read is asked by a
     /// program, and each is answered what OneDrive states then.
     pub(super) async fn fetch_range_after_download(&self, range: RangeToFetch) -> Result<Vec<u8>, Errno> {
