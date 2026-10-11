@@ -204,7 +204,8 @@ pub struct UnsentEntry {
 /// (`ItemAnswer::Excluded`), which is no entry at all. Pure. The first that holds:
 ///
 /// - `held`: the answer is `WaitReason::User(Reason::MassDelete)`;
-/// - `blocked`: the memory keeps a refusal for good of it (`entry.memory.refusal`), given
+/// - `blocked`, by the one rule the emblem goes by too
+///   (`sync_parts::published_plan::decide_is_shown_blocked`), which is: the memory keeps a refusal for good of it (`entry.memory.refusal`), given
 ///   to the last plan or not, and whatever the group of its reason — this comes before
 ///   the rule of the group: OneDrive's `NotAllowed` is of the group `waiting`, and the
 ///   plan answers it with the same `WaitReason::User(NotAllowed(..))` as a read-only

@@ -25,6 +25,16 @@
          ahead; how many rows were released. Every removal held at the moment
          of the call goes, one held after the caller last read HeldCount
          included. -->
+    <!-- How many changes made here are not sent to OneDrive: every one,
+         whatever holds it, the rows below a held delete of a folder among
+         them. Answered for a folder in any state, also one that is not up or
+         whose sync does not run (0 with no folder). What a client reads
+         before Folder.Unregister and Accounts.Remove, which are never
+         refused for it, to warn: "N changes were not sent to OneDrive and
+         will stay only on this computer". -->
+    <method name="UnsentCount">
+      <arg name="count" type="t" direction="out"/>
+    </method>
     <method name="ConfirmDeletes">
       <arg name="released" type="u" direction="out"/>
     </method>

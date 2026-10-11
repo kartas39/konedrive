@@ -37,6 +37,26 @@ pub enum ItemAnswer {
     Fault(PlanFault),
 }
 
+/// Whether an unsent item is shown as BLOCKED — needing the user —, the one rule for the
+/// queue's word (`upload_queue::decide_queue_state`) and for the emblem
+/// (`mount::item_lookup::decide_sync_mark`). Pure. True when the step memory keeps a
+/// refusal for good of the item as it is (`has_refusal_for_good`:
+/// `ItemMemory::refusal` is some, given to the last plan or not), or `answer` is
+/// `WaitReason::User(reason)` with a reason that neither waits for space
+/// (`Reason::waits_for_space`) nor is of the group `waiting` (`Reason::group`), and is
+/// not the mass removal's (`Reason::MassDelete`: that is held, a state of its own).
+/// False for everything else: a file open for writing, a wait for space, a read-only
+/// folder's wait, an item the check at start left and one the plan is at fault about
+/// (the owner's decision: neither is called blocked), every wait for a time, another
+/// item or a listing, a planned step, and no answer. Both callers give the two values
+/// from one read: the queue from its entry (`UnsentEntry::answer`, `memory`), the mount
+/// in the read of the row for `user.konedrive.sync` (`ItemReader::find_item_memory` in
+/// `ItemLookup::read_xattr_facts`, with `PublishedPlan::find_answer`).
+#[allow(unused_variables)]
+pub fn decide_is_shown_blocked(answer: Option<&ItemAnswer>, has_refusal_for_good: bool) -> bool {
+    todo!()
+}
+
 /// The plan's answers of one folder.
 pub struct PublishedPlan {
     answers: std::sync::RwLock<BTreeMap<LocalItemId, ItemAnswer>>,

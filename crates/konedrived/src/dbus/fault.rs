@@ -104,7 +104,6 @@ impl From<SyncError> for Fault {
             SyncError::NotAllowed(_) => Refusal::NotAllowed,
             SyncError::NotUploaded(_) | SyncError::NotInOneDrive(_) => Refusal::NotUploaded,
             SyncError::Unreachable(_) => Refusal::Unreachable,
-            SyncError::PendingUploads(_) => Refusal::PendingUploads,
             // The bus's own name for it, as the label, the client id and the mode go out.
             SyncError::InvalidArgs(_) => Refusal::InvalidArgs,
             SyncError::NotUp(_) => Refusal::NotUp,

@@ -22,7 +22,6 @@ fn every_refusal_of_the_folder_goes_out_under_its_name() {
         SyncError::NotInOneDrive("/f/a".into()),
         SyncError::Unreachable("no network".into()),
         SyncError::InvalidArgs("\"a/b\": a pattern names one name".into()),
-        SyncError::PendingUploads("2 change(s) made here have not been uploaded yet".into()),
         SyncError::Config("cannot record the sync folder in config.toml".into()),
         SyncError::Store("the database is locked".into()),
         SyncError::not_up("it waits for the helper"),
@@ -48,7 +47,6 @@ fn every_refusal_of_the_folder_goes_out_under_its_name() {
             SyncError::NotAllowed(_) => ("org.konedrive.Error.NotAllowed", said.clone()),
             SyncError::NotUploaded(_) | SyncError::NotInOneDrive(_) => ("org.konedrive.Error.NotUploaded", said.clone()),
             SyncError::Unreachable(_) => ("org.konedrive.Error.Unreachable", said.clone()),
-            SyncError::PendingUploads(_) => ("org.konedrive.Error.PendingUploads", said.clone()),
             SyncError::NotUp(_) => ("org.konedrive.Error.NotUp", said.clone()),
             SyncError::Config(_)
             | SyncError::Store(_)

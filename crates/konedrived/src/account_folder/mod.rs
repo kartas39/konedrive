@@ -97,10 +97,6 @@ pub enum SyncError {
     /// An argument no value of which makes sense (`SetIgnorePatterns`).
     #[error("{0}")]
     InvalidArgs(String),
-    /// A Forget, or `Accounts.Remove`, while changes wait to be uploaded:
-    /// the tree store holding them would go. The message says how many, and what to do.
-    #[error("{0}")]
-    PendingUploads(String),
     /// `config.toml` could not be read or written.
     #[error("{0}")]
     Config(String),

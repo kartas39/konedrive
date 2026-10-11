@@ -333,6 +333,9 @@ pub trait Transfers {
 pub trait UploadQueue {
     /// The changes waiting to be uploaded, oldest first, at most `limit` (0 for all).
     fn changes(&self, limit: u32) -> zbus::Result<Vec<Change>>;
+    /// How many changes made here are not sent, whatever holds them: for the warning
+    /// before a Forget and a removal of the account. Answered for a folder in any state.
+    fn unsent_count(&self) -> zbus::Result<u64>;
     /// The held removals go ahead; how many.
     fn confirm_deletes(&self) -> zbus::Result<u32>;
     /// The held removals are dropped and their items placed again; how many.

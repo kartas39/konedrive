@@ -20,6 +20,11 @@ impl UploadQueue {
             .collect())
     }
 
+    /// How many changes made here are unsent, in any state of the folder (`SyncService::count_unsent`).
+    async fn unsent_count(&self) -> Result<u64> {
+        Ok(self.service.count_unsent().await?)
+    }
+
     /// The removals the mass-delete guard held go ahead; how many.
     async fn confirm_deletes(&self) -> Result<u32> {
         Ok(self.service.confirm_deletes().await?)

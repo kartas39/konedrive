@@ -35,7 +35,7 @@ pub(super) async fn folder_command(
             println!("{tag}{}", said::registered_text(&absolute));
         }
         FolderCmd::Forget => {
-            // TODO: before the call, the warning of what is unsent: "N changes were not sent to OneDrive and will stay only on this computer" (the bus's count of unsent changes; `SyncService::count_unsent` says which). Not written yet.
+            // TODO: before the call, the warning of what is unsent: "N changes were not sent to OneDrive and will stay only on this computer" (`UploadQueue.UnsentCount()`, `proxy`'s `unsent_count`; nothing is said for 0). Not written yet; `account remove` warns by the same member.
             explained(chosen, proxy, SyncAction::Forget, proxy.folder.unregister().await).await?;
             println!("{tag}{}", said::FORGOTTEN);
             fail_if_folder_unhealthy(proxy).await?;

@@ -345,8 +345,8 @@ impl AccountManager {
     }
 
     /// `Accounts.Remove` (`docs/design/accounts.md` §7.3): the folder forgotten exactly as
-    /// `Folder.Unregister` forgets it — refused, before anything changes, under the same
-    /// rule (`PendingUploads` while changes wait to be uploaded), its tree
+    /// `Folder.Unregister` forgets it — never refused for what is unsent: the caller warns
+    /// first, by `UploadQueue.UnsentCount()` —, its tree
     /// store with it — then a sign-in under way cancelled, the refresh token and the cached
     /// name and quota deleted, the account taken out of `config.toml`, its directory deleted
     /// with what is left in it, and its object off the bus. The folder's files and the

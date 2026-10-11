@@ -57,17 +57,19 @@ impl SyncService {
     /// removal of the account: `ItemReader::count_unsent` through the folder's open store
     /// (`View::parts`), whether or not its sync runs; for a folder that keeps no open
     /// store (not up, taken down) `sync_tasks::stop_order::count_unsent_of_closed_store`
-    /// of its store's file, off the runtime; 0 with no folder. While a sync runs the bus
-    /// has the same number already, as `UploadQueue.PendingCount + BlockedCount +
-    /// HeldCount` with the rows below held directories, so a client may use those.
-    // TODO: for a folder whose sync does not run the properties of the bus are empty: the bus needs one member that answers this function (a property `UploadQueue.UnsentCount`), for the window and `konedrivectl` to warn by; it is not in the XML yet. Check and fix if needed.
+    /// of its store's file, off the runtime; 0 with no folder. Every unsent change counts,
+    /// whatever holds it — the three counts of the queue's properties do not add up to
+    /// it (the rows below a held directory are in none). The bus's
+    /// `UploadQueue.UnsentCount()` answers exactly this: the one member the window and
+    /// `konedrivectl` read before `Folder.Unregister` and `Accounts.Remove`.
     pub async fn count_unsent(&self) -> Result<u64, SyncError> {
         todo!()
     }
 
     /// `Accounts.Remove`'s first step: the folder forgotten exactly as
-    /// [`unregister_root`](Self::unregister_root) forgets it — refused under
-    /// the same rule — and, in the same change so that nothing
+    /// [`unregister_root`](Self::unregister_root) forgets it — never refused for what
+    /// is unsent; the caller of `Accounts.Remove` warns first by the same member,
+    /// `UploadQueue.UnsentCount()` — and, in the same change so that nothing
     /// comes in between, the account retired: no registration, bring-up or
     /// switch is made for it from then on. An account with no folder is
     /// retired all the same. The answer is the folder that was forgotten: `None` for an
