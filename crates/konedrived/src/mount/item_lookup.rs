@@ -466,9 +466,15 @@ impl ItemLookup {
     /// folder, in another sync folder, or back in this one beside the original, that it is
     /// an item of OneDrive which it is not. `ESTALE` for a node whose row is gone or shows
     /// nothing, as every request by a node.
+    ///
+    /// Only the row is read, for the `ESTALE`: `ls -l` and a file manager ask this of every
+    /// file of a directory, and nothing an attribute is decided from (the pin above all) is
+    /// worth reading for a list that names none.
     pub(super) fn list_xattr_names(&self, node: LocalItemId) -> Result<Vec<&'static str>, Errno> {
-        self.read_xattr_facts(node, None)?;
-        Ok(Vec::new())
+        match self.read_connections.read(|reader| reader.find_item(node)).map(to_node_row).map_err(to_store_errno)? {
+            NodeRow::Shown(_) => Ok(Vec::new()),
+            row => Err(decide_node_errno(&row).unwrap_or(Errno::ESTALE)),
+        }
     }
 }
 

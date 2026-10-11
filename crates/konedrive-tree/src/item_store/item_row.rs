@@ -625,15 +625,23 @@ pub(super) fn count_shown_items(conn: &Connection) -> Result<u64, TreeError> {
 /// shows it in, has an item id of OneDrive that is pinned. The way up is as long as every
 /// walk of the rows.
 pub(super) fn find_is_pinned(conn: &Connection, item: LocalItemId) -> Result<bool, TreeError> {
-    let sql = format!(
+    Ok(conn.prepare_cached(&is_pinned_sql())?.query_row([item.as_i64()], |row| row.get(0))?)
+}
+
+/// SQL for "is the item `?1`, or a directory above it, pinned". The joins are CROSS JOINs
+/// to keep their order: the few rows from the item up to the root, each row's binding, its
+/// pin. Left to choose, SQLite reads every bound row of `items` and asks of each whether it
+/// is above (measured on a folder of 30 000 items: 1.8 ms an answer against 0.006 ms), and
+/// a file manager asks this of every file of a directory it shows.
+pub(super) fn is_pinned_sql() -> String {
+    format!(
         "WITH RECURSIVE above(id, depth) AS (
              SELECT local_item_id, 0 FROM items WHERE local_item_id = ?1 AND local_parent_id IS NOT NULL
              UNION ALL
              SELECT items.local_parent_id, above.depth + 1 FROM above JOIN items ON items.local_item_id = above.id WHERE items.local_parent_id IS NOT NULL AND above.depth <= {})
-         SELECT EXISTS (SELECT 1 FROM above JOIN items ON items.local_item_id = above.id JOIN pins ON pins.id = items.onedrive_item_id)",
+         SELECT EXISTS (SELECT 1 FROM above CROSS JOIN items ON items.local_item_id = above.id CROSS JOIN pins ON pins.id = items.onedrive_item_id)",
         crate::MAX_CHAIN
-    );
-    Ok(conn.prepare_cached(&sql)?.query_row([item.as_i64()], |row| row.get(0))?)
+    )
 }
 
 /// SQL for the rows a pin holds for, as `held(id)`: from each pinned row the folder shows,

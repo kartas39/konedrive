@@ -69,3 +69,17 @@ fn the_pinned_files_to_download_are_those_not_on_disk_that_agree_on_everything()
     store.item_store().apply(&LocalVersionChange::Moved { item: in_root, place: ItemPlace { parent_local_item_id: ROOT, name: "renamed".into() }, is_name_ignored: false }).unwrap();
     assert_eq!(ids(&mut store, None, 10), vec![]);
 }
+
+#[test]
+fn whether_an_item_is_pinned_is_read_from_the_rows_above_it_and_not_from_every_row() {
+    let (store, [.., in_inner, _]) = store_with_shown_tree();
+    let plan: Vec<String> = store
+        .conn
+        .prepare(&format!("EXPLAIN QUERY PLAN {}", crate::item_store::item_row::is_pinned_sql()))
+        .unwrap()
+        .query_map([in_inner.as_i64()], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(!plan.iter().any(|step| step.starts_with("SCAN items")), "{plan:#?}");
+}
