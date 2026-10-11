@@ -73,6 +73,9 @@ private Q_SLOTS:
         for (const char *key : {"no-name", "no-item", "no-guard", "no-handle", "bad-handle", "another-item", "blocked"}) {
             row(key, incomplete.arg(QString::fromUtf8(key)));
         }
+        row("not-read-on-disk", QStringLiteral("KOneDrive could not read this on disk when it started: nothing of it is uploaded until it can be read at a start."));
+        row("being-checked", QStringLiteral("Being checked: KOneDrive is asking OneDrive for the whole folder again, and goes on by itself."));
+        row("quiet-time", QStringLiteral("Changed a moment ago: it goes up once it has been left alone for a moment."));
         row("waiting-for-space", QStringLiteral("OneDrive is full: free up space in OneDrive, then Refresh."));
         row("too-big", QStringLiteral("Too big for the space left in OneDrive: free up space there, then Refresh."));
         const QLocale locale;
