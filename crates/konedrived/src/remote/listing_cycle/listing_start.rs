@@ -12,10 +12,9 @@
 // test: a_refused_link_the_store_kept_begins_a_full_listing
 // test: a_refused_link_of_this_cycle_fails_the_cycle
 // test: any_other_trouble_with_graph_fails_the_cycle
-#![allow(dead_code, unused_variables)]
 
 use konedrive_graph::drive::DriveError;
-use konedrive_tree::ListingUnderWay;
+use konedrive_tree::{ListingKind, ListingUnderWay};
 
 /// How a cycle begins.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,7 +34,12 @@ pub enum ListingStart {
 /// asked for (`ItemReader::is_full_listing_requested`). Pure. A full listing under way
 /// goes on whatever else is said: the store has no delta link while one is.
 pub fn decide_listing_start(under_way: Option<&ListingUnderWay>, delta_link: Option<&str>, is_full_listing_requested: bool) -> ListingStart {
-    todo!()
+    match (under_way, delta_link) {
+        (Some(listing), _) if listing.kind == ListingKind::Full => ListingStart::GoOnWithFullListing { listing: listing.clone() },
+        _ if is_full_listing_requested => ListingStart::BeginFullListing,
+        (_, Some(delta_link)) => ListingStart::BeginDeltaListing { delta_link: delta_link.to_owned() },
+        (_, None) => ListingStart::BeginFullListing,
+    }
 }
 
 /// Where the link of a refused request came from.
@@ -62,5 +66,12 @@ pub enum AfterPageRefusal {
 /// listing; a link the store kept that OneDrive will not go on with does too (today
 /// `fetch.rs:118-123`); a link this cycle was given and anything else fails the cycle.
 pub fn decide_page_refusal(error: &DriveError, origin: PageLinkOrigin) -> AfterPageRefusal {
-    todo!()
+    match (error, origin) {
+        (DriveError::ResyncRequired | DriveError::ResyncUpload, _) => AfterPageRefusal::BeginFullListing,
+        (DriveError::NotFound | DriveError::Failed(_), PageLinkOrigin::KeptByStore) => AfterPageRefusal::BeginFullListing,
+        _ => AfterPageRefusal::FailCycle,
+    }
 }
+
+#[cfg(test)]
+mod tests;
