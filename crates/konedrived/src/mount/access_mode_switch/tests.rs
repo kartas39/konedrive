@@ -37,8 +37,9 @@ fn a_switch_on_a_thread_that_is_stopped_is_made_at_once() {
     let write_operation_thread = WriteOperationThread::start(Arc::default()).unwrap();
     write_operation_thread.stop();
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
-    assert!(runtime.block_on(access_mode_switch.switch_to_read_only_on_thread(&write_operation_thread)));
+    // The switch is made, and the answer says that the thread is gone.
+    assert!(runtime.block_on(access_mode_switch.switch_to_read_only_on_thread(&write_operation_thread)).is_err());
     assert_eq!(access_mode_switch.access_mode(), AccessMode::ReadOnly);
-    // Switched to the mode it has, it changes nothing.
-    assert!(!runtime.block_on(access_mode_switch.switch_to_read_only_on_thread(&write_operation_thread)));
+    // Switched to the mode it has, it changes nothing, and says again that the thread is gone.
+    assert!(runtime.block_on(access_mode_switch.switch_to_read_only_on_thread(&write_operation_thread)).is_err());
 }

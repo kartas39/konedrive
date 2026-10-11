@@ -278,14 +278,10 @@ pub async fn forget_folder_without_mount(root: &SyncRoot) {
 /// nothing a sync could send. Any other failure — a permission, the disk — is the error.
 /// It refuses nothing: a Forget is never refused for what is unsent.
 pub fn count_unsent_of_closed_store(tree_db: &std::path::Path) -> Result<UnsentTotal, konedrive_tree::TreeError> {
-    if !tree_db.try_exists()? {
-        return Ok(UnsentTotal::default());
-    }
-    // TODO: contract — konedrive-tree has no public reader of the version a store's file says (`read_stored_version` is private to `schema/old_store.rs`): a store that is not of this version is told here by SQLite refusing the open or the count, which a failing disk under SQLite is taken for too. Check and fix if needed.
-    let counted = konedrive_tree::TreeStore::open_read_only(tree_db).and_then(|store| store.read_items(|items| items.count_unsent()));
-    match counted {
-        Ok(unsent) => Ok(unsent),
-        Err(konedrive_tree::TreeError::Sql(_) | konedrive_tree::TreeError::Schema(_)) => Ok(UnsentTotal::default()),
-        Err(error) => Err(error),
+    match konedrive_tree::decide_old_store(&konedrive_tree::find_stored_version(tree_db)?) {
+        // A store of this version: what it cannot be asked is an error, not nothing.
+        konedrive_tree::OldStoreDecision::Use => konedrive_tree::TreeStore::open_read_only(tree_db)?.read_items(|items| items.count_unsent()),
+        // No store, or one a sync would rebuild empty.
+        konedrive_tree::OldStoreDecision::Make | konedrive_tree::OldStoreDecision::Rebuild => Ok(UnsentTotal::default()),
     }
 }

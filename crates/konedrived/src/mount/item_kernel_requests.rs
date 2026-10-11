@@ -161,8 +161,9 @@ use super::write_operation_thread::WriteOperationThread;
 mod tests;
 
 /// For how long the kernel may keep the attributes and the name of an entry the folder
-/// shows, as today (`attributes::TTL`).
-const ATTRIBUTE_LIFETIME: Duration = Duration::from_secs(1);
+/// shows, as today (`attributes::TTL`). The one such time of the mount: the kernel's
+/// interface (`kernel_requests`) answers with it too.
+pub(super) const ATTRIBUTE_LIFETIME: Duration = Duration::from_secs(1);
 
 /// How far behind its written-up-to mark the file of a running download is surely
 /// written: a piece the download writes is no larger than this. Today's

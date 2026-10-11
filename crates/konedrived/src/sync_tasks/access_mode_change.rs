@@ -59,6 +59,10 @@ use crate::sync_parts::sync_plan_wake::{SyncPlanWake, WakeCause};
 /// `RunningSteps` tells nobody when a step ends.
 const RUNNING_STEPS_LOOKED_AT_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// How long a switch to read-only waits for the steps towards OneDrive that still run. A
+/// guess: longer than a fragment of an upload takes on a slow line.
+const RUNNING_STEPS_WAITED_FOR: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Whether a step towards OneDrive is among `steps`: one that sends content or
 /// metadata. Pure.
 fn has_step_towards_onedrive(steps: &[RunningStep]) -> bool {
@@ -72,15 +76,24 @@ fn has_step_towards_onedrive(steps: &[RunningStep]) -> bool {
 /// cause of its own), with the parts of the running sync; how many changes stay unsent is
 /// the caller's to count afterwards (`ItemReader::count_unsent`). `Err` when the mount's
 /// thread is gone: the hold stands all the same.
+///
+/// The wait for the running steps is bounded ([`RUNNING_STEPS_WAITED_FOR`]): after it the
+/// switch goes on with a warning. Sending is held by then, so a step that still runs
+/// starts no request the hold refuses — an upload stops after its fragment — or ends by
+/// itself; only "no step towards OneDrive runs" is then not yet true when this returns.
 pub async fn switch_to_read_only(mount: &ItemMount, sending_holds: &SendingHolds, running_steps: &RunningSteps) -> Result<(), String> {
     // Nothing towards OneDrive is started from here on.
     sending_holds.set_folder_read_only(true);
-    // TODO: contract — `ItemMount::switch_to_read_only` answers no error when its thread is gone (mount/item_mount.rs): it makes the switch itself then, so nothing is answered `Err` here.
-    mount.switch_to_read_only().await;
+    let switched = mount.switch_to_read_only().await;
+    let waited_since = tokio::time::Instant::now();
     while has_step_towards_onedrive(&running_steps.list_steps()) {
+        if waited_since.elapsed() >= RUNNING_STEPS_WAITED_FOR {
+            tracing::warn!("a step towards OneDrive still runs {} s after the folder was switched to read-only; the switch goes on", RUNNING_STEPS_WAITED_FOR.as_secs());
+            break;
+        }
         tokio::time::sleep(RUNNING_STEPS_LOOKED_AT_EVERY).await;
     }
-    Ok(())
+    switched.map(drop).map_err(|error| error.to_string())
 }
 
 /// Switches the folder to read-write: the order of the module's doc. What was unsent
@@ -98,7 +111,7 @@ pub async fn apply_wanted_access_mode(mount: &ItemMount, sending_holds: &Sending
     match wanted {
         Mode::ReadOnly => {
             sending_holds.set_folder_read_only(true);
-            mount.switch_to_read_only().await;
+            mount.switch_to_read_only().await.map_err(|error| error.to_string())?;
         }
         Mode::ReadWrite => {
             mount.switch_to_read_write();

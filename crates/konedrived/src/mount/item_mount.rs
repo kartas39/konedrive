@@ -16,9 +16,8 @@
 //! **Built, then served.** [`ItemMount::build`] makes every part, runs the check at start
 //! and answers a mount that is NOT over the folder yet, with what answers the kernel's
 //! requests. [`ItemMount::serve`] takes those and puts the mount over the folder with a
-//! `fuser::Filesystem` it makes over them. Before the switch nothing implements that
-//! `Filesystem` over `ItemKernelRequests`: the build and everything else here are filled
-//! and tested now (step 0c); `serve`'s body is the switch's. The folder's start, its stop, its take-down and the switch
+//! `fuser::Filesystem` it makes over them (`kernel_requests::KernelRequests`). A test
+//! mounts nothing: the folder's start, its stop, its take-down and the switch
 //! of the access mode are tested over a mount that was built and not served.
 //!
 //! **What the folder's sync takes from it:** the runner of the steps towards the folder,
@@ -187,8 +186,9 @@ impl ItemMount {
     /// changed, from the kernel's cache.
     /// After this the folder's path is the mount. Called by the folder's start, right
     /// after the build (`sync_tasks::start_order::start_folder_sync`, stage 3); a
-    /// failure leaves the mount built and not served, for the caller to stop. THE
-    /// SWITCH'S: its body and the `Filesystem` are written with the switch.
+    /// failure leaves the mount for the caller to stop, which takes it off the folder if
+    /// it went over it. Blocking: called off the runtime's threads, from where the
+    /// runtime's handle is still reached. The `Filesystem` is `kernel_requests::KernelRequests`.
     pub fn serve(self: &Arc<Self>, kernel_requests: ItemKernelRequests) -> std::io::Result<()> {
         let folder = &self.folder_step_parts.folder;
         // What a read of a range and a download before a write are run on.
@@ -275,8 +275,10 @@ impl ItemMount {
     /// The folder refuses every change from now on: made as a job of the write-operation
     /// thread and awaited, so that no write operation is half done across it. Whether it
     /// was read-write before. After it the mount writes only the last closes of files
-    /// that were open.
-    pub async fn switch_to_read_only(&self) -> bool {
+    /// that were open. `Err` when the write-operation thread is gone (the mount was
+    /// stopped): the switch is made all the same, here — the thread runs no write
+    /// operation any more —, and the caller is told that this mount takes no job.
+    pub async fn switch_to_read_only(&self) -> std::io::Result<bool> {
         self.access_mode_switch.switch_to_read_only_on_thread(&self.parts_to_stop.write_operation_thread).await
     }
 

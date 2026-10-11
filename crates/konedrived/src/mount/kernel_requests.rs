@@ -23,7 +23,7 @@ use std::ffi::OsStr;
 use std::io;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use fuser::{
     AccessFlags, BsdFileFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags, KernelConfig, LockOwner, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus,
@@ -37,13 +37,8 @@ use super::backing_directory::BackingDirectory;
 use super::errno::to_errno;
 use super::item_attributes::{to_local_item_id, to_node_id};
 use super::item_handles::Fh;
-use super::item_kernel_requests::{ItemKernelRequests, LookupAnswer, MadeEntry, OpenedFile, RangeToFetch, ReadAnswer, ReplyTo};
+use super::item_kernel_requests::{ItemKernelRequests, ATTRIBUTE_LIFETIME, LookupAnswer, MadeEntry, OpenedFile, RangeToFetch, ReadAnswer, ReplyTo};
 use super::item_write_operations::{FileToFill, MadeKind, RenameMode};
-
-/// For how long the kernel may keep the attributes of an entry the folder shows.
-// TODO: contract — `ATTRIBUTE_LIFETIME` is private in `mount/item_kernel_requests.rs`
-// (only `LookupAnswer::lifetime` hands it out): this is the same second, written twice.
-const ATTRIBUTE_LIFETIME: Duration = Duration::from_secs(1);
 
 /// The longest name the folder takes, as statfs says it.
 const LONGEST_NAME: u32 = 255;

@@ -87,11 +87,15 @@ impl AccessModeSwitch {
     /// one after it is refused. Whether that changed the mode. A thread that is stopped runs
     /// no write operation any more — the job that ran when it was stopped has ended, and the
     /// switch it dropped, or refuses now, is answered only after that — so the switch is
-    /// made here, and is as exact as one made on the thread.
-    pub(super) async fn switch_to_read_only_on_thread(self: &Arc<Self>, write_operation_thread: &WriteOperationThread) -> bool {
+    /// made here, and is as exact as one made on the thread; the answer is then `Err`,
+    /// which says that the thread is gone and no more.
+    pub(super) async fn switch_to_read_only_on_thread(self: &Arc<Self>, write_operation_thread: &WriteOperationThread) -> std::io::Result<bool> {
         match self.queue_switch_to_read_only(write_operation_thread).await {
-            Ok(changed) => changed,
-            Err(_) => self.switch_to_read_only(),
+            Ok(changed) => Ok(changed),
+            Err(_) => {
+                self.switch_to_read_only();
+                Err(std::io::Error::other("the mount is stopped: its write-operation thread runs no job"))
+            }
         }
     }
 

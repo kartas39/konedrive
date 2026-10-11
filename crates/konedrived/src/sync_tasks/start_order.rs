@@ -367,7 +367,7 @@ pub async fn start_folder_sync(input: FolderStartInput) -> Result<StartedFolder,
     input.state.update(|state| state.local.scan = describe_running_check(&state.local.scan, check_began_at));
     let built = ItemMount::build(setup).await;
     let check_ended_at = (input.clock)();
-    // TODO: contract — `LocalScan` has no member for how much the check left (`StartCheckFindings`: the held items, the unresolved paths; status/snapshot.rs): the findings are in the journal alone (`start_check`), and the counts of directories and files stay 0, which the check does not count.
+    // What the check left is not said here: it is in the journal (`start_check`) and, per item, in the queue's answers ("could not be read on disk"). The counts of directories and files stay 0: the check counts none.
     input.state.update(|state| state.local.scan = describe_finished_check(&state.local.scan, check_ended_at));
     let (mount, kernel_requests) = match built {
         Ok(built) => built,

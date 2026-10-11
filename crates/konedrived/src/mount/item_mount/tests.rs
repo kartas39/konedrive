@@ -156,10 +156,10 @@ fn a_switch_to_read_only_is_made_on_the_write_operation_thread() {
         assert!(futures_util::poll!(&mut switching).is_pending(), "the switch waits for the thread");
         assert!(mount.access_mode_switch().is_read_write(), "and is not made before the thread gets to it");
         drop(tree);
-        assert!(switching.await, "it was read-write");
+        assert!(switching.await.expect("the thread runs"), "it was read-write");
     });
     assert!(!mount.access_mode_switch().is_read_write());
-    assert!(!fixture.runtime().block_on(mount.switch_to_read_only()), "and is read-only already");
+    assert!(!fixture.runtime().block_on(mount.switch_to_read_only()).expect("the thread runs"), "and is read-only already");
 }
 
 #[test]

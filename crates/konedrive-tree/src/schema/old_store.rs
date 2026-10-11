@@ -175,6 +175,30 @@ pub(super) fn count_rebuild_loss(conn: &Connection) -> Option<RebuildLoss> {
     count_all().ok()
 }
 
+/// What the file at `path` says of itself, read through a connection opened read-only for
+/// the question and closed before the answer: the file is not changed. `NoStore` where
+/// there is no file. An error is one that is no finding — permission denied, the disk —
+/// as [`read_stored_version`] answers it. Blocking.
+///
+/// For whoever must tell a store of today's version from one a start would make or
+/// rebuild ([`decide_old_store`] of the answer) without opening it as a store: the count
+/// of what is unsent in a folder that keeps no open store
+/// (`sync_tasks::stop_order::count_unsent_of_closed_store`).
+pub fn find_stored_version(path: &Path) -> Result<StoredVersion, TreeError> {
+    use rusqlite::OpenFlags;
+    if !path.try_exists()? {
+        return Ok(StoredVersion::NoStore);
+    }
+    match Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX) {
+        Ok(conn) => {
+            conn.busy_timeout(std::time::Duration::from_secs(5))?;
+            read_stored_version(&conn)
+        }
+        Err(error) if is_no_database(&error) => Ok(StoredVersion::NotADatabase),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// The addresses of the upload sessions that the store at `path` holds, when it is a
 /// store of another version than today's: the `url` of each row of its `upload_sessions`
 /// table and the `session_address` of each row of its `step_memory`, whichever of the
