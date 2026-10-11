@@ -460,7 +460,7 @@ impl ListingCycle {
     /// filler nudged (`after_listing`), `last_checked` written
     /// (`TreeStore::set_last_checked`), the conflicts on record looked over (through
     /// `report`). As today's `after_cycle` (`listing.rs:340`) without what told the
-    /// outbox. Called as soon as the store ended the listing.
+    /// upload queue. Called as soon as the store ended the listing.
     /// The wake and the nudge come first, and nothing that can fail stands before them:
     /// the listing ended in the store whatever becomes of the rest.
     async fn end_cycle(&self, report: &ListingCycleReport) -> Result<(), CycleError> {

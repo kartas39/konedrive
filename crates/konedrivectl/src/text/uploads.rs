@@ -60,9 +60,9 @@ fn reason_heading_text(reason: &str) -> String {
     }
 }
 
-/// `sync outbox`: one line per change waiting to go up — its state, kind and
+/// `sync upload-queue`: one line per change waiting to go up — its state, kind and
 /// path, how far an upload has got, and why it waits.
-pub fn outbox_text(rows: &[Change], more: bool, prefix: &str) -> String {
+pub fn upload_queue_text(rows: &[Change], more: bool, prefix: &str) -> String {
     if rows.is_empty() {
         return "Nothing is waiting to upload.\n".to_owned();
     }
@@ -82,7 +82,7 @@ pub fn outbox_text(rows: &[Change], more: bool, prefix: &str) -> String {
         out.push('\n');
     }
     if more {
-        out.push_str(&format!("… and more: `{prefix} sync outbox --all` shows them all\n"));
+        out.push_str(&format!("… and more: `{prefix} sync upload-queue --all` shows them all\n"));
     }
     out
 }

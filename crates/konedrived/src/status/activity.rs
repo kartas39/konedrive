@@ -243,7 +243,7 @@ impl Activity {
         }
     }
 
-    /// Announces `event` (`ActivityLog.Added`) without recording it: the outbox
+    /// Announces `event` (`ActivityLog.Added`) without recording it: the upload queue
     /// worker writes its events into the store in the same transaction as
     /// the commit they belong to. Dropped when it is not inside the folder
     /// registered now.

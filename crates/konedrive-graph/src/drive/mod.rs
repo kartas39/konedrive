@@ -1,8 +1,7 @@
 //! Microsoft Graph's drive API. Reads live here: the delta feed, one item's
 //! metadata, a file's bytes from an offset, and the `/content` redirect.
 //! Writes live in [`mod@write`] (folders, rename, move, delete) and [`upload`]
-//! (upload sessions); nothing calls them until the write phase's outbox
-//! worker does, and the scope stays `Files.Read` until an account is switched
+//! (upload sessions); the daemon's steps towards OneDrive call them, and the scope stays `Files.Read` until an account is switched
 //! to read-write.
 
 mod account;
@@ -121,7 +120,7 @@ struct DriveBody {
     id: String,
 }
 
-/// The drive's quota as Graph gives it (`GET /me/drive`): what the outbox decides a full
+/// The drive's quota as Graph gives it (`GET /me/drive`): what the upload queue decides a full
 /// OneDrive by. `remaining` is Graph's own figure, never `total - used`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct DriveQuota {

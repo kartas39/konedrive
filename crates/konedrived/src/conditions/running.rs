@@ -1,7 +1,7 @@
 //! What background work an account runs now (`docs/design/writes.md` §11): the one place
 //! that decides it, from the user's pause, the automatic hold (a metered connection, the
 //! battery: [`Conditions`], told by `conditions`) and the settings. Every
-//! reader of the pause — the transfer pool (through `SyncService::show_pause`), the outbox
+//! reader of the pause — the transfer pool (through `SyncService::show_pause`), the upload queue
 //! worker, the poll and the replacements it runs, the thumbnail filler — asks here.
 //!
 //! The user's pause is one of the account's settings ([`Settings::paused_until`]), kept in

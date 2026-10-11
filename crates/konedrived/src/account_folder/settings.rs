@@ -79,7 +79,7 @@ impl SyncService {
             }
         }
         // `config.toml` and the list the mount reads change together, under the
-        // list's own lock: two calls at once leave both the same (the outbox on the bus).
+        // list's own lock: two calls at once leave both the same (the upload queue on the bus).
         let (shared, persist) = (Arc::clone(&self.ignore), self.wiring.persist.clone());
         tokio::task::spawn_blocking(move || {
             let mut list = crate::panic::write(&shared);

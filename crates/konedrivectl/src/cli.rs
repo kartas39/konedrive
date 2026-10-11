@@ -209,7 +209,7 @@ pub(crate) enum FolderCmd {
     /// Show the downloads and uploads under way
     Transfers,
     /// Show the changes waiting to be uploaded, and why each waits
-    Outbox {
+    UploadQueue {
         /// Show every change, not only the first 50
         #[arg(long)]
         all: bool,

@@ -79,7 +79,7 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
          Waiting to upload:      {waiting}\n\
          Blocked:                1 (see `{p} sync not-uploaded`)\n\
          Waiting for space:      {space}\n\
-         Too big for the space:  1 (see `{p} sync outbox`)\n\
+         Too big for the space:  1 (see `{p} sync upload-queue`)\n\
          Paused until:           resumed (`{p} sync resume`)\n\
          Paused by itself:       metered connection (`{p} sync anyway` syncs now)\n\
          On this computer:       5.0 MiB\n\

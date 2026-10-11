@@ -31,15 +31,15 @@ fn a_path_in_no_folder_is_told_which_folders_there_are() {
     assert!(text.contains("/home/u/OneDrive, /home/u/Family"), "{text}");
 }
 
-/// An outbox command refused for want of a folder is told to register one; refused because
+/// An upload-queue command refused for want of a folder is told to register one; refused because
 /// the folder is not up, or its sync is not running, it is told why, in the daemon's words,
 /// and where to look.
 #[test]
-fn an_outbox_command_is_told_to_register_only_when_there_is_no_folder() {
+fn an_upload_queue_command_is_told_to_register_only_when_there_is_no_folder() {
     let told = |action, name: &str, detail| {
         refusal_text_in(action, Some(name), detail, Context { root: "/home/u/OneDrive", prefix: "konedrivectl --account Test", ..Context::default() })
     };
-    for action in [SyncAction::Outbox, SyncAction::Pause, SyncAction::Refresh] {
+    for action in [SyncAction::UploadQueue, SyncAction::Pause, SyncAction::Refresh] {
         let none = told(action, "org.konedrive.Error.NoRoot", "no sync root is registered");
         assert!(none.contains("no sync folder is registered") && none.contains("sync register"), "{none}");
         let waiting = told(action, "org.konedrive.Error.NotUp", "the folder is not up: it waits for the konedrive helper");
@@ -194,7 +194,7 @@ fn a_file_operation_is_told_in_the_catalogues_words() {
     // The command line's own: the command for this account, and the folder.
     assert_eq!(
         told(SyncAction::Open("/r/new.txt"), "NotUploaded", "x"),
-        "/r/new.txt is not uploaded yet, so it has no page in OneDrive. It can be opened there once it is uploaded (`konedrivectl --account Test sync outbox`)."
+        "/r/new.txt is not uploaded yet, so it has no page in OneDrive. It can be opened there once it is uploaded (`konedrivectl --account Test sync upload-queue`)."
     );
     assert_eq!(
         told(SyncAction::Open("/r/a.bin"), "NotSignedIn", "x"),
@@ -203,7 +203,7 @@ fn a_file_operation_is_told_in_the_catalogues_words() {
     assert_eq!(
         told(SyncAction::Free("/r/new.txt"), "NotUploaded", "/r/new.txt is not uploaded yet, so freeing it up would lose the changes made here"),
         "/r/new.txt is not uploaded yet, so freeing up its space would lose the changes made here. It was left as it is; its space can be freed once it is \
-         uploaded (`konedrivectl --account Test sync outbox`)."
+         uploaded (`konedrivectl --account Test sync upload-queue`)."
     );
     assert_eq!(
         told(SyncAction::Pin("/r/link"), "OutsideRoot", "x"),

@@ -5,7 +5,7 @@
 //!
 //! **State owned:** none. The functions below the line "thin" read the sources and call
 //! the pure ones; nothing here keeps a sum. What the properties of the bus are read from
-//! is the folder's state (`SyncSnapshot::outbox`), which [`publish_queue_status`] writes
+//! is the folder's state (`SyncSnapshot::upload_queue`), which [`publish_queue_status`] writes
 //! and nothing else does.
 //!
 //! **One answer is of two moments, and no more.** The plan's answers
@@ -774,7 +774,7 @@ pub fn read_items_not_shown(items: &ItemReader<'_>, answers: &BTreeMap<LocalItem
 }
 
 /// Writes what the properties of the bus are read from, when it changed
-/// (`SyncStateHandle::update_if_changed`): `counts` into `SyncSnapshot::outbox`'s seven
+/// (`SyncStateHandle::update_if_changed`): `counts` into `SyncSnapshot::upload_queue`'s seven
 /// counts, `uploads` into its `uploads` (path, done, total) and `is_onedrive_full` into
 /// its `quota_full`. The note there is the plan's task's and is left as it is. The one
 /// writer of these fields: the properties' change signals, the folder's overall state
@@ -791,16 +791,16 @@ pub fn read_items_not_shown(items: &ItemReader<'_>, answers: &BTreeMap<LocalItem
 pub fn publish_queue_status(state: &SyncStateHandle, counts: QueueCounts, uploads: Vec<Transfer>, is_onedrive_full: bool) {
     let uploads: Vec<(String, u64, u64)> = uploads.into_iter().map(|upload| (upload.path, upload.done, upload.total)).collect();
     state.update_if_changed(|snapshot| {
-        let outbox = &mut snapshot.outbox;
-        outbox.pending_count = counts.pending;
-        outbox.pending_bytes = counts.pending_bytes;
-        outbox.blocked_count = counts.blocked;
-        outbox.space_waiting_count = counts.space_waiting;
-        outbox.space_waiting_bytes = counts.space_waiting_bytes;
-        outbox.too_big_count = counts.too_big;
-        outbox.too_big_bytes = counts.too_big_bytes;
-        outbox.uploads = uploads;
-        outbox.quota_full = is_onedrive_full;
+        let upload_queue = &mut snapshot.upload_queue;
+        upload_queue.pending_count = counts.pending;
+        upload_queue.pending_bytes = counts.pending_bytes;
+        upload_queue.blocked_count = counts.blocked;
+        upload_queue.space_waiting_count = counts.space_waiting;
+        upload_queue.space_waiting_bytes = counts.space_waiting_bytes;
+        upload_queue.too_big_count = counts.too_big;
+        upload_queue.too_big_bytes = counts.too_big_bytes;
+        upload_queue.uploads = uploads;
+        upload_queue.quota_full = is_onedrive_full;
     });
 }
 
@@ -811,17 +811,17 @@ pub fn publish_queue_status(state: &SyncStateHandle, counts: QueueCounts, upload
 /// Forget finds them empty.
 pub fn publish_stopped_queue(state: &SyncStateHandle) {
     state.update_if_changed(|snapshot| {
-        let outbox = &mut snapshot.outbox;
-        outbox.note = None;
-        outbox.pending_count = 0;
-        outbox.pending_bytes = 0;
-        outbox.blocked_count = 0;
-        outbox.space_waiting_count = 0;
-        outbox.space_waiting_bytes = 0;
-        outbox.too_big_count = 0;
-        outbox.too_big_bytes = 0;
-        outbox.uploads.clear();
-        outbox.quota_full = false;
+        let upload_queue = &mut snapshot.upload_queue;
+        upload_queue.note = None;
+        upload_queue.pending_count = 0;
+        upload_queue.pending_bytes = 0;
+        upload_queue.blocked_count = 0;
+        upload_queue.space_waiting_count = 0;
+        upload_queue.space_waiting_bytes = 0;
+        upload_queue.too_big_count = 0;
+        upload_queue.too_big_bytes = 0;
+        upload_queue.uploads.clear();
+        upload_queue.quota_full = false;
     });
 }
 

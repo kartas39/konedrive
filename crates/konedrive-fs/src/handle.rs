@@ -2,7 +2,7 @@
 //!
 //! `name_to_handle_at(2)` needs no privilege. A file or directory of a
 //! folder that OneDrive has no item for yet is its handle and nothing else:
-//! the outbox's rows name it by it, and so do the mount's nodes. The inode
+//! the upload queue's rows name it by it, and so do the mount's nodes. The inode
 //! number is no such name: the filesystem gives it to the next file made
 //! once this one is removed. A folder is not kept on a filesystem that gives
 //! no handles ([`crate::probe`]).

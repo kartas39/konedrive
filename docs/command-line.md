@@ -100,7 +100,7 @@ holds items the folder cannot show is listed as `not-removed-here`, with what to
 konedrivectl account mode                       # read-only or read-write
 konedrivectl account mode read-write            # turn uploading on (signs in again)
 konedrivectl account mode read-only [--force]   # turn it off
-konedrivectl sync outbox [--all]                # what waits to be uploaded, and why
+konedrivectl sync upload-queue [--all]          # what waits to be uploaded, and why
 konedrivectl sync not-uploaded [--all]          # what stays on this computer, and why
 konedrivectl sync ignore [list | add <pattern> | remove <pattern>]
 ```
@@ -114,7 +114,7 @@ konedrivectl sync ignore [list | add <pattern> | remove <pattern>]
 - `account mode read-only --force` switches now. What was not sent stays on this computer and is
   sent when the account is read-write again.
 - `account mode read-write` cancels a switch to read-only that waits.
-- `sync outbox` prints one line per change that waits: its state (`running`, `waiting` or
+- `sync upload-queue` prints one line per change that waits: its state (`running`, `waiting` or
   `blocked`), its kind, its path, how far an upload has got, and why it waits. It shows the first
   50 unless `--all`.
 - `sync not-uploaded` prints every reason with its count, then the files of the reasons that need

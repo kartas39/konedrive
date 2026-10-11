@@ -305,7 +305,7 @@ private Q_SLOTS:
 
         // Two changes unsent: said first, in both questions.
         const QString warning = QStringLiteral("2 changes were not sent to OneDrive and will stay only on this computer.");
-        fake.sync->outboxRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("pending"), 0, 10, QString(), 0},
+        fake.sync->upload_queueRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("pending"), 0, 10, QString(), 0},
                                  {2, QStringLiteral("create"), root + QStringLiteral("/b.odt"), QStringLiteral("pending"), 0, 10, QString(), 0}};
         QMetaObject::invokeMethod(remove, "open");
         QTRY_VERIFY(shown(remove));
@@ -332,7 +332,7 @@ private Q_SLOTS:
         QTRY_VERIFY(!shown(forget));
 
         // Nothing unsent: forgotten unasked.
-        fake.sync->outboxRows.clear();
+        fake.sync->upload_queueRows.clear();
         fake.sync->calls.clear();
         QMetaObject::invokeMethod(forget, "ask");
         QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Unregister")));

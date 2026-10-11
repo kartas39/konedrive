@@ -93,11 +93,11 @@ private Q_SLOTS:
     /// What waits to go up, and the controls over it: the counts, pause and
     /// resume, the ignore list, and what
     /// is kept back — by reason, with the files of a reason only when shown.
-    void theOutboxAndItsControls()
+    void theUploadQueueAndItsControls()
     {
         startFake();
         const QString root = QStringLiteral("/home/u/OneDrive");
-        m_fake->outboxRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("running"), 5, 10, QString(), 0},
+        m_fake->upload_queueRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("running"), 5, 10, QString(), 0},
                               {2, QStringLiteral("create"), root + QStringLiteral("/a:b"), QStringLiteral("blocked"), 0, 3, QStringLiteral("name-characters"), 0}};
         m_fake->keptBack = {{QStringLiteral("one-action"), QStringLiteral("quota-exceeded"), 5000, 7ULL << 30},
                             {QStringLiteral("per-file"), QStringLiteral("name-characters"), 1, 3},
@@ -255,7 +255,7 @@ private Q_SLOTS:
     {
         startFake();
         const QString root = QStringLiteral("/home/u/OneDrive");
-        m_fake->outboxRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("running"), 5, 10, QString(), 0},
+        m_fake->upload_queueRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("running"), 5, 10, QString(), 0},
                               {2, QStringLiteral("create"), root + QStringLiteral("/b.odt"), QStringLiteral("pending"), 0, 10, QString(), 0}};
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());

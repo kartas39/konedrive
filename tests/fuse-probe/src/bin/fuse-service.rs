@@ -22,7 +22,7 @@
 //! turned alone, as a sign-out or a narrower grant turns it. The switch that waits for what is
 //! unsent is the account's own (`AccountService`), which this program has none of.
 //!
-//! What is unsent: `outbox` (the upload queue's entries), `outbox-status` (its counts), `not-uploaded`,
+//! What is unsent: `upload-queue` (its entries), `upload-queue-status` (its counts), `not-uploaded`,
 //! `conflicts`, `pause`, `resume`.
 
 use std::path::{Path, PathBuf};
@@ -158,16 +158,16 @@ async fn main() {
                 service.mode().as_str().to_owned()
             }
             ["mode", "read-only", "keep"] => follow(&service, &account, Mode::ReadOnly).await,
-            ["outbox"] => said(
+            ["upload-queue"] => said(
                 service
-                    .outbox(0)
+                    .upload_queue(0)
                     .await
                     .map(|rows| rows.iter().map(|row| format!("{} {} {} {}", row.kind, row.path, row.state, row.reason).trim_end().to_owned()).collect::<Vec<_>>().join(" | "))
                     .map_err(|e| e.to_string()),
             ),
-            ["outbox-status"] => {
-                let outbox = service.state().get().outbox;
-                format!("pending {}, blocked {}, note {:?}", outbox.pending_count, outbox.blocked_count, outbox.note)
+            ["upload-queue-status"] => {
+                let upload_queue = service.state().get().upload_queue;
+                format!("pending {}, blocked {}, note {:?}", upload_queue.pending_count, upload_queue.blocked_count, upload_queue.note)
             }
             ["not-uploaded"] => said(
                 service.not_uploaded().await.map(|kept| kept.iter().map(|k| format!("{} {}", k.path, k.reason)).collect::<Vec<_>>().join(" | ")).map_err(|e| e.to_string()),

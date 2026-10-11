@@ -40,7 +40,7 @@
 //! below it is changed, and they are held ([`DiskFindings::list_held_items`]) and said.
 //! The folder is not held for it, and no other row is.
 //!
-//! It knows nothing of the outbox, of `onedrive_items`, of the node table or of the mount.
+//! It knows nothing of the upload queue, of `onedrive_items`, of the node table or of the mount.
 
 use std::path::PathBuf;
 

@@ -9,7 +9,7 @@ use konedrive_tree::{ActivityKind, ActivityRow, ConflictKind, ConflictRow};
 use super::*;
 use crate::mount::item_fixture::ItemFixture;
 use crate::onedrive_steps::lost_answers::LostAnswers;
-use crate::status::snapshot::{OutboxStatus, SyncSnapshot};
+use crate::status::snapshot::{UploadQueueStatus, SyncSnapshot};
 
 /// A call of the task's announcer of marks: the items, and whether a step ran for any of
 /// them when it was called.
@@ -88,8 +88,8 @@ impl TaskFixture {
         TaskFixture { fixture, task, state, marks_calls, unsent_counts, last_unsent_count, after_folder_steps, quota_read_count, _fake_onedrive: fake_onedrive }
     }
 
-    fn outbox(&self) -> OutboxStatus {
-        self.state.get().outbox
+    fn upload_queue(&self) -> UploadQueueStatus {
+        self.state.get().upload_queue
     }
 
     /// Waits until what the task published says `is_reached`: the state is watched, no
@@ -123,35 +123,35 @@ fn the_queues_status_is_published_from_the_rows_the_answers_and_the_running_uplo
     let (fixture, task) = (&task_fixture.fixture, &task_fixture.task);
     let run = fixture.runtime();
     let first = fixture.make_own_file("first.txt", b"12345").local_item_id;
-    assert_eq!(task_fixture.outbox(), OutboxStatus::default(), "nothing is published before the task publishes");
+    assert_eq!(task_fixture.upload_queue(), UploadQueueStatus::default(), "nothing is published before the task publishes");
 
     run.block_on(task.publish_queue_status(true));
-    let published = task_fixture.outbox();
+    let published = task_fixture.upload_queue();
     assert_eq!((published.pending_count, published.pending_bytes, published.uploads.clone()), (1, 5, vec![]), "the store's count, with no plan made yet");
 
     // An upload runs: its bytes are published under the file's full path.
     assert!(fixture.running_steps.begin(TaskFixture::running_step(first, StepClass::Content, 2, 5)));
     run.block_on(task.publish_queue_status(true));
-    assert_eq!(task_fixture.outbox().uploads, [(fixture.disk_path("first.txt").display().to_string(), 2, 5)]);
+    assert_eq!(task_fixture.upload_queue().uploads, [(fixture.disk_path("first.txt").display().to_string(), 2, 5)]);
 
     // The tick: the bytes of the uploads alone, the counts as they were last read.
     fixture.make_own_file("second.txt", b"123");
     fixture.running_steps.tell_progress(first, 4, 5);
     run.block_on(task.publish_queue_status(false));
-    let published = task_fixture.outbox();
+    let published = task_fixture.upload_queue();
     assert_eq!((published.pending_count, published.pending_bytes), (1, 5), "no count is read at the tick");
     assert_eq!(published.uploads, [(fixture.disk_path("first.txt").display().to_string(), 4, 5)]);
     // The next round that reads the counts says the file made since.
     fixture.running_steps.end(first);
     run.block_on(task.publish_queue_status(true));
-    let published = task_fixture.outbox();
+    let published = task_fixture.upload_queue();
     assert_eq!((published.pending_count, published.pending_bytes, published.uploads), (2, 8, vec![]));
 
     // Whether OneDrive is full is published with them.
-    assert!(!task_fixture.outbox().quota_full);
+    assert!(!task_fixture.upload_queue().quota_full);
     fixture.onedrive_space.apply_quota(&DriveQuota { total: 10, used: 10, remaining: Some(0), state: "exceeded".into() }, (task.parts.clock)());
     run.block_on(task.publish_queue_status(false));
-    assert!(task_fixture.outbox().quota_full);
+    assert!(task_fixture.upload_queue().quota_full);
 }
 
 #[test]
@@ -164,12 +164,12 @@ fn the_status_is_published_after_a_plan_and_after_a_settled_round_and_the_marks_
     fixture.runtime().block_on(async {
         let running = tokio::spawn(Arc::clone(task).run(stop.clone()));
         // The first listing of this run has not ended: the plan is made and published, and nothing is sent.
-        task_fixture.wait_for_state("the unsent file after the first plan", |snapshot| snapshot.outbox.pending_count == 1 && snapshot.outbox.pending_bytes == 5).await;
+        task_fixture.wait_for_state("the unsent file after the first plan", |snapshot| snapshot.upload_queue.pending_count == 1 && snapshot.upload_queue.pending_bytes == 5).await;
         assert_eq!(fixture.find_item(own).unwrap().onedrive_item, None, "sending is held: the file is not sent");
         assert_eq!(task_fixture.unsent_counts.lock().unwrap().first(), Some(&1), "the unsent count of the plan's reading is told with every plan");
         // The listing ended: the file is sent, its step settled, and the round's status says nothing is unsent.
         fixture.sending_holds.set_listing_ended();
-        task_fixture.wait_for_state("an empty queue after the settled round", |snapshot| snapshot.outbox.pending_count == 0 && snapshot.cycle.items_placed == 2).await;
+        task_fixture.wait_for_state("an empty queue after the settled round", |snapshot| snapshot.upload_queue.pending_count == 0 && snapshot.cycle.items_placed == 2).await;
         // And the plan made after that round tells that nothing is unsent.
         let mut told = task_fixture.last_unsent_count.subscribe();
         let told_nothing_unsent = tokio::time::timeout(Duration::from_secs(60), told.wait_for(|unsent| *unsent == Some(0))).await;
@@ -179,7 +179,7 @@ fn the_status_is_published_after_a_plan_and_after_a_settled_round_and_the_marks_
     });
     assert!(fixture.find_item(own).unwrap().onedrive_item.is_some(), "the file was sent");
     assert!(fixture.find_item(listed).unwrap().local.is_some(), "the listed file is shown");
-    assert_eq!(task_fixture.outbox(), OutboxStatus::default(), "a stopped sync shows no count of its own");
+    assert_eq!(task_fixture.upload_queue(), UploadQueueStatus::default(), "a stopped sync shows no count of its own");
     assert_eq!(task_fixture.unsent_counts.lock().unwrap().last(), Some(&0));
 
     // The marks of the sent file were announced when its step towards OneDrive began, while it ran, and when it was settled, once it ran no more.

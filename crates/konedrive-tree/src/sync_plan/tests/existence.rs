@@ -343,7 +343,7 @@ fn an_item_new_in_onedrive_that_cannot_be_judged_yet_waits_for_the_listing_to_en
 
 /// E24. Differs from today, as the design says: an item made and removed here before it
 /// was sent has no row (the removal deletes it), so the plan has nothing to cancel, where
-/// today a create and a delete cancel in the outbox
+/// today a create and a delete cancel in the upload queue
 /// (`a_delete_with_no_item_id_leaves_without_a_request`, `upload/tests/removed.rs`). The
 /// rows that are left with no version on either side are no items: a directory mentioned
 /// by a listing before it was listed, and a removal OneDrive confirmed, kept for the guard

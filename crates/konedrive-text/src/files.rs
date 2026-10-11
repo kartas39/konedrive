@@ -247,11 +247,11 @@ pub static REFUSALS: [RefusalText; 27] = [
             unpin: None,
             free_up: Some(Each {
                 desktop: "“{file}” is not uploaded yet, so freeing it up would lose the changes made here. It was left exactly as it is.",
-                command_line: "{file} is not uploaded yet, so freeing up its space would lose the changes made here. It was left as it is; its space can be freed once it is uploaded (`{prefix} sync outbox`).",
+                command_line: "{file} is not uploaded yet, so freeing up its space would lose the changes made here. It was left as it is; its space can be freed once it is uploaded (`{prefix} sync upload-queue`).",
             }),
             open_online: Some(Each {
                 desktop: "“{file}” is not uploaded yet, so it has no page in OneDrive.",
-                command_line: "{file} is not uploaded yet, so it has no page in OneDrive. It can be opened there once it is uploaded (`{prefix} sync outbox`).",
+                command_line: "{file} is not uploaded yet, so it has no page in OneDrive. It can be opened there once it is uploaded (`{prefix} sync upload-queue`).",
             }),
         },
         without_detail: None,

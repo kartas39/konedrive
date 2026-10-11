@@ -1,6 +1,6 @@
 //! A folder served as a FUSE mount over the rows: the holder of the mount's parts, what
 //! it is made with, and the parts it hands to the folder's sync. What `mount` is today
-//! over the directory contents and the outbox.
+//! over the directory contents and the upload queue.
 //!
 //! **State owned:** the session and its connection, whether the mount was stopped, and
 //! the parts, each of which owns its own state. [`ItemMount`] holds them, calls them in

@@ -5,7 +5,7 @@ use crate::dbus::fault::Result;
 use crate::dbus::properties::*;
 use crate::dbus::UploadQueue;
 
-fn kept_back(kept: crate::account_folder::outbox::KeptBack) -> rows::KeptBack {
+fn kept_back(kept: crate::account_folder::upload_queue::KeptBack) -> rows::KeptBack {
     rows::KeptBack { path: kept.path, reason: kept.reason }
 }
 
@@ -13,7 +13,7 @@ fn kept_back(kept: crate::account_folder::outbox::KeptBack) -> rows::KeptBack {
 impl UploadQueue {
     /// The changes waiting to be uploaded, oldest first, at most `limit` (0 for all).
     async fn changes(&self, limit: u32) -> Result<Vec<rows::Change>> {
-        let changes = self.service.outbox(limit).await?;
+        let changes = self.service.upload_queue(limit).await?;
         Ok(changes
             .into_iter()
             .map(|c| rows::Change { seq: c.seq, kind: c.kind, path: c.path, state: c.state, sent: c.sent, total: c.total, reason: c.reason, next_try: c.next_try })

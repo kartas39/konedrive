@@ -1,5 +1,5 @@
 //! Microsoft Graph's drive API, writing: a new folder (`POST …/children`),
-//! rename and move (`PATCH`), delete, and the typed answers the outbox worker
+//! rename and move (`PATCH`), delete, and the typed answers the plan's task
 //! acts on. Uploads are in [`super::upload`].
 //!
 //! Every change is guarded (the write design's WR2): `If-Match` on anything

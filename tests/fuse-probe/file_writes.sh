@@ -126,8 +126,8 @@ removing_a_large_directory_sends_every_removal() {
     check "the folder lacks the directory at once" "$(user "test -e many && echo there || echo gone")" gone
     check_within 30 "OneDrive lacks the directory" onedrive_lacks many
     check_sent
-    check "the queue has no entry left, and asks nothing" "$(daemon outbox)" ""
-    check "nothing is pending or blocked" "$(daemon outbox-status | cut -d, -f1,2)" "pending 0, blocked 0"
+    check "the queue has no entry left, and asks nothing" "$(daemon upload-queue)" ""
+    check "nothing is pending or blocked" "$(daemon upload-queue-status | cut -d, -f1,2)" "pending 0, blocked 0"
     check_holds "OneDrive's bin holds the directory" "$(onedrive bin)" "M "
     check_holds "and the first of its files" "$(onedrive bin)" M01
     check_holds "and the last of them" "$(onedrive bin)" M30
@@ -358,7 +358,7 @@ file_changed_in_onedrive_while_a_change_waits_keeps_both() {
     download a.txt
     onedrive outage on > /dev/null
     user "printf 'the version of this computer' > a.txt"
-    wait_for 10 outbox_has_rows
+    wait_for 10 upload_queue_has_rows
     printf "the version of OneDrive" > "$SRC/theirs"
     onedrive edit A "$SRC/theirs" > /dev/null
     daemon refresh > /dev/null
@@ -375,7 +375,7 @@ file_removed_in_onedrive_while_changed_here_is_uploaded_again() {
     download a.txt
     onedrive outage on > /dev/null
     user "printf 'the version of this computer' > a.txt"
-    wait_for 10 outbox_has_rows
+    wait_for 10 upload_queue_has_rows
     onedrive trash A > /dev/null
     daemon refresh > /dev/null
     sleep 2
@@ -393,7 +393,7 @@ file_changed_in_onedrive_while_removed_here_comes_back() {
     download a.txt
     onedrive outage on > /dev/null
     user "rm a.txt"
-    wait_for 10 outbox_has_rows
+    wait_for 10 upload_queue_has_rows
     printf "the version of OneDrive" > "$SRC/theirs"
     onedrive edit A "$SRC/theirs" > /dev/null
     onedrive outage off > /dev/null
@@ -438,7 +438,7 @@ read_only_folder_refuses_every_change() {
     check_folder_holds a.txt 'the version of OneDrive'
     check_folder_holds docs/online.txt 'online'
     check "the folder is as it was" "$(listing)" "a.txt docs docs/online.txt empty"
-    check "nothing waits to be uploaded" "$(daemon outbox)" ""
+    check "nothing waits to be uploaded" "$(daemon upload-queue)" ""
     check "nothing was changed in OneDrive" "$(onedrive changes)" 0
     check "read-write again" "$(daemon mode read-write)" read-write
     wait_for 5 modes_are "755 755 644 644 "
@@ -458,11 +458,11 @@ unsent_changes_wait_while_the_folder_is_read_only() {
     download a.txt
     onedrive outage on > /dev/null
     user "printf 'changed here' > a.txt && printf 'made here' > new.txt && mkdir made && printf 'inside' > made/inside.txt"
-    wait_for 10 outbox_has_rows
+    wait_for 10 upload_queue_has_rows
     check "read-only, the changes kept" "$(daemon mode read-only keep)" read-only
     check "a change is refused" "$(errno_of "os.close(os.open('third.txt', os.O_WRONLY | os.O_CREAT, 0o644))")" EROFS
     check "a write to a file with an unsent change is refused" "$(errno_of "os.close(os.open('new.txt', os.O_WRONLY))")" EROFS
-    check_holds "the changes still wait" "$(daemon outbox)" "new.txt"
+    check_holds "the changes still wait" "$(daemon upload-queue)" "new.txt"
     onedrive outage off > /dev/null
     daemon refresh > /dev/null
     sleep 3
@@ -490,16 +490,16 @@ forced_switch_to_read_only_keeps_unsent_changes_and_sends_them_once_read_write()
     download a.txt
     onedrive outage on > /dev/null
     user "printf 'changed here' > a.txt && printf 'made here' > new.txt"
-    wait_for 10 outbox_has_rows
+    wait_for 10 upload_queue_has_rows
     check "read-only, forced" "$(daemon mode read-only)" read-only
     check "a change is refused" "$(errno_of "os.close(os.open('third.txt', os.O_WRONLY | os.O_CREAT, 0o644))")" EROFS
     onedrive outage off > /dev/null
     daemon refresh > /dev/null
     sleep 3
     check "nothing was sent" "$(onedrive changes)" 0
-    check_holds "the new file still waits" "$(daemon outbox)" "new.txt"
-    check_holds "the changed file still waits" "$(daemon outbox)" "a.txt"
-    check_holds "and the queue says why" "$(daemon outbox)" "the folder is read-only"
+    check_holds "the new file still waits" "$(daemon upload-queue)" "new.txt"
+    check_holds "the changed file still waits" "$(daemon upload-queue)" "a.txt"
+    check_holds "and the queue says why" "$(daemon upload-queue)" "the folder is read-only"
     check_folder_holds new.txt 'made here'
     check_folder_holds a.txt 'changed here'
     check "read-write again" "$(daemon mode read-write)" read-write
@@ -603,7 +603,7 @@ free_up_keeps_unsent_changes() {
     download docs/changed.txt
     onedrive outage on > /dev/null
     user "printf 'changed here, not sent' > docs/changed.txt && printf 'made here, not sent' > docs/new.txt"
-    wait_for 10 outbox_has_rows
+    wait_for 10 upload_queue_has_rows
     check_holds "a file with an unsent change is not freed by itself" "$(daemon dehydrate "$F/docs/changed.txt")" "refused"
     check_holds "freeing the directory frees the one file that is sent" "$(daemon free-up "$F/docs")" "files: 1,"
     check_state docs/sent.txt online-only
@@ -614,7 +614,7 @@ free_up_keeps_unsent_changes() {
     check_state docs/sent.txt online-only
     check_folder_holds docs/changed.txt 'changed here, not sent'
     check_folder_holds docs/new.txt 'made here, not sent'
-    check_lacks "the changes still wait" "$(daemon outbox-status)" "pending 0,"
+    check_lacks "the changes still wait" "$(daemon upload-queue-status)" "pending 0,"
     onedrive outage off > /dev/null
     check_onedrive_holds docs/changed.txt 'changed here, not sent' 90
     check_onedrive_holds docs/new.txt 'made here, not sent' 90
@@ -634,8 +634,8 @@ daemon_killed_with_unsent_changes_sends_them_once_started_again() {
     download edited.txt
     onedrive outage on > /dev/null
     user "printf 'changed here' > edited.txt && mv renamed.txt renamed-here.txt && rm removed.txt && mv docs/moved.txt . && mkdir made && printf 'made here' > made/new.txt"
-    wait_for 10 outbox_has_rows
-    check_lacks "the changes wait" "$(daemon outbox-status)" "pending 0,"
+    wait_for 10 upload_queue_has_rows
+    check_lacks "the changes wait" "$(daemon upload-queue-status)" "pending 0,"
     kill_service
     tidy_folder
     check "the folder itself holds the content changed here, the daemon dead" "$($U cat "$F/edited.txt" "$F/made/new.txt")" 'changed heremade here'
@@ -752,7 +752,7 @@ round_trip_leaves_onedrive_and_the_folder_alike() {
     check_within 20 "a cycle ran" a_cycle_ran
     sleep 3
     check "the cycle sent nothing that changes OneDrive" "$(onedrive changes)" "$changes"
-    check "nothing waits to be uploaded" "$(daemon outbox)" ""
+    check "nothing waits to be uploaded" "$(daemon upload-queue)" ""
     check "the cycle changed nothing in the folder" "$(user "find . -mindepth 1 -printf '%p %s %T@\n' | sort")" "$snapshot"
 }
 

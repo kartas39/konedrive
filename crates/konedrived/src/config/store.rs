@@ -68,7 +68,7 @@ impl From<ConfigError> for String {
 /// fixed loads, or migrates, it then.
 ///
 /// The calls do blocking file I/O on a small file, as the single-account code did. The one
-/// caller that asks before every outbox row, the write gate, calls from a blocking thread
+/// caller that asks before every unsent change, the write gate, calls from a blocking thread
 /// (`Engine::may_write` of `upload/engine.rs`); the rest of its readers do not.
 pub struct ConfigStore {
     file: PathBuf,

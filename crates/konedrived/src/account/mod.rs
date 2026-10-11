@@ -211,7 +211,7 @@ pub trait FolderAccount: Send + Sync {
     fn changes(&self) -> tokio::sync::watch::Receiver<state::AccountSnapshot>;
     /// The account's one quota, which the uploads' space check reads and adjusts.
     fn quota(&self) -> Quota;
-    /// Works the account's mode out again: the write gate closed under the folder's outbox
+    /// Works the account's mode out again: the write gate closed under the folder's upload queue
     /// worker, before anything on the account's side saw why.
     fn recheck_mode(&self);
     /// The folder's cycle saw the account's token reach `drive`, which is not the drive
@@ -472,7 +472,7 @@ impl AccountService {
     ///   recorded drive is never trusted on its own);
     /// - its last token carrying `Files.ReadWrite`.
     ///
-    /// Called whenever one of them may have changed, the folder's outbox worker finding the
+    /// Called whenever one of them may have changed, the folder's plan's task finding the
     /// write gate closed included ([`FolderAccount::recheck_mode`]). The folder follows
     /// `Mode` (`crate::account_folder::mode::watch_account`).
     fn recompute_mode(&self) {

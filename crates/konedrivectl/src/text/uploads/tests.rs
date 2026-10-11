@@ -1,10 +1,10 @@
 use konedrive_dbus::rows::{Change, KeptBack, KeptBackFiles, KeptBackReason};
 use konedrive_reason::{Group, LocalSkip, Reason};
 
-use super::{not_uploaded_text, outbox_text, quota_text, space_waiting_text, upload_reason_text};
+use super::{not_uploaded_text, upload_queue_text, quota_text, space_waiting_text, upload_reason_text};
 
 #[test]
-fn outbox_lines_say_what_waits_and_why() {
+fn upload_queue_lines_say_what_waits_and_why() {
     let change = |seq, path: &str, state: &str, sent, total, reason: &str| Change {
         seq,
         kind: "create".to_owned(),
@@ -16,11 +16,11 @@ fn outbox_lines_say_what_waits_and_why() {
         next_try: 0,
     };
     let rows = vec![change(1, "/f/a.txt", "running", 512, 2048, ""), change(2, "/f/a:b", "blocked", 0, 1, "name-characters")];
-    let text = outbox_text(&rows, true, "konedrivectl");
+    let text = upload_queue_text(&rows, true, "konedrivectl");
     assert!(text.contains("running  create   /f/a.txt  25% of 2.0 KiB"), "{text}");
     assert!(text.contains("blocked  create   /f/a:b  (A name OneDrive refuses (it holds one of \" * : < > ? \\ |): rename it to upload it)\n"), "{text}");
-    assert!(text.ends_with("`konedrivectl sync outbox --all` shows them all\n"), "{text}");
-    assert_eq!(outbox_text(&[], false, "k"), "Nothing is waiting to upload.\n");
+    assert!(text.ends_with("`konedrivectl sync upload-queue --all` shows them all\n"), "{text}");
+    assert_eq!(upload_queue_text(&[], false, "k"), "Nothing is waiting to upload.\n");
     assert_eq!(upload_reason_text("refused: bad name"), "OneDrive refused it: bad name");
 }
 
@@ -161,7 +161,7 @@ fn skip_spelled(skip: &LocalSkip) -> (&'static str, bool) {
     }
 }
 
-/// Quality finding `X1`: the spellings stored in the outbox and sent over
+/// Quality finding `X1`: the spellings stored in the upload queue and sent over
 /// D-Bus are the contract with the database and with the window's and
 /// Dolphin's tables. Each one, written out here, is its variant's key and
 /// reads back as the variant; and `konedrivectl` words it, or shows it as

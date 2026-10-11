@@ -1,14 +1,14 @@
 use std::time::Duration;
 
 use super::*;
-use crate::status::snapshot::{OutboxStatus, PauseStatus, TransferStatus};
+use crate::status::snapshot::{UploadQueueStatus, PauseStatus, TransferStatus};
 use konedrive_graph::pool::{Direction, TransferPool, STILL_AFTER};
 
 const MIB: u64 = 1024 * 1024;
 
 fn uploading(pending: u32, bytes: u64, sent: u64) -> SyncSnapshot {
-    let outbox = OutboxStatus { pending_count: pending, pending_bytes: bytes, uploads: vec![("/r/big.bin".into(), sent, 8 * MIB)], ..OutboxStatus::default() };
-    SyncSnapshot { outbox, ..SyncSnapshot::default() }
+    let upload_queue = UploadQueueStatus { pending_count: pending, pending_bytes: bytes, uploads: vec![("/r/big.bin".into(), sent, 8 * MIB)], ..UploadQueueStatus::default() };
+    SyncSnapshot { upload_queue, ..SyncSnapshot::default() }
 }
 
 /// Uploads: the changes not uploaded yet, less what the uploads under way have sent; done
@@ -50,16 +50,16 @@ async fn uploads_left_done_and_time_left_follow_the_pool() {
 fn changes_waiting_for_space_are_not_left() {
     let mut counter = Counter::default();
     let mut s = uploading(5, 50 * MIB, 0);
-    s.outbox.uploads.clear();
-    s.outbox.space_waiting_count = 3;
-    s.outbox.space_waiting_bytes = 30 * MIB;
-    s.outbox.too_big_count = 1;
-    s.outbox.too_big_bytes = 15 * MIB;
+    s.upload_queue.uploads.clear();
+    s.upload_queue.space_waiting_count = 3;
+    s.upload_queue.space_waiting_bytes = 30 * MIB;
+    s.upload_queue.too_big_count = 1;
+    s.upload_queue.too_big_bytes = 15 * MIB;
     let up = counter.count(&s, &BTreeMap::new()).up;
     assert_eq!((up.left_count, up.left_bytes), (1, 5 * MIB));
 
-    s.outbox.pending_count = 4;
-    s.outbox.pending_bytes = 45 * MIB;
+    s.upload_queue.pending_count = 4;
+    s.upload_queue.pending_bytes = 45 * MIB;
     assert_eq!(counter.count(&s, &BTreeMap::new()).up, Totals::default(), "all of it kept back");
 }
 
@@ -69,12 +69,12 @@ fn changes_waiting_for_space_are_not_left() {
 fn done_starts_again_when_nothing_is_left() {
     let mut counter = Counter::default();
     let mut s = uploading(2, 10 * MIB, 0);
-    s.outbox.uploads.clear();
+    s.upload_queue.uploads.clear();
     s.transfers.throughput.up_moved = 7 * MIB;
     assert_eq!(counter.count(&s, &BTreeMap::new()).up.done_bytes, 7 * MIB, "since the daemon started");
 
     let kept_back = SyncSnapshot {
-        outbox: OutboxStatus { blocked_count: 3, ..OutboxStatus::default() },
+        upload_queue: UploadQueueStatus { blocked_count: 3, ..UploadQueueStatus::default() },
         transfers: TransferStatus { throughput: s.transfers.throughput, ..TransferStatus::default() },
         ..SyncSnapshot::default()
     };
@@ -91,8 +91,8 @@ async fn the_totals_are_published_and_kept_up_to_date() {
     let transfers = Transfers::default();
     let task = tokio::spawn(run(state.clone(), transfers.clone()));
     state.update(|s| {
-        s.outbox.pending_count = 2;
-        s.outbox.pending_bytes = MIB;
+        s.upload_queue.pending_count = 2;
+        s.upload_queue.pending_bytes = MIB;
     });
     tokio::time::sleep(konedrive_graph::pool::PUBLISH_EVERY * 2).await;
     assert_eq!((state.get().transfers.queue.up.left_count, state.get().transfers.queue.up.left_bytes), (2, MIB));

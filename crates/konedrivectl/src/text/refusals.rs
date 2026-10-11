@@ -30,7 +30,7 @@ pub enum SyncAction<'a> {
     /// `account remove`, with the account's label: `Accounts.Remove` forgets the
     /// folder as `Forget` does, and is refused under the same names.
     Remove(&'a str),
-    Outbox,
+    UploadQueue,
     Pause,
     Resume,
     Ignore,
@@ -61,7 +61,7 @@ impl SyncAction<'_> {
             Self::Free(paths) => format!("freeing up {paths}"),
             Self::Open(path) => format!("opening {path} in OneDrive"),
             Self::Remove(label) => format!("removing the account {label}"),
-            Self::Outbox => "listing the changes waiting to upload".to_owned(),
+            Self::UploadQueue => "listing the changes waiting to upload".to_owned(),
             Self::Pause => "pausing the sync".to_owned(),
             Self::Resume => "resuming the sync".to_owned(),
             Self::Ignore => "changing the ignore list".to_owned(),
@@ -88,7 +88,7 @@ impl SyncAction<'_> {
             | Self::Conflicts
             | Self::FreeUpSpace
             | Self::Remove(_)
-            | Self::Outbox
+            | Self::UploadQueue
             | Self::Pause
             | Self::Resume
             | Self::Ignore

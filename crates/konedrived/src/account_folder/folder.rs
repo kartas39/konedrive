@@ -81,7 +81,7 @@ pub(super) struct Kept {
     /// Where the folder's files are downloaded from: the drive, from its first bring-up
     /// on (`None` when the daemon was given no drive).
     pub source: Option<Arc<dyn ContentSource>>,
-    /// The per-root tree lock (`docs/design/writes.md` §9): the outbox worker holds it
+    /// The per-root tree lock (`docs/design/writes.md` §9): the plan's task holds it
     /// across each commit that touches `onedrive_items`, the mount's recorder across each change it
     /// records, and a cycle must hold it from staging to swap, or the swap reverts the
     /// commit. One for as long as the folder is recorded, so that what took it before a

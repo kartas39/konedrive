@@ -45,7 +45,7 @@ fn what_changed_is_announced_with_its_value_under_its_interface() {
     let old = Seen::default();
     let mut new = old.clone();
     new.snapshot.cycle.items_listed = 7;
-    new.snapshot.outbox.pending_count = 2;
+    new.snapshot.upload_queue.pending_count = 2;
     new.snapshot.pause.paused_until = Some(0);
 
     let coalesced = changed(COALESCED, &old, &new);

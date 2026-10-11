@@ -283,7 +283,7 @@ impl SyncService {
     }
 
     /// A cycle now, if a OneDrive folder is syncing (the network came back). A read-write
-    /// folder's outbox waits for that cycle (`docs/design/writes.md` §9).
+    /// folder's upload queue waits for that cycle (`docs/design/writes.md` §9).
     pub fn refresh_now(&self) {
         if self.nudge() {
             if let Some(parts) = self.view().parts {

@@ -1,8 +1,8 @@
 use super::*;
 
-// --- the outbox on the bus: the outbox on the command line -----
+// --- the upload queue on the bus: the upload queue on the command line -----
 
-/// `sync pause`, `sync resume`, `sync ignore`, `sync outbox` and `sync not-uploaded`,
+/// `sync pause`, `sync resume`, `sync ignore`, `sync upload-queue` and `sync not-uploaded`,
 /// end to end through the binary on a OneDrive folder; and a
 /// duration that is none is a usage error (exit status 2).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -55,7 +55,7 @@ async fn binary_pauses_resumes_and_keeps_the_ignore_list() {
     assert!(said.contains("the ignore list was not changed: \"a/b\""), "{said}");
     assert!(!said.contains("org.freedesktop"), "{said}");
 
-    assert_eq!(out_text(&run(addr, &["sync", "outbox"])).trim(), "Uploading:    0 now, 0 B/s\nNothing is waiting to upload.");
+    assert_eq!(out_text(&run(addr, &["sync", "upload-queue"])).trim(), "Uploading:    0 now, 0 B/s\nNothing is waiting to upload.");
     assert_eq!(out_text(&run(addr, &["sync", "not-uploaded"])).trim(), "Everything here is uploaded or waits to be.");
 }
 

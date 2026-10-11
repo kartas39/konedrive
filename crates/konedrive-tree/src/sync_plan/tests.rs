@@ -311,7 +311,7 @@ fn a_file_a_program_holds_open_for_writing_is_not_planned() {
 }
 
 /// New: the step of an item that is both moved and changed here is its move, and its
-/// content is sent by the plan made after it. Today one outbox row does both, the move
+/// content is sent by the plan made after it. Today one unsent change does both, the move
 /// first (`edits_and_renames_go_up_guarded`, `upload/tests/row_kinds.rs`).
 #[test]
 fn an_item_has_one_step_and_its_place_goes_before_its_content() {

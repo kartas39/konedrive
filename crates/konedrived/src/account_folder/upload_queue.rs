@@ -17,7 +17,7 @@ use crate::upload_queue::{self, QueueConditions};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
     pub seq: u64,
-    /// What it does, as the outbox spells it.
+    /// What it does, as the upload queue spells it.
     pub kind: String,
     /// The full path.
     pub path: String,
@@ -87,7 +87,7 @@ impl SyncService {
     /// `Changes(limit)`: the rows waiting to be uploaded, oldest first, at most
     /// `limit` (0 for all): (seq, kind, full path, state, bytes sent, bytes
     /// in all, reason, next try).
-    pub async fn outbox(&self, limit: u32) -> Result<Vec<Change>, SyncError> {
+    pub async fn upload_queue(&self, limit: u32) -> Result<Vec<Change>, SyncError> {
         let QueueSources { parts, answers, running, conditions, folder } = self.read_queue_sources()?;
         let limit = limit as usize;
         let changes = parts

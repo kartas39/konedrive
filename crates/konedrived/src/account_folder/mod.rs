@@ -9,7 +9,7 @@ pub mod free_up;
 pub mod hydrate;
 pub mod menu;
 pub mod mode;
-pub mod outbox;
+pub mod upload_queue;
 pub mod pause;
 mod persisted;
 pub mod pins;

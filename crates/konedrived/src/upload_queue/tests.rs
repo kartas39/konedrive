@@ -5,7 +5,7 @@ use konedrive_tree::{ContentPresence, ContentVersion, ExclusionReason, FactStand
 
 use super::*;
 use crate::mount::item_fixture::{ItemFixture, START_TIME};
-use crate::status::snapshot::{OutboxNote, SyncSnapshot};
+use crate::status::snapshot::{UploadQueueNote, SyncSnapshot};
 
 const FOLDER: &str = "/folder";
 
@@ -752,16 +752,16 @@ fn a_folder_that_shows_all_of_onedrive_has_no_row_of_what_is_not_shown() {
 #[test]
 fn the_properties_are_written_by_the_one_writer_and_emptied_at_a_stop() {
     let state = SyncStateHandle::new(SyncSnapshot::default());
-    state.update(|snapshot| snapshot.outbox.note = Some(OutboxNote::Throttled(77)));
+    state.update(|snapshot| snapshot.upload_queue.note = Some(UploadQueueNote::Throttled(77)));
     let counts = QueueCounts { pending: 9, pending_bytes: 900, blocked: 2, space_waiting: 3, space_waiting_bytes: 30, too_big: 4, too_big_bytes: 40 };
     publish_queue_status(&state, counts, vec![Transfer { path: "/folder/a".into(), done: 1, total: 2 }], true);
-    let outbox = state.get().outbox;
-    assert_eq!((outbox.pending_count, outbox.pending_bytes, outbox.blocked_count), (9, 900, 2));
-    assert_eq!((outbox.space_waiting_count, outbox.space_waiting_bytes, outbox.too_big_count, outbox.too_big_bytes), (3, 30, 4, 40));
-    assert_eq!(outbox.uploads, [("/folder/a".to_owned(), 1, 2)]);
-    assert!(outbox.quota_full);
-    assert_eq!(outbox.note, Some(OutboxNote::Throttled(77)), "the note is the plan's task's");
+    let upload_queue = state.get().upload_queue;
+    assert_eq!((upload_queue.pending_count, upload_queue.pending_bytes, upload_queue.blocked_count), (9, 900, 2));
+    assert_eq!((upload_queue.space_waiting_count, upload_queue.space_waiting_bytes, upload_queue.too_big_count, upload_queue.too_big_bytes), (3, 30, 4, 40));
+    assert_eq!(upload_queue.uploads, [("/folder/a".to_owned(), 1, 2)]);
+    assert!(upload_queue.quota_full);
+    assert_eq!(upload_queue.note, Some(UploadQueueNote::Throttled(77)), "the note is the plan's task's");
 
     publish_stopped_queue(&state);
-    assert_eq!(state.get().outbox, SyncSnapshot::default().outbox, "every count 0, no upload, not full, no note");
+    assert_eq!(state.get().upload_queue, SyncSnapshot::default().upload_queue, "every count 0, no upload, not full, no note");
 }

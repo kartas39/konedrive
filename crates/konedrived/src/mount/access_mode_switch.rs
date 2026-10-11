@@ -8,7 +8,7 @@
 //!
 //! - a write operation, at its start, on the write-operation thread
 //!   ([`AccessModeSwitch::check_read_write`]): this is the answer that counts, and the
-//!   outbox recorder does not ask again;
+//!   mount's write operations does not ask again;
 //! - the request that asks for a write operation, before it puts it on that thread: a
 //!   read-only folder's is refused at once, and not when the thread gets to it. So a
 //!   request asks twice, by design: here to answer a program without waiting for a cycle,
@@ -35,7 +35,7 @@ use tokio::sync::oneshot;
 use super::write_operation_thread::WriteOperationThread;
 
 /// The access mode of a folder: a read-only one refuses every change and shows no write bit;
-/// a read-write one takes changes, and its outbox sends them.
+/// a read-write one takes changes, and its upload queue sends them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AccessMode {
     ReadOnly,

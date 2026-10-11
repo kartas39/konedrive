@@ -119,9 +119,9 @@ inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveO
     return argument;
 }
 
-/// One entry of Outbox(): (seq, kind, full path, state, bytes sent, bytes in all, reason,
+/// One entry of Changes(): (seq, kind, full path, state, bytes sent, bytes in all, reason,
 /// next try in unix seconds or 0). The window's use of it is W8b's.
-struct KonedriveOutboxRow {
+struct KonedriveUploadQueueRow {
     qulonglong seq = 0;
     QString kind;
     QString path;
@@ -131,10 +131,10 @@ struct KonedriveOutboxRow {
     QString reason;
     qint64 nextTry = 0;
 };
-using KonedriveOutboxList = QList<KonedriveOutboxRow>;
-Q_DECLARE_METATYPE(KonedriveOutboxRow)
+using KonedriveUploadQueueList = QList<KonedriveUploadQueueRow>;
+Q_DECLARE_METATYPE(KonedriveUploadQueueRow)
 
-inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveOutboxRow &row)
+inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveUploadQueueRow &row)
 {
     argument.beginStructure();
     argument << row.seq << row.kind << row.path << row.state << row.done << row.total << row.reason << row.nextTry;
@@ -142,7 +142,7 @@ inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveOutboxR
     return argument;
 }
 
-inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveOutboxRow &row)
+inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveUploadQueueRow &row)
 {
     argument.beginStructure();
     argument >> row.seq >> row.kind >> row.path >> row.state >> row.done >> row.total >> row.reason >> row.nextTry;
@@ -191,8 +191,8 @@ inline void registerKonedriveSyncTypes()
     qDBusRegisterMetaType<KonedriveOverall>();
     qDBusRegisterMetaType<KonedriveTransfer>();
     qDBusRegisterMetaType<KonedriveTransferList>();
-    qDBusRegisterMetaType<KonedriveOutboxRow>();
-    qDBusRegisterMetaType<KonedriveOutboxList>();
+    qDBusRegisterMetaType<KonedriveUploadQueueRow>();
+    qDBusRegisterMetaType<KonedriveUploadQueueList>();
     qDBusRegisterMetaType<KonedriveKeptBack>();
     qDBusRegisterMetaType<KonedriveKeptBackList>();
 }

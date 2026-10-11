@@ -11,7 +11,7 @@ fn folder(folder: FolderStatus) -> SyncSnapshot {
 fn the_throttles_time_is_rounded_up_to_the_minute() {
     let minute = 1_700_000_040; // a multiple of 60
     assert_eq!(minute % 60, 0);
-    let said = |at| OutboxNote::Throttled(at).text();
+    let said = |at| UploadQueueNote::Throttled(at).text();
     assert_eq!(said(minute + 1), said(minute + 60), "a second into the minute reads as the next minute");
     assert_eq!(said(minute + 59), said(minute + 60));
     assert_ne!(said(minute), said(minute + 1), "the full minute reads as itself");
@@ -23,10 +23,10 @@ fn the_throttles_time_is_rounded_up_to_the_minute() {
 #[test]
 fn the_worker_takes_back_only_its_own_notes() {
     const NOW: i64 = 1_000;
-    let throttled = |until| Some(OutboxNote::Throttled(until));
-    let closed = Some(OutboxNote::FolderClosed("EACCES".into()));
-    let gate = Some(OutboxNote::GateClosed("why".into()));
-    let after = |shown: &Option<OutboxNote>, folder: Option<&str>, until: Option<i64>, now: i64| OutboxNote::after_worker(shown, folder, until, now);
+    let throttled = |until| Some(UploadQueueNote::Throttled(until));
+    let closed = Some(UploadQueueNote::FolderClosed("EACCES".into()));
+    let gate = Some(UploadQueueNote::GateClosed("why".into()));
+    let after = |shown: &Option<UploadQueueNote>, folder: Option<&str>, until: Option<i64>, now: i64| UploadQueueNote::after_worker(shown, folder, until, now);
     assert_eq!(after(&None, None, Some(NOW + 100), NOW), Some(throttled(NOW + 100)));
     assert_eq!(after(&throttled(NOW + 100), None, Some(NOW + 100), NOW + 99), None, "said, it stays to its end");
     assert_eq!(after(&throttled(NOW + 100), None, Some(NOW + 160), NOW), Some(throttled(NOW + 160)));
@@ -37,7 +37,7 @@ fn the_worker_takes_back_only_its_own_notes() {
     assert_eq!(after(&gate, None, Some(NOW + 100), NOW), None, "the gate's stays");
     assert_eq!(after(&gate, Some("EACCES"), None, NOW), None);
     assert_eq!(after(&gate, None, None, NOW), None);
-    assert_eq!(after(&Some(OutboxNote::HeldBack(3)), None, None, NOW), None, "the poller's stays");
+    assert_eq!(after(&Some(UploadQueueNote::HeldBack(3)), None, None, NOW), None, "the poller's stays");
     assert_eq!(after(&None, None, None, NOW), None);
     // The folder that cannot be opened is said over the throttle, and goes when it opens.
     assert_eq!(after(&throttled(NOW + 100), Some("EACCES"), Some(NOW + 100), NOW), Some(closed.clone()));
@@ -45,22 +45,22 @@ fn the_worker_takes_back_only_its_own_notes() {
     assert_eq!(after(&closed, None, Some(NOW + 100), NOW), Some(throttled(NOW + 100)), "opened, the throttle that still lasts is said");
     assert_eq!(after(&closed, None, None, NOW), Some(None));
     // The gate closing says so over the worker's notes, and takes neither back.
-    assert_eq!(OutboxNote::after_gate(&throttled(100), Some("why")), Some(gate.clone()));
-    assert_eq!(OutboxNote::after_gate(&throttled(100), None), None, "the gate does not take the throttle's note");
-    assert_eq!(OutboxNote::after_gate(&closed, None), None);
+    assert_eq!(UploadQueueNote::after_gate(&throttled(100), Some("why")), Some(gate.clone()));
+    assert_eq!(UploadQueueNote::after_gate(&throttled(100), None), None, "the gate does not take the throttle's note");
+    assert_eq!(UploadQueueNote::after_gate(&closed, None), None);
 }
 
 /// The write gate says why it is closed over whatever is shown, and takes back only its
 /// own note: what the poller says of a read-only folder stays.
 #[test]
 fn the_gate_takes_back_only_its_own_note() {
-    let closed = |why: &str| Some(OutboxNote::GateClosed(why.to_owned()));
-    assert_eq!(OutboxNote::after_gate(&None, Some("why")), Some(closed("why")));
-    assert_eq!(OutboxNote::after_gate(&closed("why"), Some("why")), None, "nothing changes");
-    assert_eq!(OutboxNote::after_gate(&closed("why"), None), Some(None), "its own note goes as it opens");
-    assert_eq!(OutboxNote::after_gate(&Some(OutboxNote::HeldBack(3)), None), None, "the poller's stays");
-    assert_eq!(OutboxNote::after_gate(&Some(OutboxNote::HeldBack(3)), Some("why")), Some(closed("why")));
-    assert_eq!(OutboxNote::after_gate(&None, None), None);
+    let closed = |why: &str| Some(UploadQueueNote::GateClosed(why.to_owned()));
+    assert_eq!(UploadQueueNote::after_gate(&None, Some("why")), Some(closed("why")));
+    assert_eq!(UploadQueueNote::after_gate(&closed("why"), Some("why")), None, "nothing changes");
+    assert_eq!(UploadQueueNote::after_gate(&closed("why"), None), Some(None), "its own note goes as it opens");
+    assert_eq!(UploadQueueNote::after_gate(&Some(UploadQueueNote::HeldBack(3)), None), None, "the poller's stays");
+    assert_eq!(UploadQueueNote::after_gate(&Some(UploadQueueNote::HeldBack(3)), Some("why")), Some(closed("why")));
+    assert_eq!(UploadQueueNote::after_gate(&None, None), None);
 }
 
 #[test]

@@ -253,7 +253,7 @@ impl Fh {
 /// Where a writer stands among the handles that write its node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WriterRank {
-    /// No other handle writes the node: the writer the outbox is told of.
+    /// No other handle writes the node: the writer the upload queue is told of.
     First,
     /// Another handle writes the node already.
     Later,

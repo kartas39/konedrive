@@ -3,7 +3,7 @@
 //! publishes them as `DownloadLeftCount`, `DownloadLeftBytes`, `DownloadDoneBytes`,
 //! `DownloadTimeLeft`, and the same four for uploads.
 //!
-//! - **Left.** Uploads, in changes: the outbox rows not uploaded yet (`PendingCount`,
+//! - **Left.** Uploads, in changes: the unsent changes not uploaded yet (`PendingCount`,
 //!   `PendingBytes`; a move, a delete or a new folder is a change of no bytes), less the bytes
 //!   already sent of the uploads under way. Downloads, in files: every download under way
 //!   (`Transfers`: files being read, `Hydrate`, pinned files), less the bytes already
@@ -59,10 +59,10 @@ impl Counter {
         let down = (running, received);
         // `PendingCount` takes in the changes that wait for space and those too big for it:
         // kept back, not left.
-        let sent: u64 = s.outbox.uploads.iter().map(|(_, sent, _)| sent).sum();
-        let kept = s.outbox.space_waiting_count.saturating_add(s.outbox.too_big_count);
-        let kept_bytes = s.outbox.space_waiting_bytes.saturating_add(s.outbox.too_big_bytes);
-        let up = (s.outbox.pending_count.saturating_sub(kept), s.outbox.pending_bytes.saturating_sub(kept_bytes).saturating_sub(sent));
+        let sent: u64 = s.upload_queue.uploads.iter().map(|(_, sent, _)| sent).sum();
+        let kept = s.upload_queue.space_waiting_count.saturating_add(s.upload_queue.too_big_count);
+        let kept_bytes = s.upload_queue.space_waiting_bytes.saturating_add(s.upload_queue.too_big_bytes);
+        let up = (s.upload_queue.pending_count.saturating_sub(kept), s.upload_queue.pending_bytes.saturating_sub(kept_bytes).saturating_sub(sent));
         let throttled = pool.retry_after > 0;
         QueueTotals {
             down: self.direction(0, down, pool.down_moved, pool.down_average, throttled),

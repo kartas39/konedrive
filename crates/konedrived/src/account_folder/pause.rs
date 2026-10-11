@@ -3,7 +3,7 @@
 //!
 //! **The pause** is per account and kept with the account's settings, in its section of
 //! `config.toml` (`paused_until`), so it survives a restart, a timed one ends by itself, and
-//! it is set and shown whether the account's sync runs or not. It stops the outbox, the
+//! it is set and shown whether the account's sync runs or not. It stops the upload queue, the
 //! poll and the thumbnails; reads of a file, `Hydrate` and
 //! the recording of local changes go on. A pause a version before this
 //! one kept in the tree store is not taken over: a store of an older version is rebuilt.
@@ -29,7 +29,7 @@ const LOOK: i64 = 60;
 /// The clock of one account's pause. It keeps the pause as it was last shown and, for a
 /// timed one, the one timer that says when it has run out. Its time and its waits are the
 /// account's [`Clock`]'s: the one the keeper of the pause (`conditions::running`), the
-/// poll and the outbox worker read too, so a pause that is over here is over for them.
+/// poll and the plan's task read too, so a pause that is over here is over for them.
 ///
 /// What is shown is worked out under the clock's lock ([`show`](Self::show),
 /// [`forget`](Self::forget)), so the last one to show is the last one to have looked: a
@@ -176,7 +176,7 @@ impl SyncService {
         Ok(())
     }
 
-    /// `Resume()`: the pause ends now; the outbox and the poll go at once.
+    /// `Resume()`: the pause ends now; the upload queue and the poll go at once.
     pub async fn resume_syncing(&self) -> Result<(), SyncError> {
         self.change_run_settings(|s| s.paused_until = None).await?;
         tracing::info!("syncing resumed");
@@ -207,7 +207,7 @@ impl SyncService {
     /// Works out the pause and the hold and shows them: `Paused`/`PausedUntil` and
     /// `HeldBack` from `running`, and the transfer pool,
     /// which hands out nothing but opens while the account's background work stops. When
-    /// anything changed, what was held back is woken — the outbox, and the poll, which
+    /// anything changed, what was held back is woken — the upload queue, and the poll, which
     /// looks at the pause before each cycle. Called whenever either may have changed:
     /// `Pause`, `Resume`, a sync starting, the sources, the settings, and the clock when a
     /// timed pause has run out.

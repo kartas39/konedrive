@@ -109,7 +109,7 @@ daemon_killed_after_its_changes_were_sent_sends_nothing_again() {
     restart_service
     daemon refresh > /dev/null
     sleep 3
-    check "nothing waits to be uploaded" "$(daemon outbox)" ""
+    check "nothing waits to be uploaded" "$(daemon upload-queue)" ""
     check "nothing was sent a second time" "$(onedrive changes)" "$sent"
     check "OneDrive's bin holds the one removed file" "$(onedrive bin)" C
     check "the folder shows what it showed" "$(listing)" "$shown"

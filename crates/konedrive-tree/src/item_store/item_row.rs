@@ -138,7 +138,7 @@ mod column_index {
     pub(super) const UNSENT_SINCE: usize = column(ITEM_COLUMNS, "unsent_since");
 }
 
-/// A name as `items` keeps it: text when it is UTF-8 and its bytes otherwise, as the outbox
+/// A name as `items` keeps it: text when it is UTF-8 and its bytes otherwise, as the upload queue
 /// keeps a path, so that one name always has one form and is found by equality.
 pub(super) fn name_value(name: &OsStr) -> Value {
     path_value(Path::new(name))

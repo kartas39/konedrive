@@ -317,7 +317,7 @@ impl AccountService {
         // just been recorded, or be another than config.toml's, and the line above cleared the
         // reason. A drive that is not the recorded one turns a read-write account read-only.
         self.recompute_mode();
-        // The folder's outbox decides by the quota just read whether OneDrive is still full.
+        // The folder's upload queue decides by the quota just read whether OneDrive is still full.
         let uploads = crate::panic::lock(&self.uploads).as_ref().and_then(Weak::upgrade);
         if let Some(uploads) = uploads {
             uploads.quota_read(&drive.quota);

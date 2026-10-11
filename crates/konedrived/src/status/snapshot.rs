@@ -97,7 +97,7 @@ pub struct SyncSnapshot {
     pub folder: FolderStatus,
     pub cycle: CycleStatus,
     pub local: LocalStatus,
-    pub outbox: OutboxStatus,
+    pub upload_queue: UploadQueueStatus,
     pub pause: PauseStatus,
     pub transfers: TransferStatus,
 }
@@ -111,7 +111,7 @@ pub struct FolderStatus {
     /// What the registration ran into.
     pub last_error: String,
     /// `Writable`: the folder's mount takes changes, and what is changed in the folder is
-    /// uploaded now — its account is read-write and its outbox worker runs. False from the
+    /// uploaded now — its account is read-write and its plan's task runs. False from the
     /// moment a change of the folder tells its sync to stop.
     pub writable: bool,
 }
@@ -151,14 +151,14 @@ pub struct LocalStatus {
     pub scan: LocalScan,
 }
 
-/// The outbox as its worker last saw it (`account_folder/outbox.rs`).
+/// The upload queue as the plan's task last published it (`upload_queue::publish_queue_status`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct OutboxStatus {
-    /// What keeps the outbox's changes from going: the write gate
+pub struct UploadQueueStatus {
+    /// What keeps the upload queue's changes from going: the write gate
     /// closed under a read-write folder, OneDrive's throttle of its uploads, a folder the
-    /// outbox worker cannot open, or a read-only
+    /// plan's task cannot open, or a read-only
     /// folder whose sync holds its cycles while changes wait. `None` otherwise.
-    pub note: Option<OutboxNote>,
+    pub note: Option<UploadQueueNote>,
     /// `PendingCount`, `PendingBytes`, `BlockedCount`.
     pub pending_count: u32,
     pub pending_bytes: u64,
@@ -232,7 +232,7 @@ pub enum TroubleKind {
 /// `SendingHold::WritesNotAllowed` is `GateClosed`, `SendingHold::Throttled` is `Throttled`),
 /// and takes it off when the sync stops (`upload_queue::publish_stopped_queue`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OutboxNote {
+pub enum UploadQueueNote {
     /// The write gate is closed under a read-write folder: why.
     GateClosed(String),
     /// A read-only folder holds changes waiting to upload, so its cycles wait: how many.
@@ -241,14 +241,14 @@ pub enum OutboxNote {
     Unreadable,
     /// OneDrive asked the account's uploads to wait: until when (Unix seconds).
     Throttled(i64),
-    /// The outbox worker cannot open the folder, which is still there: the error.
+    /// The plan's task cannot open the folder, which is still there: the error.
     FolderClosed(String),
 }
 
-/// A throttle shorter than this many seconds is not said ([`OutboxNote::after_worker`]).
+/// A throttle shorter than this many seconds is not said ([`UploadQueueNote::after_worker`]).
 pub const THROTTLE_SAID: i64 = 5;
 
-impl OutboxNote {
+impl UploadQueueNote {
     /// What the write gate makes of the note `shown`, the gate being closed for `refusal`
     /// or open: the note to show instead, or `None` when nothing changes. The gate says
     /// why it is closed over whatever is shown, and takes back only its own note.
@@ -258,7 +258,7 @@ impl OutboxNote {
         (*shown != note && (refusal.is_some() || own)).then_some(note)
     }
 
-    /// What the outbox worker's state makes of the note `shown` at `now`: its folder
+    /// What the plan's task's state makes of the note `shown` at `now`: its folder
     /// cannot be opened (`folder`, the error), OneDrive asked its uploads to wait until
     /// `until`, or neither. The note to show instead, or `None` when nothing changes.
     ///
@@ -308,16 +308,16 @@ fn clock(at: i64) -> String {
 
 /// The problems of a folder that keeps running, in the order `LastError` says them and
 /// joined as it joins them: what the registration ran into, the sync's trouble, then the
-/// outbox's note; `None` with none.
+/// upload queue's note; `None` with none.
 ///
 /// With the sentence, its kind: [`TroubleKind::Unreachable`] only when OneDrive out of
 /// reach is all that is wrong — the kind the sync's trouble carries, and no other part
 /// saying anything.
 pub fn running_trouble(s: &SyncSnapshot) -> Option<(String, TroubleKind)> {
-    let outbox = s.outbox.note.as_ref().map(OutboxNote::text).unwrap_or_default();
+    let upload_queue = s.upload_queue.note.as_ref().map(UploadQueueNote::text).unwrap_or_default();
     let (sync, kind) = s.cycle.sync_trouble.as_ref().map_or(("", TroubleKind::Other), |t| (t.text.as_str(), t.kind));
-    let alone = s.folder.last_error.is_empty() && outbox.is_empty();
-    let text = joined([s.folder.last_error.as_str(), sync, outbox.as_str()]);
+    let alone = s.folder.last_error.is_empty() && upload_queue.is_empty();
+    let text = joined([s.folder.last_error.as_str(), sync, upload_queue.as_str()]);
     (!text.is_empty()).then(|| (text, if alone { kind } else { TroubleKind::Other }))
 }
 
@@ -340,14 +340,14 @@ pub fn published_state(s: &SyncSnapshot) -> &'static str {
     }
 }
 
-/// `LastError` as published: the registration's text, the sync's trouble, then the outbox's
+/// `LastError` as published: the registration's text, the sync's trouble, then the upload queue's
 /// note, in that order — problems only. Where local work was moved out of the way is a
 /// conflict (`Conflicts.List()`, `Conflicts.Count`), not a problem, and is not said here:
 /// said here, it stayed until a Forget, and a folder that
 /// ever had a conflict read as trouble for good.
 pub fn published_error(s: &SyncSnapshot) -> String {
-    let outbox = s.outbox.note.as_ref().map(OutboxNote::text).unwrap_or_default();
-    joined([s.folder.last_error.as_str(), s.cycle.sync_trouble.as_ref().map_or("", |t| t.text.as_str()), outbox.as_str()])
+    let upload_queue = s.upload_queue.note.as_ref().map(UploadQueueNote::text).unwrap_or_default();
+    joined([s.folder.last_error.as_str(), s.cycle.sync_trouble.as_ref().map_or("", |t| t.text.as_str()), upload_queue.as_str()])
 }
 
 /// Shared, observable sync state (see `account::state::StateHandle`, the same

@@ -80,8 +80,8 @@ seed_folder() { onedrive folder "$1" "$2" "$3" > /dev/null; }
 onedrive_holds() { [ "$(onedrive compare "$1" "$2")" = equal ]; }
 onedrive_has() { [ "$(onedrive id "$1")" != absent ]; }
 onedrive_lacks() { [ "$(onedrive id "$1")" = absent ]; }
-outbox_is_empty() { [ -z "$(daemon outbox)" ]; }
-outbox_has_rows() { [ -n "$(daemon outbox)" ]; }
+upload_queue_is_empty() { [ -z "$(daemon upload-queue)" ]; }
+upload_queue_has_rows() { [ -n "$(daemon upload-queue)" ]; }
 state_is() { [ "$(state_of "$1")" = "$2" ]; }
 folder_has() { user "test -e '$1'"; }
 folder_lacks() { user "! test -e '$1'"; }
@@ -192,11 +192,11 @@ stop_folder() {
 }
 service_has_ended() { ! [ -d "/proc/$SERVICE_PID" ] || [ "$(awk '{print $3}' "/proc/$SERVICE_PID/stat" 2> /dev/null)" = Z ]; }
 
-# What a failed scenario leaves to read: the outbox, what OneDrive holds, the folder, and the
+# What a failed scenario leaves to read: the upload queue, what OneDrive holds, the folder, and the
 # end of the daemon's log.
 print_folder_evidence() {
-    echo "    the outbox: $(daemon outbox)"
-    echo "    the outbox's counts: $(daemon outbox-status)"
+    echo "    the upload queue: $(daemon upload-queue)"
+    echo "    the upload queue's counts: $(daemon upload-queue-status)"
     echo "    OneDrive holds: $(onedrive paths); its bin: $(onedrive bin)"
     echo "    the folder: $(listing 2>&1)"
     echo "    the daemon's log, its end:"
@@ -224,8 +224,8 @@ check_folder_holds() { check "the folder shows $1 with its content" "$(user "cat
 
 # check_sent: nothing waits to be uploaded any more.
 check_sent() {
-    wait_for "${1:-20}" outbox_is_empty
-    check "nothing waits to be uploaded" "$(daemon outbox)" ""
+    wait_for "${1:-20}" upload_queue_is_empty
+    check "nothing waits to be uploaded" "$(daemon upload-queue)" ""
 }
 
 # check_state <path> <state>: the mount comes to say the state of the path.

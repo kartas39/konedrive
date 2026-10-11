@@ -99,11 +99,11 @@ async fn binary_register_of_a_file_says_it_cannot_be_the_sync_folder_and_why() {
 /// its store yet. Only the second is told to try again in a moment; with no folder, these
 /// commands say what every other one says: no folder is registered, and how to register one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_an_outbox_command_with_no_folder_says_no_folder_is_registered() {
+async fn binary_an_upload_queue_command_with_no_folder_says_no_folder_is_registered() {
     let f = harness().await;
     let addr = f._bus.address();
 
-    for command in ["outbox", "pause"] {
+    for command in ["upload-queue", "pause"] {
         let told = refused(addr, &["sync", command]);
         assert!(told.contains("no sync folder is registered"), "sync {command}: {told}");
         assert!(told.contains("konedrivectl sync register"), "sync {command}: {told}");

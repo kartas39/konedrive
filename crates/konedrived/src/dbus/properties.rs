@@ -146,7 +146,7 @@ properties! {
     /// (stopped, or not a OneDrive folder).
     LIVE_CHANGES: String = FOLDER, "LiveChanges", |s| s.snapshot.cycle.live_changes.as_str().to_owned();
     /// OneDrive is full: no content goes up.
-    QUOTA_FULL: bool = QUEUE, "QuotaFull", |s| s.snapshot.outbox.quota_full;
+    QUOTA_FULL: bool = QUEUE, "QuotaFull", |s| s.snapshot.upload_queue.quota_full;
 }
 
 properties! {
@@ -180,21 +180,21 @@ properties! {
     CONFLICT_COUNT: u32 = CONFLICTS_INTERFACE_NAME, "Count", |s| s.snapshot.local.conflict_count;
 
     /// Changes waiting to be uploaded (not blocked).
-    PENDING_COUNT: u32 = QUEUE, "PendingCount", |s| s.snapshot.outbox.pending_count;
+    PENDING_COUNT: u32 = QUEUE, "PendingCount", |s| s.snapshot.upload_queue.pending_count;
     /// The size of the files those changes send.
-    PENDING_BYTES: u64 = QUEUE, "PendingBytes", |s| s.snapshot.outbox.pending_bytes;
+    PENDING_BYTES: u64 = QUEUE, "PendingBytes", |s| s.snapshot.upload_queue.pending_bytes;
     /// Changes that need the user to go up.
-    BLOCKED_COUNT: u32 = QUEUE, "BlockedCount", |s| s.snapshot.outbox.blocked_count;
-    QUOTA_WAITING_COUNT: u32 = QUEUE, "QuotaWaitingCount", |s| s.snapshot.outbox.space_waiting_count;
-    QUOTA_WAITING_BYTES: u64 = QUEUE, "QuotaWaitingBytes", |s| s.snapshot.outbox.space_waiting_bytes;
-    TOO_BIG_COUNT: u32 = QUEUE, "TooBigCount", |s| s.snapshot.outbox.too_big_count;
+    BLOCKED_COUNT: u32 = QUEUE, "BlockedCount", |s| s.snapshot.upload_queue.blocked_count;
+    QUOTA_WAITING_COUNT: u32 = QUEUE, "QuotaWaitingCount", |s| s.snapshot.upload_queue.space_waiting_count;
+    QUOTA_WAITING_BYTES: u64 = QUEUE, "QuotaWaitingBytes", |s| s.snapshot.upload_queue.space_waiting_bytes;
+    TOO_BIG_COUNT: u32 = QUEUE, "TooBigCount", |s| s.snapshot.upload_queue.too_big_count;
 
     /// Every download under way.
     DOWNLOADS: Vec<rows::Transfer> = MOVING, "Downloads",
         |s| s.downloads.values().map(|t| rows::Transfer { path: t.path.clone(), done: t.done, total: t.total }).collect();
     /// Uploads under way, shaped as `Downloads`.
     UPLOADS: Vec<rows::Transfer> = MOVING, "Uploads",
-        |s| s.snapshot.outbox.uploads.iter().map(|(path, done, total)| rows::Transfer { path: path.clone(), done: *done, total: *total }).collect();
+        |s| s.snapshot.upload_queue.uploads.iter().map(|(path, done, total)| rows::Transfer { path: path.clone(), done: *done, total: *total }).collect();
     /// Bytes a second downloaded, the average of the last 3 s.
     DOWNLOAD_SPEED: u64 = MOVING, "DownloadSpeed", |s| s.snapshot.transfers.throughput.down_speed;
     /// Bytes a second uploaded, the average of the last 3 s.
@@ -203,10 +203,10 @@ properties! {
     /// streams it runs.
     ACTIVE_DOWNLOADS: u32 = MOVING, "ActiveDownloads", |s| count(s.downloads.len());
     /// Files uploading now: the entries of `Uploads`.
-    ACTIVE_UPLOADS: u32 = MOVING, "ActiveUploads", |s| count(s.snapshot.outbox.uploads.len());
+    ACTIVE_UPLOADS: u32 = MOVING, "ActiveUploads", |s| count(s.snapshot.upload_queue.uploads.len());
     /// The large files (100 MiB and up) the sync moves now, each once however many streams
     /// it runs; files being opened left out.
-    LARGE_FILES: u32 = MOVING, "LargeFiles", |s| large_files(&s.downloads, &s.snapshot.outbox.uploads);
+    LARGE_FILES: u32 = MOVING, "LargeFiles", |s| large_files(&s.downloads, &s.snapshot.upload_queue.uploads);
     /// Every slot of the pool held now, all four classes, the opens' reserve included: may
     /// be above `PoolSize`.
     POOL_IN_USE: u32 = MOVING, "PoolInUse", |s| s.snapshot.transfers.throughput.in_use;

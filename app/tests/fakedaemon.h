@@ -460,7 +460,7 @@ public:
     uint tooBigCount() const { return value("TooBigCount").toUInt(); }
 
 public Q_SLOTS:
-    KonedriveOutboxList Changes(uint limit);
+    KonedriveUploadQueueList Changes(uint limit);
     qulonglong UnsentCount();
     KonedriveSkippedList NotUploaded();
     KonedriveKeptBackList NotUploadedSummary();
@@ -621,7 +621,7 @@ public:
     qulonglong freedBytes = 0;
     uint busyFiles = 0;
     /// Changes(), oldest first.
-    KonedriveOutboxList outboxRows;
+    KonedriveUploadQueueList upload_queueRows;
     /// NotUploaded().
     KonedriveSkippedList notUploadedList;
     /// NotUploadedSummary(), and NotUploadedFiles() by reason.
@@ -728,16 +728,16 @@ inline void FakeFolder::SetThumbnails(bool on)
     set({{QStringLiteral("Thumbnails"), on}});
 }
 
-inline KonedriveOutboxList FakeUploadQueue::Changes(uint limit)
+inline KonedriveUploadQueueList FakeUploadQueue::Changes(uint limit)
 {
     m_sync->calls << QStringLiteral("Changes");
-    return limit == 0 ? m_sync->outboxRows : m_sync->outboxRows.mid(0, int(limit));
+    return limit == 0 ? m_sync->upload_queueRows : m_sync->upload_queueRows.mid(0, int(limit));
 }
 
 inline qulonglong FakeUploadQueue::UnsentCount()
 {
     m_sync->calls << QStringLiteral("UnsentCount");
-    return qulonglong(m_sync->outboxRows.size());
+    return qulonglong(m_sync->upload_queueRows.size());
 }
 
 inline KonedriveSkippedList FakeUploadQueue::NotUploaded()

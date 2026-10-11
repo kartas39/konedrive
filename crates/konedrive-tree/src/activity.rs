@@ -86,7 +86,7 @@ activity_kinds! {
     /// one item (`docs/design/writes.md` §7). Detail: why.
     Restored => "restored",
     /// Made here, then removed here before its upload finished: it never
-    /// goes up, and its rows leave the outbox. Detail: why.
+    /// goes up, and its rows leave the upload queue. Detail: why.
     NotUploaded => "not-uploaded",
 }
 

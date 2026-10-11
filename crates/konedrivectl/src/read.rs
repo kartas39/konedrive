@@ -131,7 +131,7 @@ pub(crate) async fn folder_status(daemon: &Daemon, path: &OwnedObjectPath) -> zb
     })
 }
 
-/// What `sync transfers` and `sync outbox` say first, from `Transfers`.
+/// What `sync transfers` and `sync upload-queue` say first, from `Transfers`.
 pub(crate) async fn transfer_summary(proxy: &FolderProxies<'_>) -> zbus::Result<TransferSummary> {
     let transfers = &proxy.transfers;
     Ok(TransferSummary {

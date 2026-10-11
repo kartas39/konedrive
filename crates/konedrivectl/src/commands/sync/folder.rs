@@ -8,15 +8,15 @@ use konedrivectl::text::folder as said;
 use konedrivectl::text::formats::{parse_duration, NOT_ABSOLUTE, NOT_UTF8_PATH};
 use konedrivectl::text::refusals::SyncAction;
 use konedrivectl::text::transfers::{transfers_text, uploading_line};
-use konedrivectl::text::uploads::{not_uploaded_text, outbox_text, quota_text, PER_FILE_SHOWN};
+use konedrivectl::text::uploads::{not_uploaded_text, upload_queue_text, quota_text, PER_FILE_SHOWN};
 
 use super::explain::{absolute_str, explained, fail_if_folder_unhealthy, folder_trouble};
 use crate::cli::{FolderCmd, IgnoreCmd};
 use crate::daemon::{Chosen, Daemon};
 use crate::{read, Usage};
 
-/// How many changes `sync outbox` shows without `--all`.
-const OUTBOX_SHOWN: u32 = 50;
+/// How many changes `sync upload-queue` shows without `--all`.
+const UPLOAD_QUEUE_SHOWN: u32 = 50;
 
 pub(super) async fn folder_command(
     daemon: &Daemon,
@@ -73,15 +73,15 @@ pub(super) async fn folder_command(
             let (downloads, uploads) = (proxy.transfers.downloads().await?, proxy.transfers.uploads().await?);
             print!("{}", transfers_text(&summary, &downloads, &uploads));
         }
-        FolderCmd::Outbox { all } => {
-            let limit = if all { 0 } else { OUTBOX_SHOWN + 1 };
-            let mut rows = explained(chosen, proxy, SyncAction::Outbox, proxy.queue.changes(limit).await).await?;
-            let more = !all && rows.len() > OUTBOX_SHOWN as usize;
+        FolderCmd::UploadQueue { all } => {
+            let limit = if all { 0 } else { UPLOAD_QUEUE_SHOWN + 1 };
+            let mut rows = explained(chosen, proxy, SyncAction::UploadQueue, proxy.queue.changes(limit).await).await?;
+            let more = !all && rows.len() > UPLOAD_QUEUE_SHOWN as usize;
             if more {
-                rows.truncate(OUTBOX_SHOWN as usize);
+                rows.truncate(UPLOAD_QUEUE_SHOWN as usize);
             }
             println!("{}", uploading_line(&read::transfer_summary(proxy).await?));
-            print!("{}", outbox_text(&rows, more, &prefix));
+            print!("{}", upload_queue_text(&rows, more, &prefix));
         }
         FolderCmd::Pause { duration } => {
             let seconds = match duration.as_deref() {

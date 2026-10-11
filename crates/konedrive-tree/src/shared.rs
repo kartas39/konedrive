@@ -98,7 +98,7 @@ fn failed() -> TreeError {
 }
 
 /// The store, shared by the tasks of one folder: the listing, the
-/// materializer, the outbox worker and the D-Bus queries. One thread owns
+/// materializer, the plan's task and the D-Bus queries. One thread owns
 /// its connection, and everyone else sends it jobs: `call` from
 /// async code, `call_blocking` from plain threads. Only that thread holds a
 /// read-write connection to the store; the bus's reads go to a second,

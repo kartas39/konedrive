@@ -94,7 +94,7 @@ enum Group {
     FreeUpSpace,
     /// `pin`, `unpin`, `free`, `open`: what Dolphin's menu has too.
     FileOperation(Operation),
-    /// What reads or steers the outbox: `outbox`, `pause`, `resume`, `ignore`,
+    /// What reads or steers the upload queue: `upload-queue`, `pause`, `resume`, `ignore`,
     /// `not-uploaded`, the large delete.
     Uploads,
     /// `thumbnails`, `anyway`.
@@ -117,7 +117,7 @@ fn group(action: SyncAction<'_>) -> Group {
         Unpin(_) => Group::FileOperation(Operation::Unpin),
         Free(_) => Group::FileOperation(Operation::FreeUp),
         Open(_) => Group::FileOperation(Operation::OpenOnline),
-        Outbox | Pause | Resume | Ignore | NotUploaded => Group::Uploads,
+        UploadQueue | Pause | Resume | Ignore | NotUploaded => Group::Uploads,
         Settings | Anyway => Group::Settings,
         Skipped | Activity | Conflicts | Dismiss(_) => Group::Lists,
     }
@@ -489,7 +489,7 @@ fn file_operation(told: &Told<'_>, operation: Operation, refusal: &Refusal) -> S
     told.catalogue(operation, refusal).unwrap_or_else(|| shared(told, refusal))
 }
 
-/// `sync outbox`, `pause`, `resume`, `ignore`, `not-uploaded` and the large delete.
+/// `sync upload-queue`, `pause`, `resume`, `ignore`, `not-uploaded` and the large delete.
 fn uploads(told: &Told<'_>, refusal: &Refusal) -> String {
     match refusal {
         Refusal::Unsupported => "this folder is not connected to OneDrive, so nothing is uploaded from it".to_owned(),

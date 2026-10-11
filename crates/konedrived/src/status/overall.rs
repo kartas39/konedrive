@@ -75,13 +75,13 @@ pub fn reason(sign_in: SignInState, s: &SyncSnapshot, downloads: usize) -> Reaso
     if s.local.conflict_count > 0 {
         return Reason::Conflicts;
     }
-    if s.outbox.quota_full {
+    if s.upload_queue.quota_full {
         return Reason::QuotaFull;
     }
-    if s.outbox.too_big_count > 0 {
+    if s.upload_queue.too_big_count > 0 {
         return Reason::TooBig;
     }
-    if s.outbox.blocked_count > 0 {
+    if s.upload_queue.blocked_count > 0 {
         return Reason::Blocked;
     }
     if s.pause.paused_until.is_some() {
@@ -105,7 +105,7 @@ pub fn reason(sign_in: SignInState, s: &SyncSnapshot, downloads: usize) -> Reaso
     if state == "listing" {
         return Reason::Listing;
     }
-    if downloads > 0 || !s.outbox.uploads.is_empty() || s.outbox.pending_count > 0 {
+    if downloads > 0 || !s.upload_queue.uploads.is_empty() || s.upload_queue.pending_count > 0 {
         return Reason::Transferring;
     }
     Reason::UpToDate

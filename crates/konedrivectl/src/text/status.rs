@@ -337,7 +337,7 @@ pub fn sync_status_text(status: &FolderStatus, prefix: &str, now: i64) -> String
             line("Waiting for space:", &space_waiting_text(status.quota_waiting, status.quota_waiting_bytes));
         }
         if status.too_big > 0 {
-            line("Too big for the space:", &format!("{} (see `{prefix} sync outbox`)", status.too_big));
+            line("Too big for the space:", &format!("{} (see `{prefix} sync upload-queue`)", status.too_big));
         }
         if status.paused {
             line("Paused until:", &paused_text(status.paused_until, prefix));

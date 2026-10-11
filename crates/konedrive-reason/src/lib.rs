@@ -485,7 +485,7 @@ impl From<String> for LocalSkip {
 pub enum WaitsFor {
     /// It is still here, and no cycle has looked at it yet.
     Cycle,
-    /// So many changes at or below it wait in the outbox.
+    /// So many changes at or below it wait in the upload queue.
     Uploads(u64),
     /// Something at this path differs from what OneDrive has, and is still
     /// to be recorded: made, changed, moved, renamed or deleted here.

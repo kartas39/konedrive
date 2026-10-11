@@ -17,7 +17,7 @@
     <method name="Changes">
       <arg name="limit" type="u" direction="in"/>
       <arg name="rows" type="a(tsssttsx)" direction="out"/>
-      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveOutboxList"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveUploadQueueList"/>
     </method>
     <!-- How many changes made here are not sent to OneDrive: every one,
          whatever holds it. Answered for a folder in any state, also one that is not up or

@@ -286,7 +286,7 @@ impl TreeStore {
     /// A second connection to the store at `path`, for reading only:
     /// in WAL mode it reads the last committed state and never waits
     /// for the writer. Nothing is created or changed; its reads are the
-    /// outbox's lists and sums for the bus.
+    /// upload queue's lists and sums for the bus.
     pub fn open_read_only(path: &Path) -> Result<Self, TreeError> {
         use rusqlite::OpenFlags;
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;

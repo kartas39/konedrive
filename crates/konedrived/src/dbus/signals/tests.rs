@@ -126,7 +126,7 @@ async fn the_overall_state_is_sent_when_it_changes_and_not_again_when_it_does_no
     settle().await;
     assert!(since(&sent).is_empty(), "still transferring");
     // A change waits to upload as the last download ends: transferring for another cause.
-    state.update(|s| s.outbox.pending_count = 1);
+    state.update(|s| s.upload_queue.pending_count = 1);
     drop(second);
     settle().await;
     assert!(since(&sent).is_empty(), "the same state for the same reason");
@@ -144,7 +144,7 @@ async fn the_overall_state_is_sent_when_it_changes_and_not_again_when_it_does_no
     // Back to what it was, each change by itself.
     state.update(|s| s.cycle.sync_trouble = None);
     settle().await;
-    state.update(|s| s.outbox.pending_count = 0);
+    state.update(|s| s.upload_queue.pending_count = 0);
     settle().await;
     assert_eq!(since(&sent), [vec![overall(Reason::Transferring), ("Trouble", Value::from(""))], vec![overall(Reason::UpToDate)]]);
 }

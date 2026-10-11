@@ -1,7 +1,7 @@
 use konedrive_dbus::overall::State;
 
 use super::*;
-use crate::status::snapshot::{OutboxNote, RootState, SyncTrouble};
+use crate::status::snapshot::{UploadQueueNote, RootState, SyncTrouble};
 
 /// A folder that is up and at rest: `up-to-date` for an account that is signed in.
 fn healthy() -> SyncSnapshot {
@@ -47,7 +47,7 @@ fn about(reason: Reason, trouble: &str) -> Overall {
 fn an_account_signing_in_is_offline() {
     // Whatever its folder says.
     let mut s = healthy();
-    s.outbox.blocked_count = 3;
+    s.upload_queue.blocked_count = 3;
     assert_eq!(overall(SignInState::SigningIn, &s, 1), plain(Reason::SigningIn));
     assert_eq!(Reason::SigningIn.state(), State::Offline);
 }
@@ -86,8 +86,8 @@ fn the_first_listing_is_syncing() {
 #[test]
 fn anything_moving_or_waiting_to_upload_is_transferring() {
     assert_eq!(overall(SignInState::SignedIn, &healthy(), 1), plain(Reason::Transferring), "a download");
-    assert_eq!(with(|s| s.outbox.uploads = vec![("/home/u/OneDrive/a".into(), 1, 2)]), plain(Reason::Transferring), "an upload");
-    assert_eq!(with(|s| s.outbox.pending_count = 1), plain(Reason::Transferring), "a change waiting to upload");
+    assert_eq!(with(|s| s.upload_queue.uploads = vec![("/home/u/OneDrive/a".into(), 1, 2)]), plain(Reason::Transferring), "an upload");
+    assert_eq!(with(|s| s.upload_queue.pending_count = 1), plain(Reason::Transferring), "a change waiting to upload");
     assert_eq!(Reason::Transferring.state(), State::Syncing);
 }
 
@@ -99,19 +99,19 @@ fn conflicts_are_a_warning() {
 
 #[test]
 fn a_full_onedrive_is_a_warning() {
-    assert_eq!(with(|s| s.outbox.quota_full = true), plain(Reason::QuotaFull));
+    assert_eq!(with(|s| s.upload_queue.quota_full = true), plain(Reason::QuotaFull));
     assert_eq!(Reason::QuotaFull.state(), State::Warning);
 }
 
 #[test]
 fn files_too_big_for_the_space_left_are_a_warning() {
-    assert_eq!(with(|s| s.outbox.too_big_count = 2), plain(Reason::TooBig));
+    assert_eq!(with(|s| s.upload_queue.too_big_count = 2), plain(Reason::TooBig));
     assert_eq!(Reason::TooBig.state(), State::Warning);
 }
 
 #[test]
 fn changes_that_cannot_be_uploaded_are_a_warning() {
-    assert_eq!(with(|s| s.outbox.blocked_count = 1), plain(Reason::Blocked));
+    assert_eq!(with(|s| s.upload_queue.blocked_count = 1), plain(Reason::Blocked));
     assert_eq!(Reason::Blocked.state(), State::Warning);
 }
 
@@ -226,9 +226,9 @@ fn trouble_that_does_not_stop_the_folder_is_a_warning_that_says_it() {
     // `LastError` joins them.
     let all = with(|s| {
         s.cycle.sync_trouble = other(said, false);
-        s.outbox.note = Some(OutboxNote::Unreadable);
+        s.upload_queue.note = Some(UploadQueueNote::Unreadable);
     });
-    assert_eq!(all, about(Reason::Trouble, &format!("{said}. {}", OutboxNote::Unreadable.text())));
+    assert_eq!(all, about(Reason::Trouble, &format!("{said}. {}", UploadQueueNote::Unreadable.text())));
     assert_eq!(Reason::Trouble.state(), State::Warning);
 }
 
@@ -237,13 +237,13 @@ fn the_first_rule_that_holds_decides() {
     type Change = fn(&mut SyncSnapshot);
     let rules: [(Reason, Change); 9] = [
         (Reason::Conflicts, |s| s.local.conflict_count = 1),
-        (Reason::QuotaFull, |s| s.outbox.quota_full = true),
-        (Reason::TooBig, |s| s.outbox.too_big_count = 1),
-        (Reason::Blocked, |s| s.outbox.blocked_count = 1),
+        (Reason::QuotaFull, |s| s.upload_queue.quota_full = true),
+        (Reason::TooBig, |s| s.upload_queue.too_big_count = 1),
+        (Reason::Blocked, |s| s.upload_queue.blocked_count = 1),
         (Reason::Paused, |s| s.pause.paused_until = Some(0)),
         (Reason::HeldBack, |s| s.pause.held_back = "metered".into()),
-        (Reason::Trouble, |s| s.outbox.note = Some(OutboxNote::Unreadable)),
-        (Reason::Transferring, |s| s.outbox.pending_count = 1),
+        (Reason::Trouble, |s| s.upload_queue.note = Some(UploadQueueNote::Unreadable)),
+        (Reason::Transferring, |s| s.upload_queue.pending_count = 1),
         (Reason::UpToDate, |_| {}),
     ];
     for first in 0..rules.len() {
@@ -275,9 +275,9 @@ fn the_first_rule_that_holds_decides() {
 fn a_pause_and_trouble() {
     let paused = with(|s| {
         s.pause.paused_until = Some(0);
-        s.outbox.note = Some(OutboxNote::Unreadable);
+        s.upload_queue.note = Some(UploadQueueNote::Unreadable);
     });
-    assert_eq!(paused, about(Reason::Paused, &OutboxNote::Unreadable.text()));
+    assert_eq!(paused, about(Reason::Paused, &UploadQueueNote::Unreadable.text()));
     let stopped = with(|s| {
         s.pause.paused_until = Some(0);
         s.cycle.sync_trouble = other("signed out", true);
@@ -289,18 +289,18 @@ fn a_pause_and_trouble() {
 fn unreachable_with_other_trouble_is_a_warning() {
     let both = with(|s| {
         s.cycle.sync_trouble = unreachable("cannot reach OneDrive (timed out); trying again");
-        s.outbox.note = Some(OutboxNote::Unreadable);
+        s.upload_queue.note = Some(UploadQueueNote::Unreadable);
     });
-    assert_eq!(both, about(Reason::Trouble, &format!("cannot reach OneDrive (timed out); trying again. {}", OutboxNote::Unreadable.text())));
+    assert_eq!(both, about(Reason::Trouble, &format!("cannot reach OneDrive (timed out); trying again. {}", UploadQueueNote::Unreadable.text())));
 }
 
 /// The sentence of the trouble is the folder's alone: it is there under every reason.
 #[test]
 fn the_sentences_are_published_under_every_reason() {
     let mut s = healthy();
-    s.outbox.note = Some(OutboxNote::Unreadable);
+    s.upload_queue.note = Some(UploadQueueNote::Unreadable);
     s.local.conflict_count = 1;
-    let said = |reason| about(reason, &OutboxNote::Unreadable.text());
+    let said = |reason| about(reason, &UploadQueueNote::Unreadable.text());
     assert_eq!(of(&s), said(Reason::Conflicts));
     assert_eq!(overall(SignInState::SignedOut, &s, 0), said(Reason::SignedOut));
 
@@ -316,13 +316,13 @@ fn the_sentences_are_published_under_every_reason() {
 fn no_trouble_is_published_while_listing_or_starting() {
     let listing = with(|s| {
         s.cycle.listing = true;
-        s.outbox.note = Some(OutboxNote::Unreadable);
+        s.upload_queue.note = Some(UploadQueueNote::Unreadable);
         s.local.conflict_count = 1;
     });
     assert_eq!(listing, plain(Reason::Conflicts));
     let starting = with(|s| {
         s.folder.root_state = RootState::Waiting;
-        s.outbox.note = Some(OutboxNote::Unreadable);
+        s.upload_queue.note = Some(UploadQueueNote::Unreadable);
     });
     assert_eq!(starting, plain(Reason::Starting));
 }

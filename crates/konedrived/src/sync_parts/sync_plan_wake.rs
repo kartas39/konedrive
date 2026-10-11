@@ -6,7 +6,7 @@
 //! that wakes the plan — the mount, the steps, the listing — because each of them is built
 //! before the task is, and none of them knows the task.
 //!
-//! **Answers for:** the map's MISSING-2.i: in place of the outbox's waker
+//! **Answers for:** the map's MISSING-2.i: in place of the upload queue's waker
 //! (`fuse/outbox_recorder.rs:23`), of the cycle's `cycled` (`account_folder/mode.rs:85`) and of
 //! SQLite's update hook on `outbox` (`konedrive-tree`'s `outbox/changes.rs:76`), none of
 //! which sees a write of `items`.

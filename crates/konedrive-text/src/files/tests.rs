@@ -80,7 +80,7 @@ fn a_refusal_is_worded_for_its_client() {
     assert_eq!(said(Operation::OpenOnline, Refusal::NotUploaded, Client::Desktop).unwrap(), "“/r/a.bin” is not uploaded yet, so it has no page in OneDrive.");
     assert_eq!(
         said(Operation::OpenOnline, Refusal::NotUploaded, Client::CommandLine).unwrap(),
-        "/r/a.bin is not uploaded yet, so it has no page in OneDrive. It can be opened there once it is uploaded (`konedrivectl --account Test sync outbox`)."
+        "/r/a.bin is not uploaded yet, so it has no page in OneDrive. It can be opened there once it is uploaded (`konedrivectl --account Test sync upload-queue`)."
     );
     assert!(said(Operation::Keep, Refusal::OutsideRoot, Client::CommandLine).unwrap().contains("inside the sync folder (/r) can be kept"));
     // The plugin's alone.

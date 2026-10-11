@@ -271,7 +271,7 @@ impl AccountManager {
         let persist = Persist { store: Arc::clone(&self.config), account: entry.id.clone() };
         let config = self.config.snapshot();
         // The folder asks its account for the sign-in, the one quota, the mode
-        // worked out again when its outbox worker finds the write gate closed, and tells it
+        // worked out again when its plan's task finds the write gate closed, and tells it
         // of a drive that is not the folder's. A folder registered while signed in shows
         // OneDrive only with a drive to show, and a restored one starts syncing as it is
         // brought up.

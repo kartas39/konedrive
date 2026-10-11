@@ -105,7 +105,7 @@ forgotten_folder_with_unsent_changes_keeps_them_as_plain_files() {
     download a.txt
     onedrive outage on > /dev/null
     user "printf 'changed here' > a.txt && printf 'made here' > new.txt"
-    wait_for 10 outbox_has_rows
+    wait_for 10 upload_queue_has_rows
     check "forgotten, though changes are unsent" "$(daemon forget)" forgotten
     check "the mount is off the folder" "$(mounted "$F" && echo mounted || echo off)" off
     check "the folder itself holds the files that were on disk" "$($U ls -A "$F" | tr '\n' ' ')" "a.txt new.txt "

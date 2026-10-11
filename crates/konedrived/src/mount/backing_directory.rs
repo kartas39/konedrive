@@ -2,7 +2,7 @@
 //!
 //! [`BackingDirectory`] owns the descriptor opened on the directory before the mount, and
 //! everything in it is reached through that descriptor, never through the mount. It knows the
-//! disk and nothing else: not the store, not the kernel's node ids, not the outbox, not the
+//! disk and nothing else: not the store, not the kernel's node ids, not the upload queue, not the
 //! mount. Which file or directory of OneDrive an entry on disk belongs to is told by the
 //! OneDrive id the entry is marked with, and whoever asks brings the id.
 //!

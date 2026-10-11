@@ -72,7 +72,7 @@ fn the_sources_of_a_stopped_sync_are_its_store_alone() {
         assert!(sources.answers.is_empty() && sources.running.is_empty());
         assert_eq!(sources.conditions, upload_queue::describe_stopped_sync());
         drop(sources);
-        assert!(service.outbox(0).await.unwrap().is_empty());
+        assert!(service.upload_queue(0).await.unwrap().is_empty());
         end_scene(&service, mount).await;
     });
 }
@@ -80,11 +80,11 @@ fn the_sources_of_a_stopped_sync_are_its_store_alone() {
 #[tokio::test]
 async fn the_queue_is_refused_with_no_folder_and_with_no_open_store() {
     let (service, _clock) = make_service();
-    assert!(matches!(service.outbox(0).await, Err(SyncError::NoRoot)));
+    assert!(matches!(service.upload_queue(0).await, Err(SyncError::NoRoot)));
 
     let folder = tempfile::tempdir().unwrap();
     stage_folder(&service, folder.path(), Sync::Stopped(Why::CannotStart("the store is locked".into())), None).await;
-    for refused in [service.outbox(0).await.map(drop), service.not_uploaded().await.map(drop), service.not_uploaded_summary().await.map(drop)] {
+    for refused in [service.upload_queue(0).await.map(drop), service.not_uploaded().await.map(drop), service.not_uploaded_summary().await.map(drop)] {
         assert!(matches!(&refused, Err(SyncError::NotUp(why)) if why.contains("the store is locked")), "{refused:?}");
     }
 }

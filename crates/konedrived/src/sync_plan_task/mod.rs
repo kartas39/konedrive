@@ -1,6 +1,6 @@
 //! The task of a folder's sync plan: the loop that reads what differs, makes the plan,
 //! runs its steps and settles what came of each. One per folder, in either access mode,
-//! in place of the outbox worker and of the reconcile.
+//! in place of the plan's task and of the reconcile.
 //!
 //! **State owned:** the loop, with the steps of the last plan that are not started yet,
 //! the count of events logged since the last listing ended, and the failed tries of the
@@ -99,7 +99,7 @@ use crate::sync_parts::sync_plan_wake::{SyncPlanWake, WakeCause};
 use crate::mount::StartCheckFindings;
 use crate::listing::listing_poller::ListingPollHandle;
 use crate::status::activity::Activity;
-use crate::status::snapshot::{OutboxNote, SyncStateHandle};
+use crate::status::snapshot::{UploadQueueNote, SyncStateHandle};
 use crate::sync_parts::onedrive_space::{OneDriveSpace, SpaceChange};
 use crate::onedrive_steps::session_cancellations::SessionCancellations;
 use crate::sync_parts::sending_holds::{SendingHold, SendingHolds};
@@ -917,7 +917,7 @@ impl SyncPlanTask {
     /// Publishes what a plan answered: the answers per item (`PublishedPlan::publish`),
     /// the folder's counts (`PlannedRound::item_counts`, of the plan's own reading) and
     /// note on the bus (through `state`), the faults of the plan in the journal, each
-    /// once. The task is the one owner of the note (`OutboxStatus::note`): it writes it
+    /// once. The task is the one owner of the note (`UploadQueueStatus::note`): it writes it
     /// with every plan, also to none, and nobody else may. For
     /// `PlanFault::FullListingNeeded` the store is asked for a full listing
     /// (`ItemStore::request_full_listing`) and then the poller for a cycle
@@ -949,8 +949,8 @@ impl SyncPlanTask {
         (parts.unsent_count_report)(round.unsent_to_send_count);
 
         let note = match hold {
-            Some(SendingHold::Throttled { until }) => Some(OutboxNote::Throttled(*until)),
-            Some(SendingHold::WritesNotAllowed { reason }) => Some(OutboxNote::GateClosed(reason.clone())),
+            Some(SendingHold::Throttled { until }) => Some(UploadQueueNote::Throttled(*until)),
+            Some(SendingHold::WritesNotAllowed { reason }) => Some(UploadQueueNote::GateClosed(reason.clone())),
             Some(SendingHold::Stopping | SendingHold::SignedOut | SendingHold::FolderReadOnly | SendingHold::Paused { .. } | SendingHold::FirstListingNotEnded) | None => None,
         };
         let counts = round.item_counts;
@@ -959,7 +959,7 @@ impl SyncPlanTask {
             state.cycle.items_placed = counts.shown;
             state.cycle.skipped_count = counts.cannot_be_shown;
             state.local.pinned_count = u32::try_from(counts.pinned).unwrap_or(u32::MAX);
-            state.outbox.note = note;
+            state.upload_queue.note = note;
         });
 
         // Each fault once: not one the plan before answered too.
