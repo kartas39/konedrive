@@ -197,8 +197,9 @@ async fn read_quota_before_first_plan(drive: &DriveClient, space: &OneDriveSpace
 /// `ContentUpload::new`; `OneDriveSteps::new` (with the tree lock and the mount's
 /// `item_content_files`); `RowSteps::new`; `ListingCycle::new` and
 /// `ListingPoller::start` (a first cycle at once; a full listing found under way goes on
-/// from its link); `SyncPlanTask::new` with the runners and the mount's
-/// `start_check_findings`, and its loop spawned. The plan's task sends nothing to
+/// from its link); `SyncPlanTask::new` with the runners, the mount's
+/// `start_check_findings` and a `quota_reader` that asks `input.drive` for the quota
+/// (`DriveClient::quota`, `None` when it could not be read), and its loop spawned. The plan's task sends nothing to
 /// OneDrive until the first listing of this start ended
 /// (`SendingHold::FirstListingNotEnded`).
 fn start_sync_tasks(input: &FolderStartInput, store: &Store, mount: &Arc<ItemMount>, sync_plan_wake: &Arc<SyncPlanWake>, running_steps: &Arc<RunningSteps>, published_plan: &Arc<PublishedPlan>, onedrive_space: &Arc<OneDriveSpace>, drive_id: &DriveId) -> SyncTasks {
