@@ -2,6 +2,9 @@
 //! directory made at the name of an item that was moved into it. None can take its name
 //! while another still has it, so one of them goes through a temporary name, on the side
 //! the names were changed on.
+//!
+//! And the row a listing made of a new item under its temporary name, when the answer of
+//! the request that made it there was lost: the two rows are one item.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -9,7 +12,7 @@ use std::ffi::{OsStr, OsString};
 use super::item_decision::{ItemAnswers, ItemCase, ItemDecision, LocalPlaceAvailability, OverruledAnswers, Overruling};
 use super::plan_items::PlanItems;
 use super::side_change::{PlaceChange, SideChange};
-use super::sync_step::{FolderStep, ItemVersions, OneDriveStep, SyncStep};
+use super::sync_step::{FolderStep, ItemVersions, OneDriveStep, RowStep, SyncStep};
 use super::WaitReason;
 use crate::folded_name::FoldedName;
 use crate::model::{ItemPlace, LocalItemId};
@@ -131,6 +134,78 @@ pub(crate) fn break_circles_of_names(cases: &[ItemCase<'_>], items: &PlanItems<'
         let through_temporary_name = members.iter().filter_map(|(member, decision)| Some((member.item.local_item_id, go_through_temporary_name(member, items, sendings.get(&member.item.local_item_id), *decision, &members)?))).min_by_key(|(member, _)| *member);
         if let Some((member, step)) = through_temporary_name {
             answers.overrule(member, ItemDecision::Step(step));
+        }
+    }
+    answers.into_overrulings()
+}
+
+/// An item that keeps a temporary name, and the row a listing made of what OneDrive has
+/// under that name: a row the folder does not show, which waits for the item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ListedTemporaryName {
+    /// The item has a binding: OneDrive has it as another item than the listed one.
+    pub(crate) has_item_binding: bool,
+    /// The two are both files, or both directories.
+    pub(crate) is_one_kind: bool,
+    /// Nothing is agreed on of the listed row: it is new in OneDrive.
+    pub(crate) is_row_new_in_onedrive: bool,
+    pub(crate) is_listing_under_way: bool,
+}
+
+/// What becomes of an item that keeps a temporary name a listed row is at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ListedTemporaryNameOutcome {
+    /// The listed row is the item itself, made in OneDrive by a request of this folder
+    /// whose answer was lost: the two rows are merged.
+    IsMerged,
+    /// A listing is being written, and may yet say what OneDrive has under the name is
+    /// elsewhere or gone.
+    WaitsForListing,
+    /// The listed row is not the item: the item's answer stands.
+    IsAnotherItem,
+}
+
+/// What becomes of the item of `listed`. An item with no binding and a new row of OneDrive
+/// of its kind under its temporary name are one item, once no listing is under way: the
+/// name holds the item's id, and nothing but a request of this folder gave it. Sent again,
+/// the item would be made in OneDrive a second time, under the next temporary name.
+pub(crate) fn decide_listed_temporary_name(listed: &ListedTemporaryName) -> ListedTemporaryNameOutcome {
+    if listed.has_item_binding || !listed.is_one_kind || !listed.is_row_new_in_onedrive {
+        ListedTemporaryNameOutcome::IsAnotherItem
+    } else if listed.is_listing_under_way {
+        ListedTemporaryNameOutcome::WaitsForListing
+    } else {
+        ListedTemporaryNameOutcome::IsMerged
+    }
+}
+
+/// Merges each item that keeps a temporary name with the row a listing made of it under
+/// that name ([`decide_listed_temporary_name`]): of the rows that wait for such an item
+/// ([`LocalPlaceAvailability::IsTemporaryNameOf`]), the one with the lowest id. The item
+/// is merged in place of whatever it was answered, but a merge with another item; the
+/// listed row goes on waiting for it. The plans made after the merge send the item on from
+/// its temporary name to its place here.
+pub(crate) fn merge_rows_listed_under_temporary_names(cases: &[ItemCase<'_>], answers: &ItemAnswers) -> Vec<Overruling> {
+    let mut answers = OverruledAnswers::of(answers);
+    let case_of: BTreeMap<LocalItemId, &ItemCase<'_>> = cases.iter().map(|case| (case.item.local_item_id, case)).collect();
+    for (id, case) in &case_of {
+        let LocalPlaceAvailability::IsTemporaryNameOf(keeper) = case.local_place_availability else { continue };
+        let Some(keeper_case) = case_of.get(&keeper) else { continue };
+        let waits_for_keeper = matches!(answers.find(*id), Some(ItemDecision::Wait(WaitReason::AnotherItem(waited_for))) if *waited_for == keeper);
+        let is_merged_already = matches!(answers.find(keeper), Some(ItemDecision::Step(SyncStep::Row(RowStep::MergeItems { .. }))));
+        if !waits_for_keeper || is_merged_already || keeper_case.item.local.is_none() {
+            continue;
+        }
+        let listed = ListedTemporaryName {
+            has_item_binding: keeper_case.item.onedrive_item.is_some(),
+            is_one_kind: keeper_case.item.kind == case.item.kind,
+            is_row_new_in_onedrive: case.item.synced_place.is_none() && case.item.synced_content.is_none(),
+            is_listing_under_way: case.is_listing_under_way,
+        };
+        match decide_listed_temporary_name(&listed) {
+            ListedTemporaryNameOutcome::IsMerged => answers.overrule(keeper, ItemDecision::Step(SyncStep::Row(RowStep::MergeItems { local: ItemVersions::of(keeper_case.item), onedrive: ItemVersions::of(case.item) }))),
+            ListedTemporaryNameOutcome::WaitsForListing => answers.overrule(keeper, ItemDecision::Wait(WaitReason::Listing)),
+            ListedTemporaryNameOutcome::IsAnotherItem => {}
         }
     }
     answers.into_overrulings()

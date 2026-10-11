@@ -22,7 +22,7 @@
 //! - a directory whose binding moves to another row — it gives it up, or is merged —, and
 //!   what was agreed to be in it ([`directory_binding`]);
 //! - the items that wait for each other's names, and the temporary name one of them goes
-//!   through ([`name_exchange`]);
+//!   through, and the row a listing made of an item under that name ([`name_exchange`]);
 //! - the guard against a mass removal ([`mass_removal`]);
 //! - the items that wait for one another, and where that ends ([`wait_chain`]).
 //!
@@ -622,6 +622,10 @@ impl SyncPlan {
 ///
 /// 1. a directory moved here into what OneDrive has in it (`move_cycle`);
 /// 2. the items that have or want one name of a directory of OneDrive (`name_contest`);
+///    then a new item and the row a listing made of it under its temporary name
+///    (`name_exchange`), which are one: after the names, so that the merge stands in
+///    place of the item's sending or its wait for a name, and before the circles of names
+///    (5), which would send the item again under the next temporary name;
 /// 3. the items the rows say OneDrive has under one name (`onedrive_name_holders`);
 /// 4. what OneDrive has below a directory that was removed here, while that directory's
 ///    removal is still to be sent, and a directory OneDrive removed that holds the user's
@@ -657,6 +661,7 @@ pub fn make_sync_plan(input: &SyncPlanInput) -> SyncPlan {
     answers.overrule(move_cycles.overrulings);
     let name_contests = name_contest::settle_name_contests(&cases, &items, &answers, &input.computer_name, &input.places_taken_in_onedrive, &input.items_left_by_uploads, &move_cycles.moves_taken_back);
     answers.overrule(name_contests.overrulings);
+    answers.overrule(name_exchange::merge_rows_listed_under_temporary_names(&cases, &answers));
     answers.overrule(onedrive_name_holders::bring_one_holder_of_each_name_here(&cases, &items, &answers));
     answers.overrule(removed_directory::wait_for_removals_of_directories(&cases, &items));
     answers.overrule(removed_directory::keep_directories_that_hold_the_users_own(&cases, &items, &answers));
