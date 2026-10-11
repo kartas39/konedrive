@@ -198,15 +198,30 @@ pub const DISMISSED: &str = "Dismissed. The file was left where it is.";
 /// After `sync free-up-space` in a folder with pins.
 pub const PINS_LEFT: &str = "Files kept on this device (`konedrivectl sync pin`) were left as they are.";
 
+/// What `sync activity` says in the place of the detail for a kind whose events carry
+/// none and need a sentence; `None` for every other kind.
+// TODO: wording
+fn activity_kind_sentence(kind: &str) -> Option<&'static str> {
+    match kind {
+        "not-removed-here" => Some("cannot be removed here: it holds items that cannot be shown on this computer. Remove it in OneDrive."),
+        _ => None,
+    }
+}
+
 /// `sync activity`: one line per event, newest first — time, kind, full
-/// path, and the detail in parentheses when there is one.
+/// path, and the detail in parentheses when there is one; for a directory that could
+/// not be removed here, why and what to do.
 pub fn activity_text(events: &[Event]) -> String {
     if events.is_empty() {
         return "Nothing has happened yet.\n".to_owned();
     }
     let mut out = String::new();
     for Event { at, kind, path, detail } in events {
-        let detail = if detail.is_empty() { String::new() } else { format!("  ({detail})") };
+        let detail = match activity_kind_sentence(kind) {
+            Some(sentence) => format!("  ({sentence})"),
+            None if detail.is_empty() => String::new(),
+            None => format!("  ({detail})"),
+        };
         out.push_str(&format!("{}  {kind:<10}  {path}{detail}\n", local_time(*at)));
     }
     out

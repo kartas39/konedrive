@@ -112,14 +112,15 @@ pub(crate) enum AccountCmd {
     ///
     /// read-write signs in again, in the browser as `login` does, asking Microsoft for
     /// permission to change the account's files, and waits; nothing changes until that
-    /// permission is granted. read-only needs no sign-in, and is refused while changes wait
-    /// to be uploaded, unless --force.
+    /// permission is granted. read-only needs no sign-in; while changes made here are not
+    /// sent, the account sends them first and switches by itself, unless --force.
+    /// read-write cancels a switch to read-only that waits.
     Mode {
         /// read-only or read-write; without it, the mode is shown
         #[arg(value_parser = ["read-only", "read-write"])]
         mode: Option<String>,
-        /// Switch to read-only even while changes wait to be uploaded: they stay here, and
-        /// are not uploaded
+        /// Switch to read-only now, also while changes are not sent: they stay on this
+        /// computer, and are sent when the account is read-write again
         #[arg(long, requires = "mode")]
         force: bool,
     },

@@ -57,7 +57,7 @@ activity_kinds! {
     Conflict => "conflict",
     /// A directory could not be removed here because it holds in OneDrive items that
     /// cannot be shown here: it is to be removed in OneDrive. The path is the directory.
-    // TODO: wording — the kind's text in the window and in `konedrivectl` is not written yet.
+    // TODO: wording
     NotRemovedHere => "not-removed-here",
     /// A download that failed: a fill on open, or `Hydrate`. Detail: why —
     /// exactly "not enough disk space" when the disk is full.

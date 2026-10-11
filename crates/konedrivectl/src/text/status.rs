@@ -112,8 +112,12 @@ pub fn status_text(status: &AccountStatus, client_id: Option<&str>) -> String {
     if let Some(client_id) = client_id {
         line("Client ID:", if client_id.is_empty() { "(not set)" } else { client_id });
     }
+    let unsent = unsent_of_read_only_wish(&status.last_error);
     if let Some(mode) = &status.mode {
-        line("Mode:", mode);
+        match unsent {
+            Some(unsent) => line("Mode:", &format!("{mode}, {}", switching_text(unsent))),
+            None => line("Mode:", mode),
+        }
     }
     if status.state.as_deref() == Some("signed-in") {
         if let Some(name) = &status.display_name {
@@ -123,20 +127,102 @@ pub fn status_text(status: &AccountStatus, client_id: Option<&str>) -> String {
             line("Storage:", &format!("{} of {} used", human_bytes(used), human_bytes(total)));
         }
     }
-    if !status.last_error.is_empty() {
+    // A switch to read-only that waits is said with the mode, and is no error.
+    if !status.last_error.is_empty() && unsent.is_none() {
         line("Last error:", &status.last_error);
     }
     out
 }
 
+/// How many changes an account that keeps a wish for read-only has still to send, as
+/// `Account.LastError` says it meanwhile ("switching to read-only: N changes still to
+/// send", `dbus/org.konedrive.Account.xml`); `None` for anything else it says.
+pub fn unsent_of_read_only_wish(last_error: &str) -> Option<u64> {
+    let count = last_error.strip_prefix("switching to read-only: ")?.strip_suffix(" changes still to send")?;
+    if !count.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    count.parse().ok()
+}
+
+/// An account that keeps a wish for read-only, in words.
+// TODO: wording
+fn switching_text(unsent: u64) -> String {
+    match unsent {
+        1 => "switching to read-only: 1 change still to send".to_owned(),
+        unsent => format!("switching to read-only: {unsent} changes still to send"),
+    }
+}
+
+/// The two ways out of a switch to read-only that waits. `prefix` is the command with the
+/// account chosen.
+// TODO: wording
+fn switching_ways_out_text(prefix: &str) -> String {
+    format!(
+        "It switches by itself once they are sent. `{prefix} account mode read-only --force` switches now: what is \
+         not sent stays on this computer, and is sent when the account is read-write again. `{prefix} account mode \
+         read-write` cancels the switch.\n"
+    )
+}
+
 /// `account mode` with no mode given: the mode, and `Account.LastError` when it says
-/// something. `tag` is what a success line starts with.
-pub fn mode_shown_text(tag: &str, mode: &str, last_error: &str) -> String {
+/// something; of an account switching to read-only, how many changes it has still to
+/// send and the two ways out. `tag` is what a success line starts with, `prefix` the
+/// command with the account chosen.
+pub fn mode_shown_text(tag: &str, prefix: &str, mode: &str, last_error: &str) -> String {
     let mut out = format!("{tag}{mode}\n");
-    if !last_error.is_empty() {
+    if let Some(unsent) = unsent_of_read_only_wish(last_error) {
+        let mut said = switching_text(unsent);
+        said[..1].make_ascii_uppercase();
+        out.push_str(&format!("{said}. {}", switching_ways_out_text(prefix)));
+    } else if !last_error.is_empty() {
         out.push_str(&format!("{:<12}{last_error}\n", "Last error:"));
     }
     out
+}
+
+/// `account mode read-write` of an account that waited to switch to read-only, done.
+// TODO: wording
+pub const SWITCH_CANCELLED: &str = "Read-write: the switch to read-only is cancelled, and changes go on being uploaded.";
+
+/// What came of `account mode read-only`, as the account says it afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadOnlyAsked {
+    /// The account is read-only.
+    Switched,
+    /// Changes are unsent, and the switch was not forced: the account sends them and
+    /// switches by itself. How many are still to send.
+    Waits { unsent: u64 },
+    /// The account says neither: it is read-write, with no word of a switch.
+    NotSaid,
+}
+
+/// What came of `account mode read-only`, from `Account.Mode` and `Account.LastError` read
+/// after `SetMode` answered.
+pub fn decide_read_only_asked(mode: &str, last_error: &str) -> ReadOnlyAsked {
+    match (mode, unsent_of_read_only_wish(last_error)) {
+        ("read-only", _) => ReadOnlyAsked::Switched,
+        (_, Some(unsent)) => ReadOnlyAsked::Waits { unsent },
+        (_, None) => ReadOnlyAsked::NotSaid,
+    }
+}
+
+/// `account mode read-only`, done. `tag` is what a success line starts with, `prefix` the
+/// command with the account chosen.
+// TODO: wording
+pub fn read_only_asked_text(tag: &str, prefix: &str, asked: ReadOnlyAsked) -> String {
+    match asked {
+        ReadOnlyAsked::Switched => format!(
+            "{tag}Read-only: the folder's files are read-only again, and nothing changed in it is uploaded. What was \
+             not sent stays on this computer, and is sent when the account is read-write again.\n"
+        ),
+        ReadOnlyAsked::Waits { unsent } => {
+            let mut said = switching_text(unsent);
+            said[..1].make_ascii_uppercase();
+            format!("{tag}{said}. {}", switching_ways_out_text(prefix))
+        }
+        ReadOnlyAsked::NotSaid => format!("{tag}Read-only was asked for; `{prefix} account mode` shows the mode the account is in.\n"),
+    }
 }
 
 /// One account's folder as its interfaces' properties say it: what `sync status` shows. A

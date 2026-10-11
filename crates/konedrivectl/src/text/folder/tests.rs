@@ -1,4 +1,4 @@
-use super::{decide_unsent_answer, decide_unsent_question, needs_attention_text, paused_now_text, unsent_warning_text, UnsentAnswer, UnsentQuestion, NO_TERMINAL_TO_ASK, QUESTION_NOT_ANSWERED};
+use super::{activity_text, decide_unsent_answer, decide_unsent_question, needs_attention_text, paused_now_text, unsent_warning_text, UnsentAnswer, UnsentQuestion, NO_TERMINAL_TO_ASK, QUESTION_NOT_ANSWERED};
 use crate::text::files::{folders_unread_text, pin_text, PLAIN_PREFIX};
 use crate::text::formats::{local_time, warning_text};
 
@@ -70,4 +70,19 @@ fn only_y_and_yes_go_on_and_an_input_that_ended_is_no_answer() {
         assert_eq!(decide_unsent_answer(Some(line)), UnsentAnswer::Declined, "{line:?}");
     }
     assert_eq!(decide_unsent_answer(None), UnsentAnswer::NotAnswered, "Ctrl-D, or a pipe that ended");
+}
+
+/// `sync activity` says of a directory that could not be removed here why, and what to
+/// do; every other kind keeps its detail, or none.
+#[test]
+fn the_activity_says_why_a_directory_was_not_removed_here() {
+    let event = |kind: &str, path: &str, detail: &str| konedrive_dbus::rows::Event { at: 0, kind: kind.to_owned(), path: path.to_owned(), detail: detail.to_owned() };
+    let out = activity_text(&[event("not-removed-here", "/r/Notebooks", ""), event("uploaded", "/r/a.txt", "3 KB"), event("removed", "/r/b.txt", "")]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(
+        lines[0].ends_with("not-removed-here  /r/Notebooks  (cannot be removed here: it holds items that cannot be shown on this computer. Remove it in OneDrive.)"),
+        "{out}"
+    );
+    assert!(lines[1].ends_with("/r/a.txt  (3 KB)"), "{out}");
+    assert!(lines[2].ends_with("/r/b.txt"), "{out}");
 }
