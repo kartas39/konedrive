@@ -1407,10 +1407,12 @@ fn while_onedrive_asks_to_wait_what_needs_its_content_fails_at_once_and_the_rest
     let file = mount.fixture.show_onedrive_file("away.xlsx", b"abcdefghij").local_item_id;
     let fetched = mount.list_fetched_ranges().len();
 
+    let fh = mount.open_to_read(file).unwrap().fh;
     mount.fixture.start_throttle_wait(300);
     let again = Errno::from_i32(THROTTLE_WAIT_ERRNO);
-    // The open for reading asks OneDrive nothing; the read does, and is refused.
-    let fh = mount.open_to_read(file).unwrap().fh;
+    // An open for reading is refused: its errno reaches the program as it is. A handle
+    // opened before the wait is refused at its read.
+    assert_eq!(mount.open_to_read(file).err(), Some(again));
     assert_eq!(mount.read(fh, 0, 4).err(), Some(again));
     assert_eq!(mount.open_to_write(file).err(), Some(again));
     assert_eq!(mount.truncate(file, None, 3).err(), Some(again));

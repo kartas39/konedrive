@@ -514,6 +514,12 @@ impl ItemKernelRequests {
         let mut is_mended = false;
         for _try in 0..ROW_TRIES {
             match decide_open_to_read(&self.lookup.find_shown_item(node)?)? {
+                // While OneDrive asks the account to wait, the open is refused, not the read:
+                // an errno of an open reaches the program as it is, and one of a read through
+                // the page cache reaches it as `EIO` whatever the mount answered (seen in the
+                // VM: `cat` said "Input/output error"). A handle opened before the wait is
+                // refused at its read all the same (`fetch_range`).
+                OpenToRead::NotOnDisk { .. } if self.downloader.throttle_wait().seconds_left() > 0 => return Err(Errno::from_i32(THROTTLE_WAIT_ERRNO)),
                 OpenToRead::NotOnDisk { item, content } => return Ok(OpenedFile { fh: self.item_handles.add_file(OpenItemFile::ReadingNotOnDisk { item, content }), keeps_cache: true }),
                 OpenToRead::BackingFile => {}
             }
@@ -670,6 +676,13 @@ impl ItemKernelRequests {
                 Err(Errno::from_i32(THROTTLE_WAIT_ERRNO))
             }
         }
+    }
+
+    /// An open of `node` was refused because OneDrive asked the account to wait: the file
+    /// is told as the one refused during the wait, when it is the first
+    /// (`ItemDownloader::tell_throttle_refusal`). On the runtime: the path is read there.
+    pub(super) async fn tell_throttle_refusal(&self, node: LocalItemId) {
+        self.downloader.tell_throttle_refusal(node).await;
     }
 
     /// Downloads `file` for a program that writes it, and waits for the landing: what

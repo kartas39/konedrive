@@ -34,7 +34,7 @@ use tokio::task::AbortHandle;
 
 use super::access_mode_switch::AccessModeSwitch;
 use super::backing_directory::BackingDirectory;
-use super::errno::to_errno;
+use super::errno::{to_errno, THROTTLE_WAIT_ERRNO};
 use super::item_attributes::{to_local_item_id, to_node_id};
 use super::item_handles::Fh;
 use super::item_kernel_requests::{ItemKernelRequests, ATTRIBUTE_LIFETIME, LookupAnswer, MadeEntry, OpenedFile, RangeToFetch, ReadAnswer, ReplyTo};
@@ -289,7 +289,13 @@ impl Filesystem for KernelRequests {
         if flags.0 & libc::O_ACCMODE == libc::O_RDONLY {
             return match self.requests.answer_open_to_read(node) {
                 Ok(opened) => reply.opened(to_file_handle(opened.fh), to_fopen_flags(&opened)),
-                Err(errno) => reply.error(errno),
+                Err(errno) => {
+                    if errno.code() == THROTTLE_WAIT_ERRNO {
+                        let requests = Arc::clone(&self.requests);
+                        self.runtime.spawn(async move { requests.tell_throttle_refusal(node).await });
+                    }
+                    reply.error(errno)
+                }
             };
         }
         match self.requests.decide_open_to_write(node) {
