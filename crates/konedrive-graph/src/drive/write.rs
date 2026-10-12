@@ -61,6 +61,10 @@ pub enum WriteError {
     /// token's scope does not allow writes.
     #[error("OneDrive does not allow this change: sign in again")]
     Forbidden,
+    /// `413`: the file is larger than OneDrive takes. Nothing changes that but another
+    /// file.
+    #[error("the file is larger than OneDrive takes")]
+    TooLarge,
     /// `400`: OneDrive refuses the request, most often the name. Carries the
     /// service's own message.
     #[error("OneDrive refused it: {0}")]
@@ -199,6 +203,7 @@ pub(super) async fn error_from(response: reqwest::Response) -> WriteError {
         Kind::Throttled => WriteError::Throttled { retry_after: wait },
         Kind::Locked => WriteError::Locked,
         Kind::Forbidden => WriteError::Forbidden,
+        Kind::TooLarge => WriteError::TooLarge,
         Kind::BadRequest if graph.message.is_empty() => WriteError::Refused(answered(format!("Graph returned {status} {code}"))),
         Kind::BadRequest => WriteError::Refused(answered(graph.message.clone())),
         Kind::Unauthorized => WriteError::Failed(answered("Microsoft Graph rejected the access token".into())),

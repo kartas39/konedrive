@@ -463,7 +463,6 @@ fn find_decision_not_to_send(case: &ItemCase<'_>, sent_part: SentPart) -> Option
     Some(match find_sending_obstacle(sent_part, &case.sending)? {
         SendingObstacle::Ignored => ItemDecision::Exclusion(ExclusionReason::NameIgnored),
         SendingObstacle::NameRefused(reason) => ItemDecision::Wait(WaitReason::User(reason)),
-        SendingObstacle::TooLarge => ItemDecision::Wait(WaitReason::User(Reason::TooLarge)),
         SendingObstacle::OneDriveFull => ItemDecision::Wait(WaitReason::User(Reason::WaitingForSpace)),
         SendingObstacle::QuietTime { until } => ItemDecision::Wait(WaitReason::Time { until, reason: Reason::QuietTime }),
         SendingObstacle::Refused(reason) => ItemDecision::Wait(WaitReason::User(reason)),

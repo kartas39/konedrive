@@ -81,6 +81,8 @@ pub(crate) enum StepRefusal {
     Forbidden,
     /// 400: refused for good as this version, with OneDrive's message.
     RefusedForGood { message: String },
+    /// 413: the file is larger than OneDrive takes. Refused for good as this version.
+    TooLarge,
     /// The account is signed out: all sending waits for the sign-in.
     SignedOut,
     /// The upload ended with other content in OneDrive than was sent. For a new file the

@@ -152,7 +152,6 @@ fn describe(store: &mut TreeStore, facts: &CallerFacts, rows: Vec<Item>) -> Sync
         pinned_items: rows.iter().filter(|row| row.kind == ItemKind::File && items.is_pinned(row.local_item_id).unwrap()).map(|row| row.local_item_id).collect(),
         is_listing_under_way: items.find_listing_under_way().unwrap().is_some(),
         is_onedrive_full: facts.is_onedrive_full,
-        largest_file_size: 250 << 30,
         computer_name: COMPUTER_NAME.to_owned(),
         places_taken_in_onedrive: facts.places_taken_in_onedrive.clone(),
         items_left_by_uploads,

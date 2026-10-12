@@ -343,7 +343,6 @@ impl Folder {
             pinned_items: Default::default(),
             is_listing_under_way: items.find_listing_under_way().unwrap().is_some(),
             is_onedrive_full: false,
-            largest_file_size: 250 << 30,
             computer_name: "pc".to_owned(),
             places_taken_in_onedrive: Default::default(),
             items_left_by_uploads: Default::default(),

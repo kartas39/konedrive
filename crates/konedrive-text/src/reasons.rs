@@ -44,7 +44,7 @@ pub const REASONS: &[ReasonText] = &[
     bare("name-spaces", "A name that starts or ends with a space, which OneDrive refuses: rename it to upload it."),
     bare("name-reserved", "A name OneDrive reserves: rename it to upload it."),
     bare("name-not-utf8", "A name that is not valid UTF-8: rename it to upload it."),
-    bare("too-large", "Larger than OneDrive takes (250 GB)."),
+    bare("too-large", "Larger than OneDrive takes."),
     bare("quota-exceeded", "OneDrive is full: free some space in OneDrive."),
     bare("forbidden", "This sign-in does not allow uploads: sign in again."),
     detailed("refused", "Refused by OneDrive.", "OneDrive refused it: {detail}"),

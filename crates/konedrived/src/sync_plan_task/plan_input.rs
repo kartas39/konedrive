@@ -58,8 +58,6 @@ use super::local_step_tries::LocalStepTries;
 pub(crate) struct PlanSettings {
     /// This computer's name, for a conflict copy's name.
     pub(crate) computer_name: String,
-    /// The largest size of a file OneDrive takes, in bytes.
-    pub(crate) largest_file_size: u64,
     /// How long after its last change a file's content is not sent, in seconds.
     pub(crate) quiet_time: i64,
     /// How many unsent items, and how many OneDrive changed, are read at first.
@@ -78,11 +76,10 @@ pub(crate) const ITEMS_READ_AT_ONCE: usize = 1000;
 
 impl PlanSettings {
     /// The settings of a folder's sync: `computer_name` (the account's machine name, as a
-    /// conflict copy's name holds it), the largest file OneDrive takes
-    /// (`local::names::MAX_FILE_SIZE`), [`QUIET_TIME`] and [`ITEMS_READ_AT_ONCE`]. What
+    /// conflict copy's name holds it), [`QUIET_TIME`] and [`ITEMS_READ_AT_ONCE`]. What
     /// the owner of the folder's state gives a start (`FolderStartInput::settings`).
     pub(crate) fn of(computer_name: String) -> Self {
-        PlanSettings { computer_name, largest_file_size: crate::local::names::MAX_FILE_SIZE, quiet_time: QUIET_TIME, items_read_at_once: ITEMS_READ_AT_ONCE }
+        PlanSettings { computer_name, quiet_time: QUIET_TIME, items_read_at_once: ITEMS_READ_AT_ONCE }
     }
 }
 
@@ -595,7 +592,6 @@ pub(crate) fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Re
         pinned_items: BTreeSet::new(),
         is_listing_under_way: items.find_listing_under_way()?.is_some(),
         is_onedrive_full: facts.is_onedrive_full,
-        largest_file_size: facts.settings.largest_file_size,
         computer_name: facts.settings.computer_name.clone(),
         places_taken_in_onedrive: BTreeMap::new(),
         items_left_by_uploads: BTreeMap::new(),

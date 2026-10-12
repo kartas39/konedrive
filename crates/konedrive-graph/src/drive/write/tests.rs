@@ -75,6 +75,9 @@ async fn every_refusal_comes_back_as_its_typed_error() {
     assert!(matches!(refusal(answer(403)).await, WriteError::Forbidden));
     let refused = refusal(answer(400).set_body_json(error("invalidRequest", "The name is not valid"))).await;
     assert!(matches!(&refused, WriteError::Refused(m) if m == "The name is not valid"), "{refused:?}");
+    // As a personal drive answers the first fragment of a file over its limit (issue #265).
+    let too_large = answer(413).set_body_json(json!({"error": {"code": "invalidRequest", "message": "The payload of the request was too large", "innererror": {"code": "maxFileSizeExceeded"}}}));
+    assert!(matches!(refusal(too_large).await, WriteError::TooLarge));
     assert!(matches!(refusal(answer(502)).await, WriteError::Transient(_)));
     let throttled = refusal(answer(429).insert_header("retry-after", "7")).await;
     assert!(

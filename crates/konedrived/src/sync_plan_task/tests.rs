@@ -69,7 +69,7 @@ impl TaskFixture {
             poll: fixture.poll_handle().0,
             pool: Arc::clone(&fixture.pool),
             state: state.clone(),
-            settings: PlanSettings { computer_name: "here".into(), largest_file_size: 1 << 30, quiet_time: 0, items_read_at_once: 100 },
+            settings: PlanSettings { computer_name: "here".into(), quiet_time: 0, items_read_at_once: 100 },
             start_check: StartCheckFindings { held_items: BTreeSet::new(), has_unread_part: false, unresolved_path_count: 0, bound_by_mark_count: 0 },
             folder: fixture.folder(),
             clock: fixture.clock(),

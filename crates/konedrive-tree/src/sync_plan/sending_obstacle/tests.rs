@@ -11,7 +11,6 @@ fn conditions() -> SendingConditions {
         is_ignored: false,
         name_refusal: None,
         size: Some(3),
-        largest_file_size: 100,
         quiet_until: None,
         is_onedrive_full: false,
         refusal: None,
@@ -43,10 +42,7 @@ fn a_name_onedrive_cannot_hold_is_in_the_way_where_the_name_is_sent() {
 }
 
 #[test]
-fn the_size_a_full_onedrive_and_the_quiet_time_are_in_the_way_where_content_is_sent() {
-    let too_large = Some(SendingObstacle::TooLarge);
-    assert_eq!(obstacles(&SendingConditions { size: Some(101), ..conditions() }), [None, too_large.clone(), too_large, None, None]);
-    assert_eq!(obstacles(&SendingConditions { size: Some(100), ..conditions() }), [None, None, None, None, None], "the largest size is taken");
+fn a_full_onedrive_and_the_quiet_time_are_in_the_way_where_content_is_sent() {
     let full = Some(SendingObstacle::OneDriveFull);
     assert_eq!(obstacles(&SendingConditions { is_onedrive_full: true, ..conditions() }), [None, full.clone(), full, None, None]);
     let quiet = Some(SendingObstacle::QuietTime { until: 77 });
@@ -68,8 +64,6 @@ fn of_several_obstacles_the_one_that_does_not_end_by_itself_is_said_first() {
     let all = SendingConditions { is_ignored: false, ..all };
     assert_eq!(new_file(&all), Some(SendingObstacle::NameRefused(Reason::NameSpaces)));
     let all = SendingConditions { name_refusal: None, ..all };
-    assert_eq!(new_file(&all), Some(SendingObstacle::TooLarge));
-    let all = SendingConditions { size: Some(3), ..all };
     assert_eq!(new_file(&all), Some(SendingObstacle::OneDriveFull));
     let all = SendingConditions { is_onedrive_full: false, ..all };
     assert_eq!(new_file(&all), Some(SendingObstacle::QuietTime { until: 77 }));

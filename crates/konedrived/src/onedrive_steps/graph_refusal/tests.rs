@@ -37,6 +37,7 @@ fn a_refusal_that_is_certain_is_settled_at_once_as_its_case() {
         (WriteError::Throttled { retry_after: None }, StepRefusal::Throttled { retry_after: None }),
         (WriteError::Locked, StepRefusal::Locked),
         (WriteError::Forbidden, StepRefusal::Forbidden),
+        (WriteError::TooLarge, StepRefusal::TooLarge),
         (WriteError::Refused(detail("the name is not allowed", Some(400))), StepRefusal::RefusedForGood { message: "the name is not allowed".to_owned() }),
         (WriteError::SignedOut, StepRefusal::SignedOut),
     ];
