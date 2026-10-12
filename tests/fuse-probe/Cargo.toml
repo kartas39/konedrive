@@ -1,0 +1,28 @@
+# The VM suite of the mount: the daemon's service with a folder served through FUSE, in a
+# virtme-ng guest (run.sh). Not a member of the repository workspace.
+[workspace]
+
+[package]
+name = "fuse-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+libc = "0.2"
+# The daemon's service and the fake OneDrive of its tests, as a process the suite talks to.
+konedrived = { path = "../../crates/konedrived", features = ["fault-injection"] }
+# The client of a fake OneDrive that runs as a process of its own.
+konedrive-graph = { path = "../../crates/konedrive-graph" }
+url = "2"
+# The daemon's log, when a scenario asks for it.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std"] }
+# The stop on SIGTERM, bounded as the daemon's.
+futures-util = "0.3"
+# A scripted answer of the fake OneDrive: a download cut short.
+wiremock = "0.6"
+
+# konedrived needs fuser with FUSE_INTERRUPT handed on (vendor/fuser/README.konedrive.md).
+[patch.crates-io]
+fuser = { path = "../../vendor/fuser" }

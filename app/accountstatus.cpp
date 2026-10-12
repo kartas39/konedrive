@@ -38,21 +38,6 @@ QString scanReasonText(const QString &reason)
     if (reason == QLatin1String("start")) {
         return i18nc("@info why the local files are checked", "as syncing started");
     }
-    if (reason == QLatin1String("read-write")) {
-        return i18nc("@info why the local files are checked", "after the switch to read-write");
-    }
-    if (reason == QLatin1String("helper-back")) {
-        return i18nc("@info why the local files are checked", "after the helper came back");
-    }
-    if (reason == QLatin1String("overflow")) {
-        return i18nc("@info why the local files are checked", "after too many changes at once");
-    }
-    if (reason == QLatin1String("ignore-list")) {
-        return i18nc("@info why the local files are checked", "after the ignore list changed");
-    }
-    if (reason == QLatin1String("periodic")) {
-        return i18nc("@info why the local files are checked", "as part of the folder cannot be watched");
-    }
     return reason;
 }
 }
@@ -181,7 +166,7 @@ void AccountStatus::update()
         text = i18n("No OneDrive folder yet");
     } else if (reason == QLatin1String("starting")) {
         // A folder that is recorded and not up yet, with nothing known to be wrong: it is
-        // being brought up, or waits for the helper to connect (the start of a session).
+        // being brought up (the start of a session).
         text = i18n("Starting…");
     } else if (reason == QLatin1String("stopped")) {
         // Folder.Trouble is then everything the folder stopped on, shown as it is.
@@ -189,12 +174,19 @@ void AccountStatus::update()
     } else {
         // The line under the folder: what the account is doing, in words, from the counts
         // and the times. The trouble that does not stop the folder is said first, whatever
-        // the reason is (deletes held, a pause).
-        const bool listing = m_sync->rootState() == QLatin1String("listing");
+        // the reason is (a pause).
+        // The first listing of the drive runs: the daemon says so as the reason (Folder.State has no such word).
+        const bool listing = reason == QLatin1String("listing");
+        // OneDrive asked the account to wait (a Retry-After): nothing is listed or moved
+        // until then, and Transfers.RetryAfter says the seconds left.
+        const bool throttled = reason == QLatin1String("throttled");
         const int uploads = m_sync->uploads()->count();
         const uint pending = m_sync->pendingCount();
         const QString heldBack = m_sync->heldBack();
-        if (listing) {
+        if (throttled) {
+            // TODO: wording
+            text = m_sync->retryAfter() > 0 ? i18n("OneDrive asked to wait: %1 left", durationText(m_sync->retryAfter())) : i18n("OneDrive asked to wait");
+        } else if (listing) {
             text = i18n("Listing your OneDrive: %1 items so far", m_sync->itemsListed());
         } else if (!m_sync->trouble().isEmpty()) {
             text = m_sync->trouble();
@@ -217,18 +209,14 @@ void AccountStatus::update()
         } else {
             text = i18n("Up to date");
         }
-        if (!listing && !checkedText.isEmpty()) {
+        if (!listing && !throttled && !checkedText.isEmpty()) {
             text = i18nc("@info status: what, then when it last checked", "%1 · %2", text, checkedText);
             ages = !live;
         }
 
         // Why the account needs attention, where the line does not say it: by the reason.
-        if (reason == QLatin1String("deletes-held")) {
-            attention = i18np("1 item deleted here waits for you: delete it in OneDrive too, or restore it",
-                              "%1 items deleted here wait for you: delete them in OneDrive too, or restore them",
-                              m_sync->heldCount());
-        } else if (reason == QLatin1String("conflicts")) {
-            attention = i18np("1 changed file was moved out of the way", "%1 changed files were moved out of the way", m_sync->conflictCount());
+        if (reason == QLatin1String("conflicts")) {
+            attention = i18np("1 file changed here and in OneDrive: both versions are kept", "%1 files changed here and in OneDrive: both versions are kept", m_sync->conflictCount());
         } else if (reason == QLatin1String("quota-full")) {
             attention = i18np("OneDrive is full: 1 file waits for space", "OneDrive is full: %1 files wait for space", m_sync->spaceWaitingCount());
         } else if (reason == QLatin1String("too-big")) {
@@ -237,25 +225,16 @@ void AccountStatus::update()
             attention = i18np("1 change cannot be uploaded", "%1 changes cannot be uploaded", m_sync->blockedCount());
         } else if (reason == QLatin1String("not-updated")) {
             attention = m_sync->notUpdated();
-        } else if (reason == QLatin1String("helper-unavailable")) {
-            attention = i18n("The konedrive helper is not available: files are not kept in step, and nothing downloads when it is opened.");
         }
     }
 
-    // The local scan: never a percentage, since only the base's count is known in advance.
+    // The check of the folder on disk at the start of its sync.
     QString scanLine;
     const QString scanState = m_sync->scanState();
     if (scanState == QLatin1String("running")) {
-        QString seen = i18nc("@info local scan: N folders and M files",
-                             "%1 and %2",
-                             i18ncp("@info local scan", "1 folder", "%1 folders", m_sync->scanDirectories()),
-                             i18ncp("@info local scan", "1 file", "%1 files", m_sync->scanFiles()));
-        if (m_sync->scanExpected() > 0) {
-            seen = i18nc("@info local scan: what was seen, of about N", "%1, of about %2", seen, m_sync->scanExpected());
-        }
-        scanLine = i18nc("@info local scan: what was seen, when it started, why",
-                         "Checking local files: %1 — started %2, %3",
-                         seen,
+        // TODO: wording
+        scanLine = i18nc("@info local scan: when it started, why",
+                         "Checking local files — started %1, %2",
                          ago(m_sync->scanStarted()),
                          scanReasonText(m_sync->scanReason()));
         ages = true;

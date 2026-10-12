@@ -80,7 +80,7 @@ fn a_refusal_is_worded_for_its_client() {
     assert_eq!(said(Operation::OpenOnline, Refusal::NotUploaded, Client::Desktop).unwrap(), "“/r/a.bin” is not uploaded yet, so it has no page in OneDrive.");
     assert_eq!(
         said(Operation::OpenOnline, Refusal::NotUploaded, Client::CommandLine).unwrap(),
-        "/r/a.bin is not uploaded yet, so it has no page in OneDrive. It can be opened there once it is uploaded (`konedrivectl --account Test sync outbox`)."
+        "/r/a.bin is not uploaded yet, so it has no page in OneDrive. It can be opened there once it is uploaded (`konedrivectl --account Test sync upload-queue`)."
     );
     assert!(said(Operation::Keep, Refusal::OutsideRoot, Client::CommandLine).unwrap().contains("inside the sync folder (/r) can be kept"));
     // The plugin's alone.
@@ -88,7 +88,7 @@ fn a_refusal_is_worded_for_its_client() {
     assert_eq!(said(Operation::FreeUp, Refusal::NotAllowed, Client::CommandLine), None);
     // None: told as any failure.
     assert_eq!(said(Operation::Keep, Refusal::NotUp, Client::Desktop), None);
-    assert_eq!(said(Operation::OpenOnline, Refusal::NoHelper, Client::Desktop), None);
+    assert_eq!(said(Operation::OpenOnline, Refusal::NotUp, Client::Desktop), None);
     assert_eq!(said(Operation::Keep, Refusal::Other("org.example.New".to_owned()), Client::Desktop), None);
     assert!(entry(&Refusal::Other("org.example.New".to_owned())).is_none());
     assert_eq!(failed(Operation::Unpin, &told), "Unpinning “/r/a.bin” failed: the daemon's words");

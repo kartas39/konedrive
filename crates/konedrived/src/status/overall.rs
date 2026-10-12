@@ -10,8 +10,7 @@
 use konedrive_dbus::overall::Reason;
 
 use crate::account::state::SignInState;
-use crate::helper::status::HelperState;
-use crate::status::snapshot::{published_error, published_state, running_trouble, ReplacementNote, SyncSnapshot, TroubleKind};
+use crate::status::snapshot::{published_error, published_state, running_trouble, SyncSnapshot, TroubleKind};
 
 /// What [`overall`] decides.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,7 +19,8 @@ pub struct Overall {
     pub reason: Reason,
     /// `Folder.Trouble` ([`trouble`]): the trouble there is now, whatever the reason is.
     pub trouble: String,
-    /// `Folder.NotUpdated`: the failed-update note alone, whenever there is one.
+    /// `Folder.NotUpdated`: always empty. A file that changed in OneDrive has its downloaded
+    /// copy removed, and is read from OneDrive again: no update can fail and wait.
     pub not_updated: String,
 }
 
@@ -31,26 +31,22 @@ pub fn overall(sign_in: SignInState, s: &SyncSnapshot, downloads: usize) -> Over
     Overall {
         reason: reason(sign_in, s, downloads),
         trouble: trouble(s),
-        not_updated: not_updated(s),
+        not_updated: String::new(),
     }
 }
 
-/// `Folder.NotUpdated`: the failed-update note alone, whenever there is one; or empty.
-pub fn not_updated(s: &SyncSnapshot) -> String {
-    s.cycle.replacement_note.as_ref().map(ReplacementNote::text).unwrap_or_default()
-}
 
 /// `Folder.Trouble`: the sentence of the trouble there is now, or empty.
 ///
 /// - A folder that has stopped on an error: everything `LastError` says.
 /// - A folder that runs: its problems that do not stop it, out of reach included
-///   ([`running_trouble`]), without the no-interception warning and the failed-update note.
+///   ([`running_trouble`]).
 /// - While the first listing runs, and for a folder that is not up or not there: nothing,
 ///   as [`reason`] counts no trouble then.
 pub fn trouble(s: &SyncSnapshot) -> String {
     match published_state(s) {
         "error" => published_error(s),
-        "ready" | "no-interception" => running_trouble(s).map(|(text, _)| text).unwrap_or_default(),
+        "ready" => running_trouble(s).map(|(text, _)| text).unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -75,32 +71,18 @@ pub fn reason(sign_in: SignInState, s: &SyncSnapshot, downloads: usize) -> Reaso
     if state == "error" {
         return Reason::Stopped;
     }
-    // What needs the user comes first, the mass-delete guard before all: only the user can
-    // decide.
-    if s.outbox.held_count > 0 {
-        return Reason::DeletesHeld;
-    }
+    // What needs the user comes first.
     if s.local.conflict_count > 0 {
         return Reason::Conflicts;
     }
-    if s.outbox.quota_full {
+    if s.upload_queue.quota_full {
         return Reason::QuotaFull;
     }
-    if s.outbox.too_big_count > 0 {
+    if s.upload_queue.too_big_count > 0 {
         return Reason::TooBig;
     }
-    if s.outbox.blocked_count > 0 {
+    if s.upload_queue.blocked_count > 0 {
         return Reason::Blocked;
-    }
-    if s.cycle.replacement_note.is_some() {
-        return Reason::NotUpdated;
-    }
-    // The helper serves every account: its trouble counts against each account whose
-    // folder it intercepts, not one registered without interception, where nothing
-    // downloads on open whatever the helper does. A warning and not offline: the folder
-    // itself may be fine.
-    if s.folder.helper_state != HelperState::Connected && state != "no-interception" {
-        return Reason::HelperUnavailable;
     }
     if s.pause.paused_until.is_some() {
         return Reason::Paused;
@@ -108,6 +90,11 @@ pub fn reason(sign_in: SignInState, s: &SyncSnapshot, downloads: usize) -> Reaso
     // The account's own hold ranks as the user's pause.
     if !s.pause.held_back.is_empty() {
         return Reason::HeldBack;
+    }
+    // OneDrive asked the account to wait: nothing is listed or moved until then, whatever
+    // the account was doing, and what its uploads' hold says is this very wait.
+    if s.transfers.throughput.retry_after > 0 {
+        return Reason::Throttled;
     }
     // While the first listing runs, the trouble of a folder that keeps running is not
     // counted: the listing is what the account is doing.
@@ -123,7 +110,7 @@ pub fn reason(sign_in: SignInState, s: &SyncSnapshot, downloads: usize) -> Reaso
     if state == "listing" {
         return Reason::Listing;
     }
-    if downloads > 0 || !s.outbox.uploads.is_empty() || s.outbox.pending_count > 0 {
+    if downloads > 0 || !s.upload_queue.uploads.is_empty() || s.upload_queue.pending_count > 0 {
         return Reason::Transferring;
     }
     Reason::UpToDate

@@ -15,7 +15,7 @@
 //!    `session` by `forget`, `seed_as` and `commit_as`, and alone by every refresh. What a
 //!    refresh calls back (`note_granted`) and what `commit_as` runs under it take only the
 //!    locks below, never `session`.
-//!    - The account's folder is asked under `session` too (`PendingUploads::quota_read`, from
+//!    - The account's folder is asked under `session` too (`AccountFolder::quota_read`, from
 //!      `refresh_account_info`): what answers there never calls back into what takes
 //!      `session` (a sign-out, a switch of the mode).
 //!    - Between accounts: no account's `session` is held while another account is asked.
@@ -41,7 +41,7 @@ mod mode;
 pub mod quota;
 pub mod secret;
 mod sign_in;
-pub(crate) use sign_in::{claim_new, Refused};
+pub(crate) use sign_in::{claim_new, signed_in_sentence, Refused};
 pub mod state;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -57,6 +57,7 @@ use crate::account::quota::Quota;
 use crate::account::attempt::{Attempt, SignedIn};
 use crate::config::{AccountConfig, AccountId, AccountPaths, Config, ConfigError, ConfigStore, DriveId, Mode, Origin, WriteStanding};
 use konedrive_graph::drive::{DriveClient, Status};
+use konedrive_graph::loopback::Answer;
 use konedrive_graph::oauth::{grants_writes, is_read_only, Endpoints, OAuthClient, TokenResponse};
 use crate::account::secret::SecretStore;
 use crate::account::state::{AccountSnapshot, ModeNote, SignInState, StateHandle};
@@ -101,9 +102,6 @@ pub enum ModeError {
     /// The account's token does not carry `Files.ReadWrite`.
     #[error("{0}")]
     ModeNotGranted(String),
-    /// Changes wait to be uploaded, and the switch to read-only was not forced.
-    #[error("{0}")]
-    PendingUploads(String),
     #[error("{0}")]
     NotSignedIn(String),
     #[error("{0}")]
@@ -157,20 +155,57 @@ const DRIVE_MISMATCH: &str = "this account's sign-in reaches the OneDrive drive"
 /// ([`ModeNote::WiderGrant`]).
 const WIDER_GRANT: &str = "Microsoft answered a request for read-only access with a token that can";
 
-/// What the switch between the modes asks of the account's folder (`docs/design/writes.md` §2): how many
-/// changes wait to be uploaded, and dropping them when a switch to read-only is forced — the
-/// files stay, as ordinary local changes. The account's `SyncService` answers
-/// (`crate::sync::mode`); until the outbox exists (the examination and the outbox worker), nothing waits.
+/// What a folder answers that was told to hold what is unsent
+/// ([`AccountFolder::hold_unsent_changes`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldUnsentChanges {
+    /// How many changes stay here unsent.
+    pub unsent: u64,
+    /// Whether a request that changes OneDrive was still in flight when the folder
+    /// answered: the account keeps its token that can write until none is.
+    pub is_request_in_flight: bool,
+}
+
+/// What the account asks of its folder: at a switch between the modes, how many changes
+/// are left to send, and holding what is unsent here when the switch is made; and that a
+/// quota it read is applied. Nothing is ever
+/// dropped. The account's `SyncService` answers (`crate::account_folder::mode`).
 #[async_trait::async_trait]
-pub trait PendingUploads: Send + Sync {
-    async fn pending_uploads(&self) -> u64;
-    async fn drop_pending_uploads(&self);
+pub trait AccountFolder: Send + Sync {
+    /// How many changes made here are unsent now and will be sent without the user doing
+    /// anything: the count the folder's plan reports
+    /// ([`FolderAccount::tell_unsent_count`]) — every unsent change but those OneDrive
+    /// refuses for good and those the check at start left. What a switch to read-only
+    /// waits for. 0 for an account with no folder.
+    async fn count_unsent_to_send(&self) -> u64;
+    /// The account switches to read-only now: from this call on the folder sends nothing
+    /// (`SendingHolds::set_folder_read_only(true)`, the hold `SendingHold::FolderReadOnly`)
+    /// and takes no change (the mount's switch). Returns when both hold, and says whether
+    /// a request that changes OneDrive is still in flight then (the folder's wait for it
+    /// is bounded). Called at EVERY switch to read-only,
+    /// forced or not (nothing is unsent then), in the one order of a switch
+    /// (`AccountService::set_mode`): `config.toml` written and the mode worked out again
+    /// first — so that the account's snapshot says read-only before the folder is told,
+    /// and the folder's watcher cannot turn it back —, then this call, awaited — and,
+    /// for as long as a request is in flight
+    /// ([`has_request_in_flight`](Self::has_request_in_flight), asked after a short wait
+    /// each time), nothing more —, and only then the token that can write given up. So no request leaves
+    /// under a token that cannot write and none is refused for it. What is unsent stays
+    /// here, not sent and not lost, and is sent when the folder is read-write again.
+    async fn hold_unsent_changes(&self) -> HeldUnsentChanges;
+    /// Whether a request that changes OneDrive is in flight now: what the account asks
+    /// again, after [`hold_unsent_changes`](Self::hold_unsent_changes) answered that one
+    /// was, until none is. It must hold no door of the folder and wait for nothing: the
+    /// folder was switched once, and the account's own wait is the only one.
+    fn has_request_in_flight(&self) -> bool {
+        false
+    }
     /// The account's quota was just read (`RefreshInfo`): a full OneDrive, or a file
     /// too big for what was left, is decided again by it.
     fn quota_read(&self, _quota: &konedrive_graph::drive::DriveQuota) {}
 }
 
-/// What an account's folder asks of its account (`crate::sync`): the one thing the folder
+/// What an account's folder asks of its account (`crate::account_folder`): the one thing the folder
 /// is made with for all of it. The daemon's is the [`AccountService`].
 pub trait FolderAccount: Send + Sync {
     /// The account's state as published: whether somebody is signed in, the mode it runs
@@ -180,12 +215,20 @@ pub trait FolderAccount: Send + Sync {
     fn changes(&self) -> tokio::sync::watch::Receiver<state::AccountSnapshot>;
     /// The account's one quota, which the uploads' space check reads and adjusts.
     fn quota(&self) -> Quota;
-    /// Works the account's mode out again: the write gate closed under the folder's outbox
-    /// worker, before anything on the account's side saw why.
+    /// Works the account's mode out again: the folder found that the account may not
+    /// write, before anything on the account's side saw why.
     fn recheck_mode(&self);
     /// The folder's cycle saw the account's token reach `drive`, which is not the drive
     /// the folder was listed from.
     fn drive_seen(&self, drive: &str);
+    /// The folder's plan counted `unsent` unsent changes. For an account whose user asked
+    /// for read-only while changes were unsent: the count shown is this one
+    /// (`AccountSnapshot::read_only_wish`, written here when it changed), and at
+    /// 0 the account switches (`AccountService::switch_to_read_only_when_sent`, in a task
+    /// of its own: this never waits). Nothing for an account that keeps no such wish.
+    /// Called by the folder, from the report it gave its sync
+    /// (`FolderStartInput::unsent_count_report`), after every published plan.
+    fn tell_unsent_count(&self, unsent: u64);
 }
 
 impl FolderAccount for AccountService {
@@ -207,6 +250,27 @@ impl FolderAccount for AccountService {
 
     fn drive_seen(&self, drive: &str) {
         AccountService::drive_seen(self, drive);
+    }
+
+    fn tell_unsent_count(&self, unsent: u64) {
+        let shown = self.state.get().read_only_wish;
+        if shown.is_none() && !self.config.account(&self.id).is_some_and(|account| account.read_only_wanted) {
+            return;
+        }
+        // Written when it changed: every plan says the count, and most say the one before.
+        if shown.is_some_and(|wish| wish.unsent != unsent) {
+            self.state.update(|s| {
+                if let Some(wish) = &mut s.read_only_wish {
+                    wish.unsent = unsent;
+                }
+            });
+        }
+        if unsent == 0 {
+            // In a task of its own: the plan's task, which calls this, never waits for the switch, which waits for it.
+            if let (Some(service), Ok(runtime)) = (self.me.upgrade(), tokio::runtime::Handle::try_current()) {
+                runtime.spawn(async move { service.switch_to_read_only_when_sent().await });
+            }
+        }
     }
 }
 
@@ -240,7 +304,7 @@ pub struct AccountService {
     quota: Quota,
     /// The account's folder, as the mode switch asks it about waiting uploads. Empty until
     /// the accounts manager wires the folder up, and in tests without one.
-    uploads: std::sync::Mutex<Option<Weak<dyn PendingUploads>>>,
+    uploads: std::sync::Mutex<Option<Weak<dyn AccountFolder>>>,
     endpoints: Endpoints,
     http: reqwest::Client,
     /// Graph, for [`Self::graph`]. Its own transfer pool, which nothing else uses.
@@ -254,6 +318,9 @@ pub struct AccountService {
     siblings: std::sync::Mutex<Option<Arc<Siblings>>>,
     /// Set by `Accounts.Remove`: no sign-in is begun or stored from then on.
     retired: std::sync::atomic::AtomicBool,
+    /// The service itself, for the one task it starts from a call that has no `Arc` of it
+    /// (`FolderAccount::tell_unsent_count`). Weak: it keeps nothing alive.
+    me: Weak<AccountService>,
 }
 
 /// An account's own attempt ([`attempt`]): what interrupts its wait for the browser, and
@@ -289,7 +356,8 @@ impl AccountService {
         let graph = DriveClient::new(endpoints.graph.clone(), Arc::clone(&tokens) as Arc<dyn konedrive_graph::token::TokenSource>)?;
         let cache_lock = Arc::new(std::sync::Mutex::new(()));
         let quota = Quota::new(state.clone(), Some(keep_quota(paths.account_cache.clone(), Arc::clone(&cache_lock))));
-        let service = Arc::new(Self {
+        let service = Arc::new_cyclic(|me: &Weak<Self>| Self {
+            me: me.clone(),
             id: id.clone(),
             config,
             state,
@@ -348,7 +416,7 @@ impl AccountService {
     }
 
     /// The account's folder, for the mode switch's question about waiting uploads.
-    pub fn set_uploads(&self, uploads: Weak<dyn PendingUploads>) {
+    pub fn set_uploads(&self, uploads: Weak<dyn AccountFolder>) {
         *crate::panic::lock(&self.uploads) = Some(uploads);
     }
 
@@ -408,15 +476,16 @@ impl AccountService {
     ///   recorded drive is never trusted on its own);
     /// - its last token carrying `Files.ReadWrite`.
     ///
-    /// Called whenever one of them may have changed, the folder's outbox worker finding the
-    /// write gate closed included ([`FolderAccount::recheck_mode`]). The folder follows
-    /// `Mode` (`crate::sync::mode::follow`).
+    /// Called whenever one of them may have changed, the folder finding that the
+    /// account may not write included ([`FolderAccount::recheck_mode`]). The folder follows
+    /// `Mode` (`crate::account_folder::mode::watch_account`).
     fn recompute_mode(&self) {
         // The mode and the recorded drive, from one reading of the file. A
         // file that cannot be read now fails closed: read-only, and `LastError` says why when
         // the file last read said read-write.
         let standing = self.config.write_standing(&self.id);
         let unreadable = standing.is_none() && self.config.account(&self.id).is_some_and(|a| a.mode == Mode::ReadWrite);
+        let is_read_only_wanted = self.config.account(&self.id).is_some_and(|a| a.read_only_wanted);
         let WriteStanding { mode: configured, recorded_drive: recorded } =
             standing.unwrap_or(WriteStanding { mode: Mode::ReadOnly, recorded_drive: None });
         self.state.update(|s| {
@@ -433,7 +502,7 @@ impl AccountService {
                     None => Some(ModeNote::NoDriveRecorded),
                     // Another drive seen comes first: signing in again cannot cure it.
                     Some(drive) if !s.live_drive.is_empty() && !same_drive => {
-                        Some(ModeNote::DriveMismatch { live: s.live_drive.clone(), recorded: drive.to_string() })
+                        Some(ModeNote::DriveMismatch { live: s.live_drive.clone(), recorded: drive.as_str().to_owned() })
                     }
                     Some(_) if !granted => Some(ModeNote::SignInToWrite),
                     Some(_) if s.live_drive.is_empty() => Some(ModeNote::DriveNotSeen),
@@ -442,6 +511,9 @@ impl AccountService {
             } else {
                 None
             };
+            // The wish for read-only is said while it stands and the account is read-write: its count is left as it is
+            // (`tell_unsent_count` writes it), 0 until the folder's first plan counted.
+            s.read_only_wish = (is_read_only_wanted && s.mode == Mode::ReadWrite).then(|| s.read_only_wish.unwrap_or(state::ReadOnlyWish { unsent: 0 }));
             // The note takes the place of what `LastError` said; with no reason left, only
             // the note goes, and an error said since stays.
             s.set_mode_note(why);

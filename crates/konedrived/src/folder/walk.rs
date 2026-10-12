@@ -11,12 +11,17 @@ pub(crate) fn reserved(name: &std::ffi::OsStr) -> bool {
 }
 
 /// Every regular file under `root` with its `lstat` metadata: `.konedrive-*`
-/// entries skipped, symbolic links never followed, no mount point below the
-/// root's own filesystem crossed, and nothing deeper than
+/// entries skipped, symbolic links below the root never followed, no mount point
+/// below the root's own filesystem crossed, and nothing deeper than
 /// `konedrive_fs::MAX_DEPTH`. No file is opened — opening a placeholder
 /// would download it — only directories are.
+///
+/// `root` itself is taken as the directory it names, also when it is a link to it — the
+/// link the kernel keeps for a descriptor, by which the backing directory is walked
+/// (`BackingDirectory::resolve_root_path`): the filesystem that is not left is the
+/// directory's, not the link's.
 pub fn walk_files(root: &Path, visit: &mut dyn FnMut(&Path, &Metadata)) {
-    let Ok(root_meta) = std::fs::symlink_metadata(root) else { return };
+    let Ok(root_meta) = std::fs::metadata(root) else { return };
     let mut dirs = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = dirs.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };

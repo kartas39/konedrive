@@ -6,8 +6,8 @@ license.workspace = true
 publish = false
 
 [features]
-# Test-only: `testing::TestBus`, a private session bus. The tests of the daemon, of
-# `konedrivectl` and of the VM suite turn it on; never enable it in a build that ships.
+# Test-only: `testing::TestBus`, a private session bus. The tests of the daemon and of
+# `konedrivectl` turn it on; never enable it in a build that ships.
 testing = []
 
 [dependencies]

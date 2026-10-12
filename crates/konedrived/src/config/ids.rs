@@ -1,6 +1,6 @@
 //! The two ids `config.toml` keeps for an account, as types of their own: the account's id
-//! here ([`AccountId`]) and the id of its drive in OneDrive ([`DriveId`]). Both are text, and
-//! one given where the other is asked for does not compile.
+//! here ([`AccountId`]) and the id of its drive in OneDrive ([`DriveId`], which the tree store
+//! has). Both are text, and one given where the other is asked for does not compile.
 
 use std::fmt;
 use std::ops::Deref;
@@ -49,27 +49,7 @@ pub fn is_account_id(text: &str) -> bool {
     text.len() == 12 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// The id of a drive in OneDrive, as Graph gives it: an account's identity. Never empty: an
-/// account that has no drive yet has none (`Option<DriveId>`).
-#[derive(Clone, PartialEq, Eq, Hash, Serialize)]
-#[serde(transparent)]
-pub struct DriveId(String);
-
-impl DriveId {
-    /// `text` as a drive id; `None` when it is empty.
-    pub fn new(text: impl Into<String>) -> Option<Self> {
-        let text = text.into();
-        (!text.is_empty()).then_some(Self(text))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub fn into_string(self) -> String {
-        self.0
-    }
-}
+pub use konedrive_tree::DriveId;
 
 /// `drive_id` of an account as the file has it: a missing key and an empty text are no drive.
 pub(super) fn drive_or_none<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<DriveId>, D::Error> {
@@ -126,4 +106,3 @@ macro_rules! text_id {
 }
 
 text_id!(AccountId);
-text_id!(DriveId);

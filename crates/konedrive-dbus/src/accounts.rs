@@ -71,10 +71,6 @@ pub trait Accounts {
     /// What every account does on battery: `sync`, `power-saver` or `pause`.
     #[zbus(property)]
     fn on_battery(&self) -> zbus::Result<String>;
-    /// The privileged helper as the daemon sees it, as [`HelperState`](crate::HelperState)
-    /// spells it.
-    #[zbus(property)]
-    fn helper_state(&self) -> zbus::Result<String>;
     /// Trouble that belongs to no account; empty when there is none.
     #[zbus(property)]
     fn last_error(&self) -> zbus::Result<String>;
@@ -145,9 +141,8 @@ pub trait Account {
     fn set_label(&self, label: &str) -> zbus::Result<()>;
     /// Switches the mode to `read-only` or `read-write`; the URL of the
     /// sign-in the switch needs, empty when it needs none. Refused
-    /// `NotSignedIn`, `Failed` for an account whose drive is not known and cannot be
-    /// asked for now, or `PendingUploads` unless `force`
-    /// (`dbus/org.konedrive.Account.xml`).
+    /// `NotSignedIn`, or `Failed` for an account whose drive is not known and cannot be
+    /// asked for now (`dbus/org.konedrive.Account.xml`).
     fn set_mode(&self, mode: &str, force: bool) -> zbus::Result<String>;
 
     /// The last element of the object path.
@@ -163,6 +158,15 @@ pub trait Account {
     fn state(&self) -> zbus::Result<String>;
     #[zbus(property)]
     fn last_error(&self) -> zbus::Result<String>;
+    /// The user asked for read-only while changes were unsent: the account is read-write
+    /// still, sends them, and switches by itself when none is left
+    /// ([`set_mode`](Self::set_mode) forced switches at once; to read-write takes the wish back).
+    #[zbus(property)]
+    fn read_only_wanted(&self) -> zbus::Result<bool>;
+    /// While [`read_only_wanted`](Self::read_only_wanted): how many changes are still to
+    /// send before the switch; 0 otherwise.
+    #[zbus(property)]
+    fn unsent_before_read_only(&self) -> zbus::Result<u64>;
     #[zbus(property)]
     fn display_name(&self) -> zbus::Result<String>;
     #[zbus(property)]
@@ -189,9 +193,7 @@ pub trait Folder {
     /// Refused `Overlaps` for a folder that is, is inside, or contains
     /// another account's folder.
     fn register(&self, path: &str) -> zbus::Result<()>;
-    fn register_without_interception(&self, path: &str) -> zbus::Result<()>;
     fn unregister(&self) -> zbus::Result<()>;
-    fn populate_from_directory(&self, source_dir: &str) -> zbus::Result<u64>;
     fn refresh(&self) -> zbus::Result<()>;
     fn skipped(&self) -> zbus::Result<Vec<NotInFolder>>;
     fn free_up_space(&self) -> zbus::Result<FreedSpace>;
@@ -210,7 +212,7 @@ pub trait Folder {
 
     #[zbus(property)]
     fn path(&self) -> zbus::Result<String>;
-    /// `none`, `listing`, `ready`, `no-interception` or `error`.
+    /// `none`, `waiting`, `listing`, `ready` or `error`.
     #[zbus(property)]
     fn state(&self) -> zbus::Result<String>;
     #[zbus(property)]
@@ -309,8 +311,13 @@ pub trait Transfers {
     /// Seconds left of OneDrive's `Retry-After` wait; 0 when there is none.
     #[zbus(property)]
     fn retry_after(&self) -> zbus::Result<u32>;
-    /// The queue totals: files left to download and changes left to upload,
-    /// their bytes, the bytes done in this run, and the seconds left (0: unknown).
+    /// The full path of the file a program was first refused the content of during the
+    /// `Retry-After` that runs; empty when none was, and when no wait runs.
+    #[zbus(property)]
+    fn retry_after_refusal(&self) -> zbus::Result<String>;
+    /// The queue totals: files left to download (the pinned files whose content is not on
+    /// this computer yet, and each file being opened while its download runs) and changes
+    /// left to upload, their bytes, the bytes done in this run, and the seconds left (0: unknown).
     #[zbus(property)]
     fn download_left_count(&self) -> zbus::Result<u32>;
     #[zbus(property)]
@@ -339,10 +346,9 @@ pub trait Transfers {
 pub trait UploadQueue {
     /// The changes waiting to be uploaded, oldest first, at most `limit` (0 for all).
     fn changes(&self, limit: u32) -> zbus::Result<Vec<Change>>;
-    /// The held removals go ahead; how many.
-    fn confirm_deletes(&self) -> zbus::Result<u32>;
-    /// The held removals are dropped and their items placed again; how many.
-    fn restore_deletes(&self) -> zbus::Result<u32>;
+    /// How many changes made here are not sent, whatever holds them: for the warning
+    /// before a Forget and a removal of the account. Answered for a folder in any state.
+    fn unsent_count(&self) -> zbus::Result<u64>;
     /// What stays on this computer and why.
     fn not_uploaded(&self) -> zbus::Result<Vec<KeptBack>>;
     /// What is kept back, one row per reason, by group: one-action, per-file, never,
@@ -360,10 +366,6 @@ pub trait UploadQueue {
     /// Changes that need the user before they can go up.
     #[zbus(property)]
     fn blocked_count(&self) -> zbus::Result<u32>;
-    /// Removals held by the mass-delete guard: `confirm_deletes` or
-    /// `restore_deletes` decides them.
-    #[zbus(property)]
-    fn held_count(&self) -> zbus::Result<u32>;
     /// OneDrive is full: no content goes up until a quota read finds space.
     #[zbus(property)]
     fn quota_full(&self) -> zbus::Result<bool>;
@@ -385,7 +387,7 @@ pub trait UploadQueue {
 )]
 pub trait Conflicts {
     fn list(&self) -> zbus::Result<Vec<Conflict>>;
-    fn dismiss(&self, rescued_path: &str) -> zbus::Result<()>;
+    fn dismiss(&self, kept_path: &str) -> zbus::Result<()>;
 
     #[zbus(property)]
     fn count(&self) -> zbus::Result<u32>;
@@ -404,20 +406,12 @@ pub trait LocalScan {
     /// `running`, `idle`, or `none` for a read-only folder.
     #[zbus(property)]
     fn state(&self) -> zbus::Result<String>;
-    /// Why it runs: start, read-write, helper-back, overflow, ignore-list, periodic.
+    /// Why it runs: start.
     #[zbus(property)]
     fn reason(&self) -> zbus::Result<String>;
     /// Unix seconds when it started.
     #[zbus(property)]
     fn started(&self) -> zbus::Result<i64>;
-    /// Directories and files seen so far.
-    #[zbus(property)]
-    fn directories(&self) -> zbus::Result<u64>;
-    #[zbus(property)]
-    fn files(&self) -> zbus::Result<u64>;
-    /// About how many items it will see (the base's count, not the disk's).
-    #[zbus(property)]
-    fn expected(&self) -> zbus::Result<u64>;
     /// Unix seconds when the last scan finished (0: none yet), and how long it took.
     #[zbus(property)]
     fn finished(&self) -> zbus::Result<i64>;

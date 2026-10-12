@@ -10,7 +10,7 @@ inside `<folder>/konedrive-stress-<time>/` (plus one temporary directory outside
 scenarios that move things out and, mostly, back in) and, by default, leaves everything it made in
 place afterwards, locally and in OneDrive, so a run can be inspected; pass `--cleanup` for the old
 behaviour of deleting it all at the end. Every scenario is checked three ways once the outbox
-drains: no blocked or held rows are left, nothing of this run is stuck in `not-uploaded`, and —
+drains: no blocked rows are left, nothing of this run is stuck in `not-uploaded`, and —
 after `sync refresh` — the local and OneDrive item counts agree; then, read-only against Graph
 itself (`graph_check.py`), the run folder's actual content in OneDrive is compared file by file
 against what is on disk (size and QuickXorHash), because matching counts alone would not catch a
@@ -84,7 +84,7 @@ def preflight(args: argparse.Namespace, ctl: konedrivectl_wrap.Ctl) -> RunContex
         ctl.account = account_guard.test_account_id(config_path, args.account)
     except account_guard.NotATestAccount as e:
         raise Refused(
-            f"{e}. This tool writes real changes and confirms held deletes on its own, so it runs only "
+            f"{e}. This tool writes real changes, deletions among them, so it runs only "
             "against a test account, never a real one."
         ) from e
 
@@ -151,9 +151,7 @@ def teardown(ctx: RunContext) -> None:
 
 def wait_for_drain(ctl: konedrivectl_wrap.Ctl, timeout: float, poll: float = 1.0, stable_secs: float = 3.0):
     """Polls `sync outbox --all` until it says nothing is waiting, stable for `stable_secs`.
-    Confirms any held deletes along the way — this run's own mass deletes are always held for
-    confirmation, and this is the only thing in the tool that releases them (see the README: this
-    is why it is for a test account only). Returns `(drained, last outbox text)`."""
+    Returns `(drained, last outbox text)`."""
     deadline = time.monotonic() + timeout
     stable_since = None
     last_text = ""
@@ -162,12 +160,6 @@ def wait_for_drain(ctl: konedrivectl_wrap.Ctl, timeout: float, poll: float = 1.0
         text = run.stdout if run.ok else last_text or run.combined()
         last_text = text
         rows = konedrivectl_wrap.parse_outbox(run.stdout) if run.ok else []
-        held = [r for r in rows if r.state == "held"]
-        if held:
-            ctl.deletes_confirm()
-            stable_since = None
-            time.sleep(poll)
-            continue
         if not rows:
             if stable_since is None:
                 stable_since = time.monotonic()
@@ -203,7 +195,7 @@ def _under_run_root(path_str: str, run_root: Path) -> bool:
 
 
 def check_scenario(ctx: RunContext, tag: str = ""):
-    """The four checks every scenario gets, in order: drain, no blocked/held, nothing of this run
+    """The four checks every scenario gets, in order: drain, no blocked rows, nothing of this run
     stuck locally, item counts agree after a refresh, and — read-only against Graph — the run
     folder's actual content matches disk. Returns `(problems, extra CLI output for the report)`."""
     problems: list = []
@@ -217,9 +209,9 @@ def check_scenario(ctx: RunContext, tag: str = ""):
 
     outbox_run = ctx.ctl.outbox_all()
     rows = konedrivectl_wrap.parse_outbox(outbox_run.stdout) if outbox_run.ok else []
-    bad = [r for r in rows if r.state in ("blocked", "held")]
+    bad = [r for r in rows if r.state == "blocked"]
     if bad:
-        problems.append(f"{len(bad)} row(s) left blocked or held in the outbox{suffix}")
+        problems.append(f"{len(bad)} row(s) left blocked in the outbox{suffix}")
         extra["outbox"] = outbox_run.stdout
 
     nu_run = ctx.ctl.not_uploaded()
@@ -747,7 +739,6 @@ class SoakSample:
     elapsed_s: float
     outbox_rows: int
     blocked: int
-    held: int
 
 
 @dataclasses.dataclass
@@ -986,7 +977,6 @@ def run_soak(ctx: RunContext, args: argparse.Namespace) -> SoakResult:
                     elapsed_s=now - t_start,
                     outbox_rows=len(rows),
                     blocked=sum(1 for r in rows if r.state == "blocked"),
-                    held=sum(1 for r in rows if r.state == "held"),
                 )
             )
             last_sample = now
@@ -1123,10 +1113,10 @@ def write_report(args, ctx: RunContext, results: list, soak_result, start_dt: da
         lines.append("")
         lines.append("### Outbox timeline (sampled every ~30s, without blocking)")
         lines.append("")
-        lines.append("| At (s) | Outbox rows | Blocked | Held |")
-        lines.append("| ------ | ----------- | ------- | ---- |")
+        lines.append("| At (s) | Outbox rows | Blocked |")
+        lines.append("| ------ | ----------- | ------- |")
         for s in soak_result.samples:
-            lines.append(f"| {s.elapsed_s:.0f} | {s.outbox_rows} | {s.blocked} | {s.held} |")
+            lines.append(f"| {s.elapsed_s:.0f} | {s.outbox_rows} | {s.blocked} |")
         lines.append("")
         if not soak_result.passed:
             lines.append("### Soak final check — FAIL")

@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,9 +11,6 @@ use futures_util::FutureExt;
 use tracing_subscriber::EnvFilter;
 
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-/// The first delay before a helper reconnect is retried; it doubles up to
-/// `helper::hub::MAX_HELPER_BACKOFF`.
-const HELPER_BACKOFF: Duration = Duration::from_secs(1);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -22,6 +18,18 @@ async fn main() -> anyhow::Result<()> {
     if std::env::args().nth(1).is_some_and(|arg| arg == "--version" || arg == "-V") {
         use konedrive_dbus::version::{line, COMMIT, VERSION};
         println!("{}", line("konedrived", VERSION, COMMIT));
+        return Ok(());
+    }
+    // What the unit runs after the daemon's end, however it ended: a folder that shows OneDrive
+    // loses the mount the daemon left on it, and is locked.
+    if std::env::args().nth(1).is_some_and(|arg| arg == "--tidy") {
+        let folders = konedrived::mount::tidy_served_folders(&Paths::from_xdg()?.config_file);
+        // A file manager that showed the mount reads the folder on disk now.
+        let directories = folders.iter().flat_map(|folder| konedrived::mount::list_directories(folder)).collect();
+        // The tidy step has no daemon's connection: it opens the session bus itself, and with none says nothing.
+        if let Ok(connection) = zbus::Connection::session().await {
+            konedrived::desktop::dirnotify::read_again(&connection, directories).await;
+        }
         return Ok(());
     }
     tracing_subscriber::fmt()
@@ -42,9 +50,8 @@ async fn main() -> anyhow::Result<()> {
         drive: konedrived::daemon::manager::own_drive(),
         bus: Arc::new(konedrived::dbus::export::OnBus),
     };
-    // `config.toml` migrated, every account brought up as far as it can be
-    // without the helper, every object exported, and only then the bus name
-    // claimed: a D-Bus-activated client's first call is never answered from
+    // `config.toml` migrated, every account's folder taken up, every object exported, and
+    // only then the bus name claimed: a D-Bus-activated client's first call is never answered from
     // stale state (`docs/design/accounts.md` §3.2). Held for the life of the process: dropping
     // the connection would drop the bus name and every object with it.
     // A stop before the daemon is up has nothing in flight to wait for.
@@ -56,25 +63,8 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     let registry = Arc::clone(daemon.manager.registry());
-    let hub = Arc::clone(registry.hub());
-    // HS1: with no link, `HelperState` says what systemd says of the
-    // helper's unit (read-only, on the system bus). The one place that asks
-    // the real systemd.
-    hub.set_unit(Arc::new(konedrived::helper::status::Systemd::default()));
-    // Everything that can be slow — the helper connection, which can take up
-    // to 30 s against a helper that accepts and then says nothing, and each
-    // folder's registration and recovery walk — happens in the supervisor,
-    // where it delays nobody's first call. On every connect it brings every
-    // account's folder up, one after another, before it serves a fill.
     // Kept, each of them: one that is gone ends the daemon (quality finding `SY11`).
     let mut tasks = stop::Tasks::default();
-    tasks.spawn(
-        "the helper's supervisor",
-        stop::Need::Always,
-        konedrived::helper::hub::supervise(Arc::clone(&hub), PathBuf::from(konedrive_proto::SOCKET_PATH), HELPER_BACKOFF),
-    );
-    // `HelperState` follows the link, and systemd every 30 s without one.
-    tasks.spawn("the watch of the helper's state", stop::Need::Always, konedrived::helper::hub::watch(hub));
     // Every account holds back by itself on a metered connection or on battery, as its
     // settings say (`conditions`). With no system bus it has nothing to follow, and ends.
     tasks.spawn("the watcher of power and metering", stop::Need::WhileItCan, konedrived::conditions::watch(Arc::clone(&registry)));
@@ -82,10 +72,9 @@ async fn main() -> anyhow::Result<()> {
     tasks.spawn("the network's watcher", stop::Need::WhileItCan, konedrived::conditions::network::watch(Arc::clone(&registry)));
 
     tracing::info!("konedrived ready");
-    let _connection = daemon.connection;
+    let connection = daemon.connection;
     // A signal stops the daemon; so does the end of a task it cannot work without, and then
-    // it leaves with a failure, for systemd to start it again (`Restart=on-failure`): a
-    // daemon that stays up with no supervisor says ready and fills nothing.
+    // it leaves with a failure, for systemd to start it again (`Restart=on-failure`).
     let code = match stop::stopped(signals.next(), &mut tasks).await {
         None => 0,
         Some(died) => {
@@ -96,11 +85,34 @@ async fn main() -> anyhow::Result<()> {
     // The stop: nothing new is sent, and the requests in flight
     // get a bounded time to return and be persisted; a second signal ends it.
     tracing::info!("stopping: the uploads in flight get up to {} s", stop::STOP_BOUND.as_secs());
-    let closing: Vec<_> = registry.accounts().iter().filter_map(|sync| sync.close_outbox()).collect();
-    match stop::wind_down(futures_util::future::join_all(closing).map(|_| ()), stop::STOP_BOUND, signals.next()).await {
+    // One call per account: its sync is stopped, then its folder loses its mount and is locked.
+    // The folders that got there within the bound are kept, for the desktop to be told. The unit's
+    // tidy step does the same for a daemon that could not.
+    // A folder whose end was cut at the bound, or by a second signal, is left as it is: the process exits with its
+    // mount still over the folder, which is then a mount whose daemon is gone, or with the write bits half removed.
+    // The tidy step takes such a mount off and removes the write bits of the whole folder (`mount::tidy_folder`).
+    let ended: Arc<std::sync::Mutex<Vec<std::path::PathBuf>>> = Arc::default();
+    let ending: Vec<_> = registry
+        .accounts()
+        .into_iter()
+        .map(|sync| {
+            let ended = Arc::clone(&ended);
+            async move {
+                if let Some(folder) = sync.end_at_daemon_stop().await {
+                    konedrived::panic::lock(&ended).push(folder);
+                }
+            }
+        })
+        .collect();
+    match stop::wind_down(futures_util::future::join_all(ending).map(|_| ()), stop::STOP_BOUND, signals.next()).await {
         stop::Ended::Finished => tracing::info!("stopped"),
         stop::Ended::Bound => tracing::warn!("stopped: requests still in flight are cut"),
         stop::Ended::Again => tracing::warn!("stopped at once by a second signal"),
+    }
+    // Last: whoever showed a mount that is gone is told to read the folder on disk.
+    let ended: Vec<std::path::PathBuf> = std::mem::take(&mut *konedrived::panic::lock(&ended));
+    for folder in ended {
+        konedrived::desktop::dirnotify::read_again(&connection, konedrived::mount::list_directories(&folder)).await;
     }
     // Not through the runtime's drop, which would wait for blocking tasks.
     std::process::exit(code)

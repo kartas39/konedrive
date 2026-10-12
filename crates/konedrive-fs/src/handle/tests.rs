@@ -15,22 +15,6 @@ fn a_handle_follows_the_inode_through_a_rename_and_not_the_name() {
     assert_eq!(FileHandle::at(&root, OsStr::new("gone")).unwrap_err().raw_os_error(), Some(libc::ENOENT));
 }
 
-/// A handle the kernel could never have handed out is refused before any
-/// system call: the helper passes the daemon's bytes straight through.
-#[test]
-fn a_malformed_handle_is_refused_before_the_kernel_sees_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = File::open(dir.path()).unwrap();
-    let einval = |handle: FileHandle| {
-        assert!(!handle.is_well_formed(), "{handle:?}");
-        handle.open(std::os::fd::AsFd::as_fd(&root), libc::O_PATH).unwrap_err().raw_os_error()
-    };
-    assert_eq!(einval(FileHandle { kind: 1, bytes: Vec::new() }), Some(libc::EINVAL));
-    assert_eq!(einval(FileHandle { kind: 1, bytes: vec![0; MAX_HANDLE_BYTES + 1] }), Some(libc::EINVAL));
-    assert_eq!(einval(FileHandle { kind: -1, bytes: vec![0; 8] }), Some(libc::EINVAL));
-    assert!(FileHandle { kind: 0x4d, bytes: vec![0; MAX_HANDLE_BYTES] }.is_well_formed());
-}
-
 #[test]
 fn a_symlink_is_not_followed() {
     let dir = tempfile::tempdir().unwrap();

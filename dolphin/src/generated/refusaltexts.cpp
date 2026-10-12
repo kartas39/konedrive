@@ -15,19 +15,6 @@ QString refusalSentence(Operation operation, const QString &errorName, const QSt
     if (errorName == QLatin1String("org.konedrive.Error.NoRoot")) {
         return i18nc("@info", "The folder holding “%1” is no longer registered with KOneDrive, so nothing was done with it.", file);
     }
-    if (errorName == QLatin1String("org.konedrive.Error.NoHelper")) {
-        switch (operation) {
-        case Operation::AlwaysKeep:
-            return i18nc("@info", "The konedrive helper is not connected, so nothing was changed. Keeping “%1” on this device must first have the helper stop letting its opens through unchecked — a download that failed partway would otherwise leave it reading as zeros. Try again once the helper is back (“konedrivectl sync status” shows when it is).", file);
-        case Operation::Unpin:
-            return i18nc("@info", "The konedrive helper is not connected, so nothing was changed. Unpinning “%1” needs the helper too, the same as any other change under KOneDrive's watch. Try again once KOneDrive is connected to the helper again — it reconnects on its own.", file);
-        case Operation::FreeUpSpace:
-            return i18nc("@info", "The konedrive helper is not connected, so nothing was changed. Freeing up “%1” must first have the helper take off any mark that lets the file's opens through unchecked, or the emptied file could read as zeros from then on. Try again once KOneDrive is connected to the helper again — it reconnects on its own.", file);
-        case Operation::OpenOnline:
-            break;
-        }
-        return QString();
-    }
     if (errorName == QLatin1String("org.konedrive.Error.NotManaged")) {
         switch (operation) {
         case Operation::AlwaysKeep:
@@ -80,7 +67,7 @@ QString refusalSentence(Operation operation, const QString &errorName, const QSt
         return QString();
     }
     if (errorName == QLatin1String("org.konedrive.Error.NoSource")) {
-        return i18nc("@info", "KOneDrive does not know where to download “%1” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).", file);
+        return i18nc("@info", "The folder is not connected to OneDrive yet, so “%1” cannot be downloaded. Try again in a moment.", file);
     }
     if (errorName == QLatin1String("org.konedrive.Error.NotAllowed")) {
         switch (operation) {
@@ -176,12 +163,8 @@ QString freeUpWhyToolTip(MenuAnswer::FreeUpWhy why, const QString &blockedBy)
     switch (why) {
     case MenuAnswer::FreeUpWhy::PinnedAbove:
         return i18nc("@info:tooltip", "Kept on this device because “%1” is; unpin it first.", blockedBy);
-    case MenuAnswer::FreeUpWhy::NoHelper:
-        return i18nc("@info:tooltip", "The konedrive helper is not connected. Try again once it is — it reconnects on its own.");
     case MenuAnswer::FreeUpWhy::NotUploaded:
         return i18nc("@info:tooltip", "Not uploaded yet: freeing it up would lose the changes made here.");
-    case MenuAnswer::FreeUpWhy::Unknown:
-        return i18nc("@info:tooltip", "KOneDrive cannot tell yet whether a change here waits to be uploaded. Try again in a moment.");
     case MenuAnswer::FreeUpWhy::NotSaid:
         break;
     }

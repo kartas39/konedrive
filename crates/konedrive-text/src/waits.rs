@@ -41,27 +41,7 @@ pub const WAITS: &[WaitText] = &[
             many: "Still on this computer: {count} changes in it wait to be uploaded.",
         },
     },
-    WaitText { key: "changes", sentence: WaitSentence::Path("Still on this computer: what was done at {path} on this computer has not reached OneDrive yet.") },
     WaitText { key: "open-for-writing", sentence: WaitSentence::Path("Still on this computer: {path} is open in a program.") },
-    WaitText {
-        key: "unknown-state",
-        sentence: WaitSentence::Path("Still on this computer: whether {path} holds changes cannot be read. Move it out of the folder or delete it."),
-    },
-    WaitText {
-        key: "not-downloaded",
-        sentence: WaitSentence::Path("Still on this computer: {path} is not downloaded and is not where OneDrive has it. Move it out of the folder."),
-    },
-    WaitText {
-        key: "local-only",
-        sentence: WaitSentence::Path("Still on this computer: {path} is only here (its name is on the ignore list). Move it out of the folder or delete it."),
-    },
-    WaitText { key: "mounted-inside", sentence: WaitSentence::Path("Still on this computer: another filesystem is mounted at {path}. Unmount it.") },
-    WaitText {
-        key: "moved-in-onedrive",
-        sentence: WaitSentence::Path(
-            "Still on this computer: {path} was moved in OneDrive, and the name it has there is taken on this computer. Rename or move what has that name.",
-        ),
-    },
 ];
 
 /// The entry of a key.

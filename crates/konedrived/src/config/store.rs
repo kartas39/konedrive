@@ -67,9 +67,7 @@ impl From<ConfigError> for String {
 /// [`last_error`](Self::last_error) (`Accounts.LastError`). A later start with the file
 /// fixed loads, or migrates, it then.
 ///
-/// The calls do blocking file I/O on a small file, as the single-account code did. The one
-/// caller that asks before every outbox row, the write gate, calls from a blocking thread
-/// (`Engine::may_write` of `upload/engine.rs`); the rest of its readers do not.
+/// The calls do blocking file I/O on a small file, as the single-account code did.
 pub struct ConfigStore {
     file: PathBuf,
     inner: Mutex<Inner>,

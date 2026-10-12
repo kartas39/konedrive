@@ -145,7 +145,7 @@ jobs:
       - name: The programs find their libraries
         run: |
           missing=0
-          for file in /usr/bin/konedrived /usr/bin/konedrivectl /usr/bin/konedrive /usr/libexec/konedrive-helper \
+          for file in /usr/bin/konedrived /usr/bin/konedrivectl /usr/bin/konedrive \
                       $(rpm -ql konedrive-kde | grep '\.so$'); do
             echo "== $file"
             if ldd "$file" | grep 'not found'; then

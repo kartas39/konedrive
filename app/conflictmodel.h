@@ -4,9 +4,9 @@
 
 #include <QAbstractListModel>
 
-/// The window's "Conflicts" list: local versions the sync moved out of the
-/// way (Conflicts.List()), newest first, the first `Shown` of them; `total`
-/// counts them all. Rows are kept by the path the file was moved to, and a
+/// The window's "Conflicts" list: files changed here and in OneDrive, each with
+/// the copy kept beside it (Conflicts.List()), newest first, the first `Shown` of
+/// them; `total` counts them all. Rows are kept by the copy's path, and a
 /// refresh applies what changed at once — one removal, one insertion and one
 /// dataChanged, or else one reset — never row by row.
 class ConflictModel : public QAbstractListModel
@@ -21,13 +21,11 @@ public:
     enum Role {
         TimeRole = Qt::UserRole + 1,
         OriginalRole,
-        RescuedRole,
+        CopyRole,
         NameRole,
         OriginalFolderRole,
-        RescuedFolderRole,
-        /// A copy kept beside the original (the daemon's kind "copy"), not a rescue.
-        IsCopyRole,
-        RescuedNameRole,
+        CopyFolderRole,
+        CopyNameRole,
     };
     Q_ENUM(Role)
 

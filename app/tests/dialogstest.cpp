@@ -159,7 +159,8 @@ private Q_SLOTS:
 
     /// "Upload changes made on this computer" follows Mode. Turned on, it
     /// explains before the daemon is asked anything; turned off while
-    /// changes wait to be uploaded, it asks before it drops them.
+    /// changes are unsent, the page shows the switch that waits, with its
+    /// two ways out.
     void theUploadSwitch()
     {
         FakeDaemon fake;
@@ -194,8 +195,7 @@ private Q_SLOTS:
         QObject *page = window->findChild<QObject *>(QStringLiteral("accountPage"));
         QObject *uploadSwitch = window->findChild<QObject *>(QStringLiteral("uploadSwitch"));
         QObject *explain = window->findChild<QObject *>(QStringLiteral("uploadDialog"));
-        QObject *drop = window->findChild<QObject *>(QStringLiteral("dropUploadsDialog"));
-        QVERIFY(page && uploadSwitch && explain && drop);
+        QVERIFY(page && uploadSwitch && explain);
         QTRY_VERIFY(uploadSwitch->property("enabled").toBool());
         QVERIFY(!uploadSwitch->property("checked").toBool());
 
@@ -213,17 +213,130 @@ private Q_SLOTS:
         fake.account->set({{QStringLiteral("Mode"), QStringLiteral("read-write")}});
         QTRY_VERIFY(uploadSwitch->property("checked").toBool());
 
-        // Off, with changes waiting: asked first, then forced.
-        fake.account->pendingUploads = 2;
+        // Off: asked of the daemon at once, with no question.
         QMetaObject::invokeMethod(page, "setUploads", Q_ARG(QVariant, false));
-        QTRY_VERIFY(shown(drop));
-        QVERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-only:no-force")));
-        QTRY_VERIFY(uploadSwitch->property("checked").toBool());
-        QMetaObject::invokeMethod(drop, "confirm");
-        QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-only:force")));
+        QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-only:no-force")));
         QTRY_COMPARE(accounts.at(0)->account()->mode(), QStringLiteral("read-only"));
         QTRY_VERIFY(accounts.at(0)->account()->switchingTo().isEmpty());
         QVERIFY(!uploadSwitch->property("checked").toBool());
+
+        // Off while changes are unsent: no question; the page says that the switch waits.
+        QObject *waits = window->findChild<QObject *>(QStringLiteral("switchingToReadOnlyLine"));
+        QObject *now = window->findChild<QObject *>(QStringLiteral("switchToReadOnlyNow"));
+        QObject *cancel = window->findChild<QObject *>(QStringLiteral("cancelReadOnlySwitch"));
+        QVERIFY(waits && now && cancel);
+        QVERIFY(!waits->property("visible").toBool());
+        fake.account->set({{QStringLiteral("Mode"), QStringLiteral("read-write")}});
+        QTRY_VERIFY(uploadSwitch->property("checked").toBool());
+        fake.account->unsentChanges = 2;
+        QMetaObject::invokeMethod(page, "setUploads", Q_ARG(QVariant, false));
+        QTRY_VERIFY(waits->property("visible").toBool());
+        QCOMPARE(waits->property("text").toString(), QStringLiteral("Switching to read-only: 2 changes still to send"));
+        QVERIFY(now->property("visible").toBool() && cancel->property("visible").toBool());
+        QVERIFY(uploadSwitch->property("checked").toBool());
+        QObject *accountError = window->findChild<QObject *>(QStringLiteral("accountError"));
+        QVERIFY(accountError);
+        QVERIFY(!accountError->property("visible").toBool());
+
+        // Cancel takes the wish back: read-write, and the state is gone.
+        fake.account->calls.clear();
+        QTRY_VERIFY(cancel->property("enabled").toBool());
+        QMetaObject::invokeMethod(cancel, "clicked");
+        QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-write:no-force")));
+        QTRY_VERIFY(!waits->property("visible").toBool());
+        QVERIFY(uploadSwitch->property("checked").toBool());
+
+        // Switch Now forces it.
+        QTRY_VERIFY(uploadSwitch->property("enabled").toBool());
+        QMetaObject::invokeMethod(page, "setUploads", Q_ARG(QVariant, false));
+        QTRY_VERIFY(waits->property("visible").toBool());
+        QTRY_VERIFY(now->property("enabled").toBool());
+        QMetaObject::invokeMethod(now, "clicked");
+        QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-only:force")));
+        QTRY_COMPARE(accounts.at(0)->account()->mode(), QStringLiteral("read-only"));
+        QTRY_VERIFY(!waits->property("visible").toBool());
+        QVERIFY(!uploadSwitch->property("checked").toBool());
+
+        fake.stop();
+    }
+
+    /// A Forget and the account's removal are never refused for what is unsent:
+    /// the question says how many changes stay only on this computer. With none,
+    /// the removal asks as it always did, and the folder is forgotten unasked.
+    void aForgetAndARemovalWarnOfUnsentChanges()
+    {
+        FakeDaemon fake;
+        const QString root = QStringLiteral("/home/u/OneDrive");
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        fake.sync->folder->set({{QStringLiteral("Path"), root}, {QStringLiteral("State"), QStringLiteral("ready")}, {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+        QVERIFY(fake.start());
+
+        Autostart autostart;
+        DownloadProgressSettings progress;
+        PlacesSettings places;
+        TraySettings trayIcons;
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
+
+        QQmlApplicationEngine engine;
+        KLocalization::setupLocalizedContext(&engine);
+        engine.loadFromModule("org.konedrive.app.window", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        window->show();
+        QTRY_COMPARE(accounts.count(), 1);
+        QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->sync()->rootPath() == root);
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("account")));
+        QObject *remove = window->findChild<QObject *>(QStringLiteral("removeDialog"));
+        QObject *forget = window->findChild<QObject *>(QStringLiteral("forgetDialog"));
+        QVERIFY(remove && forget);
+
+        // Nothing unsent: the removal's question says only what it always said.
+        QMetaObject::invokeMethod(remove, "open");
+        QTRY_VERIFY(shown(remove));
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("UnsentCount")));
+        QTest::qWait(100);
+        QVERIFY(remove->property("subtitle").toString().startsWith(QStringLiteral("The files that were downloaded")));
+        QMetaObject::invokeMethod(remove, "close");
+        QTRY_VERIFY(!shown(remove));
+
+        // Two changes unsent: said first, in both questions.
+        const QString warning = QStringLiteral("2 changes were not sent to OneDrive and will stay only on this computer.");
+        fake.sync->uploadQueueRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("pending"), 0, 10, QString(), 0},
+                                 {2, QStringLiteral("create"), root + QStringLiteral("/b.odt"), QStringLiteral("pending"), 0, 10, QString(), 0}};
+        QMetaObject::invokeMethod(remove, "open");
+        QTRY_VERIFY(shown(remove));
+        QTRY_VERIFY(remove->property("subtitle").toString().startsWith(warning));
+        QVERIFY(remove->property("subtitle").toString().contains(QStringLiteral("The files that were downloaded")));
+        QMetaObject::invokeMethod(remove, "close");
+        QTRY_VERIFY(!shown(remove));
+        QVERIFY(!fake.manager->calls.join(QLatin1Char(' ')).contains(QStringLiteral("Remove")));
+
+        QMetaObject::invokeMethod(forget, "ask");
+        QTRY_VERIFY(shown(forget));
+        QCOMPARE(forget->property("subtitle").toString(), warning);
+        QVERIFY(!fake.sync->calls.contains(QStringLiteral("Unregister")));
+        // Declined: nothing is forgotten.
+        QMetaObject::invokeMethod(forget, "close");
+        QTRY_VERIFY(!shown(forget));
+        QTest::qWait(100);
+        QVERIFY(!fake.sync->calls.contains(QStringLiteral("Unregister")));
+        // Asked again and confirmed.
+        QMetaObject::invokeMethod(forget, "ask");
+        QTRY_VERIFY(shown(forget));
+        QMetaObject::invokeMethod(forget, "confirm");
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Unregister")));
+        QTRY_VERIFY(!shown(forget));
+
+        // Nothing unsent: forgotten unasked.
+        fake.sync->uploadQueueRows.clear();
+        fake.sync->calls.clear();
+        QMetaObject::invokeMethod(forget, "ask");
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Unregister")));
+        QVERIFY(!shown(forget));
 
         fake.stop();
     }
@@ -447,9 +560,8 @@ private Q_SLOTS:
         fake.stop();
     }
 
-    /// Issue #8: the Status page says how the local scan goes — how far a running one got,
-    /// of about how many, since when and why; then when the last one finished; and nothing
-    /// for a read-only folder.
+    /// The Status page says how the check of the local files goes — since when a running
+    /// one runs and why; then when the last one finished.
     void theStatusPageShowsTheLocalScan()
     {
         FakeDaemon fake;
@@ -458,11 +570,8 @@ private Q_SLOTS:
                                 {QStringLiteral("State"), QStringLiteral("ready")},
                                 {QStringLiteral("Source"), QStringLiteral("onedrive")}});
         fake.sync->scan->set({{QStringLiteral("State"), QStringLiteral("running")},
-                              {QStringLiteral("Reason"), QStringLiteral("read-write")},
-                              {QStringLiteral("Started"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 125)},
-                              {QStringLiteral("Directories"), QVariant::fromValue<qulonglong>(12)},
-                              {QStringLiteral("Files"), QVariant::fromValue<qulonglong>(345)},
-                              {QStringLiteral("Expected"), QVariant::fromValue<qulonglong>(500)}});
+                              {QStringLiteral("Reason"), QStringLiteral("start")},
+                              {QStringLiteral("Started"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 125)}});
         QVERIFY(fake.start());
 
         Autostart autostart;
@@ -497,7 +606,7 @@ private Q_SLOTS:
         QVERIFY(line);
         QTRY_VERIFY(line->isVisible());
         QCOMPARE(line->property("text").toString(),
-                 QStringLiteral("Checking local files: 12 folders and 345 files, of about 500 — started 2 min ago, after the switch to read-write"));
+                 QStringLiteral("Checking local files — started 2 min ago, as syncing started"));
 
         fake.sync->scan->set({{QStringLiteral("State"), QStringLiteral("idle")},
                               {QStringLiteral("Finished"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 300)},

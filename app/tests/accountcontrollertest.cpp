@@ -189,29 +189,77 @@ private Q_SLOTS:
                  QStringLiteral("Uploading was not turned off: disk full"));
     }
 
-    /// Changes waiting to be uploaded make the switch to read-only a
-    /// question; forced, it goes through.
-    void aSwitchToReadOnlyAsksBeforeDroppingUploads()
+    /// A switch to read-only is asked of the daemon as it was asked for,
+    /// forced or not, and is no error.
+    void aSwitchToReadOnlyIsAskedForcedOrNot()
     {
         startFake();
         m_daemon->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}, {QStringLiteral("Mode"), QStringLiteral("read-write")}});
-        m_daemon->account->pendingUploads = 3;
         AccountController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.mode(), QStringLiteral("read-write"));
-        QSignalSpy asked(&controller, &AccountController::pendingUploadsRefused);
 
         controller.setMode(QStringLiteral("read-only"));
         QCOMPARE(controller.switchingTo(), QStringLiteral("read-only"));
-        QTRY_COMPARE(asked.count(), 1);
+        QTRY_COMPARE(controller.mode(), QStringLiteral("read-only"));
+        QTRY_COMPARE(controller.switchingTo(), QString());
         QCOMPARE(controller.actionError(), QString());
-        QCOMPARE(controller.switchingTo(), QString());
-        QCOMPARE(controller.mode(), QStringLiteral("read-write"));
+        QVERIFY(m_daemon->account->calls.contains(QStringLiteral("SetMode:read-only:no-force")));
 
+        m_daemon->account->set({{QStringLiteral("Mode"), QStringLiteral("read-write")}});
+        QTRY_COMPARE(controller.mode(), QStringLiteral("read-write"));
         controller.setMode(QStringLiteral("read-only"), true);
         QTRY_COMPARE(controller.mode(), QStringLiteral("read-only"));
         QTRY_COMPARE(controller.switchingTo(), QString());
-        QCOMPARE(asked.count(), 1);
         QVERIFY(m_daemon->account->calls.contains(QStringLiteral("SetMode:read-only:force")));
+    }
+
+    /// Read-only asked for while changes are unsent is a state, not an error: the
+    /// account stays read-write with the count shown, until it is forced, taken
+    /// back, or the daemon switches by itself.
+    void aSwitchToReadOnlyThatWaitsIsAState()
+    {
+        startFake();
+        m_daemon->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}, {QStringLiteral("Mode"), QStringLiteral("read-write")}});
+        m_daemon->account->unsentChanges = 3;
+        AccountController controller(fake::FirstAccount);
+        QTRY_COMPARE(controller.mode(), QStringLiteral("read-write"));
+        QVERIFY(!controller.switchingToReadOnly());
+
+        controller.setMode(QStringLiteral("read-only"));
+        QTRY_VERIFY(controller.switchingToReadOnly());
+        QCOMPARE(controller.unsentCount(), 3ULL);
+        QCOMPARE(controller.mode(), QStringLiteral("read-write"));
+        QCOMPARE(controller.lastError(), QString());
+        QCOMPARE(controller.actionError(), QString());
+        QTRY_COMPARE(controller.switchingTo(), QString());
+
+        // The count follows the daemon's.
+        m_daemon->account->setReadOnlyWish(true, 1);
+        QTRY_COMPARE(controller.unsentCount(), 1ULL);
+
+        // Taken back: read-write, and nothing said.
+        controller.setMode(QStringLiteral("read-write"));
+        QTRY_VERIFY(!controller.switchingToReadOnly());
+        QCOMPARE(controller.mode(), QStringLiteral("read-write"));
+        QTRY_COMPARE(controller.switchingTo(), QString());
+        QCOMPARE(controller.signInUrl(), QString());
+
+        // Asked again and forced: switched at once.
+        controller.setMode(QStringLiteral("read-only"));
+        QTRY_VERIFY(controller.switchingToReadOnly());
+        controller.setMode(QStringLiteral("read-only"), true);
+        QTRY_COMPARE(controller.mode(), QStringLiteral("read-only"));
+        QVERIFY(!controller.switchingToReadOnly());
+        QCOMPARE(controller.unsentCount(), 0ULL);
+
+        // LastError is another thing: an error is shown beside a wish, and takes nothing from it.
+        m_daemon->account->set({{QStringLiteral("LastError"), QStringLiteral("no network")}});
+        QTRY_COMPARE(controller.lastError(), QStringLiteral("no network"));
+        QVERIFY(!controller.switchingToReadOnly());
+        m_daemon->account->setReadOnlyWish(true, 4);
+        QTRY_VERIFY(controller.switchingToReadOnly());
+        QCOMPARE(controller.unsentCount(), 4ULL);
+        QCOMPARE(controller.lastError(), QStringLiteral("no network"));
     }
 
     void signOutAndRefreshCallTheDaemon()

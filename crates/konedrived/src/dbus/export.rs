@@ -10,19 +10,18 @@ use crate::account::AccountService;
 use crate::daemon::manager::{AccountManager, Bus};
 use crate::dbus::accounts::Accounts;
 use crate::dbus::files::Files;
-use crate::sync::SyncService;
+use crate::account_folder::SyncService;
 use crate::dbus::{ActivityLog, Conflicts, Folder, LocalScan, Transfers, UploadQueue};
-use crate::dbus::signals::{announce_helper_state, start_signals};
+use crate::dbus::signals::start_signals;
 
 /// Serves one account's folder — `Folder`, `Transfers`, `UploadQueue`, `Conflicts`,
 /// `LocalScan` and `ActivityLog` — at `path` and starts their signals; the tasks
 /// that send them, to stop when the account goes.
 ///
 /// At startup this runs before the bus name is claimed
-/// (`crate::daemon::startup::serve`): `main` used to claim the name, then connect
-/// to the helper (up to 30 s), then attach the folder's interface, so a
-/// D-Bus-activated client calling it in that window got
-/// `UnknownInterface` from a daemon that was already on the bus. Nothing
+/// (`crate::daemon::startup::serve`): a D-Bus-activated client calling an
+/// interface attached after the name was claimed got `UnknownInterface`
+/// from a daemon that was already on the bus. Nothing
 /// that can fail, and nothing that can be slow, is left between the
 /// interfaces and the name.
 pub async fn export(
@@ -90,10 +89,6 @@ impl Bus for OnBus {
         server.at(ACCOUNTS_PATH, Files { manager: Arc::clone(manager) }).await?;
         #[cfg(feature = "dev-tools")]
         server.at(ACCOUNTS_PATH, crate::dbus::dev_tools::DevTools { manager: Arc::clone(manager) }).await?;
-        // `HelperState` is the hub's, and every change of it `Accounts`'s to announce.
-        let accounts = server.interface::<_, Accounts>(ACCOUNTS_PATH).await?;
-        // Not kept, and it never ends: it is the process's, as `Accounts` on the bus is.
-        drop(announce_helper_state(accounts, manager.hub().subscribe()));
         Ok(())
     }
 

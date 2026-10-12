@@ -73,6 +73,11 @@ impl Transfers {
     }
 
     #[zbus(property)]
+    async fn retry_after_refusal(&self) -> String {
+        RETRY_AFTER_REFUSAL.of(&self.service)
+    }
+
+    #[zbus(property)]
     async fn download_left_count(&self) -> u32 {
         DOWNLOAD_LEFT_COUNT.of(&self.service)
     }

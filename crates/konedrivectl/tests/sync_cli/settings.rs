@@ -1,11 +1,12 @@
 use super::*;
 
-// --- the outbox on the bus: the outbox on the command line -----
+// --- the upload queue on the bus: the upload queue on the command line -----
 
-/// `sync pause`, `sync resume`, `sync ignore`, `sync outbox`, `sync not-uploaded`
-/// and `sync deletes`, end to end through the binary on a OneDrive folder; and a
+/// `sync pause`, `sync resume`, `sync ignore`, `sync upload-queue` and `sync not-uploaded`,
+/// end to end through the binary on a OneDrive folder; and a
 /// duration that is none is a usage error (exit status 2).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_pauses_resumes_and_keeps_the_ignore_list() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
@@ -54,14 +55,14 @@ async fn binary_pauses_resumes_and_keeps_the_ignore_list() {
     assert!(said.contains("the ignore list was not changed: \"a/b\""), "{said}");
     assert!(!said.contains("org.freedesktop"), "{said}");
 
-    assert_eq!(out_text(&run(addr, &["sync", "outbox"])).trim(), "Uploading:    0 now, 0 B/s\nNothing is waiting to upload.");
+    assert_eq!(out_text(&run(addr, &["sync", "upload-queue"])).trim(), "Uploading:    0 now, 0 B/s\nNothing is waiting to upload.");
     assert_eq!(out_text(&run(addr, &["sync", "not-uploaded"])).trim(), "Everything here is uploaded or waits to be.");
-    assert_eq!(out_text(&run(addr, &["sync", "deletes", "confirm"])).trim(), "No delete is waiting for confirmation.");
 }
 
 /// `sync thumbnails` prints the setting without an argument and changes it with
 /// one; a choice that is none is a usage error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_shows_and_changes_the_thumbnail_setting() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
@@ -114,6 +115,7 @@ async fn binary_shows_and_changes_the_settings_every_account_shares() {
 /// While the account holds back by itself, `sync status` says why; `sync anyway`
 /// lifts the hold, and the line goes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_status_says_why_the_account_paused_by_itself_and_anyway_lifts_it() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
@@ -141,6 +143,7 @@ async fn binary_status_says_why_the_account_paused_by_itself_and_anyway_lifts_it
 /// account is held back — and `sync anyway --all` lifts the hold of every account that holds
 /// back by itself, but not the user's pause; with `--account` it is a usage error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_status_says_how_changes_arrive_and_anyway_all_lifts_every_hold() {
     use konedrived::status::snapshot::LiveChanges;
     let (f, _graph) = harness_onedrive().await;
@@ -177,27 +180,3 @@ async fn binary_status_says_how_changes_arrive_and_anyway_all_lifts_every_hold()
     wait_for(|| live() == LiveChanges::Connecting).await;
 }
 
-/// A folder not connected to OneDrive has no sync settings.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_sync_settings_of_a_local_folder_say_it_has_none() {
-    let f = harness().await;
-    let root = f.dir.path().join("local");
-    std::fs::create_dir(&root).unwrap();
-    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
-    let out = run(f._bus.address(), &["sync", "thumbnails", "off"]);
-    assert!(!out.status.success(), "{out:?}");
-    assert!(err_text(&out).contains("not connected to OneDrive, so it has no sync settings"), "{}", err_text(&out));
-}
-
-/// A folder not connected to OneDrive uploads nothing: the outbox commands say
-/// so, by the refusal's name.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_outbox_of_a_local_folder_says_nothing_is_uploaded_from_it() {
-    let f = harness().await;
-    let root = f.dir.path().join("local");
-    std::fs::create_dir(&root).unwrap();
-    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
-    let out = run(f._bus.address(), &["sync", "outbox"]);
-    assert!(!out.status.success(), "{out:?}");
-    assert!(err_text(&out).contains("not connected to OneDrive, so nothing is uploaded from it"), "{}", err_text(&out));
-}

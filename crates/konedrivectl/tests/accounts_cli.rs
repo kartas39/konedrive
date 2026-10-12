@@ -9,7 +9,6 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{err_text, out_text, run_env};
@@ -108,105 +107,6 @@ async fn accounts_are_added_chosen_renamed_and_removed() {
     assert!(!list.contains("Home") && list.contains("Personal"), "{list}");
     // One account again: nothing to choose.
     assert!(succeeded(&bus, &["logout"], &[]).contains("Signed out of Personal."));
-}
-
-/// `root` registered without interception for `account`, and filled from a directory of
-/// its own holding `names`, each with the account's label as its content.
-fn local_folder(bus: &TestBus, dir: &Path, account: &str, names: &[&str]) -> PathBuf {
-    let root = dir.join(account);
-    let source = dir.join(format!("{account}-source"));
-    std::fs::create_dir(&root).unwrap();
-    std::fs::create_dir(&source).unwrap();
-    for name in names {
-        std::fs::write(source.join(name), account.as_bytes()).unwrap();
-    }
-    let root = root.canonicalize().unwrap();
-    let args = ["--account", account, "sync", "register-without-interception", root.to_str().unwrap()];
-    let said = succeeded(bus, &args, &[]);
-    // Several accounts: the success line says whose folder it is.
-    assert!(said.starts_with(&format!("{account}: Folder registered without interception: ")), "{said}");
-    succeeded(bus, &["--account", account, "sync", "populate-from", source.to_str().unwrap()], &[]);
-    root
-}
-
-fn state_of(bus: &TestBus, path: &Path) -> String {
-    succeeded(bus, &["sync", "state", path.to_str().unwrap()], &[]).trim().to_owned()
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn path_commands_go_by_the_path_and_status_shows_every_account() {
-    let bus = TestBus::start();
-    let config = tempfile::tempdir().unwrap();
-    let daemon = common::start_daemon(&bus, config.path()).await;
-    let dir = tempfile::tempdir().unwrap();
-    daemon.manager.add("Personal", &daemon.connection).await.unwrap();
-    daemon.manager.add("Family", &daemon.connection).await.unwrap();
-    let personal = local_folder(&bus, dir.path(), "Personal", &["a.txt", "a2.txt"]);
-    let family = local_folder(&bus, dir.path(), "Family", &["b.txt", "b2.txt"]);
-
-    // No --account: the path decides, whatever KONEDRIVE_ACCOUNT says.
-    let env = [(konedrivectl::ACCOUNT_VARIABLE, "Family")];
-    for (file, content) in [(personal.join("a.txt"), "Personal"), (family.join("b.txt"), "Family")] {
-        assert_eq!(state_of(&bus, &file), "online-only");
-        assert!(succeeded(&bus, &["sync", "hydrate", file.to_str().unwrap()], &env).contains("Downloaded."));
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), content, "filled from its own account's source");
-        assert_eq!(state_of(&bus, &file), "hydrated");
-    }
-    let (a2, b2) = (personal.join("a2.txt"), family.join("b2.txt"));
-    let pinned = succeeded(&bus, &["sync", "pin", a2.to_str().unwrap(), b2.to_str().unwrap()], &[]);
-    // Pins in two accounts: `sync transfers` is one account's, so the hint names none.
-    let transfers = "`konedrivectl --account <account> sync transfers`";
-    assert_eq!(pinned.trim(), format!("Kept on this device. 2 files are downloading ({transfers})."));
-    wait_for("both pinned files", || state_of(&bus, &a2) == "hydrated" && state_of(&bus, &b2) == "hydrated").await;
-
-    let (status, told) = failed(&bus, &["--account", "Personal", "sync", "hydrate", a2.to_str().unwrap()], &[]);
-    assert_eq!(status, 2, "{told}");
-    assert!(told.contains("the path decides the account: leave out --account"), "{told}");
-    let outside = dir.path().join("elsewhere.txt");
-    std::fs::write(&outside, b"mine").unwrap();
-    let (_, told) = failed(&bus, &["sync", "hydrate", outside.to_str().unwrap()], &[]);
-    let both = format!("({}, {})", personal.display(), family.display());
-    assert!(told.contains("is not inside any account's sync folder") && told.contains(&both), "{told}");
-
-    // A suggested command names the account it is about: with KONEDRIVE_ACCOUNT pointing
-    // elsewhere, a bare `sync forget` would forget the other account's folder.
-    let other = dir.path().join("Other");
-    std::fs::create_dir(&other).unwrap();
-    let args = ["--account", "Family", "sync", "register-without-interception", other.to_str().unwrap()];
-    let (_, told) = failed(&bus, &args, &[(konedrivectl::ACCOUNT_VARIABLE, "Personal")]);
-    assert!(told.contains("run `konedrivectl --account Family sync forget` first"), "{told}");
-
-    // A command on one account's folder needs the account.
-    let (status, told) = failed(&bus, &["sync", "transfers"], &[]);
-    assert_eq!(status, 2, "{told}");
-    assert!(told.contains("(Personal, Family)"), "{told}");
-
-    // `status` and `sync status` show every account, each under its label.
-    let text = succeeded(&bus, &["status"], &[]);
-    assert!(text.starts_with(&format!("Client ID:  {DEFAULT_CLIENT_ID}\n")), "{text}");
-    assert!(text.contains("\nPersonal\n  State:      signed-out\n"), "{text}");
-    assert!(text.contains("\nFamily\n  State:      signed-out\n"), "{text}");
-    let text = succeeded(&bus, &["sync", "status"], &[]);
-    assert!(text.starts_with("Helper:"), "{text}");
-    assert_eq!(text.matches("Helper:").count(), 1, "one helper for every account: {text}");
-    assert!(text.contains(&format!("\nPersonal\n  Folder:                 {}\n", personal.display())), "{text}");
-    assert!(text.contains(&format!("\nFamily\n  Folder:                 {}\n", family.display())), "{text}");
-    let list = succeeded(&bus, &["account", "list"], &[]);
-    assert!(list.contains(&format!("{} (no-interception)", family.display())), "{list}");
-
-    // A third account's folder cannot be inside another's.
-    daemon.manager.add("Work", &daemon.connection).await.unwrap();
-    let inside = personal.join("work");
-    std::fs::create_dir(&inside).unwrap();
-    let args = ["--account", "work", "sync", "register-without-interception", inside.to_str().unwrap()];
-    let (_, told) = failed(&bus, &args, &[]);
-    assert!(told.contains("cannot be this account's folder") && told.contains("Personal"), "{told}");
-
-    // Removing an account keeps its folder's files, and its paths are no account's any more.
-    let removed = succeeded(&bus, &["account", "remove", "personal"], &[]);
-    assert!(removed.contains(&format!("Kept: the folder {}", personal.display())), "{removed}");
-    assert_eq!(std::fs::read_to_string(personal.join("a.txt")).unwrap(), "Personal");
-    assert_eq!(state_of(&bus, &personal.join("a.txt")), "not-managed");
 }
 
 /// `account add` signs in and adds the account under its email, with no account and with one

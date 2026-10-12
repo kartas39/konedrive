@@ -13,23 +13,8 @@ impl Folder {
         Ok(self.service.register_root(Path::new(path)).await?)
     }
 
-    /// Binds a folder with **nothing intercepting opens inside it**.
-    /// Separate from `Register`, rather than a flag on it, so
-    /// that nobody enters this mode without naming it: a placeholder nobody
-    /// intercepts reads as zeros, which `State = no-interception` and
-    /// `LastError` then say in as many words.
-    async fn register_without_interception(&self, path: &str) -> Result<()> {
-        Ok(self.service.register_root_without_interception(Path::new(path)).await?)
-    }
-
     async fn unregister(&self) -> Result<()> {
         Ok(self.service.unregister_root().await?)
-    }
-
-    /// Mirrors a local directory as placeholders. Part 2 replaces the source
-    /// with the Graph listing; this stays as the offline test path.
-    async fn populate_from_directory(&self, source_dir: &str) -> Result<u64> {
-        Ok(self.service.populate_from_directory(Path::new(source_dir)).await?)
     }
 
     async fn refresh(&self) -> Result<()> {

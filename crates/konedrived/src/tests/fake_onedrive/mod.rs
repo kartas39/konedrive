@@ -1,5 +1,5 @@
-//! A fake OneDrive for the daemon's tests (`remote/`, `local/`, `sync/`, `upload/`) and the VM
-//! suite's write scenarios (built with `fault-injection`): an in-memory drive behind a
+//! A fake OneDrive for the daemon's tests (`remote/`, `local/`, `account_folder/`, `upload/`) and the VM
+//! suite (built with `fault-injection`): an in-memory drive behind a
 //! wiremock server, answering the requests `DriveClient` makes as Graph
 //! documents them — `If-Match` on eTag or cTag, `409` on a name taken
 //! (without case), a folder's cTag changing with anything below it, deletes
@@ -24,8 +24,6 @@ use konedrive_graph::drive::item::format_graph_time;
 use konedrive_graph::drive::{DriveClient, RetryPolicy};
 use konedrive_graph::quickxor::QuickXor;
 use konedrive_graph::token::StaticToken;
-#[cfg(test)]
-use konedrive_tree::{Kind, Store};
 
 pub use sockets::{Early, FakeSockets, PING_INTERVAL};
 
@@ -140,6 +138,9 @@ pub struct Cloud {
     /// How long, in seconds from the request, an endpoint lives: `expirationDateTime`.
     /// Left out of the answer while `None`.
     pub socket_lifetime: Option<i64>,
+    /// The drive an item's `parentReference` names; `D` while `None`. A test whose store
+    /// knows another drive sets it, so that an answer is of the store's drive.
+    pub drive_id: Option<String>,
 }
 
 impl Cloud {
@@ -405,7 +406,7 @@ impl Cloud {
             value["createdDateTime"] = json!(format_graph_time(*created));
         }
         match &item.parent {
-            Some(parent) => value["parentReference"] = json!({ "id": parent, "driveId": "D" }),
+            Some(parent) => value["parentReference"] = json!({ "id": parent, "driveId": self.drive_id.as_deref().unwrap_or("D") }),
             None => value["root"] = json!({}),
         }
         if item.folder {
@@ -816,30 +817,6 @@ impl FakeGraph {
         // Behind anything a test mounts itself: an answer given by hand wins.
         Mock::given(any()).respond_with(Responder(Arc::clone(&cloud), Arc::clone(&sockets))).with_priority(u8::MAX).mount(&server).await;
         Self { server, cloud, sockets }
-    }
-
-    /// A drive holding what the base holds, with the same tags and hashes.
-    #[cfg(test)]
-    pub async fn from_store(store: &Store) -> Self {
-        let graph = Self::start().await;
-        let rows = store.call(move |s| s.all_items()).await.unwrap();
-        graph.with(|cloud| {
-            for row in rows {
-                cloud.add(FakeItem {
-                    parent: row.parent_id.clone(),
-                    name: row.name.clone(),
-                    folder: row.kind == Kind::Folder,
-                    content: Vec::new(),
-                    hash: row.quickxor.clone(),
-                    size: row.size,
-                    etag: row.etag.clone().unwrap_or_else(|| format!("e-{}", row.id)),
-                    ctag: row.ctag.clone().unwrap_or_else(|| format!("c-{}", row.id)),
-                    mtime: row.mtime,
-                    id: row.id,
-                });
-            }
-        });
-        graph
     }
 
     /// Runs `f` on the drive; a change it makes sends a notification.

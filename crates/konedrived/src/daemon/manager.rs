@@ -16,11 +16,10 @@ use crate::config::{is_valid_client_id, AccountConfig, AccountId, AccountPaths, 
 use crate::account::secret::{AccountSecrets, Wallet};
 use crate::account::state::SignInState;
 use crate::desktop::baloo::Baloo;
-use crate::helper::hub::HelperHub;
-use crate::sync::menu::{self, Menu};
-use crate::sync::registry::Registry;
+use crate::account_folder::menu::{self, Menu};
+use crate::account_folder::registry::Registry;
 use crate::conditions::running::HoldSettings;
-use crate::sync::{OneDrive, Persist, SyncError, SyncPaths, SyncService, Transfers, Wiring};
+use crate::account_folder::{OneDrive, Persist, SyncError, SyncPaths, SyncService, Transfers, Wiring};
 
 /// The drive an account's folder shows, asked once as the account is made
 /// ([`Options::drive`]).
@@ -31,7 +30,7 @@ pub fn own_drive() -> DriveOf {
     Arc::new(|account| account.drive().map(Some))
 }
 
-/// No drive: every folder is a local one, filled with `PopulateFromDirectory`.
+/// No drive: no folder can be registered.
 pub fn no_drive() -> DriveOf {
     Arc::new(|_| Ok(None))
 }
@@ -58,7 +57,7 @@ pub struct Options {
 /// The bus, as the daemon uses it: the manager's own objects and each account's are put on
 /// it and taken off it by `dbus/`, which the daemon's own layer cannot name; its
 /// `dbus::export::OnBus` is the one implementation outside the tests. What goes over the
-/// bus beyond that — every signal, `HelperState`'s included — is `dbus/`'s own business.
+/// bus beyond that — every signal — is `dbus/`'s own business.
 #[async_trait]
 pub trait Bus: Send + Sync {
     /// Puts `org.konedrive.Accounts` and `org.konedrive.Files` at `/org/konedrive/Accounts`,
@@ -105,7 +104,7 @@ pub enum ManagerError {
     Failed(String),
     #[error("there is no account {0}")]
     NoAccount(String),
-    /// What the account's folder refused, under the folder's names (`NoHelper`, …).
+    /// What the account's folder refused, under the folder's names (`NoRoot`, …).
     #[error(transparent)]
     Sync(#[from] SyncError),
     /// What `Accounts.SignIn` refuses under a name of `Account.BeginSignIn`'s (`NoClientId`).
@@ -124,7 +123,7 @@ impl From<ConfigError> for ManagerError {
 }
 
 /// The accounts, in the order they were added, and what they share: `config.toml`, the
-/// registry of their folders with the helper hub, and the identity guard's view of every
+/// registry of their folders, and the identity guard's view of every
 /// account.
 pub struct AccountManager {
     pub(crate) config: Arc<ConfigStore>,
@@ -133,6 +132,8 @@ pub struct AccountManager {
     /// The accounts as their folders see each other. It is written only here, by
     /// [`list`](Self::list) and [`unlist`](Self::unlist), with `accounts`.
     registry: Arc<Registry>,
+    /// The daemon's connection to the session bus, given to every account's folder.
+    desktop_bus: Option<Connection>,
     siblings: Arc<Siblings>,
     accounts: Mutex<Vec<Arc<Account>>>,
     /// The sign-ins of `Accounts.SignIn`: the one under way belongs to no account, and is
@@ -146,13 +147,18 @@ pub struct AccountManager {
 impl AccountManager {
     /// The registry takes the hold's settings from `config` now, before any account is
     /// listed.
-    pub fn new(config: Arc<ConfigStore>, paths: Paths, options: Options, registry: Arc<Registry>) -> Arc<Self> {
+    ///
+    /// `desktop_bus` is the daemon's connection to the session bus, which every account's
+    /// folder tells the desktop's programs on (`Wiring::desktop_bus`); with none they are told
+    /// nothing.
+    pub fn new(config: Arc<ConfigStore>, paths: Paths, options: Options, registry: Arc<Registry>, desktop_bus: Option<Connection>) -> Arc<Self> {
         registry.set_hold_settings(HoldSettings::of(&config.snapshot()));
         Arc::new(Self {
             config,
             paths,
             options,
             registry,
+            desktop_bus,
             siblings: Arc::new(Siblings::default()),
             accounts: Mutex::new(Vec::new()),
             sign_ins: Mutex::new(SignIns::default()),
@@ -167,11 +173,6 @@ impl AccountManager {
     /// How the objects get on the bus.
     pub(crate) fn bus(&self) -> Arc<dyn Bus> {
         Arc::clone(&self.options.bus)
-    }
-
-    /// The link to the helper every account shares.
-    pub fn hub(&self) -> &Arc<HelperHub> {
-        self.registry.hub()
     }
 
     /// The accounts as their folders see each other: the same accounts as
@@ -211,8 +212,8 @@ impl AccountManager {
     }
 
     /// Brings up every account `config.toml` holds, in file order (`docs/design/accounts.md` §3.2, step 4):
-    /// the session restored from the wallet and the cache, and an intercepted folder held
-    /// until the helper is back. An account that repeats an earlier one's id, label, drive
+    /// the session restored from the wallet and the cache, and its folder taken up, down
+    /// until [`resume_all`](Self::resume_all) brings it up. An account that repeats an earlier one's id, label, drive
     /// or folder is loaded but held back (§4.1); one whose id cannot name an object or a
     /// directory, or repeats an id, is not loaded at all, and `Accounts.LastError` says so.
     pub async fn load(&self) {
@@ -270,7 +271,7 @@ impl AccountManager {
         let persist = Persist { store: Arc::clone(&self.config), account: entry.id.clone() };
         let config = self.config.snapshot();
         // The folder asks its account for the sign-in, the one quota, the mode
-        // worked out again when its outbox worker finds the write gate closed, and tells it
+        // worked out again when the folder finds that the account may not write, and tells it
         // of a drive that is not the folder's. A folder registered while signed in shows
         // OneDrive only with a drive to show, and a restored one starts syncing as it is
         // brought up.
@@ -278,14 +279,14 @@ impl AccountManager {
             drive,
             paths: SyncPaths {
                 tree_db: paths.tree_db.clone(),
-                rescue_dir: paths.rescue_dir.clone(),
                 thumbnails: self.options.thumbnails.clone(),
             },
         });
         let sync = SyncService::new(Wiring {
             onedrive,
             baloo: (self.options.baloo)(),
-            transfers: Transfers { ceiling: config.transfer_ceiling(), large: config.transfer_large() },
+            desktop_bus: self.desktop_bus.clone(),
+            transfers: Transfers { ceiling: config.transfer_ceiling(), large: config.transfer_large(), download_after: config.download_after() },
             ..Wiring::new(Arc::clone(&self.registry), Arc::clone(&account) as Arc<dyn crate::account::FolderAccount>, persist)
         });
         // A switch to read-only asks the folder what waits to be uploaded (`docs/design/writes.md` §2).
@@ -352,18 +353,18 @@ impl AccountManager {
     }
 
     /// `Accounts.Remove` (`docs/design/accounts.md` §7.3): the folder forgotten exactly as
-    /// `Folder.Unregister` forgets it — refused, before anything changes, under the same
-    /// rule (`NoHelper` for an intercepted folder with no helper), a OneDrive folder's tree
+    /// `Folder.Unregister` forgets it — never refused for what is unsent: the caller warns
+    /// first, by `UploadQueue.UnsentCount()` —, its tree
     /// store with it — then a sign-in under way cancelled, the refresh token and the cached
     /// name and quota deleted, the account taken out of `config.toml`, its directory deleted
     /// with what is left in it, and its object off the bus. The folder's files and the
-    /// rescued files are kept.
+    /// kept copies are kept.
     ///
     /// A removal that fails after the account was retired — the sign-in cannot be deleted,
     /// or the account cannot be taken out of `config.toml` — leaves the account as an
     /// account: listed, taking a folder, a sign-in and a mode again, and removable again.
-    /// What the steps before did is not taken back (a folder forgotten is forgotten at the
-    /// helper, and a OneDrive folder's tree store is gone), and the refusal, under the name
+    /// What the steps before did is not taken back (a folder forgotten is unmounted, and
+    /// its tree store is gone), and the refusal, under the name
     /// the failure always had, says what was done.
     pub async fn remove(&self, path: &ObjectPath<'_>, connection: &Connection) -> Result<(), ManagerError> {
         let _changing = self.changing.lock().await;
@@ -373,7 +374,7 @@ impl AccountManager {
         }
         // Retired first, each under its own lock, so that no call on the account's own
         // objects can register a folder or store a sign-in in between: the folder
-        // forgotten (a held account's through the helper too), then the sign-in.
+        // forgotten (a held account's too), then the sign-in.
         let forgotten = account.sync.retire().await?;
         let failed = match account.account.retire().await {
             Err(e) => Some((ManagerError::Failed(format!("cannot delete the sign-in: {e}")), false)),
@@ -546,11 +547,21 @@ impl AccountManager {
         menu::decide(paths, &parts, account_folder)
     }
 
-    /// Brings up every folder that needs no helper (§3.2, step 6); an intercepted one
-    /// waits for the hub's first connection.
+    /// Brings up every account's folder, one after another, in account order (§3.2,
+    /// step 6).
+    ///
+    /// An account whose bring-up panics is left down, saying so, and the next account is
+    /// brought up all the same: a defect that one account's folder meets would otherwise
+    /// keep the daemon from starting.
     pub async fn resume_all(&self) {
+        use futures_util::FutureExt;
         for account in self.accounts() {
-            account.sync.resume().await;
+            let Err(panic) = std::panic::AssertUnwindSafe(account.sync.resume()).catch_unwind().await else { continue };
+            let panic = crate::panic::message(panic);
+            tracing::error!("bringing up the folder of the account {} panicked: {panic}", account.id);
+            if std::panic::AssertUnwindSafe(account.sync.bring_up_panicked(&panic)).catch_unwind().await.is_err() {
+                tracing::error!("the folder of the account {} could not be left down either; it stays as the panic left it", account.id);
+            }
         }
     }
 }
@@ -632,7 +643,7 @@ async fn follow_mode(account: &Account) {
     let changes = account.account.state().subscribe();
     let mode = changes.borrow().mode;
     account.sync.follow_mode(mode).await;
-    let follower = tokio::spawn(crate::sync::mode::follow(changes, Arc::downgrade(&account.sync)));
+    let follower = tokio::spawn(crate::account_folder::mode::watch_account(changes, Arc::downgrade(&account.sync)));
     crate::panic::lock(&account.signals).push(follower);
 }
 

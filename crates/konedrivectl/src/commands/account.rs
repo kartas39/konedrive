@@ -7,7 +7,7 @@ use konedrivectl::choice::{choose, Source};
 use konedrivectl::text::accounts::{account_list_text, removed_text};
 use konedrivectl::text::formats::warning_text;
 use konedrivectl::text::refusals::{explain_account_error, explain_sync_error_in, AccountAction, Context, SyncAction};
-use konedrivectl::text::status::mode_shown_text;
+use konedrivectl::text::status::{decide_read_only_asked, mode_shown_text, read_only_asked_text, SWITCH_CANCELLED};
 
 use super::browser::{open_browser, spawn_browser};
 use crate::cli::AccountCmd;
@@ -44,24 +44,22 @@ pub(crate) async fn account(daemon: &Daemon, option: Option<&str>, command: Acco
             result.map_err(|e| anyhow!(explain_account_error(action, &e)))?;
             println!("Renamed {} to {}.", target.label, label.trim());
         }
-        AccountCmd::Remove { named } => {
+        AccountCmd::Remove { named, yes } => {
             let accounts = daemon.accounts().await?;
             daemon.check_loaded(&accounts).await?;
             let target = choose(&accounts, Some((&named, Source::Argument)))?;
             let sync = daemon.sync(&target.path).await?;
             let folder = sync.folder.path().await.unwrap_or_default();
-            // Read first: the list goes with the account. Where each listed file was rescued
-            // to is the one thing about rescues this can know.
-            let conflicts = sync.conflicts.list().await.unwrap_or_default();
+            // Never refused for what is unsent: the user is told what stays only here, and may leave it.
+            super::sync::folder::warn_of_unsent_changes(&sync, yes).await?;
             let result = daemon.manager.remove(&target.path.as_ref()).await;
             if let Err(error) = result {
-                let helper = daemon.manager.helper_state().await.unwrap_or_default();
                 let source = sync.folder.source().await.unwrap_or_default();
-                let context = Context { root: &folder, source: &source, helper: &helper, ..Default::default() };
+                let context = Context { root: &folder, source: &source, ..Default::default() };
                 let action = SyncAction::Remove(&target.label);
                 bail!("{}", explain_sync_error_in(action, &error, context));
             }
-            print!("{}", removed_text(&target.label, &folder, &conflicts));
+            print!("{}", removed_text(&target.label, &folder));
         }
     }
     Ok(())
@@ -75,17 +73,27 @@ async fn account_mode(daemon: &Daemon, option: Option<&str>, mode: Option<&str>,
     let (label, tag, prefix) = (chosen.account.label.clone(), chosen.tag(), chosen.prefix());
     let proxy = daemon.account(&chosen.account.path).await?;
     let Some(mode) = mode else {
-        print!("{}", mode_shown_text(&tag, &proxy.mode().await?, &proxy.last_error().await?));
+        print!("{}", mode_shown_text(&tag, &prefix, &proxy.mode().await?, crate::read::read_only_wish(&proxy).await?, &proxy.last_error().await?));
         return Ok(());
     };
+    // Read before the call: read-write asked of an account that waits to switch cancels the switch.
+    let was_switching = proxy.read_only_wanted().await?;
     let result = proxy.set_mode(mode, force).await;
     let url = result.map_err(|e| anyhow!(explain_account_error(AccountAction::SetMode(&label, mode, &prefix), &e)))?;
     if mode == "read-only" {
-        println!("{tag}Read-only: the folder's files are read-only again, and nothing changed in it is uploaded.");
+        // Not refused while changes are unsent: the account says whether it switched or waits.
+        // Uncached, as `login`'s: what the account says now, not what it said before the call.
+        let after = AccountProxy::builder(&daemon.connection)
+            .path(chosen.account.path.clone())?
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await?;
+        let asked = decide_read_only_asked(&after.mode().await?, crate::read::read_only_wish(&after).await?);
+        print!("{}", read_only_asked_text(&tag, &prefix, asked));
         return Ok(());
     }
     if url.is_empty() {
-        println!("{tag}Already read-write.");
+        println!("{tag}{}", if was_switching { SWITCH_CANCELLED } else { "Already read-write." });
         return Ok(());
     }
     if open_browser() {

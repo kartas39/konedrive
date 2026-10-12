@@ -73,7 +73,7 @@ pub fn time_left_text(seconds: u32) -> String {
     }
 }
 
-/// One direction's summary line of `sync transfers` (and of `sync outbox`, for uploads):
+/// One direction's summary line of `sync transfers` (and of `sync upload-queue`, for uploads):
 /// `Downloading: 12 now, 1 234 files left (48.2 GiB, about 12 min), 3.1 GiB done, 8.4 MiB/s`.
 /// What is left, and what is done, only while anything is left; the time only when known.
 fn direction_line(label: &str, active: u32, totals: &QueueTotals, noun: (&str, &str), speed: u64) -> String {

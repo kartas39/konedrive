@@ -1,5 +1,5 @@
 //! What the codes mean, in words: the one catalogue of the sentences the
-//! clients show for a reason (`konedrive-reason`'s `Reason`, `LocalSkip` and
+//! clients show for a reason (`konedrive-reason`'s `Reason` and
 //! `WaitsFor`) and for a refused operation on a file (`konedrive-dbus`'s
 //! `Refusal`).
 //!

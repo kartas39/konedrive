@@ -152,7 +152,8 @@ async fn a_sign_in_that_succeeds_makes_the_account_under_its_email() {
     // Under way: nothing of it anywhere.
     s.there_are(0).await;
 
-    assert_eq!(simulate_browser(&url, "code=good-code").await.status(), 200);
+    let page = simulate_browser(&url, "code=good-code").await.text().await.unwrap();
+    assert!(page.contains("<p>Signed in as test@outlook.com.</p>"), "the browser reads how it ended: {page}");
     let (ended, outcome, message, path) = s.next_finished().await;
     assert_eq!((ended, outcome.as_str(), message.as_str()), (sign_in, SIGNED_IN, "test@outlook.com"));
     // Listed, signed in, under its final label, by the time the signal is read.
@@ -163,17 +164,14 @@ async fn a_sign_in_that_succeeds_makes_the_account_under_its_email() {
     assert_eq!(account.state().await.unwrap(), "signed-in");
     assert_eq!(account.mode().await.unwrap(), "read-only");
     let config = s.config_text();
-    assert!(config.contains("label = \"test@outlook.com\"") && config.contains("drive_id = \"D1\""), "{config}");
+    // The drive's id as a drive id is made: its letters in lower case.
+    assert!(config.contains("label = \"test@outlook.com\"") && config.contains("drive_id = \"d1\""), "{config}");
     assert!(config.contains("login_hint = \"test@outlook.com\"") && !config.contains("draft"), "{config}");
     assert_eq!(s.wallet.current(&Slot::Account(id_of(&path))).as_deref(), Some("RT1"));
     s.there_are(1).await;
     s.no_more_finished().await;
 
-    // It is an account like any other: it takes a folder, and is removed.
-    let folder = konedrive_dbus::accounts::FolderProxy::new(&s.client, path.clone()).await.unwrap();
-    let root = s.dir.path().join("folder");
-    std::fs::create_dir(&root).unwrap();
-    folder.register_without_interception(root.to_str().unwrap()).await.unwrap();
+    // It is an account like any other: it is removed.
     s.manager.remove(&OwnedObjectPath::try_from(path).unwrap().as_ref()).await.unwrap();
     s.there_are(0).await;
     s.no_more_finished().await;
@@ -238,7 +236,11 @@ async fn the_drive_decides_whether_an_account_is_added_and_the_email_names_it() 
     assert_eq!(outcome, SIGNED_IN);
 
     // The same Microsoft account again: the account that has the drive, and nothing made.
-    let (outcome, message, account) = s.sign_in_with("code=good-code").await;
+    let (sign_in, url) = s.manager.sign_in().await.unwrap();
+    let page = simulate_browser(&url, "code=good-code").await.text().await.unwrap();
+    assert!(page.contains("<p>This Microsoft account is already connected as &#39;test@outlook.com&#39;.</p>"), "{page}");
+    let (ended, outcome, message, account) = s.next_finished().await;
+    assert_eq!(ended, sign_in);
     assert_eq!((outcome.as_str(), message.as_str(), account.as_str()), (ALREADY_ADDED, "test@outlook.com", first.as_str()));
     s.there_are(1).await;
 

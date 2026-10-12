@@ -55,6 +55,15 @@ activity_kinds! {
     /// A local version moved out of the way. The path is where
     /// it was; the detail, where it is now.
     Conflict => "conflict",
+    /// A directory could not be removed here because it holds in OneDrive items that
+    /// cannot be shown here: it is to be removed in OneDrive. The path is the directory.
+    // TODO: wording
+    NotRemovedHere => "not-removed-here",
+    /// The folder's store was of an older version and was made anew, and something the
+    /// user misses went with it: pins, changes that were not sent and are not on disk,
+    /// uploads under way. Once, at the start that made it anew. The path is the folder;
+    /// the detail says what was lost.
+    StoreRebuilt => "store-rebuilt",
     /// A download that failed: a fill on open, or `Hydrate`. Detail: why —
     /// exactly "not enough disk space" when the disk is full.
     Failed => "failed",
@@ -77,7 +86,7 @@ activity_kinds! {
     /// one item (`docs/design/writes.md` §7). Detail: why.
     Restored => "restored",
     /// Made here, then removed here before its upload finished: it never
-    /// goes up, and its rows leave the outbox. Detail: why.
+    /// goes up, and its rows leave the upload queue. Detail: why.
     NotUploaded => "not-uploaded",
 }
 

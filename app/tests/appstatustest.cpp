@@ -167,7 +167,7 @@ private Q_SLOTS:
     void listingIsSyncing()
     {
         startSynced();
-        decide("syncing", "listing", {{QStringLiteral("State"), QStringLiteral("listing")}, {QStringLiteral("ItemsListed"), QVariant::fromValue<qulonglong>(12)}});
+        decide("syncing", "listing", {{QStringLiteral("ItemsListed"), QVariant::fromValue<qulonglong>(12)}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("syncing"));
         QCOMPARE(m_status->iconName(), QStringLiteral("state-sync"));
         QCOMPARE(m_status->text(), QStringLiteral("Listing your OneDrive: 12 items so far"));
@@ -187,9 +187,9 @@ private Q_SLOTS:
         QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
     }
 
-    /// Changes waiting or going up are syncing; blocked ones and held
-    /// removals need attention; a pause is its own state.
-    void uploadsBlockedHeldAndPaused()
+    /// Changes waiting or going up are syncing; blocked ones need attention;
+    /// a pause is its own state.
+    void uploadsBlockedAndPaused()
     {
         startSynced();
         m_daemon->sync->queue->set({{QStringLiteral("PendingCount"), QVariant::fromValue<uint>(3)}});
@@ -205,11 +205,6 @@ private Q_SLOTS:
         QCOMPARE(m_status->iconName(), QStringLiteral("state-warning"));
         QCOMPARE(m_status->attention(), QStringLiteral("2 changes cannot be uploaded"));
 
-        m_daemon->sync->holdDeletes(Root + QStringLiteral("/old"), 1);
-        decide("warning", "deletes-held");
-        QTRY_COMPARE(m_status->attention(), QStringLiteral("1 item deleted here waits for you: delete it in OneDrive too, or restore it"));
-
-        m_daemon->sync->queue->RestoreDeletes();
         m_daemon->sync->queue->set({{QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(0)}, {QStringLiteral("PendingCount"), QVariant::fromValue<uint>(0)}});
         m_daemon->sync->setUploads({});
         m_daemon->sync->folder->Pause(0);
@@ -243,6 +238,25 @@ private Q_SLOTS:
         QVERIFY(timer->isActive());
     }
 
+    /// While OneDrive asks the account to wait, its line and the tray say so with the time
+    /// left, in place of the listing; the wait over, the line is the listing's again.
+    void anAccountOneDriveAskedToWaitSaysHowLongIsLeft()
+    {
+        startSynced();
+        TrayIcon tray(m_app.get());
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(240)}});
+        decide("paused", "throttled", {{QStringLiteral("ItemsListed"), QVariant::fromValue<qulonglong>(12)}});
+        QTRY_COMPARE(m_status->text(), QStringLiteral("OneDrive asked to wait: 4 min left"));
+        QCOMPARE(m_status->state(), QStringLiteral("paused"));
+        QTRY_COMPARE(tray.one()->item()->toolTipSubTitle(), QStringLiteral("OneDrive asked to wait: 4 min left"));
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(45)}});
+        QTRY_COMPARE(m_status->text(), QStringLiteral("OneDrive asked to wait: 45 s left"));
+
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(0)}});
+        decide("syncing", "listing");
+        QTRY_COMPARE(m_status->text(), QStringLiteral("Listing your OneDrive: 12 items so far"));
+    }
+
     /// An account that holds back by itself (HeldBack) is paused, for its line and the tray,
     /// and its line says why; the user's pause, when there is one too, is what the line says.
     void aHeldAccountIsPaused()
@@ -267,7 +281,7 @@ private Q_SLOTS:
         decide("warning", "conflicts");
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
         QCOMPARE(m_status->text(), QStringLiteral("Paused · checked 20 s ago"));
-        QCOMPARE(m_status->attention(), QStringLiteral("1 changed file was moved out of the way"));
+        QCOMPARE(m_status->attention(), QStringLiteral("1 file changed here and in OneDrive: both versions are kept"));
 
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(0)}});
         m_daemon->sync->folder->Resume();
@@ -346,9 +360,9 @@ private Q_SLOTS:
         QTRY_COMPARE(m_status->text(), QStringLiteral("Starting…"));
         QCOMPARE(m_status->state(), QStringLiteral("syncing"));
         QVERIFY(m_status->attention().isEmpty());
-        decide("warning", "stopped", {{QStringLiteral("State"), QStringLiteral("error")}, {QStringLiteral("Trouble"), QStringLiteral("the konedrive helper is not running")}});
+        decide("warning", "stopped", {{QStringLiteral("State"), QStringLiteral("error")}, {QStringLiteral("Trouble"), QStringLiteral("the folder cannot be mounted")}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
-        QCOMPARE(m_status->text(), QStringLiteral("the konedrive helper is not running"));
+        QCOMPARE(m_status->text(), QStringLiteral("the folder cannot be mounted"));
     }
 
     void aConflictNeedsAttention()
@@ -361,7 +375,7 @@ private Q_SLOTS:
         decide("warning", "conflicts");
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
         QCOMPARE(m_status->iconName(), QStringLiteral("state-warning"));
-        QCOMPARE(m_status->attention(), QStringLiteral("1 changed file was moved out of the way"));
+        QCOMPARE(m_status->attention(), QStringLiteral("1 file changed here and in OneDrive: both versions are kept"));
         QCOMPARE(m_status->text(), QStringLiteral("Downloading 1 file · checked 20 s ago"));
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(0)}});
         decide("syncing", "transferring");
@@ -384,25 +398,6 @@ private Q_SLOTS:
         QTRY_VERIFY(m_status->attention() != note);
         decide("ok", "up-to-date", {{QStringLiteral("NotUpdated"), QString()}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
-        QVERIFY(m_status->attention().isEmpty());
-    }
-
-    /// The helper's trouble, when the daemon counts it against this account: a warning
-    /// that says so, while the line says what the folder does.
-    void theHelpersTroubleNeedsAttention()
-    {
-        startSynced();
-        decide("warning", "helper-unavailable");
-        QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
-        QVERIFY2(m_status->attention().contains(QStringLiteral("helper")), qPrintable(m_status->attention()));
-        QCOMPARE(m_status->text(), QStringLiteral("Up to date · checked 20 s ago"));
-
-        // The helper's state alone decides nothing here: the daemon says whose concern it is.
-        decide("ok", "up-to-date");
-        QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
-        m_daemon->manager->set({{QStringLiteral("HelperState"), QStringLiteral("stopped")}});
-        QTRY_VERIFY(m_manager->helperTrouble());
-        QCOMPARE(m_status->state(), QStringLiteral("ok"));
         QVERIFY(m_status->attention().isEmpty());
     }
 
@@ -560,7 +555,7 @@ private Q_SLOTS:
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(2)}});
         decide("warning", "conflicts");
         QTRY_COMPARE(tray.one()->item()->iconName(), QStringLiteral("state-warning"));
-        QCOMPARE(tray.one()->item()->toolTipSubTitle(), QStringLiteral("Up to date · checked 20 s ago\n2 changed files were moved out of the way"));
+        QCOMPARE(tray.one()->item()->toolTipSubTitle(), QStringLiteral("Up to date · checked 20 s ago\n2 files changed here and in OneDrive: both versions are kept"));
 
         m_daemon->account->set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
         decide("offline", "signed-out");
@@ -659,7 +654,7 @@ private Q_SLOTS:
         decide("warning", "conflicts");
         QTRY_COMPARE(tray.one()->item()->iconName(), QStringLiteral("state-warning"));
         QTRY_COMPARE(tray.one()->item()->toolTipSubTitle(),
-                     QStringLiteral("Personal — 2 changed files were moved out of the way\nFamily — Signed out of OneDrive"));
+                     QStringLiteral("Personal — 2 files changed here and in OneDrive: both versions are kept\nFamily — Signed out of OneDrive"));
         QCOMPARE(AppStatus::rank(QStringLiteral("warning")) < AppStatus::rank(QStringLiteral("offline")), true);
 
         // Renaming an account renames its line.

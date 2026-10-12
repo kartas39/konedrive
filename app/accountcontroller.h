@@ -36,6 +36,12 @@ class AccountController : public QObject
     Q_PROPERTY(bool modeSignInPending READ modeSignInPending NOTIFY modeSwitchChanged)
     Q_PROPERTY(QString state READ state NOTIFY accountChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY accountChanged)
+    /// The account keeps a wish for read-only (Account.ReadOnlyWanted): it is read-write
+    /// still, sends what is unsent, and switches by itself when nothing is.
+    /// setMode("read-only", true) switches at once; setMode("read-write") takes the wish back.
+    Q_PROPERTY(bool switchingToReadOnly READ switchingToReadOnly NOTIFY accountChanged)
+    /// While switchingToReadOnly: how many changes are still to send (Account.UnsentBeforeReadOnly).
+    Q_PROPERTY(qulonglong unsentCount READ unsentCount NOTIFY accountChanged)
     Q_PROPERTY(QString displayName READ displayName NOTIFY accountChanged)
     Q_PROPERTY(QString email READ email NOTIFY accountChanged)
     Q_PROPERTY(qulonglong quotaUsed READ quotaUsed NOTIFY accountChanged)
@@ -59,6 +65,8 @@ public:
     bool modeSignInPending() const { return m_switchingTo == QLatin1String("read-write") && !m_signInUrl.isEmpty(); }
     QString state() const { return m_state; }
     QString lastError() const { return m_lastError; }
+    bool switchingToReadOnly() const { return m_switchingToReadOnly; }
+    qulonglong unsentCount() const { return m_unsentCount; }
     QString displayName() const { return m_displayName; }
     QString email() const { return m_email; }
     qulonglong quotaUsed() const { return m_quotaUsed; }
@@ -75,8 +83,7 @@ public:
     Q_INVOKABLE void refreshAccountInfo();
     Q_INVOKABLE void copySignInUrl();
     /// SetMode(mode, force). To read-write, the sign-in URL it answers is opened like
-    /// signIn()'s, and the switch waits for it (modeSignInPending). To read-only, a refusal
-    /// for changes still waiting to upload is pendingUploadsRefused(), not an actionError.
+    /// signIn()'s, and the switch waits for it (modeSignInPending).
     Q_INVOKABLE void setMode(const QString &mode, bool force = false);
     /// Gives up a switch to read-write waiting for its sign-in (CancelSignIn).
     Q_INVOKABLE void cancelModeSwitch();
@@ -91,9 +98,6 @@ Q_SIGNALS:
     void signInUrlChanged();
     void actionErrorChanged();
     void modeSwitchChanged();
-    /// SetMode("read-only") was refused because changes made here still wait to be
-    /// uploaded: the window asks whether to drop them, then calls setMode("read-only", true).
-    void pendingUploadsRefused();
     /// BeginSignIn returned the authorization URL; the UI opens it in the browser.
     void openUrlRequested(const QString &url);
     /// The user asked to sign out from this window (the Notifier stays quiet about it).
@@ -121,6 +125,8 @@ private:
     QString m_mode = QStringLiteral("read-only");
     QString m_state = QStringLiteral("signed-out");
     QString m_lastError;
+    bool m_switchingToReadOnly = false;
+    qulonglong m_unsentCount = 0;
     QString m_displayName;
     QString m_email;
     qulonglong m_quotaUsed = 0;

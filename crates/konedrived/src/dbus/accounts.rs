@@ -86,11 +86,6 @@ impl Accounts {
     }
 
     #[zbus(property)]
-    async fn helper_state(&self) -> String {
-        self.manager.hub().state().as_str().to_owned()
-    }
-
-    #[zbus(property)]
     async fn last_error(&self) -> String {
         self.manager.config.last_error()
     }

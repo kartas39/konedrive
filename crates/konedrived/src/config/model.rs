@@ -64,7 +64,17 @@ pub struct TransfersConfig {
     /// Clamped into 1…`max`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub large: Option<i64>,
+    /// A folder served through FUSE: how many bytes of a file that is not downloaded may be read
+    /// before the whole file is downloaded. Up to there each read fetches its own bytes from
+    /// OneDrive, so a program that only looks at the start of a file (a file manager finding
+    /// its type) downloads nothing more. 0 downloads the file at its first read.
+    /// [`DOWNLOAD_AFTER`] when missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_after: Option<i64>,
 }
+
+/// `[transfers] download_after` when `config.toml` does not say: 1 MiB.
+pub const DOWNLOAD_AFTER: u64 = 1 << 20;
 
 impl Config {
     /// Each account's transfer pool ceiling: `[transfers] max`, clamped into
@@ -78,6 +88,11 @@ impl Config {
             tracing::warn!("[transfers] max = {max} in config.toml is outside {CEILING_MIN}-{CEILING_MAX}; using {clamped}");
         }
         clamped
+    }
+
+    /// `[transfers] download_after`, in bytes; a negative number counts as 0.
+    pub fn download_after(&self) -> u64 {
+        self.transfers.as_ref().and_then(|t| t.download_after).map_or(DOWNLOAD_AFTER, |bytes| bytes.max(0) as u64)
     }
 
     /// Each account's large-stream limit (the streams of large sync transfers, never an
@@ -172,6 +187,12 @@ pub struct AccountConfig {
     /// time that has passed is no pause, and stays here until the section is written again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused_until: Option<i64>,
+    /// The user asked for read-only while changes were unsent: the account stays read-write
+    /// until nothing is unsent and then switches by itself (`account::mode`,
+    /// `keep_read_only_wish`). Absent while no such wish stands, and in every file written
+    /// before the wish was kept: both read as none.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub read_only_wanted: bool,
     /// `pause_on_metered` as an account had it before it became one setting for the whole
     /// app: read only to be moved to [`Config::pause_on_metered`]
     /// ([`crate::config::migrate::move_hold_settings`]), and gone from the file once moved.
@@ -201,6 +222,7 @@ impl AccountConfig {
             machine_name: String::new(),
             thumbnails: None,
             paused_until: None,
+            read_only_wanted: false,
             old_pause_on_metered: None,
             old_on_battery: None,
         }
@@ -280,45 +302,24 @@ fn is_false(value: &bool) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootConfig {
     pub path: PathBuf,
-    /// The root id the folder carried when it was registered (`user.konedrive.root`), the
-    /// name the helper holds an intercepted root under. Empty when carried over from a
-    /// configuration older than it; the folder's own attribute stands in for it then.
+    /// The root id the folder carried when it was registered (`user.konedrive.root`). Empty
+    /// when carried over from a configuration older than it; the folder's own attribute
+    /// stands in for it then.
     #[serde(default)]
     pub id: String,
-    /// Whether the root is the ordinary intercepted kind. A missing key reads as `true`,
-    /// the fail-closed mode: a root wrongly restored as intercepted refuses to come up
-    /// without a helper, one wrongly restored as un-intercepted would serve zeros.
-    #[serde(default = "yes")]
-    pub intercepted: bool,
-    /// `"onedrive"` (listed from the account's drive) or `"local"` (filled with
-    /// `PopulateFromDirectory`). A missing key reads as `"local"`; any other value is kept
-    /// as it is, and the folder is not brought up (`SyncService`).
+    /// `"onedrive"`: listed from the account's drive. A missing key reads as `"local"`,
+    /// what an older konedrive wrote for a folder filled by hand; any value but
+    /// `"onedrive"` is kept as it is, and the folder is not brought up (`SyncService`).
     #[serde(default = "local_source")]
     pub source: String,
     /// Whether this daemon excluded the folder from Baloo, so a Forget takes off only an
     /// exclusion it added.
     #[serde(default)]
     pub baloo_excluded: bool,
-    /// Whether a root registered without interception switches to interception when the
-    /// helper connects; see [`RootConfig::upgrades_when_helper`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub upgrade_when_helper: Option<bool>,
-}
-
-fn yes() -> bool {
-    true
 }
 
 fn local_source() -> String {
     "local".into()
-}
-
-impl RootConfig {
-    /// `upgrade_when_helper`, with a missing value read so: a root without
-    /// interception switches, and an intercepted root has nothing to switch.
-    pub fn upgrades_when_helper(&self) -> bool {
-        self.upgrade_when_helper.unwrap_or(!self.intercepted)
-    }
 }
 
 /// An account's mode (`docs/design/writes.md` §2): read-only, the default, or read-write. The mode in

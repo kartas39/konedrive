@@ -50,6 +50,7 @@ async fn exposes_initial_properties() {
     let s = setup(Duration::from_secs(5)).await;
     assert_eq!(s.proxy.state().await.unwrap(), "signed-out");
     assert_eq!(s.proxy.last_error().await.unwrap(), "");
+    assert_eq!((s.proxy.read_only_wanted().await.unwrap(), s.proxy.unsent_before_read_only().await.unwrap()), (false, 0));
     assert_eq!(s.proxy.quota_total().await.unwrap(), 0);
     assert_eq!(s.proxy.id().await.unwrap(), s.id);
     assert_eq!(s.proxy.label().await.unwrap(), "Personal");

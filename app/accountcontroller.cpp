@@ -113,6 +113,13 @@ void AccountController::applyProperties(const QVariantMap &properties)
         m_signInUrl.clear();
         Q_EMIT signInUrlChanged();
     }
+    // A switch to read-only that waits for what is unsent: a state of the account.
+    if (const auto it = properties.constFind(QStringLiteral("ReadOnlyWanted")); it != properties.constEnd()) {
+        m_switchingToReadOnly = it->toBool();
+    }
+    if (const auto it = properties.constFind(QStringLiteral("UnsentBeforeReadOnly")); it != properties.constEnd()) {
+        m_unsentCount = it->toULongLong();
+    }
     // A switch to read-write ends as the command line's does: granted, or LastError
     // saying why not (SetMode cleared it before it answered), or no longer signed in.
     if (modeSignInPending()) {
@@ -227,11 +234,7 @@ void AccountController::setMode(const QString &mode, bool force)
         const QDBusPendingReply<QString> reply = *w;
         if (reply.isError()) {
             endModeSwitch();
-            if (reply.error().name() == QLatin1String("org.konedrive.Error.PendingUploads")) {
-                Q_EMIT pendingUploadsRefused();
-            } else {
-                setActionError(modeRefusalText(mode, reply.error().name(), reply.error().message()));
-            }
+            setActionError(modeRefusalText(mode, reply.error().name(), reply.error().message()));
             return;
         }
         const QString url = reply.value();

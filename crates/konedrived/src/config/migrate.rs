@@ -20,31 +20,18 @@ use crate::config::{
 pub struct V1Config {
     #[serde(default)]
     pub client_id: String,
-    /// The registered sync root, empty when none. It has to be
-    /// "persisted, so it survives a restart" — and
-    /// without it the startup recovery walk never runs at a startup at
-    /// all, since nothing else re-registers the folder.
+    /// The registered sync root, empty when none.
     #[serde(default)]
     pub sync_root: String,
-    /// Whether that root is the ordinary intercepted kind. Defaults to
-    /// `true` when the key is missing, so the fail-closed mode is what an
-    /// older or hand-edited config restores: a root wrongly restored as
-    /// intercepted refuses to come up without a helper, while one wrongly
-    /// restored as un-intercepted would come up silently serving zeros.
-    #[serde(default = "intercepted_by_default")]
-    pub sync_root_intercepted: bool,
-    /// The root id the folder carried when it was registered — the name the
-    /// helper holds an intercepted root under. Recorded so that a root
-    /// restored at startup can be held, forgotten and told apart before the
-    /// helper is back, without reading anything from the folder. Empty in a
+    /// The root id the folder carried when it was registered. Empty in a
     /// config written before it existed; the folder's own
     /// `user.konedrive.root` stands in for it then.
     #[serde(default)]
     pub sync_root_id: String,
     /// What the folder shows: `"onedrive"` — listed from the
-    /// signed-in drive, locked, kept in step — or `"local"`, filled with
-    /// `PopulateFromDirectory` as in part 1. A config written before this
-    /// existed describes a local folder.
+    /// signed-in drive — or `"local"`, a folder filled by hand, which is
+    /// not brought up. A config written before this existed describes a
+    /// local folder.
     #[serde(default = "local_source")]
     pub sync_root_source: String,
     /// Whether *this daemon* excluded the root from KDE's Baloo indexer
@@ -56,25 +43,14 @@ pub struct V1Config {
     /// there.
     #[serde(default)]
     pub sync_root_baloo_excluded: bool,
-    /// Whether a root registered without interception switches to
-    /// interception when the helper connects: `true` when it was
-    /// registered that way because no helper was connected, `false` when a
-    /// helper was and the mode was a choice. Missing in a config written
-    /// before this existed.
-    #[serde(default)]
-    pub sync_root_upgrade_when_helper: Option<bool>,
     /// The drive a OneDrive folder was listed from, recorded
     /// when its sync first learns it, so the check that the account signed
     /// in is still that drive's survives a tree store rebuilt empty.
-    /// Empty until then, for a local folder, and in a
+    /// Empty until then, and in a
     /// config written before it existed. It goes with `sync_root_id`: a
     /// different root never inherits it.
     #[serde(default)]
     pub sync_root_drive_id: String,
-}
-
-fn intercepted_by_default() -> bool {
-    true
 }
 
 fn local_source() -> String {
@@ -107,10 +83,8 @@ async fn to_v2(v1: V1Config, paths: &Paths, legacy_token: impl Future<Output = b
     let root = (!v1.sync_root.is_empty()).then(|| RootConfig {
         path: PathBuf::from(&v1.sync_root),
         id: v1.sync_root_id,
-        intercepted: v1.sync_root_intercepted,
         source: v1.sync_root_source,
         baloo_excluded: v1.sync_root_baloo_excluded,
-        upgrade_when_helper: v1.sync_root_upgrade_when_helper,
     });
     let accounts = if carry {
         vec![AccountConfig {

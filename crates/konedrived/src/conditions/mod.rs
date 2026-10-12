@@ -25,7 +25,7 @@ use zbus::zvariant::OwnedValue;
 use crate::conditions::running::Conditions;
 
 /// Every account of the daemon, as this area's watchers tell them: the registry of their
-/// folders implements it (`sync::registry::Registry`).
+/// folders implements it (`account_folder::registry::Registry`).
 pub trait Accounts: Send + Sync {
     /// What the hold's sources say now: every account decides by the hold's settings.
     fn set_conditions(&self, conditions: Conditions);

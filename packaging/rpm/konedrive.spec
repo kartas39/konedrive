@@ -1,6 +1,5 @@
 # KOneDrive for Fedora: two binary packages from one source.
-#   konedrive      the daemon, the command line, the window, and the root helper
-#                  with its system unit: they cannot work without each other
+#   konedrive      the daemon, the command line and the window
 #   konedrive-kde  the Dolphin plugins
 # Built offline from vendored crates by scripts/build-rpm.sh, which makes both
 # source tarballs from the committed tree. What goes where, and why:
@@ -43,27 +42,31 @@ Source1:        %{name}-%{version}-vendor.tar.gz
 
 ExclusiveArch:  %{rust_arches}
 
+# The least KDE Frameworks: KF_MIN_VERSION of app/CMakeLists.txt and
+# dolphin/CMakeLists.txt (docs/limitations/K34.md).
+%global kf6_min 6.21
+
 BuildRequires:  cargo
 BuildRequires:  rust
 BuildRequires:  gcc
 BuildRequires:  gcc-c++
 BuildRequires:  make
 BuildRequires:  cmake
-BuildRequires:  extra-cmake-modules
+BuildRequires:  extra-cmake-modules >= %{kf6_min}
 BuildRequires:  kf6-rpm-macros
 BuildRequires:  qt6-qtbase-devel
 BuildRequires:  qt6-qtdeclarative-devel
-BuildRequires:  kf6-kirigami-devel
+BuildRequires:  kf6-kirigami-devel >= %{kf6_min}
 BuildRequires:  kf6-kirigami-addons-devel
-BuildRequires:  kf6-ki18n-devel
-BuildRequires:  kf6-kcoreaddons-devel
-BuildRequires:  kf6-kconfig-devel
-BuildRequires:  kf6-knotifications-devel
-BuildRequires:  kf6-kstatusnotifieritem-devel
-BuildRequires:  kf6-kdbusaddons-devel
-BuildRequires:  kf6-kio-devel
-BuildRequires:  kf6-kwindowsystem-devel
-BuildRequires:  kf6-kjobwidgets-devel
+BuildRequires:  kf6-ki18n-devel >= %{kf6_min}
+BuildRequires:  kf6-kcoreaddons-devel >= %{kf6_min}
+BuildRequires:  kf6-kconfig-devel >= %{kf6_min}
+BuildRequires:  kf6-knotifications-devel >= %{kf6_min}
+BuildRequires:  kf6-kstatusnotifieritem-devel >= %{kf6_min}
+BuildRequires:  kf6-kdbusaddons-devel >= %{kf6_min}
+BuildRequires:  kf6-kio-devel >= %{kf6_min}
+BuildRequires:  kf6-kwindowsystem-devel >= %{kf6_min}
+BuildRequires:  kf6-kjobwidgets-devel >= %{kf6_min}
 BuildRequires:  desktop-file-utils
 BuildRequires:  systemd-rpm-macros
 
@@ -74,15 +77,19 @@ Requires:       kf6-kquickcharts%{?_isa}
 # The window's Qt Quick Controls style (org.kde.desktop).
 Requires:       kf6-qqc2-desktop-style%{?_isa}
 Requires:       qt6-qtdeclarative%{?_isa}
+# The daemon mounts each OneDrive folder with fusermount3.
+Requires:       fuse3
+# Below this KIO's "Move to Trash" copies a file of the folder into the home
+# trash, which downloads it (docs/limitations/K34.md).
+Requires:       kf6-kio-core%{?_isa} >= %{kf6_min}
 Recommends:     %{name}-kde = %{version}-%{release}
 
 %description
-KOneDrive shows your OneDrive as a folder of real files at their real sizes,
-each one an empty placeholder until something opens it; opening it downloads
-it first. It has a daemon that runs as your user, a small root-owned helper
-that intercepts opens with fanotify, a window with a tray icon, and the
-konedrivectl command line. An account is read-only until you switch it to
-upload the changes made on this computer.
+KOneDrive shows your OneDrive as a folder of files at their real sizes; a file
+takes no space until something reads it, and reading it downloads it. It has
+a daemon that runs as your user and serves the folder as a FUSE mount, a
+window with a tray icon, and the konedrivectl command line. An account is
+read-only until you switch it to upload the changes made on this computer.
 
 %package        kde
 Summary:        Dolphin integration for KOneDrive: file state emblems and menu actions
@@ -95,33 +102,31 @@ device, or has a change waiting to be uploaded, and "Always Keep on This
 Device", "Free Up Space" and "Open in OneDrive" in its context menu. Neither
 plugin opens a file in the folder.
 
+# Where Cargo writes: the build directory, unless the build names another directory
+# (scripts/build-rpm.sh does for a local build, to keep the compiled crates between builds).
+%{!?cargo_target: %global cargo_target target}
+
 %prep
 %autosetup -a 1
 
 %build
 # The Rust workspace, offline. The vendored .cargo/config.toml replaces
-# crates.io with vendor/. Cargo's home and output stay in the build directory.
-# RUSTFLAGS come from Fedora's build flags. fault-injection is the VM suite's
+# crates.io with crates-io/. Cargo's home and output stay in the build directory.
+# RUSTFLAGS come from Fedora's build flags. fault-injection is the tests'
 # alone and never packaged; dev-tools (the token export)
 # only with `--with dev_tools`, a local development package.
 export CARGO_HOME="$PWD/.cargo-home"
-export CARGO_TARGET_DIR="$PWD/target"
+export CARGO_TARGET_DIR="%{cargo_target}"
 # The version and the commit the binaries show; the tree has no .git to ask.
 export KONEDRIVE_BUILD_VERSION="%{build_version}"
 export KONEDRIVE_COMMIT="%{commit}"
 cargo build --release --offline --locked \
-    -p konedrived -p konedrivectl -p konedrive-helper \
+    -p konedrived -p konedrivectl \
     %{?with_dev_tools:--features konedrived/dev-tools,konedrivectl/dev-tools}
-# The helper's test hooks are all named KONEDRIVE_FAULT_*; a release helper has
-# none. scripts/install-helper.sh refuses such a binary the same way.
-if grep -aq KONEDRIVE_FAULT_ target/release/konedrive-helper; then
-    echo "konedrive-helper was built with the fault-injection feature" >&2
-    exit 1
-fi
 # A released daemon hands out no access token: only a development build
 # (dev-tools) serves org.konedrive.TokenExport.
 %if %{without dev_tools}
-if grep -aq org.konedrive.TokenExport target/release/konedrived; then
+if grep -aq org.konedrive.TokenExport %{cargo_target}/release/konedrived; then
     echo "konedrived was built with the dev-tools feature" >&2
     exit 1
 fi
@@ -140,9 +145,8 @@ pushd dolphin
 popd
 
 %install
-install -Dpm 0755 target/release/konedrived %{buildroot}%{_bindir}/konedrived
-install -Dpm 0755 target/release/konedrivectl %{buildroot}%{_bindir}/konedrivectl
-install -Dpm 0755 target/release/konedrive-helper %{buildroot}%{_libexecdir}/konedrive-helper
+install -Dpm 0755 %{cargo_target}/release/konedrived %{buildroot}%{_bindir}/konedrived
+install -Dpm 0755 %{cargo_target}/release/konedrivectl %{buildroot}%{_bindir}/konedrivectl
 
 pushd app
 %cmake_install
@@ -152,63 +156,34 @@ pushd dolphin
 popd
 
 # The unit and activation files in packaging/ are the developer install's, which
-# runs the daemon from ~/.local/bin and the helper from /usr/local/libexec. Each
-# path is rewritten, and the build stops if a line it expects has changed.
-sed 's|^ExecStart=%%h/\.local/bin/konedrived$|ExecStart=%{_bindir}/konedrived|' \
+# runs the daemon from ~/.local/bin. Each path is rewritten, and the build stops
+# if a line it expects has changed.
+sed -e 's|^ExecStart=%%h/\.local/bin/konedrived$|ExecStart=%{_bindir}/konedrived|' \
+    -e 's|^ExecStopPost=%%h/\.local/bin/konedrived --tidy$|ExecStopPost=%{_bindir}/konedrived --tidy|' \
     packaging/systemd/konedrived.service > konedrived.service
 grep -qx 'ExecStart=%{_bindir}/konedrived' konedrived.service
-sed 's|^ExecStart=/usr/local/libexec/konedrive-helper$|ExecStart=%{_libexecdir}/konedrive-helper|' \
-    packaging/systemd/konedrive-helper.service > konedrive-helper.service
-grep -qx 'ExecStart=%{_libexecdir}/konedrive-helper' konedrive-helper.service
+grep -qx 'ExecStopPost=%{_bindir}/konedrived --tidy' konedrived.service
 sed 's|^Exec=/bin/false$|Exec=%{_bindir}/konedrived|' \
     packaging/dbus/org.konedrive.Daemon.service > org.konedrive.Daemon.service
 grep -qx 'Exec=%{_bindir}/konedrived' org.konedrive.Daemon.service
 
 install -Dpm 0644 konedrived.service %{buildroot}%{_userunitdir}/konedrived.service
-install -Dpm 0644 konedrive-helper.service %{buildroot}%{_unitdir}/konedrive-helper.service
 install -Dpm 0644 org.konedrive.Daemon.service \
     %{buildroot}%{_datadir}/dbus-1/services/org.konedrive.Daemon.service
-# The helper is enabled on install: without it a OneDrive folder is not kept in
-# step, and placeholders read as zeros.
-install -dm 0755 %{buildroot}%{_presetdir}
-echo 'enable konedrive-helper.service' > %{buildroot}%{_presetdir}/80-konedrive.preset
 
 %check
 desktop-file-validate %{buildroot}%{_datadir}/applications/org.konedrive.KOneDrive.desktop
 
 %post
-%systemd_post konedrive-helper.service
 %systemd_user_post konedrived.service
-# A helper from scripts/install-helper.sh has its unit in /etc, which overrides
-# this package's unit in /usr/lib (README, "Switching from the developer install").
-if [ -e /etc/systemd/system/konedrive-helper.service ]; then
-    echo "konedrive: /etc/systemd/system/konedrive-helper.service, from scripts/install-helper.sh," >&2
-    echo "konedrive: overrides the packaged helper. Remove it: sudo scripts/install-helper.sh --uninstall --force" >&2
-fi
-# First install only: the preset has enabled the helper, and it starts now
-# rather than at the next boot, so that a folder can be registered at once.
-# systemd reloads its units only when the transaction ends, so it is told to
-# here, first. Neither call may fail the transaction; a failed start is said.
-if [ $1 -eq 1 ] && [ -d /run/systemd/system ]; then
-    systemctl daemon-reload || :
-    systemctl start konedrive-helper.service ||
-        echo "konedrive: the helper did not start; see: systemctl status konedrive-helper" >&2
-fi
 
 %preun
-# Removal only: the helper and every running daemon are stopped and disabled.
-%systemd_preun konedrive-helper.service
+# Removal only: every running daemon is stopped and disabled.
 %systemd_user_preun konedrived.service
 
 %postun
-# Upgrade only: the helper, and the daemon of every logged-in user, restart
-# once the transaction ends, so that the new binaries run together. The cost:
-# at this ordinary stop the helper fails every open still waiting for a
-# download with an error, and the download it waited for is cut off; a file
-# opened in the moment no helper runs reads the placeholder's zeros
-# (limitations log Z1). Only a helper that crashes or is killed lets a waiting
-# open through to zeros.
-%systemd_postun_with_restart konedrive-helper.service
+# Upgrade only: the daemon of every logged-in user restarts once the
+# transaction ends.
 %systemd_user_postun_with_restart konedrived.service
 
 %files
@@ -217,9 +192,6 @@ fi
 %{_bindir}/konedrive
 %{_bindir}/konedrived
 %{_bindir}/konedrivectl
-%{_libexecdir}/konedrive-helper
-%{_unitdir}/konedrive-helper.service
-%{_presetdir}/80-konedrive.preset
 %{_userunitdir}/konedrived.service
 %{_datadir}/dbus-1/services/org.konedrive.Daemon.service
 %{_datadir}/applications/org.konedrive.KOneDrive.desktop

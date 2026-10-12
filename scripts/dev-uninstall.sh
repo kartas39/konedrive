@@ -78,8 +78,3 @@ fi
 
 echo "The developer install is removed. Your settings, the tree store and the sync folder are"
 echo "as they were."
-if [ -e /usr/local/libexec/konedrive-helper ] || [ -e /etc/systemd/system/konedrive-helper.service ]; then
-    echo "The helper from scripts/install-helper.sh is still installed; to switch to the packages,"
-    echo "remove it next (the folder stays registered, and the packaged helper takes it over):"
-    echo "    sudo scripts/install-helper.sh --uninstall --force"
-fi

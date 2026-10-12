@@ -3,7 +3,7 @@
 //! exercised with no bus at all.
 //!
 //! - `/org/konedrive/Accounts`: `org.konedrive.Accounts` (the accounts, the settings they
-//!   share, the helper's state) and `org.konedrive.Files` (the per-file calls, routed by
+//!   share) and `org.konedrive.Files` (the per-file calls, routed by
 //!   path), over the `daemon::manager::AccountManager`; `org.konedrive.DevTools` too in a
 //!   development build.
 //! - `/org/konedrive/Accounts/<id>`: one account's `org.konedrive.Account` (and
@@ -34,7 +34,7 @@ pub mod upload_queue;
 
 use std::sync::Arc;
 
-use crate::sync::SyncService;
+use crate::account_folder::SyncService;
 
 /// The interfaces of one account's folder, each over the same `SyncService`
 /// (definitions: `dbus/org.konedrive.{Folder,Transfers,UploadQueue,Conflicts,LocalScan,ActivityLog}.xml`).

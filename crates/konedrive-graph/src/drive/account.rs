@@ -17,7 +17,7 @@ pub struct Profile {
 }
 
 /// `GET /me/drive`: the drive's id — the account's identity (`docs/design/accounts.md` §2) — and its quota:
-/// `used` and `total` for the account page, Graph's `remaining` and `state` for the outbox.
+/// `used` and `total` for the account page, Graph's `remaining` and `state` for the upload queue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Drive {
     /// Empty only if Graph left it out.

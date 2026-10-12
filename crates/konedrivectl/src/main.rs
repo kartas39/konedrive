@@ -34,12 +34,30 @@ impl std::fmt::Display for Usage {
 
 impl std::error::Error for Usage {}
 
+/// The user answered "no" to a command's question: nothing was changed, and the command
+/// exits with status 1 — it did not do what it was asked, so `konedrivectl … && next`
+/// does not go on. The sentence is said as it is, not as an error.
+#[derive(Debug)]
+pub(crate) struct Declined(pub(crate) &'static str);
+
+impl std::fmt::Display for Declined {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Declined {}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
+            if let Some(declined) = error.downcast_ref::<Declined>() {
+                eprintln!("{declined}");
+                return ExitCode::FAILURE;
+            }
             eprintln!("Error: {error:?}");
             if error.downcast_ref::<Usage>().is_some() {
                 ExitCode::from(2)

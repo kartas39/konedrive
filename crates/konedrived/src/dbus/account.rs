@@ -73,6 +73,19 @@ impl Account {
         self.service.state().get().published_error()
     }
 
+    /// The user asked for read-only while changes were unsent: the account is read-write
+    /// still, sends them, and switches by itself when none is left.
+    #[zbus(property)]
+    async fn read_only_wanted(&self) -> bool {
+        self.service.state().get().read_only_wish.is_some()
+    }
+
+    /// While `ReadOnlyWanted`: how many changes are still to send before the switch. 0 otherwise.
+    #[zbus(property)]
+    async fn unsent_before_read_only(&self) -> u64 {
+        self.service.state().get().read_only_wish.map_or(0, |wish| wish.unsent)
+    }
+
     #[zbus(property)]
     async fn display_name(&self) -> String {
         self.service.state().get().display_name
@@ -156,6 +169,12 @@ async fn emit_changes(
     }
     if old.published_error() != new.published_error() {
         account.last_error_changed(emitter).await?;
+    }
+    if old.read_only_wish.is_some() != new.read_only_wish.is_some() {
+        account.read_only_wanted_changed(emitter).await?;
+    }
+    if old.read_only_wish.map_or(0, |wish| wish.unsent) != new.read_only_wish.map_or(0, |wish| wish.unsent) {
+        account.unsent_before_read_only_changed(emitter).await?;
     }
     if old.label != new.label {
         account.label_changed(emitter).await?;

@@ -1,7 +1,5 @@
 use konedrive_dbus::Refusal;
 
-use super::formats::sentence;
-
 mod account;
 mod folder;
 
@@ -12,9 +10,7 @@ pub use account::{account_refusal_text, dev_refusal_text, explain_account_error,
 #[derive(Debug, Clone, Copy)]
 pub enum SyncAction<'a> {
     Register(&'a str),
-    RegisterWithoutInterception(&'a str),
     Forget,
-    PopulateFrom(&'a str),
     Hydrate(&'a str),
     Dehydrate(&'a str),
     Refresh,
@@ -34,7 +30,7 @@ pub enum SyncAction<'a> {
     /// `account remove`, with the account's label: `Accounts.Remove` forgets the
     /// folder as `Forget` does, and is refused under the same names.
     Remove(&'a str),
-    Outbox,
+    UploadQueue,
     Pause,
     Resume,
     Ignore,
@@ -43,7 +39,6 @@ pub enum SyncAction<'a> {
     /// `sync anyway`.
     Anyway,
     NotUploaded,
-    Deletes,
 }
 
 impl SyncAction<'_> {
@@ -52,11 +47,7 @@ impl SyncAction<'_> {
     fn doing(&self) -> String {
         match self {
             Self::Register(path) => format!("registering {path}"),
-            Self::RegisterWithoutInterception(path) => {
-                format!("registering {path} without interception")
-            }
             Self::Forget => "forgetting the sync folder".to_owned(),
-            Self::PopulateFrom(dir) => format!("filling the sync folder from {dir}"),
             Self::Hydrate(path) => format!("downloading {path}"),
             Self::Dehydrate(path) => format!("freeing up {path}"),
             Self::Refresh => "asking OneDrive for changes".to_owned(),
@@ -70,22 +61,19 @@ impl SyncAction<'_> {
             Self::Free(paths) => format!("freeing up {paths}"),
             Self::Open(path) => format!("opening {path} in OneDrive"),
             Self::Remove(label) => format!("removing the account {label}"),
-            Self::Outbox => "listing the changes waiting to upload".to_owned(),
+            Self::UploadQueue => "listing the changes waiting to upload".to_owned(),
             Self::Pause => "pausing the sync".to_owned(),
             Self::Resume => "resuming the sync".to_owned(),
             Self::Ignore => "changing the ignore list".to_owned(),
             Self::Settings => "changing the sync settings".to_owned(),
             Self::Anyway => "syncing anyway".to_owned(),
             Self::NotUploaded => "listing what is not uploaded".to_owned(),
-            Self::Deletes => "deciding on the large delete".to_owned(),
         }
     }
 
     fn path(&self) -> &str {
         match self {
             Self::Register(path)
-            | Self::RegisterWithoutInterception(path)
-            | Self::PopulateFrom(path)
             | Self::Hydrate(path)
             | Self::Dehydrate(path)
             | Self::Dismiss(path)
@@ -100,14 +88,13 @@ impl SyncAction<'_> {
             | Self::Conflicts
             | Self::FreeUpSpace
             | Self::Remove(_)
-            | Self::Outbox
+            | Self::UploadQueue
             | Self::Pause
             | Self::Resume
             | Self::Ignore
             | Self::Settings
             | Self::Anyway
-            | Self::NotUploaded
-            | Self::Deletes => "",
+            | Self::NotUploaded => "",
         }
     }
 }
@@ -144,13 +131,12 @@ pub fn explain_sync_error(action: SyncAction<'_>, error: &zbus::Error, root: &st
 /// What the CLI knows of the daemon besides a refusal, read after it: the
 /// folder of the account the refusal is about (`Folder.Path`: the chosen
 /// account's, or for a path, the folder that holds it), what it shows
-/// (`RootSource`), the helper (`Accounts.HelperState`), and for a path, every
-/// account's folder. Any of them may be empty.
+/// (`RootSource`), and for a path, every account's folder. Any of them may be
+/// empty.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Context<'a> {
     pub root: &'a str,
     pub source: &'a str,
-    pub helper: &'a str,
     /// Every account's registered folder, for a path command: a path in none
     /// of them is refused `OutsideRoot` before any account sees it.
     pub folders: &'a [String],
@@ -176,11 +162,9 @@ impl Context<'_> {
     }
 }
 
-/// [`explain_sync_error`], with what [`Context`] adds: a refusal for want
-/// of the helper ends with how to start it (HS4), a folder that shows
-/// OneDrive is not told to populate itself from a directory, a path
-/// in no account's folder is told which folders there are, and a folder
-/// that was another account's is told so.
+/// [`explain_sync_error`], with what [`Context`] adds: a folder that is not
+/// connected yet is told so, a path in no account's folder is told which
+/// folders there are, and a folder that was another account's is told so.
 pub fn explain_sync_error_in(action: SyncAction<'_>, error: &zbus::Error, context: Context<'_>) -> String {
     let (refusal, detail) = read_error(error);
     text_in(action, refusal.as_ref(), &detail, context)
@@ -228,7 +212,7 @@ fn text_in(action: SyncAction<'_>, refusal: Option<&Refusal>, detail: &str, cont
                 ),
             };
         }
-        (Some(Refusal::NotEmpty), Register(_) | RegisterWithoutInterception(_)) if context.foreign => {
+        (Some(Refusal::NotEmpty), Register(_)) if context.foreign => {
             return format!(
                 "{path} holds the files of another OneDrive account's folder, so it cannot be this \
                  account's. Choose an empty folder, or create a new one. If it was this account's own \
@@ -238,15 +222,10 @@ fn text_in(action: SyncAction<'_>, refusal: Option<&Refusal>, detail: &str, cont
         _ => {}
     }
     let text = folder::text(&told, refusal);
-    match (refusal, konedrive_dbus::HelperState::parse(context.helper).and_then(konedrive_dbus::HelperState::advice)) {
+    match refusal {
         // A folder that shows OneDrive downloads from OneDrive; it has no
         // source yet only while it waits to be brought up.
-        (Some(Refusal::NoSource), _) if context.source == "onedrive" => {
-            "the folder is not connected yet; try again in a moment".to_owned()
-        }
-        // The catalogue's sentences end with a full stop; this table's do not.
-        (Some(Refusal::NoHelper), Some(advice)) if text.ends_with('.') => format!("{text} {}", sentence(advice)),
-        (Some(Refusal::NoHelper), Some(advice)) => format!("{text}. {}", sentence(advice)),
+        Some(Refusal::NoSource) if context.source == "onedrive" => "the folder is not connected yet; try again in a moment".to_owned(),
         _ => text,
     }
 }

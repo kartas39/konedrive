@@ -6,8 +6,6 @@ keep|org.konedrive.Error.InUse||“doc.bin” is open in another program, so its
 keep|org.konedrive.Error.InUse|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is open in another program, so its space cannot be freed right now. Close it there and try again.
 keep|org.konedrive.Error.NoRoot||The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
 keep|org.konedrive.Error.NoRoot|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
-keep|org.konedrive.Error.NoHelper||The konedrive helper is not connected, so nothing was changed. Keeping “doc.bin” on this device must first have the helper stop letting its opens through unchecked — a download that failed partway would otherwise leave it reading as zeros. Try again once the helper is back (“konedrivectl sync status” shows when it is).
-keep|org.konedrive.Error.NoHelper|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The konedrive helper is not connected, so nothing was changed. Keeping “doc.bin” on this device must first have the helper stop letting its opens through unchecked — a download that failed partway would otherwise leave it reading as zeros. Try again once the helper is back (“konedrivectl sync status” shows when it is).
 keep|org.konedrive.Error.NotManaged||“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so there is nothing for KOneDrive to keep downloaded.
 keep|org.konedrive.Error.NotManaged|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so there is nothing for KOneDrive to keep downloaded.
 keep|org.konedrive.Error.NotHydrated||“doc.bin” is not downloaded, so there is no space to free — it already takes none.
@@ -20,8 +18,8 @@ keep|org.konedrive.Error.AlreadyRegistered||Keeping “doc.bin” on this device
 keep|org.konedrive.Error.AlreadyRegistered|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 keep|org.konedrive.Error.NotSignedIn||Keeping “doc.bin” on this device failed: org.konedrive.Error.NotSignedIn
 keep|org.konedrive.Error.NotSignedIn|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
-keep|org.konedrive.Error.NoSource||KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
-keep|org.konedrive.Error.NoSource|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
+keep|org.konedrive.Error.NoSource||The folder is not connected to OneDrive yet, so “doc.bin” cannot be downloaded. Try again in a moment.
+keep|org.konedrive.Error.NoSource|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The folder is not connected to OneDrive yet, so “doc.bin” cannot be downloaded. Try again in a moment.
 keep|org.konedrive.Error.NoConflict||Keeping “doc.bin” on this device failed: org.konedrive.Error.NoConflict
 keep|org.konedrive.Error.NoConflict|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 keep|org.konedrive.Error.NotAllowed||Could not change what is kept on this device: 
@@ -32,8 +30,6 @@ keep|org.konedrive.Error.NoAccount||Keeping “doc.bin” on this device failed:
 keep|org.konedrive.Error.NoAccount|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 keep|org.konedrive.Error.NotUploaded||Keeping “doc.bin” on this device failed: org.konedrive.Error.NotUploaded
 keep|org.konedrive.Error.NotUploaded|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
-keep|org.konedrive.Error.PendingUploads||Keeping “doc.bin” on this device failed: org.konedrive.Error.PendingUploads
-keep|org.konedrive.Error.PendingUploads|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 keep|org.konedrive.Error.Unreachable||OneDrive could not be reached.
 keep|org.konedrive.Error.Unreachable|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|OneDrive could not be reached: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 keep|org.konedrive.Error.NotUp||Keeping “doc.bin” on this device failed: org.konedrive.Error.NotUp
@@ -84,8 +80,6 @@ unpin|org.konedrive.Error.InUse||“doc.bin” is open in another program, so it
 unpin|org.konedrive.Error.InUse|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is open in another program, so its space cannot be freed right now. Close it there and try again.
 unpin|org.konedrive.Error.NoRoot||The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
 unpin|org.konedrive.Error.NoRoot|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
-unpin|org.konedrive.Error.NoHelper||The konedrive helper is not connected, so nothing was changed. Unpinning “doc.bin” needs the helper too, the same as any other change under KOneDrive's watch. Try again once KOneDrive is connected to the helper again — it reconnects on its own.
-unpin|org.konedrive.Error.NoHelper|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The konedrive helper is not connected, so nothing was changed. Unpinning “doc.bin” needs the helper too, the same as any other change under KOneDrive's watch. Try again once KOneDrive is connected to the helper again — it reconnects on its own.
 unpin|org.konedrive.Error.NotManaged||“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so it was never pinned.
 unpin|org.konedrive.Error.NotManaged|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so it was never pinned.
 unpin|org.konedrive.Error.NotHydrated||“doc.bin” is not downloaded, so there is no space to free — it already takes none.
@@ -98,8 +92,8 @@ unpin|org.konedrive.Error.AlreadyRegistered||Unpinning “doc.bin” failed: org
 unpin|org.konedrive.Error.AlreadyRegistered|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 unpin|org.konedrive.Error.NotSignedIn||Unpinning “doc.bin” failed: org.konedrive.Error.NotSignedIn
 unpin|org.konedrive.Error.NotSignedIn|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
-unpin|org.konedrive.Error.NoSource||KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
-unpin|org.konedrive.Error.NoSource|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
+unpin|org.konedrive.Error.NoSource||The folder is not connected to OneDrive yet, so “doc.bin” cannot be downloaded. Try again in a moment.
+unpin|org.konedrive.Error.NoSource|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The folder is not connected to OneDrive yet, so “doc.bin” cannot be downloaded. Try again in a moment.
 unpin|org.konedrive.Error.NoConflict||Unpinning “doc.bin” failed: org.konedrive.Error.NoConflict
 unpin|org.konedrive.Error.NoConflict|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 unpin|org.konedrive.Error.NotAllowed||Could not change what is kept on this device: 
@@ -110,8 +104,6 @@ unpin|org.konedrive.Error.NoAccount||Unpinning “doc.bin” failed: org.konedri
 unpin|org.konedrive.Error.NoAccount|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 unpin|org.konedrive.Error.NotUploaded||Unpinning “doc.bin” failed: org.konedrive.Error.NotUploaded
 unpin|org.konedrive.Error.NotUploaded|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
-unpin|org.konedrive.Error.PendingUploads||Unpinning “doc.bin” failed: org.konedrive.Error.PendingUploads
-unpin|org.konedrive.Error.PendingUploads|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 unpin|org.konedrive.Error.Unreachable||OneDrive could not be reached.
 unpin|org.konedrive.Error.Unreachable|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|OneDrive could not be reached: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 unpin|org.konedrive.Error.NotUp||Unpinning “doc.bin” failed: org.konedrive.Error.NotUp
@@ -162,8 +154,6 @@ free-up|org.konedrive.Error.InUse||“doc.bin” is open in another program, so 
 free-up|org.konedrive.Error.InUse|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is open in another program, so its space cannot be freed right now. Close it there and try again.
 free-up|org.konedrive.Error.NoRoot||The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
 free-up|org.konedrive.Error.NoRoot|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
-free-up|org.konedrive.Error.NoHelper||The konedrive helper is not connected, so nothing was changed. Freeing up “doc.bin” must first have the helper take off any mark that lets the file's opens through unchecked, or the emptied file could read as zeros from then on. Try again once KOneDrive is connected to the helper again — it reconnects on its own.
-free-up|org.konedrive.Error.NoHelper|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The konedrive helper is not connected, so nothing was changed. Freeing up “doc.bin” must first have the helper take off any mark that lets the file's opens through unchecked, or the emptied file could read as zeros from then on. Try again once KOneDrive is connected to the helper again — it reconnects on its own.
 free-up|org.konedrive.Error.NotManaged||“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, and KOneDrive never frees the space of a file it could not download again.
 free-up|org.konedrive.Error.NotManaged|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, and KOneDrive never frees the space of a file it could not download again.
 free-up|org.konedrive.Error.NotHydrated||“doc.bin” is not downloaded, so there is no space to free — it already takes none.
@@ -176,8 +166,8 @@ free-up|org.konedrive.Error.AlreadyRegistered||Freeing up “doc.bin” failed: 
 free-up|org.konedrive.Error.AlreadyRegistered|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 free-up|org.konedrive.Error.NotSignedIn||Freeing up “doc.bin” failed: org.konedrive.Error.NotSignedIn
 free-up|org.konedrive.Error.NotSignedIn|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
-free-up|org.konedrive.Error.NoSource||KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
-free-up|org.konedrive.Error.NoSource|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
+free-up|org.konedrive.Error.NoSource||The folder is not connected to OneDrive yet, so “doc.bin” cannot be downloaded. Try again in a moment.
+free-up|org.konedrive.Error.NoSource|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The folder is not connected to OneDrive yet, so “doc.bin” cannot be downloaded. Try again in a moment.
 free-up|org.konedrive.Error.NoConflict||Freeing up “doc.bin” failed: org.konedrive.Error.NoConflict
 free-up|org.konedrive.Error.NoConflict|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 free-up|org.konedrive.Error.NotAllowed||Could not free up space: 
@@ -188,8 +178,6 @@ free-up|org.konedrive.Error.NoAccount||Freeing up “doc.bin” failed: org.kone
 free-up|org.konedrive.Error.NoAccount|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 free-up|org.konedrive.Error.NotUploaded||“doc.bin” is not uploaded yet, so freeing it up would lose the changes made here. It was left exactly as it is.
 free-up|org.konedrive.Error.NotUploaded|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not uploaded yet, so freeing it up would lose the changes made here. It was left exactly as it is.
-free-up|org.konedrive.Error.PendingUploads||Freeing up “doc.bin” failed: org.konedrive.Error.PendingUploads
-free-up|org.konedrive.Error.PendingUploads|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 free-up|org.konedrive.Error.Unreachable||OneDrive could not be reached.
 free-up|org.konedrive.Error.Unreachable|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|OneDrive could not be reached: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 free-up|org.konedrive.Error.NotUp||Freeing up “doc.bin” failed: org.konedrive.Error.NotUp
@@ -240,8 +228,6 @@ open-online|org.konedrive.Error.InUse||“doc.bin” is open in another program,
 open-online|org.konedrive.Error.InUse|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is open in another program, so its space cannot be freed right now. Close it there and try again.
 open-online|org.konedrive.Error.NoRoot||The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
 open-online|org.konedrive.Error.NoRoot|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
-open-online|org.konedrive.Error.NoHelper||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.NoHelper
-open-online|org.konedrive.Error.NoHelper|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 open-online|org.konedrive.Error.NotManaged||“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so it has no page in OneDrive.
 open-online|org.konedrive.Error.NotManaged|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so it has no page in OneDrive.
 open-online|org.konedrive.Error.NotHydrated||“doc.bin” is not downloaded, so there is no space to free — it already takes none.
@@ -254,8 +240,8 @@ open-online|org.konedrive.Error.AlreadyRegistered||Opening “doc.bin” in OneD
 open-online|org.konedrive.Error.AlreadyRegistered|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 open-online|org.konedrive.Error.NotSignedIn||The account is not signed in, so OneDrive cannot be asked for the page of “doc.bin”. Sign in and try again.
 open-online|org.konedrive.Error.NotSignedIn|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The account is not signed in, so OneDrive cannot be asked for the page of “doc.bin”. Sign in and try again.
-open-online|org.konedrive.Error.NoSource||KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
-open-online|org.konedrive.Error.NoSource|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
+open-online|org.konedrive.Error.NoSource||The folder is not connected to OneDrive yet, so “doc.bin” cannot be downloaded. Try again in a moment.
+open-online|org.konedrive.Error.NoSource|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The folder is not connected to OneDrive yet, so “doc.bin” cannot be downloaded. Try again in a moment.
 open-online|org.konedrive.Error.NoConflict||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.NoConflict
 open-online|org.konedrive.Error.NoConflict|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 open-online|org.konedrive.Error.NotAllowed||Could not change what is kept on this device: 
@@ -266,8 +252,6 @@ open-online|org.konedrive.Error.NoAccount||Opening “doc.bin” in OneDrive fai
 open-online|org.konedrive.Error.NoAccount|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 open-online|org.konedrive.Error.NotUploaded||“doc.bin” is not uploaded yet, so it has no page in OneDrive.
 open-online|org.konedrive.Error.NotUploaded|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not uploaded yet, so it has no page in OneDrive.
-open-online|org.konedrive.Error.PendingUploads||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.PendingUploads
-open-online|org.konedrive.Error.PendingUploads|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 open-online|org.konedrive.Error.Unreachable||OneDrive could not be reached.
 open-online|org.konedrive.Error.Unreachable|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|OneDrive could not be reached: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
 open-online|org.konedrive.Error.NotUp||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.NotUp

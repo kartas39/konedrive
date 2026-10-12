@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use konedrive_graph::drive::DriveClient;
-use konedrive_graph::loopback::{Callback, LoopbackError, LoopbackListener};
+use konedrive_graph::loopback::{Answer, Callback, LoopbackError, LoopbackListener};
 use konedrive_graph::oauth::{scopes_for, Endpoints, OAuthClient, TokenResponse};
 use konedrive_graph::pkce::{random_token, Pkce};
 use konedrive_graph::token::StaticToken;
@@ -63,22 +63,18 @@ impl Attempt {
         self.oauth.picker_authorize_url(&self.redirect_uri, &self.pkce, &self.csrf).to_string()
     }
 
-    /// Waits for the browser, for at most `timeout`, and exchanges the code. `Err` says
-    /// why there are no tokens; empty when `cancel` ended the wait.
-    pub(crate) async fn tokens(self, timeout: Duration, cancel: oneshot::Receiver<()>) -> Result<TokenResponse, String> {
+    /// Waits for the browser, for at most `timeout`, and exchanges the code. The tokens
+    /// come with the browser's request, still unanswered: whoever decides what the tokens
+    /// lead to says it there. `Err` says why there are no tokens, and a browser that
+    /// asked was told the same; empty when `cancel` ended the wait.
+    pub(crate) async fn tokens(self, timeout: Duration, cancel: oneshot::Receiver<()>) -> Result<(TokenResponse, Answer), String> {
         let Attempt { oauth, listener, redirect_uri, pkce, csrf } = self;
         let callback = tokio::select! {
             result = listener.wait(&csrf, timeout) => result,
             _ = cancel => return Err(String::new()),
         };
-        let code = match callback {
-            Ok(Callback::Code(code)) => code,
-            Ok(Callback::Error { error, .. }) if error == "access_denied" => {
-                return Err("Access was denied in the browser.".into())
-            }
-            Ok(Callback::Error { error, description }) => {
-                return Err(format!("Microsoft reported an error: {error}: {description}"))
-            }
+        let (callback, browser) = match callback {
+            Ok(answered) => answered,
             Err(LoopbackError::TimedOut) => {
                 return Err("Timed out waiting for the browser. If Microsoft showed an error page, \
                             check the app registration: client ID and redirect URI http://localhost."
@@ -86,10 +82,20 @@ impl Attempt {
             }
             Err(e) => return Err(e.to_string()),
         };
-        oauth
-            .exchange_code(&code, &pkce.verifier, &redirect_uri)
-            .await
-            .map_err(|e| format!("Sign-in failed: {e}"))
+        let tokens = match callback {
+            Callback::Code(code) => {
+                oauth.exchange_code(&code, &pkce.verifier, &redirect_uri).await.map_err(|e| format!("Sign-in failed: {e}"))
+            }
+            Callback::Error { error, .. } if error == "access_denied" => Err("Access was denied in the browser.".into()),
+            Callback::Error { error, description } => Err(format!("Microsoft reported an error: {error}: {description}")),
+        };
+        match tokens {
+            Ok(tokens) => Ok((tokens, browser)),
+            Err(why) => {
+                browser.say(&why);
+                Err(why)
+            }
+        }
     }
 }
 

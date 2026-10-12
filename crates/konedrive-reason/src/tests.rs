@@ -9,11 +9,9 @@ fn a_stored_reason_is_written_back_as_it_was_read() {
         ("refused: ", Reason::Refused(Some(String::new()))),
         ("refused", Reason::Refused(None)),
         ("not allowed now: the folder is read-only: for now", Reason::NotAllowed(Some("the folder is read-only: for now".into()))),
-        ("download-failed: errno 5", Reason::Download(Some("errno 5".into()))),
-        ("moved-out-unreachable: errno 13", Reason::Unreachable(Some("errno 13".into()))),
         ("too-big:300:20", Reason::TooBig(Some((300, 20)))),
         ("too-big", Reason::TooBig(None)),
-        ("gone-once", Reason::GoneOnce),
+        ("quiet-time", Reason::QuietTime),
     ];
     for (stored, reason) in typed {
         assert_eq!(Reason::parse(stored), reason, "{stored}");
@@ -38,8 +36,7 @@ fn what_no_variant_spells_still_has_its_key_and_group() {
     };
     assert_eq!(of("network: connection reset"), ("network".into(), Some(Group::Waiting), Some("connection reset".into())));
     assert_eq!(of("too-big:0300:20"), ("too-big".into(), Some(Group::OneAction), Some("0300:20".into())));
-    assert_eq!(of("symlink: odd"), ("symlink".into(), Some(Group::Never), Some("odd".into())));
-    assert_eq!(of("mass-delete: odd"), ("mass-delete: odd".into(), None, None));
+    assert_eq!(of("locked: odd"), ("locked".into(), Some(Group::Waiting), Some("odd".into())));
     assert_eq!(of("something-new"), ("something-new".into(), None, None));
     assert!(Reason::parse("too-big:0300:20").waits_for_space() && Reason::parse("too-big:x").waits_for_space());
     assert_eq!(Reason::parse("too-big:0300:20").sizes(), Some((300, 20)));
@@ -47,9 +44,7 @@ fn what_no_variant_spells_still_has_its_key_and_group() {
     assert!(Reason::parse("").is_empty() && !Reason::Blocked.is_empty());
 }
 
-/// The key of a variant is the key its stored string is summed under, and
-/// the two tables share no key but `not-downloaded` and `state-unreadable`, each grouped
-/// the same in both.
+/// The key of a variant is the key its stored string is summed under.
 #[test]
 fn a_variants_key_is_the_key_of_its_stored_string() {
     for reason in Reason::ALL {
@@ -58,13 +53,6 @@ fn a_variants_key_is_the_key_of_its_stored_string() {
         assert_eq!(known_group(reason.key()), reason.group(), "{reason}");
         assert_eq!(reason.detail(), None, "{reason}");
     }
-    for skip in LocalSkip::ALL {
-        assert_eq!(LocalSkip::parse(skip.key()), skip);
-        assert_eq!((skip.to_string().as_str(), skip.detail()), (skip.key(), None));
-        assert_eq!(known_group(skip.key()), skip.group(), "{skip}");
-        assert_eq!(Reason::from_key(skip.key()).is_some(), matches!(skip, LocalSkip::NotDownloaded | LocalSkip::BadState), "{skip}");
-    }
-    assert_eq!(LocalSkip::parse("something-new"), LocalSkip::Other("something-new".into()));
     for group in Group::ALL {
         assert_eq!(Group::parse(group.as_str()), Some(group));
     }
@@ -74,7 +62,7 @@ fn a_variants_key_is_the_key_of_its_stored_string() {
 /// each reason under.
 #[test]
 fn every_key_has_the_group_it_had() {
-    let table: [(Option<Group>, &[&str]); 5] = [
+    let table: [(Option<Group>, &[&str]); 4] = [
         (Some(Group::OneAction), &["quota-exceeded", "waiting-for-space", "too-big", "forbidden"]),
         (
             Some(Group::PerFile),
@@ -85,53 +73,34 @@ fn every_key_has_the_group_it_had() {
                 "name-not-utf8",
                 "too-large",
                 "refused",
-                "no-name",
-                "no-item",
-                "no-guard",
-                "no-handle",
-                "bad-handle",
-                "another-item",
-                "state-unreadable",
                 "blocked",
-                "unreadable",
+                "not-read-on-disk",
             ],
         ),
-        (Some(Group::Never), &["symlink", "fifo", "socket", "device", "other-device", "reserved-name", "hard-link", "ignored"]),
         (
             Some(Group::Waiting),
             &[
                 "open-for-writing",
+                "being-checked",
+                "quiet-time",
                 "locked",
                 "not-found",
-                "not-downloaded",
                 "changed-while-sending",
                 "parent-not-in-onedrive",
                 "hash-mismatch",
-                "move-out-not-yet",
-                "waiting-for-the-helper",
-                "moved-out-unreachable",
-                "back-in-the-folder",
-                "moved-out-place-unknown",
-                "download-failed",
-                "gone-once",
-                "handle-from-another-filesystem",
-                "gone-unproved",
-                "lease-probe-failed",
                 "network",
                 "local-error",
                 "index-error",
                 "upload-error",
-                "moved-out-not-opened",
                 "paused",
                 "upload-session-open",
                 "name-held-by-an-upload",
                 "changed in OneDrive again and again",
-                "changing in OneDrive again and again",
                 "the upload session ended twice",
                 "not allowed now",
             ],
         ),
-        (None, &["mass-delete", "something-new"]),
+        (None, &["something-new", "symlink", "unreadable"]),
     ];
     let mut keys = 0;
     for (group, of) in table {
@@ -140,9 +109,8 @@ fn every_key_has_the_group_it_had() {
             keys += 1;
         }
     }
-    // Every key of the two tables is above: `not-downloaded` and `state-unreadable` are in
-    // both, `something-new` in neither.
-    assert_eq!(keys, Reason::ALL.len() + LocalSkip::ALL.len() - 1);
+    // Every key of the table is above, and three that are not in it.
+    assert_eq!(keys, Reason::ALL.len() + 3);
 }
 
 /// What an item still waits for is stored and sent as one string, and read
@@ -152,19 +120,13 @@ fn what_an_item_waits_for_is_read_as_it_was_written() {
     let all = [
         WaitsFor::Cycle,
         WaitsFor::Uploads(3),
-        WaitsFor::Changes("docs/new: file.txt".into()),
-        WaitsFor::OpenForWriting("a".into()),
-        WaitsFor::UnknownState("b".into()),
-        WaitsFor::NotDownloaded("c".into()),
-        WaitsFor::LocalOnly("d~".into()),
-        WaitsFor::MountedInside("e".into()),
-        WaitsFor::MovedAway("f".into()),
+        WaitsFor::OpenForWriting("/home/u/OneDrive/docs/new: file.txt".into()),
     ];
     for waits in all {
         assert_eq!(WaitsFor::parse(&waits.to_string()), waits);
     }
     assert_eq!(WaitsFor::Uploads(2).to_string(), "uploads:2");
-    assert_eq!(WaitsFor::Changes("docs/a.txt".into()).under("/home/u/OneDrive").to_string(), "changes:/home/u/OneDrive/docs/a.txt");
+    assert_eq!(WaitsFor::parse("changes:docs/a.txt"), WaitsFor::Other("changes:docs/a.txt".into()), "an older daemon's key");
     assert_eq!(WaitsFor::parse("something-new:x"), WaitsFor::Other("something-new:x".into()));
     assert_eq!(WaitsFor::parse("something-new:x").key(), "something-new");
 }

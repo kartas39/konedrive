@@ -94,11 +94,24 @@ fn a_failed_transfer_does_not_grow_the_pool() {
     assert_eq!(pool.size(), 2);
 }
 
-/// `429`: half the pool, nothing handed out for the wait, once per burst; then the level
-/// it came at is remembered: fast growth below it, one slot per round at and above it,
-/// and fast again once it is forgotten.
+/// One success with every slot busy and work waiting, the rest of the slots and the waiter
+/// let go after it.
+fn succeed_once(pool: &Arc<TransferPool>) {
+    let size = pool.size();
+    let mut slots = take(pool, Class::Download, size);
+    let waiting = queue(pool, Class::Download);
+    let mut done = slots.pop().unwrap();
+    done.succeeded();
+    drop(done);
+    drop(waiting);
+    drop(slots);
+}
+
+/// `429`: half the pool, nothing handed out for the wait, once per burst; then the
+/// throttle is remembered: one slot per round from the halved size, through the size the
+/// throttle came at and above it, and one per success again once it is forgotten.
 #[tokio::test(start_paused = true)]
-async fn a_throttle_halves_the_pool_and_its_level_slows_growth_until_forgotten() {
+async fn a_throttle_halves_the_pool_and_slows_its_growth_until_forgotten() {
     let pool = TransferPool::starting_at(8, 64);
     pool.throttled(Some(Duration::from_secs(5)));
     assert_eq!(pool.size(), 4);
@@ -110,33 +123,61 @@ async fn a_throttle_halves_the_pool_and_its_level_slows_growth_until_forgotten()
     assert!(pool.try_acquire(Class::Download).is_some(), "slots again after the wait");
     assert_eq!(pool.throughput().retry_after, 0);
 
-    // Below the level: one per success.
-    let grow_once = |pool: &Arc<TransferPool>| {
-        let size = pool.size();
-        let mut slots = take(pool, Class::Download, size);
-        let waiting = queue(pool, Class::Download);
-        let mut done = slots.pop().unwrap();
-        done.succeeded();
-        drop(done);
-        drop(waiting);
-        drop(slots);
-    };
-    for _ in 0..4 {
-        grow_once(&pool);
+    for size in 4..10 {
+        for _ in 0..size - 1 {
+            succeed_once(&pool);
+        }
+        assert_eq!(pool.size(), size, "not before a whole round");
+        succeed_once(&pool);
+        assert_eq!(pool.size(), size + 1, "one slot after as many successes as slots");
     }
-    assert_eq!(pool.size(), 8, "fast up to the level the throttle came at");
-    for _ in 0..7 {
-        grow_once(&pool);
-    }
-    assert_eq!(pool.size(), 8, "at the level: not before a whole round");
-    grow_once(&pool);
-    assert_eq!(pool.size(), 9, "one slot after as many successes as slots");
 
     tokio::time::sleep(THROTTLE_MEMORY).await;
-    grow_once(&pool);
-    assert_eq!(pool.size(), 10, "forgotten after five minutes: fast again");
-    grow_once(&pool);
-    assert_eq!(pool.size(), 11);
+    succeed_once(&pool);
+    assert_eq!(pool.size(), 11, "forgotten: one per success again");
+    succeed_once(&pool);
+    assert_eq!(pool.size(), 12);
+}
+
+/// A wait as long as the memory itself does not use the memory up: it is counted from
+/// the wait's end. After a `Retry-After` of 300 s the pool does not go back to the size
+/// it was throttled at in as many successes as it lost slots.
+#[tokio::test(start_paused = true)]
+async fn the_throttle_is_remembered_from_the_end_of_its_wait() {
+    let pool = TransferPool::starting_at(32, 32);
+    pool.throttled(Some(THROTTLE_MEMORY));
+    assert_eq!(pool.size(), 16);
+    tokio::time::sleep(THROTTLE_MEMORY + Duration::from_secs(1)).await;
+    assert!(pool.try_acquire(Class::Download).is_some(), "the wait is over");
+    for _ in 0..16 {
+        succeed_once(&pool);
+    }
+    assert_eq!(pool.size(), 17, "sixteen successes are one round, one slot: not back at 32");
+
+    // Just before the memory ends it still holds; a throttle of the same burst moves the
+    // wait's end, and the memory with it.
+    tokio::time::sleep(THROTTLE_MEMORY - Duration::from_secs(2)).await;
+    for _ in 0..17 {
+        succeed_once(&pool);
+    }
+    assert_eq!(pool.size(), 18, "still one per round");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    succeed_once(&pool);
+    assert_eq!(pool.size(), 19, "forgotten 300 s after the wait ended");
+}
+
+/// A second throttle while the first is remembered halves again, and its own wait's end
+/// is what the memory is counted from.
+#[tokio::test(start_paused = true)]
+async fn a_later_throttle_is_remembered_from_its_own_wait() {
+    let pool = TransferPool::starting_at(16, 32);
+    pool.throttled(Some(Duration::from_secs(10)));
+    tokio::time::sleep(THROTTLE_MEMORY).await;
+    pool.throttled(Some(Duration::from_secs(10)));
+    assert_eq!(pool.size(), 4, "another burst: halved again");
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    succeed_once(&pool);
+    assert_eq!(pool.size(), 4, "the first throttle's memory would have ended by now");
 }
 
 /// A throttle with the pool at 1 leaves it at 1.

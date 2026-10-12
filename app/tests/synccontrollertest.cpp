@@ -46,11 +46,11 @@ private Q_SLOTS:
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         m_fake->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/OneDrive")},
-                             {QStringLiteral("State"), QStringLiteral("listing")},
+                             {QStringLiteral("State"), QStringLiteral("ready")},
                              {QStringLiteral("Source"), QStringLiteral("onedrive")},
                              {QStringLiteral("ItemsListed"), QVariant::fromValue<qulonglong>(12480)}});
         QTRY_COMPARE(controller.itemsListed(), 12480ULL);
-        QCOMPARE(controller.rootState(), QStringLiteral("listing"));
+        QCOMPARE(controller.rootState(), QStringLiteral("ready"));
         QCOMPARE(controller.rootSource(), QStringLiteral("onedrive"));
     }
 
@@ -60,16 +60,16 @@ private Q_SLOTS:
     void followsEveryInterfaceOfTheFolder()
     {
         startFake();
-        m_fake->scan->set({{QStringLiteral("Reason"), QStringLiteral("overflow")}});
+        m_fake->scan->set({{QStringLiteral("Reason"), QStringLiteral("start")}});
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
-        QCOMPARE(controller.scanReason(), QStringLiteral("overflow")); // from GetAll
+        QCOMPARE(controller.scanReason(), QStringLiteral("start")); // from GetAll
         QCOMPARE(controller.poolSize(), 16u);
 
         m_fake->folder->set({{QStringLiteral("State"), QStringLiteral("ready")}});
-        m_fake->scan->set({{QStringLiteral("State"), QStringLiteral("running")}, {QStringLiteral("Files"), QVariant::fromValue<qulonglong>(7)}});
+        m_fake->scan->set({{QStringLiteral("State"), QStringLiteral("running")}, {QStringLiteral("Started"), QVariant::fromValue<qlonglong>(7)}});
         QTRY_COMPARE(controller.scanState(), QStringLiteral("running"));
-        QCOMPARE(controller.scanFiles(), 7ULL);
+        QCOMPARE(controller.scanStarted(), 7LL);
         QCOMPARE(controller.rootState(), QStringLiteral("ready"));
 
         m_fake->transfers->set({{QStringLiteral("PoolSize"), QVariant::fromValue<uint>(8)}, {QStringLiteral("LargeStreams"), QVariant::fromValue<uint>(2)}});
@@ -91,24 +91,22 @@ private Q_SLOTS:
     }
 
     /// What waits to go up, and the controls over it: the counts, pause and
-    /// resume, the ignore list, the mass-delete guard's two answers, and what
+    /// resume, the ignore list, and what
     /// is kept back — by reason, with the files of a reason only when shown.
-    void theOutboxAndItsControls()
+    void theUploadQueueAndItsControls()
     {
         startFake();
         const QString root = QStringLiteral("/home/u/OneDrive");
-        m_fake->outboxRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("running"), 5, 10, QString(), 0},
+        m_fake->uploadQueueRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("running"), 5, 10, QString(), 0},
                               {2, QStringLiteral("create"), root + QStringLiteral("/a:b"), QStringLiteral("blocked"), 0, 3, QStringLiteral("name-characters"), 0}};
-        m_fake->holdDeletes(root + QStringLiteral("/old"), 1);
         m_fake->keptBack = {{QStringLiteral("one-action"), QStringLiteral("quota-exceeded"), 5000, 7ULL << 30},
                             {QStringLiteral("per-file"), QStringLiteral("name-characters"), 1, 3},
-                            {QStringLiteral("never"), QStringLiteral("symlink"), 1, 0}};
+                            {QStringLiteral("waiting"), QStringLiteral("locked"), 1, 0}};
         m_fake->keptBackFiles.insert(QStringLiteral("name-characters"), {{root + QStringLiteral("/a:b"), QStringLiteral("name-characters")}});
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         QCOMPARE(controller.machineName(), QStringLiteral("fedora"));
         QCOMPARE(controller.ignorePatterns(), (QStringList{QStringLiteral("*.tmp"), QStringLiteral("~*")}));
-        QCOMPARE(controller.heldCount(), 1u);
 
         m_fake->queue->set({{QStringLiteral("PendingCount"), QVariant::fromValue<uint>(1)},
                             {QStringLiteral("PendingBytes"), QVariant::fromValue<qulonglong>(10)},
@@ -130,14 +128,10 @@ private Q_SLOTS:
         controller.addIgnorePattern(QStringLiteral("a/b"));
         QTRY_VERIFY(controller.actionError().contains(QStringLiteral("not a pattern")));
 
-        controller.restoreDeletes();
-        QTRY_COMPARE(controller.heldCount(), 0u);
-        QVERIFY(m_fake->calls.contains(QStringLiteral("RestoreDeletes")));
-
         controller.loadNotUploaded();
         QTRY_VERIFY(controller.notUploadedKnown());
         QCOMPARE(controller.notUploadedSummary().size(), 3);
-        QCOMPARE(controller.notUploadedSummary().at(2).toMap().value(QStringLiteral("why")).toString(), QStringLiteral("A symbolic link: never uploaded."));
+        QCOMPARE(controller.notUploadedSummary().at(2).toMap().value(QStringLiteral("why")).toString(), QStringLiteral("Locked in OneDrive (open for co-authoring): tried again later."));
         QCOMPARE(controller.blockedBytes(), (7ULL << 30) + 3);
         QVERIFY(controller.notUploadedFiles().isEmpty());
         controller.setNotUploadedFilesShown(QStringLiteral("name-characters"), true);
@@ -183,35 +177,17 @@ private Q_SLOTS:
         QVERIFY(m_fake->calls.contains(QStringLiteral("Register:/home/u/OneDrive")));
     }
 
-    /// Without the helper the window asks before registering a folder whose
-    /// placeholders nothing fills on open. The
-    /// window never registers a folder
-    /// without interception — an unhydrated file would read as zeros for
-    /// good. The prompt's only way forward is "Try Again", which retries
-    /// RegisterRoot.
-    void withoutTheHelperTheUserWaitsOrRetries()
+    /// A folder the daemon refuses is not registered, and the refusal is said.
+    void aRefusedFolderIsAnActionError()
     {
         startFake();
-        m_fake->helperMissing = true;
+        m_fake->registerRefused = QStringLiteral("/home/u/OneDrive is not empty");
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         controller.chooseFolder(QUrl::fromLocalFile(QStringLiteral("/home/u/OneDrive")));
-        QTRY_COMPARE(controller.pendingFolder(), QStringLiteral("/home/u/OneDrive"));
+        QTRY_COMPARE(controller.actionError(), QStringLiteral("/home/u/OneDrive is not empty"));
+        QCOMPARE(controller.rootPath(), QString());
         QCOMPARE(m_fake->calls.count(QStringLiteral("Register:/home/u/OneDrive")), 1);
-
-        // Retrying while the helper is still missing changes nothing.
-        controller.retryRegistration();
-        QTRY_COMPARE(m_fake->calls.count(QStringLiteral("Register:/home/u/OneDrive")), 2);
-        QCOMPARE(controller.pendingFolder(), QStringLiteral("/home/u/OneDrive"));
-
-        // The helper connects while the prompt is up; "Try Again" retries
-        // RegisterRoot and this time it takes.
-        m_fake->helperMissing = false;
-        controller.retryRegistration();
-        QTRY_COMPARE(controller.pendingFolder(), QString());
-        QCOMPARE(controller.rootState(), QStringLiteral("listing"));
-        QCOMPARE(m_fake->calls.count(QStringLiteral("Register:/home/u/OneDrive")), 3);
-        QVERIFY(!m_fake->calls.contains(QStringLiteral("RegisterWithoutInterception:/home/u/OneDrive")));
     }
 
     void listsWhatIsSkippedWithWhy()
@@ -234,7 +210,7 @@ private Q_SLOTS:
         startFake();
         m_fake->skippedList = {
             {QStringLiteral("/home/u/OneDrive/long"), QStringLiteral("name-too-long"), QStringLiteral("uploads:2"), QStringLiteral("/home/u/OneDrive/docs-fedora")},
-            {QStringLiteral("/home/u/OneDrive/other"), QStringLiteral("name-too-long"), QStringLiteral("local-only:/home/u/OneDrive/docs/a.txt~"), QStringLiteral("/home/u/OneDrive/docs")},
+            {QStringLiteral("/home/u/OneDrive/other"), QStringLiteral("name-too-long"), QStringLiteral("open-for-writing:/home/u/OneDrive/docs/a.txt"), QStringLiteral("/home/u/OneDrive/docs")},
             {QStringLiteral("/home/u/OneDrive/newer"), QStringLiteral("name-too-long"), QStringLiteral("a-word-of-a-newer-daemon"), QStringLiteral("/home/u/OneDrive/n")},
         };
         SyncController controller(fake::FirstAccount);
@@ -243,7 +219,7 @@ private Q_SLOTS:
         QTRY_COMPARE(controller.skipped().size(), 3);
         const auto why = [&controller](int row) { return controller.skipped().at(row).toMap().value(QStringLiteral("why")).toString(); };
         QCOMPARE(why(0), QStringLiteral("The name is longer than Linux allows (255 bytes; a Cyrillic letter takes two). Still on this computer: 2 changes in it wait to be uploaded. It is at /home/u/OneDrive/docs-fedora."));
-        QVERIFY2(why(1).endsWith(QStringLiteral("Still on this computer: /home/u/OneDrive/docs/a.txt~ is only here (its name is on the ignore list). Move it out of the folder or delete it. It is at /home/u/OneDrive/docs.")), qPrintable(why(1)));
+        QVERIFY2(why(1).endsWith(QStringLiteral("Still on this computer: /home/u/OneDrive/docs/a.txt is open in a program. It is at /home/u/OneDrive/docs.")), qPrintable(why(1)));
         QVERIFY2(why(2).endsWith(QStringLiteral("Still on this computer: it leaves once nothing in it waits to be uploaded. It is at /home/u/OneDrive/n.")), qPrintable(why(2)));
     }
 
@@ -255,7 +231,7 @@ private Q_SLOTS:
         startFake();
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
-        controller.dismissConflict(QStringLiteral("/no/such/rescue"));
+        controller.dismissConflict(QStringLiteral("/no/such/copy"));
         QTRY_VERIFY(!controller.actionError().isEmpty());
         controller.loadSkipped();
         QTRY_COMPARE(controller.skipped().size(), 1);
@@ -271,6 +247,30 @@ private Q_SLOTS:
         controller.forget();
         QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("Unregister")));
         QVERIFY(m_fake->calls.contains(QStringLiteral("Refresh")));
+    }
+
+    /// What a Forget and the account's removal warn of: UnsentCount, and 0 when it
+    /// cannot be read, so that neither waits for it.
+    void theUnsentCountIsReadOrNothing()
+    {
+        startFake();
+        const QString root = QStringLiteral("/home/u/OneDrive");
+        m_fake->uploadQueueRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("running"), 5, 10, QString(), 0},
+                              {2, QStringLiteral("create"), root + QStringLiteral("/b.odt"), QStringLiteral("pending"), 0, 10, QString(), 0}};
+        SyncController controller(fake::FirstAccount);
+        QTRY_VERIFY(controller.serviceAvailable());
+        QSignalSpy read(&controller, &SyncController::unsentCountRead);
+        controller.readUnsentCount();
+        QTRY_COMPARE(read.count(), 1);
+        QCOMPARE(read.at(0).at(0).toULongLong(), 2ULL);
+        QVERIFY(m_fake->calls.contains(QStringLiteral("UnsentCount")));
+        QVERIFY(!m_fake->calls.contains(QStringLiteral("Unregister")));
+
+        // No daemon: answered all the same.
+        m_daemon->stop();
+        controller.readUnsentCount();
+        QTRY_COMPARE(read.count(), 2);
+        QCOMPARE(read.at(1).at(0).toULongLong(), 0ULL);
     }
 
     /// The scalar properties reach the window.
@@ -349,15 +349,15 @@ private Q_SLOTS:
     void dismissingAConflictRefreshesTheList()
     {
         startFake();
-        m_fake->conflictList = {{200, QStringLiteral("/home/u/OneDrive/doc.odt"), QStringLiteral("/home/u/.local/share/konedrive/rescued/2/doc.odt")},
-                                {100, QStringLiteral("/home/u/OneDrive/a.txt"), QStringLiteral("/home/u/.local/share/konedrive/rescued/1/a.txt")}};
+        m_fake->conflictList = {{200, QStringLiteral("/home/u/OneDrive/doc.odt"), QStringLiteral("/home/u/OneDrive/doc-fedora.odt")},
+                                {100, QStringLiteral("/home/u/OneDrive/a.txt"), QStringLiteral("/home/u/OneDrive/a-fedora.txt")}};
         m_fake->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(2)}});
         SyncController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.conflicts()->count(), 2);
 
-        controller.dismissConflict(QStringLiteral("/home/u/.local/share/konedrive/rescued/2/doc.odt"));
+        controller.dismissConflict(QStringLiteral("/home/u/OneDrive/doc-fedora.odt"));
         QTRY_COMPARE(controller.conflicts()->count(), 1);
-        QVERIFY(m_fake->calls.contains(QStringLiteral("Dismiss:/home/u/.local/share/konedrive/rescued/2/doc.odt")));
+        QVERIFY(m_fake->calls.contains(QStringLiteral("Dismiss:/home/u/OneDrive/doc-fedora.odt")));
         QCOMPARE(text(controller.conflicts(), 0, ConflictModel::OriginalRole), QStringLiteral("/home/u/OneDrive/a.txt"));
         QCOMPARE(controller.actionError(), QString());
     }

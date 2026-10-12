@@ -72,12 +72,8 @@ MenuAnswer menuAnswerFrom(const QVariantMap &answer)
         const QString why = answer.value(QStringLiteral("free-up-why")).toString();
         if (why == QLatin1String("pinned-above")) {
             result.freeUpWhy = MenuAnswer::FreeUpWhy::PinnedAbove;
-        } else if (why == QLatin1String("no-helper")) {
-            result.freeUpWhy = MenuAnswer::FreeUpWhy::NoHelper;
         } else if (why == QLatin1String("not-uploaded")) {
             result.freeUpWhy = MenuAnswer::FreeUpWhy::NotUploaded;
-        } else if (why == QLatin1String("unknown")) {
-            result.freeUpWhy = MenuAnswer::FreeUpWhy::Unknown;
         }
     }
     result.blockedBy = answer.value(QStringLiteral("blocked-by")).toString();

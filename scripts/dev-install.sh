@@ -1,8 +1,8 @@
 #!/bin/sh
 # Builds everything and installs it for the current user under ~/.local: a development
 # build, with the dev-tools feature — the token export (`konedrivectl dev
-# export-access-token`, `org.konedrive.TokenExport`) that the VM tests against real Graph, the
-# stress tests and the test-account harness need. The released package has neither.
+# export-access-token`, `org.konedrive.TokenExport`) that the stress tests and the test-account
+# harness need. The released package has neither. The daemon needs `fusermount3` (fuse3).
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)

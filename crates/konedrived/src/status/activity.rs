@@ -1,10 +1,9 @@
-//! The activity log and the conflicts: what the sync did, and the local
-//! versions it moved out of the way.
+//! The activity log and the conflicts: what the sync did, and the copies it kept of
+//! local versions.
 //!
 //! Both live in the folder's tree store (`activity`, `conflicts`), which a
-//! Forget drops and a rebuild empties. A folder with no tree store — one
-//! filled with `PopulateFromDirectory` — keeps its activity in memory only,
-//! and has no conflicts: only a reconcile with OneDrive rescues anything.
+//! Forget drops and a rebuild empties. With no tree store attached the activity
+//! is kept in memory only, and there are no conflicts: only a folder's sync keeps a copy.
 
 use std::collections::VecDeque;
 use std::io;
@@ -127,7 +126,7 @@ fn there(path: &str) -> bool {
 ///
 /// - once [`detach`](Self::detach) returns, no write under way still holds a
 ///   clone of the store, which is what lets a Forget remove the store's files
-///   (`sync/start_stop.rs` detaches before the store goes);
+///   (`account_folder/start_stop.rs` detaches before the store goes);
 /// - [`attach`](Self::attach) moves what memory holds into the store and
 ///   hands the store over in the same hold, so nothing recorded meanwhile can
 ///   fall between the two.
@@ -143,7 +142,7 @@ fn there(path: &str) -> bool {
 /// in memory or in the next folder's store.
 pub struct Activity {
     backing: Mutex<Backing>,
-    /// The rescued path the last [`prune`](Self::prune) stopped at.
+    /// The kept copy's path the last [`prune`](Self::prune) stopped at.
     pruned_to: Mutex<String>,
     added: broadcast::Sender<Event>,
     state: SyncStateHandle,
@@ -244,7 +243,7 @@ impl Activity {
         }
     }
 
-    /// Announces `event` (`ActivityLog.Added`) without recording it: the outbox
+    /// Announces `event` (`ActivityLog.Added`) without recording it: the upload queue
     /// worker writes its events into the store in the same transaction as
     /// the commit they belong to. Dropped when it is not inside the folder
     /// registered now.
@@ -272,9 +271,8 @@ impl Activity {
         }
     }
 
-    /// Records local versions a reconcile moved out of the way, and drops
-    /// any whose file is gone. Blocking. Nothing without a store: only a
-    /// OneDrive folder's reconcile rescues anything.
+    /// Records the copies kept of local versions, and drops any whose copy is
+    /// gone. Blocking. Nothing without a store: only a folder's sync keeps a copy.
     pub fn add_conflicts(&self, rows: Vec<ConflictRow>) {
         if !rows.is_empty() {
             let backing = self.backing();
@@ -288,7 +286,7 @@ impl Activity {
         self.prune();
     }
 
-    /// The conflicts whose rescued file is still there, newest first; the
+    /// The conflicts whose kept copy is still there, newest first; the
     /// rest are dropped (a conflict whose file is gone drops off
     /// by itself). Whether it is there is asked with `lstat`, never an open.
     /// `Conflicts.Count` follows. Read on the store's read-only connection,
@@ -300,9 +298,9 @@ impl Activity {
                 return Ok(Vec::new());
             };
             let rows = store.read_blocking(|s| s.conflicts())?;
-            let (kept, gone): (Vec<ConflictRow>, Vec<ConflictRow>) = rows.into_iter().partition(|row| there(&row.rescued));
+            let (kept, gone): (Vec<ConflictRow>, Vec<ConflictRow>) = rows.into_iter().partition(|row| there(&row.kept_copy));
             if !gone.is_empty() {
-                let gone: Vec<String> = gone.into_iter().map(|row| row.rescued).collect();
+                let gone: Vec<String> = gone.into_iter().map(|row| row.kept_copy).collect();
                 store.call_blocking(move |s| s.remove_conflicts(&gone))?;
             }
             kept
@@ -313,7 +311,7 @@ impl Activity {
     }
 
     /// Looks over the next [`PRUNE_BATCH`] conflicts, in the order of their
-    /// rescued paths from where the last look stopped — the whole list, a
+    /// kept copies' paths from where the last look stopped — the whole list, a
     /// batch at a time, round and round — drops those whose file
     /// is gone in one job, and sets `Conflicts.Count` to what is left on
     /// record. Blocking.
@@ -334,9 +332,9 @@ impl Activity {
                 }
             };
             if batch.len() == PRUNE_BATCH {
-                *crate::panic::lock(&self.pruned_to) = batch[PRUNE_BATCH - 1].rescued.clone();
+                *crate::panic::lock(&self.pruned_to) = batch[PRUNE_BATCH - 1].kept_copy.clone();
             }
-            let gone: Vec<String> = batch.into_iter().filter(|row| !there(&row.rescued)).map(|row| row.rescued).collect();
+            let gone: Vec<String> = batch.into_iter().filter(|row| !there(&row.kept_copy)).map(|row| row.kept_copy).collect();
             store.call_blocking(move |s| {
                 if !gone.is_empty() {
                     s.remove_conflicts(&gone)?;
@@ -350,15 +348,15 @@ impl Activity {
         }
     }
 
-    /// Takes the conflict whose rescued file is `rescued` off the list; the
+    /// Takes the conflict whose kept copy is `kept_copy` off the list; the
     /// file itself is not touched. Whether there was one. Blocking.
-    pub fn dismiss(&self, rescued: &str) -> Result<bool, TreeError> {
+    pub fn dismiss(&self, kept_copy: &str) -> Result<bool, TreeError> {
         let removed = {
             let backing = self.backing();
             match backing.store.as_ref() {
                 Some(store) => {
-                    let rescued = rescued.to_owned();
-                    store.call_blocking(move |s| s.remove_conflict(&rescued))?
+                    let kept_copy = kept_copy.to_owned();
+                    store.call_blocking(move |s| s.remove_conflict(&kept_copy))?
                 }
                 None => false,
             }

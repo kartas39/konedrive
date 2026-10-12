@@ -6,8 +6,8 @@ use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
+use crate::mount::item_fixture::{onedrive_id_of, ItemFixture, ONEDRIVE_MTIME};
 use konedrive_graph::token::StaticToken;
-use konedrive_tree::{Change, Kind, Placement, Row, TreeStore};
 
 fn jpeg(width: u32, height: u32) -> Vec<u8> {
     let image = image::RgbImage::from_pixel(width, height, image::Rgb([200, 30, 30]));
@@ -16,50 +16,49 @@ fn jpeg(width: u32, height: u32) -> Vec<u8> {
     out.into_inner()
 }
 
-fn photo(id: &str, name: &str, mime: &str) -> Change {
-    Change::Upsert(Row { id: id.into(), parent_id: Some("R".into()), name: name.into(), kind: Kind::File, size: 1000, mtime: 1_700_000_000, etag: None, ctag: Some("c1".into()), quickxor: None, mime: Some(mime.into()), placement: Placement::Placed })
-}
-
+/// A folder's rows with the files `names` shown, each a file OneDrive has with the MIME type
+/// given, a fake Graph and an empty thumbnail cache.
 struct World {
     server: MockServer,
-    folder: tempfile::TempDir,
+    fixture: ItemFixture,
     cache: tempfile::TempDir,
-    store: Store,
 }
 
-async fn world(items: &[Change]) -> World {
-    let server = MockServer::start().await;
-    let folder = tempfile::tempdir().unwrap();
-    let store = Store::new(TreeStore::in_memory().unwrap());
-    let root = Change::Root(Row { id: "R".into(), parent_id: None, name: String::new(), kind: Kind::Folder, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed });
-    let mut changes = vec![root];
-    changes.extend_from_slice(items);
-    store.call(move |s| { s.begin_staging(konedrive_tree::NewTree::Whole)?; s.stage(&changes)?; s.commit_staging("L") }).await.unwrap();
-    for item in items {
-        if let Change::Upsert(row) = item {
-            let path = folder.path().join(&row.name);
-            std::fs::write(&path, b"").unwrap();
-            let times = [libc::timespec { tv_sec: row.mtime, tv_nsec: 0 }; 2];
-            let c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
-            // SAFETY: a valid C string and two timespecs.
-            assert_eq!(unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), times.as_ptr(), 0) }, 0);
-        }
+async fn world(files: &[(&str, &str)]) -> World {
+    let fixture = ItemFixture::new();
+    for (name, mime) in files {
+        let shown = fixture.show_onedrive_file(name, name.as_bytes());
+        let (item, mime) = (shown.local_item_id.as_i64(), (*mime).to_owned());
+        // The listing's row carries no MIME type in the fixture: it is written as a listing would have.
+        fixture.write_rows(move |store| store.bench_sql(&format!("UPDATE items SET onedrive_mime = '{mime}' WHERE local_item_id = {item}")));
     }
-    World { server, folder, cache: tempfile::tempdir().unwrap(), store }
+    World { server: MockServer::start().await, fixture, cache: tempfile::tempdir().unwrap() }
+}
+
+fn thumb_path(name: &str, size: &str) -> String {
+    format!("/me/drive/items/{}/thumbnails/0/{size}/content", onedrive_id_of(name))
 }
 
 impl World {
+    fn root(&self) -> std::path::PathBuf {
+        self.fixture.folder().canonicalize().unwrap()
+    }
+
     fn filler(&self) -> ThumbnailFiller {
         // Short throttle waits, so a `503` is given up on in milliseconds.
         let retry = konedrive_graph::drive::RetryPolicy { attempts: 2, default_wait: Duration::from_millis(10), max_wait: Duration::from_millis(50) };
         let drive = konedrive_graph::drive::DriveClient::new(Url::parse(&format!("{}/", self.server.uri())).unwrap(), Arc::new(StaticToken::new("T"))).unwrap().with_retry(retry);
-        let root = SyncRoot { path: self.folder.path().canonicalize().unwrap(), root_id: "r".into() };
-        ThumbnailFiller::new(drive, self.store.clone(), root, self.cache.path().to_path_buf(), Arc::default())
+        let root = SyncRoot { path: self.root(), root_id: "r".into() };
+        ThumbnailFiller::new(drive, self.fixture.store.clone(), root, self.cache.path().to_path_buf(), Arc::default())
     }
 
-    fn cached(&self, dir: &str, file: &std::path::Path) -> std::path::PathBuf {
-        let uri = file_uri(&file.canonicalize().unwrap());
+    fn cached(&self, dir: &str, name: &str) -> std::path::PathBuf {
+        let uri = file_uri(&self.root().join(name));
         self.cache.path().join(dir).join(format!("{:x}.png", md5::Md5::digest(uri.as_bytes())))
+    }
+
+    fn item(&self, name: &str) -> LocalItemId {
+        self.fixture.find_item_at(name).expect("the row").local_item_id
     }
 }
 
@@ -72,319 +71,209 @@ fn a_file_uri_escapes_what_a_path_segment_cannot_hold() {
     assert_eq!(file_uri(std::path::Path::new("/h/100%.jpg")), "file:///h/100%25.jpg");
 }
 
+/// An image the folder shows gets the thumbnails KIO looks for, named by the path the folder
+/// shows it at and stamped with the time of the content OneDrive has; made once, it is not
+/// asked for again.
 #[tokio::test]
-async fn an_image_gets_the_thumbnails_kio_looks_for() {
-    let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
-    Mock::given(method("GET")).and(path("/me/drive/items/P/thumbnails/0/c512x512/content"))
+async fn an_image_gets_the_thumbnails_kio_looks_for_and_is_asked_for_once() {
+    let w = world(&[("p.jpg", "image/jpeg")]).await;
+    Mock::given(method("GET")).and(path(thumb_path("p.jpg", "c512x512")))
         .respond_with(ResponseTemplate::new(200).insert_header("content-type", "image/jpeg").set_body_bytes(jpeg(600, 400)))
         .expect(1)
         .mount(&w.server).await;
     let filler = w.filler();
-    assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.written, 1);
-    let file = w.folder.path().join("p.jpg");
+    let made = filler.run_once(&CancellationToken::new(), 100).await;
+    assert_eq!((made.taken, made.written), (1, 1));
     for (dir, edge) in SIZES {
-        let png = w.cached(dir, &file);
-        let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&png).unwrap()));
+        let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(w.cached(dir, "p.jpg")).unwrap()));
         let reader = decoder.read_info().unwrap();
         let info = reader.info();
         assert!(info.width.max(info.height) <= *edge, "{dir}: {}x{}", info.width, info.height);
         let text = |key: &str| info.uncompressed_latin1_text.iter().find(|t| t.keyword == key).map(|t| t.text.clone());
-        assert_eq!(text("Thumb::URI"), Some(file_uri(&file.canonicalize().unwrap())));
-        assert_eq!(text("Thumb::MTime"), Some("1700000000".into()));
+        assert_eq!(text("Thumb::URI"), Some(file_uri(&w.root().join("p.jpg"))));
+        assert_eq!(text("Thumb::MTime"), Some(ONEDRIVE_MTIME.to_string()));
     }
-    assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.written, 0, "nothing to do the second time");
+    let again = filler.run_once(&CancellationToken::new(), 100).await;
+    assert_eq!((again.taken, again.written), (0, 0), "no candidate the second time");
 }
 
+/// What settles the question is recorded for the content, and not asked again: Graph has
+/// no thumbnail (404), refuses (403), or answers bytes that are no image.
 #[tokio::test]
-async fn an_item_graph_has_no_thumbnail_for_is_not_asked_again() {
-    let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
-    Mock::given(method("GET")).and(path("/me/drive/items/P/thumbnails/0/c512x512/content"))
-        .respond_with(ResponseTemplate::new(404))
-        .expect(1)
-        .mount(&w.server).await;
+async fn an_item_with_no_usable_thumbnail_is_not_asked_again() {
+    let w = world(&[("none.jpg", "image/jpeg"), ("refused.png", "image/png"), ("broken.mp4", "video/mp4")]).await;
+    for (name, answer) in [("none.jpg", ResponseTemplate::new(404)), ("refused.png", ResponseTemplate::new(403)), ("broken.mp4", ResponseTemplate::new(200).set_body_bytes(b"no image at all".to_vec()))] {
+        Mock::given(method("GET")).and(path(thumb_path(name, "c512x512"))).respond_with(answer).expect(1).mount(&w.server).await;
+    }
     let filler = w.filler();
-    filler.run_once(&CancellationToken::new(), 100).await;
-    filler.run_once(&CancellationToken::new(), 100).await;
+    let first = filler.run_once(&CancellationToken::new(), 100).await;
+    assert_eq!((first.taken, first.written), (3, 0));
+    assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.taken, 0);
 }
 
 #[tokio::test]
 async fn only_images_and_videos_are_asked_for() {
-    let w = world(&[photo("T", "notes.txt", "text/plain")]).await;
-    assert_eq!(w.filler().run_once(&CancellationToken::new(), 100).await.written, 0);
+    let w = world(&[("notes.txt", "text/plain")]).await;
+    assert_eq!(w.filler().run_once(&CancellationToken::new(), 100).await.taken, 0);
     assert!(w.server.received_requests().await.unwrap().is_empty());
 }
 
-#[tokio::test]
-async fn a_renamed_image_gets_a_thumbnail_under_its_new_name() {
-    let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
-    Mock::given(method("GET")).and(path("/me/drive/items/P/thumbnails/0/c512x512/content"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(jpeg(64, 64)))
-        .expect(2)
-        .mount(&w.server).await;
-    let filler = w.filler();
-    filler.run_once(&CancellationToken::new(), 100).await;
-    std::fs::rename(w.folder.path().join("p.jpg"), w.folder.path().join("q.jpg")).unwrap();
-    w.store.call(|s| { s.begin_staging(konedrive_tree::NewTree::Delta)?; s.stage(&[photo("P", "q.jpg", "image/jpeg")])?; s.commit_staging("L2") }).await.unwrap();
-    assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.written, 1);
-    assert!(w.cached("normal", &w.folder.path().join("q.jpg")).is_file());
-}
-
-/// promise: a thumbnail made for a version survives the next
-/// commit, or every cycle would fetch every thumbnail again.
-#[tokio::test]
-async fn a_commit_keeps_what_the_thumbnails_were_made_for() {
-    let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
-    Mock::given(method("GET")).and(path("/me/drive/items/P/thumbnails/0/c512x512/content"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(jpeg(64, 64)))
-        .expect(1)
-        .mount(&w.server).await;
-    let filler = w.filler();
-    filler.run_once(&CancellationToken::new(), 100).await;
-    // A full listing builds `staging` from nothing: only the commit's own
-    // update can carry the thumbnail's key across.
-    let root = Change::Root(Row { id: "R".into(), parent_id: None, name: String::new(), kind: Kind::Folder, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed });
-    w.store.call(move |s| { s.begin_staging(konedrive_tree::NewTree::Whole)?; s.stage(&[root, photo("P", "p.jpg", "image/jpeg")])?; s.commit_staging("L2") }).await.unwrap();
-    assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.written, 0);
-}
-
-/// Bytes that Graph answered with 200 but that will not
-/// decode (corrupt, wrong format) must be recorded like a 404, or every
-/// cycle asks Graph for the same undecodable bytes forever. The mock's
-/// `.expect(1)` is the real assertion: a second \`run_once\` that asked
-/// Graph again would fail it.
-#[tokio::test]
-async fn an_undecodable_body_is_recorded_and_not_retried() {
-    let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
-    Mock::given(method("GET")).and(path("/me/drive/items/P/thumbnails/0/c512x512/content"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"not an image".to_vec()))
-        .expect(1)
-        .mount(&w.server).await;
-    let filler = w.filler();
-    assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.written, 0, "nothing to write from bytes that will not decode");
-    assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.written, 0, "and not asked for again");
-}
-
-/// A full batch (`limit` candidates) that includes one
-/// Graph refuses still leaves `taken == limit`, so a drain keyed off
-/// `taken` (not `written`) does not stop before the next batch — here,
-/// one more candidate past the first 200.
-#[tokio::test]
-async fn a_full_batch_with_a_refusal_in_it_still_drains_the_next_batch() {
-    let mut items = vec![photo("BAD", "bad.jpg", "image/jpeg")];
-    for i in 0..200 {
-        items.push(photo(&format!("OK{i}"), &format!("ok{i}.jpg"), "image/jpeg"));
-    }
-    let w = world(&items).await;
-    Mock::given(method("GET")).and(path("/me/drive/items/BAD/thumbnails/0/c512x512/content"))
-        .respond_with(ResponseTemplate::new(404))
-        .mount(&w.server).await;
-    Mock::given(method("GET")).and(path_regex(r"^/me/drive/items/OK\d+/thumbnails/0/c512x512/content$"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(jpeg(8, 8)))
-        .mount(&w.server).await;
-    let filler = w.filler();
-    let outcome = filler.drain(&CancellationToken::new(), 200).await;
-    assert_eq!(outcome.taken, 201, "every candidate was looked at, not just the first full batch");
-    assert_eq!(outcome.written, 200, "everything but the 404 was written");
-}
-
-/// Batches go on where the last one stopped — each candidate
-/// is looked at once per drain, the ones Graph fails for this time
-/// included — and the next drain starts from the beginning again.
+/// Batches go on where the last one stopped, by local item id — each candidate is looked at
+/// once per drain, the ones Graph fails for this time included — and the next drain starts
+/// from the beginning again.
 #[tokio::test]
 async fn batches_go_on_where_the_last_stopped() {
-    let items: Vec<Change> = (0..5).map(|i| photo(&format!("P{i}"), &format!("p{i}.jpg"), "image/jpeg")).collect();
-    let w = world(&items).await;
-    // Every request fails in a way worth trying again (a server error).
-    Mock::given(method("GET")).and(path_regex(r"^/me/drive/items/P\d/thumbnails/0/c512x512/content$"))
-        .respond_with(ResponseTemplate::new(500))
-        .mount(&w.server).await;
+    let names: Vec<String> = (0..5).map(|i| format!("p{i}.jpg")).collect();
+    let files: Vec<(&str, &str)> = names.iter().map(|name| (name.as_str(), "image/jpeg")).collect();
+    let w = world(&files).await;
+    // Every request fails in a way worth trying again (a server error): nothing is recorded.
+    Mock::given(method("GET")).and(path_regex(r"^/me/drive/items/p\d\.jpg/thumbnails/0/c512x512/content$")).respond_with(ResponseTemplate::new(500)).mount(&w.server).await;
     let filler = w.filler();
-    let (first, next) = filler.run_from(&CancellationToken::new(), 2, String::new()).await;
-    assert_eq!((first.taken, next.as_deref()), (2, Some("P1")));
-    let (second, next) = filler.run_from(&CancellationToken::new(), 2, next.unwrap()).await;
-    assert_eq!((second.taken, next.as_deref()), (2, Some("P3")), "not P0 and P1 again");
+    let (first, next) = filler.run_from(&CancellationToken::new(), 2, None).await;
+    assert_eq!((first.taken, next), (2, Some(w.item("p1.jpg"))));
+    let (second, next) = filler.run_from(&CancellationToken::new(), 2, next).await;
+    assert_eq!((second.taken, next), (2, Some(w.item("p3.jpg"))), "not the first two again");
+    let (third, next) = filler.run_from(&CancellationToken::new(), 2, next).await;
+    assert_eq!((third.taken, next), (1, None), "a batch that is not full was the last");
     let total = filler.drain(&CancellationToken::new(), 2).await;
     assert_eq!(total.taken, 5, "a drain looks at each once, and ends");
+    // A passing trouble settled nothing: the next drain asks for all of them again.
+    assert_eq!(filler.drain(&CancellationToken::new(), 2).await.taken, 5);
 }
 
-/// A thumbnail that cannot be cached here (the cache is not a
-/// directory) is recorded like the other failures: a batch of them ends
-/// the drain, and the item is not asked for again until it changes.
+/// A full batch whose every candidate was settled leaves nothing for the next one, and the
+/// drain ends there: it does not go round.
 #[tokio::test]
-async fn a_batch_of_local_failures_ends_the_drain() {
-    let items: Vec<Change> = (0..3).map(|i| photo(&format!("P{i}"), &format!("p{i}.jpg"), "image/jpeg")).collect();
-    let w = world(&items).await;
-    Mock::given(method("GET")).and(path_regex(r"^/me/drive/items/P\d/thumbnails/0/c512x512/content$"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(jpeg(8, 8)))
-        .expect(3)
-        .mount(&w.server).await;
-    let cache = w.cache.path().join("not-a-directory");
-    std::fs::write(&cache, b"").unwrap();
-    let drive = konedrive_graph::drive::DriveClient::new(Url::parse(&format!("{}/", w.server.uri())).unwrap(), Arc::new(StaticToken::new("T"))).unwrap();
-    let root = SyncRoot { path: w.folder.path().canonicalize().unwrap(), root_id: "r".into() };
-    let filler = ThumbnailFiller::new(drive, w.store.clone(), root, cache, Arc::default());
-    let total = filler.drain(&CancellationToken::new(), 2).await;
-    assert_eq!((total.taken, total.written), (3, 0));
-    assert_eq!(filler.drain(&CancellationToken::new(), 2).await.taken, 0, "recorded: not asked for again");
+async fn a_drain_ends_when_the_batch_after_a_full_one_is_empty() {
+    let w = world(&[("a.jpg", "image/jpeg"), ("b.jpg", "image/jpeg")]).await;
+    Mock::given(method("GET")).and(path_regex(r"^/me/drive/items/[ab]\.jpg/thumbnails/0/c512x512/content$")).respond_with(ResponseTemplate::new(404)).expect(2).mount(&w.server).await;
+    let total = w.filler().drain(&CancellationToken::new(), 2).await;
+    assert_eq!(total.taken, 2);
 }
 
-/// A stop does not wait out a thumbnail request — which can sit through
-/// Graph's `Retry-After` for minutes — or the pause after one: a Forget
-/// waits for the stop.
-#[tokio::test]
-async fn a_stop_does_not_wait_for_a_thumbnail_request() {
-    let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
-    Mock::given(method("GET")).and(path("/me/drive/items/P/thumbnails/0/c512x512/content"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(jpeg(8, 8)).set_delay(Duration::from_secs(60)))
-        .mount(&w.server).await;
-    let (kick, cancel) = (Arc::new(Notify::new()), CancellationToken::new());
-    let task = w.filler().spawn(Arc::clone(&kick), cancel.clone());
-    kick.notify_one();
-    for _ in 0..200 {
-        if !w.server.received_requests().await.unwrap().is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    cancel.cancel();
-    tokio::time::timeout(Duration::from_secs(5), task).await.expect("the stop waited for the request").unwrap();
-}
-
-fn thumb_path(id: &str, size: &str) -> String {
-    format!("/me/drive/items/{id}/thumbnails/0/{size}/content")
-}
-
-/// Graph refuses `c512x512` for some items with `406`; its
-/// named size `large` is asked once instead, and scaled down the same way.
+/// Graph refuses `c512x512` for some items with `406`; its named size `large` is asked once
+/// instead.
 #[tokio::test]
 async fn a_406_is_asked_again_at_graphs_named_size() {
-    let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
-    Mock::given(method("GET")).and(path(thumb_path("P", "c512x512")))
-        .respond_with(ResponseTemplate::new(406))
-        .expect(1)
-        .mount(&w.server).await;
-    Mock::given(method("GET")).and(path(thumb_path("P", "large")))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(jpeg(800, 600)))
-        .expect(1)
-        .mount(&w.server).await;
-    let filler = w.filler();
-    assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.written, 1);
-    let png = w.cached("x-large", &w.folder.path().join("p.jpg"));
-    let info = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(png).unwrap())).read_info().unwrap().info().clone();
-    assert_eq!((info.width, info.height), (512, 384), "scaled down to the largest size filled");
-    assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.taken, 0);
+    let w = world(&[("p.jpg", "image/jpeg")]).await;
+    Mock::given(method("GET")).and(path(thumb_path("p.jpg", "c512x512"))).respond_with(ResponseTemplate::new(406)).expect(1).mount(&w.server).await;
+    Mock::given(method("GET")).and(path(thumb_path("p.jpg", "large"))).respond_with(ResponseTemplate::new(200).set_body_bytes(jpeg(64, 64))).expect(1).mount(&w.server).await;
+    assert_eq!(w.filler().run_once(&CancellationToken::new(), 100).await.written, 1);
+    assert!(w.cached("normal", "p.jpg").is_file());
 }
 
-/// Refused at both sizes, the item is recorded, and the next
-/// drain does not ask for it again.
+/// A stop does not wait for candidates that were not asked yet: with the stop given before
+/// the batch, nothing is asked of Graph.
 #[tokio::test]
-async fn a_406_refused_at_both_sizes_is_recorded() {
-    let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
-    Mock::given(method("GET")).and(path(thumb_path("P", "c512x512")))
-        .respond_with(ResponseTemplate::new(406))
-        .expect(1)
-        .mount(&w.server).await;
-    Mock::given(method("GET")).and(path(thumb_path("P", "large")))
-        .respond_with(ResponseTemplate::new(406))
-        .expect(1)
-        .mount(&w.server).await;
-    let filler = w.filler();
-    assert_eq!(filler.drain(&CancellationToken::new(), 100).await, RunOutcome { taken: 1, written: 0 });
-    assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 0, "not asked for again");
+async fn a_filler_that_is_told_to_stop_asks_for_nothing_more() {
+    let w = world(&[("p.jpg", "image/jpeg")]).await;
+    let stop = CancellationToken::new();
+    stop.cancel();
+    let made = w.filler().run_once(&stop, 100).await;
+    assert_eq!(made.written, 0);
+    assert!(w.server.received_requests().await.unwrap().is_empty());
 }
 
-/// Any other 4xx is final at once — no second size, no retry.
-#[tokio::test]
-async fn a_403_is_recorded_at_once() {
-    let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
-    Mock::given(method("GET")).and(path(thumb_path("P", "c512x512")))
-        .respond_with(ResponseTemplate::new(403))
-        .expect(1)
-        .mount(&w.server).await;
-    Mock::given(method("GET")).and(path(thumb_path("P", "large")))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(jpeg(8, 8)))
-        .expect(0)
-        .mount(&w.server).await;
-    let filler = w.filler();
-    filler.drain(&CancellationToken::new(), 100).await;
-    assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 0);
+/// The requests Graph was asked for thumbnails.
+async fn asked_count(w: &World) -> usize {
+    w.server.received_requests().await.unwrap().len()
 }
 
-/// A passing trouble — a sign-in trouble, a server error, a
-/// dropped connection — is not recorded: the next drain asks again.
-#[tokio::test]
-async fn a_passing_trouble_is_asked_again_at_the_next_drain() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let dropped = format!("http://{}/blob", listener.local_addr().unwrap());
-    tokio::spawn(async move {
-        while let Ok((socket, _)) = listener.accept().await {
-            drop(socket);
-        }
-    });
-    let w = world(&[photo("A", "a.jpg", "image/jpeg"), photo("B", "b.jpg", "image/jpeg"), photo("C", "c.jpg", "image/jpeg")]).await;
-    Mock::given(method("GET")).and(path(thumb_path("A", "c512x512")))
-        .respond_with(ResponseTemplate::new(401))
-        .mount(&w.server).await;
-    Mock::given(method("GET")).and(path(thumb_path("B", "c512x512")))
-        .respond_with(ResponseTemplate::new(503))
-        .mount(&w.server).await;
-    Mock::given(method("GET")).and(path(thumb_path("C", "c512x512")))
-        .respond_with(ResponseTemplate::new(302).insert_header("location", dropped.as_str()))
-        .mount(&w.server).await;
-    let filler = w.filler();
-    assert_eq!(filler.drain(&CancellationToken::new(), 100).await, RunOutcome { taken: 3, written: 0 });
-    assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 3, "none of them recorded");
-    let asked_large = w.server.received_requests().await.unwrap().iter().any(|r| r.url.path().ends_with("/large/content"));
-    assert!(!asked_large, "only a 406 is asked at the other size");
+/// A run that would wait for its turn is given a quarter of a second, then stopped.
+async fn run_briefly(filler: &ThumbnailFiller) -> RunOutcome {
+    let stop = CancellationToken::new();
+    let stopper = {
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            stop.cancel();
+        })
+    };
+    let made = filler.run_once(&stop, 100).await;
+    stopper.abort();
+    made
 }
 
-/// A recorded refusal holds only for that version of the
-/// item; once it changes, it is asked for again.
+/// No more than `REQUESTS_AT_ONCE` requests are under way together, however many
+/// candidates there are and however many slots the pool has free; none takes a slot.
 #[tokio::test]
-async fn a_refused_item_is_asked_again_once_it_changes() {
-    let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
-    Mock::given(method("GET")).and(path(thumb_path("P", "c512x512")))
-        .respond_with(ResponseTemplate::new(403))
-        .expect(2)
-        .mount(&w.server).await;
-    let filler = w.filler();
-    filler.drain(&CancellationToken::new(), 100).await;
-    assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 0);
-    let Change::Upsert(mut row) = photo("P", "p.jpg", "image/jpeg") else { unreachable!() };
-    row.ctag = Some("c2".into());
-    w.store.call(move |s| { s.begin_staging(konedrive_tree::NewTree::Delta)?; s.stage(&[Change::Upsert(row)])?; s.commit_staging("L2") }).await.unwrap();
-    assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 1, "a new version is asked for");
+async fn a_few_thumbnails_are_asked_for_at_once_and_none_takes_a_slot_of_the_pool() {
+    let names: Vec<String> = (0..5).map(|i| format!("p{i}.jpg")).collect();
+    let files: Vec<(&str, &str)> = names.iter().map(|name| (name.as_str(), "image/jpeg")).collect();
+    let w = world(&files).await;
+    // Each answer takes long enough for the first two to be under way together, and for
+    // the filler to ask once more whether the third may start.
+    Mock::given(method("GET")).and(path_regex(r"^/me/drive/items/p\d\.jpg/thumbnails/0/c512x512/content$")).respond_with(ResponseTemplate::new(404).set_delay(Duration::from_millis(600))).mount(&w.server).await;
+    let filler = Arc::new(w.filler());
+    let pool = Arc::clone(filler.drive.pool());
+    let run = {
+        let filler = Arc::clone(&filler);
+        tokio::spawn(async move { filler.run_once(&CancellationToken::new(), 100).await })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(asked_count(&w).await, request_start::REQUESTS_AT_ONCE, "the rest wait for these");
+    assert_eq!(pool.held(Class::Download), 0, "a thumbnail takes no slot");
+    assert_eq!(run.await.unwrap().taken, 5);
+    assert_eq!(asked_count(&w).await, 5, "each was asked in its turn");
+    assert_eq!(pool.size(), konedrive_graph::pool::START, "and none made the pool grow");
 }
 
-/// With thumbnails off the filler asks Graph for nothing, kick or not, and
-/// nothing else stops; turned on again, it asks for the items without one at once.
+/// While a listing is under way nothing is asked, and the run ends at once: the
+/// listing's end nudges the filler.
 #[tokio::test]
-async fn thumbnails_off_ask_for_nothing_and_on_again_ask_for_what_is_missing() {
-    let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
-    Mock::given(method("GET")).and(path(thumb_path("P", "c512x512")))
-        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "image/jpeg").set_body_bytes(jpeg(64, 64)))
-        .expect(1)
-        .mount(&w.server).await;
-    let running = Arc::new(Running::default());
-    running.change(|s| s.thumbnails = false);
-    let filler = ThumbnailFiller { running: Arc::clone(&running), ..w.filler() };
-    assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.written, 0);
-    let (kick, cancel) = (Arc::new(Notify::new()), CancellationToken::new());
-    let task = filler.spawn(Arc::clone(&kick), cancel.clone());
-    kick.notify_one();
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(w.server.received_requests().await.unwrap().is_empty(), "off: no request");
-    assert!(!running.stopped(), "the rest of the account runs");
+async fn nothing_is_asked_while_a_listing_is_under_way() {
+    let w = world(&[("p.jpg", "image/jpeg")]).await;
+    w.fixture.write_rows(|store| store.item_store().begin_delta_listing().map(|_| ()));
+    let filler = w.filler();
+    let (made, next) = filler.run_from(&CancellationToken::new(), 1, None).await;
+    assert_eq!((made.written, next), (0, None), "the drain ends here");
+    assert_eq!(asked_count(&w).await, 0);
+}
 
-    running.change(|s| s.thumbnails = true);
-    let cached = w.cached("normal", &w.folder.path().join("p.jpg"));
-    for _ in 0..200 {
-        if cached.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+/// Before a full listing ended (the store has no delta link) nothing is asked.
+#[tokio::test]
+async fn nothing_is_asked_before_the_first_listing_ended() {
+    let w = world(&[("p.jpg", "image/jpeg")]).await;
+    w.fixture.write_rows(|store| store.item_store().begin_full_listing().map(|_| ()));
+    assert_eq!(w.filler().run_once(&CancellationToken::new(), 100).await.written, 0);
+    assert_eq!(asked_count(&w).await, 0);
+}
+
+/// Thumbnails give way: none is asked while a file is being opened, while a transfer
+/// waits for a slot of the pool, or during a throttle's wait.
+#[tokio::test]
+async fn nothing_is_asked_while_a_file_is_opened_a_transfer_waits_or_onedrive_throttles() {
+    let w = world(&[("p.jpg", "image/jpeg")]).await;
+    let filler = w.filler();
+    let pool = Arc::clone(filler.drive.pool());
+
+    let opened = pool.acquire(Class::Open).await;
+    run_briefly(&filler).await;
+    assert_eq!(asked_count(&w).await, 0, "a file is being opened");
+    drop(opened);
+
+    let mut downloads = Vec::new();
+    for _ in 0..pool.size() {
+        downloads.push(pool.acquire(Class::Download).await);
     }
-    assert!(cached.exists(), "on again, the missing one is asked for without a kick");
-    cancel.cancel();
-    task.await.unwrap();
+    let waiting = {
+        let pool = Arc::clone(&pool);
+        tokio::spawn(async move { pool.acquire(Class::Upload).await })
+    };
+    while !pool.waiting() {
+        tokio::task::yield_now().await;
+    }
+    run_briefly(&filler).await;
+    assert_eq!(asked_count(&w).await, 0, "an upload waits for a slot");
+    waiting.abort();
+    let _ = waiting.await;
+    run_briefly(&filler).await;
+    assert_eq!(asked_count(&w).await, 1, "every slot busy and nothing waiting: a thumbnail needs no slot");
+    drop(downloads);
+
+    let w = world(&[("p.jpg", "image/jpeg")]).await;
+    let filler = w.filler();
+    filler.drive.pool().throttled(Some(Duration::from_secs(300)));
+    run_briefly(&filler).await;
+    assert_eq!(asked_count(&w).await, 0, "OneDrive asked to wait");
 }

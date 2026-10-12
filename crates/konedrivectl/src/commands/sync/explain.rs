@@ -15,7 +15,6 @@ use crate::daemon::{Chosen, Daemon, Folders};
 /// this should read (`explain_sync_error_in`): matched by the D-Bus error name, and said in
 /// terms of their own file.
 pub(super) async fn explained<T>(
-    daemon: &Daemon,
     chosen: &Chosen,
     proxy: &FolderProxies<'_>,
     action: SyncAction<'_>,
@@ -25,18 +24,16 @@ pub(super) async fn explained<T>(
         Ok(value) => return Ok(value),
         Err(error) => error,
     };
-    // Two refusals name the registered folder, one depends on what it shows, and one ends
-    // with how to start the helper. If even reading them fails, they simply do not; the
-    // refusal is the thing to report.
+    // Two refusals name the registered folder, and one depends on what it shows. If even
+    // reading them fails, they simply do not; the refusal is the thing to report.
     let root = proxy.folder.path().await.unwrap_or_default();
     let source = proxy.folder.source().await.unwrap_or_default();
-    let helper = daemon.manager.helper_state().await.unwrap_or_default();
     let foreign = match action {
-        SyncAction::Register(path) | SyncAction::RegisterWithoutInterception(path) => carries_a_drive(path),
+        SyncAction::Register(path) => carries_a_drive(path),
         _ => false,
     };
     let prefix = chosen.prefix();
-    let context = Context { root: &root, source: &source, helper: &helper, folders: &[], foreign, prefix: &prefix, several: false };
+    let context = Context { root: &root, source: &source, folders: &[], foreign, prefix: &prefix, several: false };
     Err(anyhow!("{}", explain_sync_error_in(action, &error, context)))
 }
 
@@ -69,10 +66,9 @@ pub(super) async fn explained_paths<T>(
         Some(folder) => folder.sync.folder.source().await.unwrap_or_default(),
         None => String::new(),
     };
-    let helper = daemon.manager.helper_state().await.unwrap_or_default();
     let roots = folders.roots();
     let prefix = folders.prefix(held_by);
-    let context = Context { root: &root, source: &source, helper: &helper, folders: &roots, foreign: false, prefix: &prefix, several };
+    let context = Context { root: &root, source: &source, folders: &roots, foreign: false, prefix: &prefix, several };
     Err(anyhow!("{}", explain_sync_error_in(action.about(&named), &error, context)))
 }
 
@@ -116,8 +112,8 @@ fn carries_a_drive(path: &str) -> bool {
 
 /// `Some(detail)` when the folder's state is `error` after the call just made: `LastError`
 /// is the detail. Every command that changes something checks this after its own call went
-/// through: any of them can run while the folder is unhealthy already (a helper that
-/// dropped, a recovery that could not finish), and that must show in the command's exit
+/// through: any of them can run while the folder is unhealthy already (a mount a fault
+/// took down, a start that failed), and that must show in the command's exit
 /// status though the thing it asked for was done.
 pub(super) async fn folder_trouble(proxy: &FolderProxies<'_>) -> anyhow::Result<Option<String>> {
     if proxy.folder.state().await? == "error" {

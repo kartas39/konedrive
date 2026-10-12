@@ -5,9 +5,7 @@
 By hand, two steps:
 
 1. Merge `dev` into `main`, with a pull request and a merge commit (not a squash: `main` must hold
-   `dev`'s own commits, or the next merge finds them all again). The pull request runs the suite
-   that needs root (below): merge only when all three of its jobs are green — nothing but the
-   person merging holds a release back on them. The workflow below then releases `X.Y.Z`, the version in `Cargo.toml`,
+   `dev`'s own commits, or the next merge finds them all again). The workflow below then releases `X.Y.Z`, the version in `Cargo.toml`,
    and tags the commit `vX.Y.Z`.
 2. At once, a one-line pull request into `dev` that moves `version` in `[workspace.package]` of the
    root `Cargo.toml` from `X.Y.Z` to `X.Y.(Z+1)` (or to the next minor or major version, when that
@@ -57,23 +55,15 @@ Not in the release: on the pull requests (`.github/workflows/tests.yml`).
 
 - the unit tests of the daemon, the Graph client, the reasons and the tree store
   (`cargo test -p konedrived -p konedrive-graph -p konedrive-reason -p konedrive-tree --lib --features konedrived/dev-tools`),
-  directly on GitHub's runner — a virtual machine with its own kernel — as its unprivileged user.
-  Not in a container: Docker's default seccomp profile refuses `fanotify_init`, which the tests of
-  the notification watcher need. `sudo` only sets the runner up (`dbus-daemon` for the private
-  buses, and Ubuntu's AppArmor restriction on unprivileged user namespaces lifted for the one test
-  that mounts a tmpfs in one);
+  directly on GitHub's runner, as its unprivileged user. `sudo` only sets the runner up
+  (`dbus-daemon` for the private buses);
 - the window's and the Dolphin plugins' tests (`ctest`), in a `fedora:45` container, where Qt and
   KDE Frameworks are the ones the packages are built with;
 - the catalogue of sentences and the generated files, with the structure rules
   (`.github/workflows/structure.yml`).
 
-**A pull request into `main`** runs the suite that needs root — the helper, fanotify, a
-filesystem of its own — on btrfs, ext4 and xfs, one machine each, all three at once:
-`tests/vm/run.sh host <fs>`. A GitHub runner is itself a throwaway virtual machine with `sudo` and
-a kernel new enough (7.0 on `ubuntu-26.04`), so the suite runs as root on it with no VM inside, in
-a mount namespace of its own. That mode refuses to run anywhere else: on a developer's machine the
-suite runs only inside the `virtme-ng` VM (`quick`, `full`). The same job runs by hand:
-`gh workflow run tests.yml --ref <branch>`.
+**A pull request into `main`** runs none of them again. The suite that mounts a folder
+(`tests/fuse-probe/run.sh`) runs by hand, in a `virtme-ng` VM on a developer's machine.
 
 **The Rust of the tests is fixed** (`RUST_VERSION` in `tests.yml` and `structure.yml`), so that a
 new compiler does not fail a pull request by itself; it is moved by hand, in a pull request. The
