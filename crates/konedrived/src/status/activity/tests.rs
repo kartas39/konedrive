@@ -42,27 +42,6 @@ fn conflicts_are_looked_over_a_batch_at_a_time() {
     assert_eq!(state.get().local.conflict_count, 404);
 }
 
-/// The cap on its own: the first `per_kind` of each kind in
-/// the order they came, then one "and N more" per kind that had more.
-#[test]
-fn capped_keeps_the_first_of_each_kind_and_counts_the_rest() {
-    let mut events: Vec<Event> = (0..4).map(|n| event_at(Kind::Added, &format!("/r/a{n}"))).collect();
-    events.push(event_at(Kind::Removed, "/r/x"));
-    events.extend((4..6).map(|n| event_at(Kind::Added, &format!("/r/a{n}"))));
-    let out = capped(events, 3, "/r");
-    let shown: Vec<_> = out.iter().map(|e| (e.kind.as_str(), e.path.as_str(), e.detail.as_str())).collect();
-    assert_eq!(
-        shown,
-        vec![
-            ("added", "/r/a0", ""),
-            ("added", "/r/a1", ""),
-            ("added", "/r/a2", ""),
-            ("removed", "/r/x", ""),
-            ("added", "/r", "and 3 more"),
-        ]
-    );
-}
-
 fn in_folder(root: &str) -> SyncStateHandle {
     SyncStateHandle::new(SyncSnapshot { folder: crate::status::snapshot::FolderStatus { root_path: root.into(), ..Default::default() }, ..SyncSnapshot::default() })
 }

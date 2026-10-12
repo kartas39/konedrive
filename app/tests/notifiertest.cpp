@@ -229,23 +229,6 @@ private Q_SLOTS:
         QCOMPARE(m_sink.sent.at(1).text, QStringLiteral("OneDrive asked this computer to wait about 1 minute. notes.docx opens after that."));
     }
 
-    /// M3: past the cap, the daemon's own "and N more" conflict event (path
-    /// = the root) is a count, not a copy's path.
-    void aCappedConflictSummaryCountsRatherThanNamingAPath()
-    {
-        start();
-        // report() always appends "/name" to Root; this event's path is the
-        // root itself, so it is emitted directly.
-        QSignalSpy arrived(m_sync.get(), &SyncController::activityAdded);
-        m_daemon->sync->activity(1758700000, QStringLiteral("conflict"), Root, QStringLiteral("and 7 more"));
-        QVERIFY(arrived.wait(5000));
-        QCOMPARE(m_sink.sent.size(), 1);
-        const Notice &notice = m_sink.sent.first();
-        QCOMPARE(notice.event, QStringLiteral("conflict"));
-        QCOMPARE(notice.text, QStringLiteral("7 more files changed here and in OneDrive; both versions are kept."));
-        QCOMPARE(notice.showPath, QString());
-    }
-
     /// Every notice carries its account, for a click to open the window on
     /// it; with more than one account the title names it, the text unchanged.
     void theTitleNamesTheAccountWhenThereAreSeveral()

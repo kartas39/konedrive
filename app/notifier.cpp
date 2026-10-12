@@ -12,7 +12,6 @@
 
 #include <QElapsedTimer>
 #include <QFileInfo>
-#include <QRegularExpression>
 #include <QTimer>
 #include <QUrl>
 
@@ -26,10 +25,6 @@ QString fileName(const QString &path)
     const QString name = QFileInfo(path).fileName();
     return name.isEmpty() ? path : name;
 }
-
-/// A capped cycle's own summary event (activity::capped,
-/// crates/konedrived/src/status/activity.rs): "and N more", nothing else.
-const QRegularExpression cappedMore(QStringLiteral("^and (\\d+) more$"));
 
 /// The title of a conflict that kept a copy beside the file.
 QString copyTitle()
@@ -122,16 +117,6 @@ void Notifier::onActivity(qint64, const QString &kind, const QString &path, cons
         return;
     }
     if (kind == QLatin1String("conflict")) {
-        // M3: past 50 conflicts in one cycle, the daemon adds one more
-        // `conflict` event whose path is the root and whose detail is
-        // "and N more" — a count, not a copy's path. "Show in Folder" has
-        // no single file to point at, so this one has none.
-        if (path == m_sync->rootPath()) {
-            if (const auto match = cappedMore.match(detail); match.hasMatch()) {
-                post({QStringLiteral("conflict"), copyTitle(), QString(), {}}, match.captured(1).toInt());
-                return;
-            }
-        }
         // A file changed on both sides: the daemon's detail is the copy kept beside it.
         post({QStringLiteral("conflict"), copyTitle(), i18n("%1 changed here and in OneDrive. Both are kept: your version as %2.", name, fileName(detail)), detail});
         return;
@@ -238,7 +223,7 @@ void Notifier::setAccountName(std::function<QString()> name)
     m_accountName = std::move(name);
 }
 
-void Notifier::post(const Notice &event, int count)
+void Notifier::post(const Notice &event)
 {
     Notice notice = event;
     notice.account = m_account->path();
@@ -249,21 +234,12 @@ void Notifier::post(const Notice &event, int count)
     const qint64 now = m_clock();
     auto it = m_windows.find(notice.event);
     if (it == m_windows.end()) {
-        Window window{now + WindowMs, 0, notice};
-        if (count <= 1) {
-            m_sink->send(notice);
-        } else {
-            // A capped cycle's "and N more": nothing to count up from, so
-            // the window opens already having said all of it.
-            window.pending = count;
-            m_sink->send(summary(window));
-            window.pending = 0;
-        }
-        m_windows.insert(notice.event, window);
+        m_sink->send(notice);
+        m_windows.insert(notice.event, Window{now + WindowMs, 0, notice});
         arm();
         return;
     }
-    it->pending += count;
+    ++it->pending;
     it->last = notice;
 }
 

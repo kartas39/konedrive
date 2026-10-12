@@ -24,8 +24,8 @@ pub use konedrive_tree::ActivityKind as Kind;
 /// four fields, the kind by its name.
 pub type Event = ActivityRow;
 
-/// An incremental cycle logs at most this many events of each kind (`docs/design/desktop.md`
-/// §2.4), plus one "and N more".
+/// At most this many events of what OneDrive changed are logged between the ends of two
+/// listings (`step_settlement::decide_events_to_log`).
 pub const PER_KIND: usize = 50;
 
 /// An event that happens now.
@@ -65,34 +65,6 @@ pub fn failure_reason(errno: i32) -> String {
         libc::EIO => "it could not be downloaded".to_owned(),
         other => io::Error::from_raw_os_error(other).to_string(),
     }
-}
-
-/// At most `per_kind` events of each kind, in the order they
-/// came, then — for each kind that had more — one event of that kind at
-/// `root` saying "and N more", in the order the kinds first appeared.
-pub fn capped(events: Vec<Event>, per_kind: usize, root: &str) -> Vec<Event> {
-    let mut counts: Vec<(Kind, usize)> = Vec::new();
-    let mut out = Vec::new();
-    for event in events {
-        let seen = match counts.iter_mut().find(|(kind, _)| *kind == event.kind) {
-            Some((_, seen)) => seen,
-            None => {
-                counts.push((event.kind, 0));
-                &mut counts.last_mut().expect("just pushed").1
-            }
-        };
-        *seen += 1;
-        if *seen <= per_kind {
-            out.push(event);
-        }
-    }
-    let at = unix_now();
-    for (kind, seen) in counts {
-        if seen > per_kind {
-            out.push(Event { at, kind, path: root.to_owned(), detail: format!("and {} more", seen - per_kind) });
-        }
-    }
-    out
 }
 
 /// Conflicts looked over at the end of each cycle ([`Activity::prune`], a
