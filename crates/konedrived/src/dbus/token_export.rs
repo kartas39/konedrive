@@ -9,7 +9,7 @@ use konedrive_dbus::Refusal;
 /// `org.konedrive.TokenExport`: only in a development build (the `dev-tools` feature); a
 /// release has neither the interface nor `konedrivectl dev`.
 #[cfg(feature = "dev-tools")]
-pub struct TokenExport {
+pub(crate) struct TokenExport {
     pub(crate) service: Arc<AccountService>,
 }
 

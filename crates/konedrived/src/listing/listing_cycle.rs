@@ -86,15 +86,15 @@ use crate::status::snapshot::{SyncStateHandle, SyncTrouble, TroubleKind};
 /// How a cycle begins, and what a refused page leads to.
 mod listing_start;
 
-pub use listing_start::{decide_listing_start, decide_page_refusal, AfterPageRefusal, FullListingAllowance, ListingStart, PageLinkOrigin};
+pub(crate) use listing_start::{decide_listing_start, decide_page_refusal, AfterPageRefusal, FullListingAllowance, ListingStart, PageLinkOrigin};
 
 /// One page as it was fetched: what it says, what followed it, and the count of
 /// confirmations read before the request left.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FetchedPage {
-    pub changes: Vec<Change>,
-    pub link: ListingLink,
-    pub fetch_began_at_count: u64,
+pub(crate) struct FetchedPage {
+    pub(crate) changes: Vec<Change>,
+    pub(crate) link: ListingLink,
+    pub(crate) fetch_began_at_count: u64,
 }
 
 /// Why a page was not fetched.
@@ -173,17 +173,17 @@ impl Drop for FullListingShown<'_> {
 
 /// What one cycle did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ListingCycleReport {
-    pub kind: ListingKind,
-    pub pages: usize,
+pub(crate) struct ListingCycleReport {
+    pub(crate) kind: ListingKind,
+    pub(crate) pages: usize,
     /// How many changes the pages named.
-    pub changes: usize,
+    pub(crate) changes: usize,
     /// How many items were read again for the guard against an outdated listing.
-    pub read_again: usize,
+    pub(crate) read_again: usize,
 }
 
 /// The listing of one folder.
-pub struct ListingCycle {
+pub(crate) struct ListingCycle {
     drive: DriveClient,
     store: Store,
     sync_plan_wake: Arc<SyncPlanWake>,
@@ -200,15 +200,15 @@ pub struct ListingCycle {
 }
 
 /// What a listing cycle is made with.
-pub struct ListingCycleSetup {
-    pub drive: DriveClient,
-    pub store: Store,
-    pub sync_plan_wake: Arc<SyncPlanWake>,
-    pub state: SyncStateHandle,
-    pub drive_record: Option<DriveRecord>,
-    pub neighbours: Option<Neighbours>,
-    pub report: Report,
-    pub after_listing: Option<Arc<tokio::sync::Notify>>,
+pub(crate) struct ListingCycleSetup {
+    pub(crate) drive: DriveClient,
+    pub(crate) store: Store,
+    pub(crate) sync_plan_wake: Arc<SyncPlanWake>,
+    pub(crate) state: SyncStateHandle,
+    pub(crate) drive_record: Option<DriveRecord>,
+    pub(crate) neighbours: Option<Neighbours>,
+    pub(crate) report: Report,
+    pub(crate) after_listing: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl ListingCycle {
@@ -240,7 +240,7 @@ impl ListingCycle {
     /// says so, as today's `Listing::cycle` (`listing.rs:284`). `cancel` ends it between two
     /// requests; the page being written is written whole. A page the store refuses because
     /// its listing was given up ends the cycle with what it did until then, and no fault.
-    pub async fn run(&self, cancel: &CancellationToken) -> Result<ListingCycleReport, CycleError> {
+    pub(crate) async fn run(&self, cancel: &CancellationToken) -> Result<ListingCycleReport, CycleError> {
         let result = self.run_in_turn(cancel).await;
         self.state.update(|state| match &result {
             Ok(_) => state.cycle.sync_trouble = None,
@@ -490,29 +490,29 @@ pub(super) mod tests;
 /// same-account check then survives a tree store rebuilt empty, whose `meta`
 /// has forgotten it.
 #[derive(Clone)]
-pub struct DriveRecord {
-    pub store: Arc<crate::config::ConfigStore>,
+pub(crate) struct DriveRecord {
+    pub(crate) store: Arc<crate::config::ConfigStore>,
     /// The account's id.
-    pub account: crate::config::AccountId,
+    pub(crate) account: crate::config::AccountId,
     /// What `config.toml` recorded when the sync started; `None` when
     /// nothing was, and the first cycle writes it.
-    pub recorded: Option<String>,
+    pub(crate) recorded: Option<String>,
 }
 
 /// What a cycle asks of, or tells, the rest of the daemon.
 #[derive(Clone)]
-pub struct Neighbours {
+pub(crate) struct Neighbours {
     /// The drive the account's token reaches, when a cycle finds it is not
     /// the folder's: the account records it and works its
     /// mode out again, so that a read-write account turns read-only.
-    pub drive_seen: DriveSeen,
+    pub(crate) drive_seen: DriveSeen,
 }
 
 /// Told the drive an account's token reaches.
-pub type DriveSeen = Arc<dyn Fn(&str) + Send + Sync>;
+pub(crate) type DriveSeen = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Debug, thiserror::Error)]
-pub enum CycleError {
+pub(crate) enum CycleError {
     #[error("signed out: sign in again to keep this folder in step with OneDrive")]
     SignedOut,
     #[error(
@@ -543,7 +543,7 @@ pub enum CycleError {
 
 impl CycleError {
     /// Trouble that stops the folder until someone acts.
-    pub fn blocking(&self) -> bool {
+    pub(crate) fn blocking(&self) -> bool {
         matches!(
             self,
             CycleError::SignedOut | CycleError::OtherAccount(_) | CycleError::DriveTaken(_) | CycleError::Store(_)
@@ -554,7 +554,7 @@ impl CycleError {
 impl CycleError {
     /// The kind of trouble this is for the account's overall state: only
     /// [`Offline`](CycleError::Offline) is OneDrive out of reach, whatever its sentence says.
-    pub fn kind(&self) -> TroubleKind {
+    pub(crate) fn kind(&self) -> TroubleKind {
         match self {
             CycleError::Offline(_) => TroubleKind::Unreachable,
             _ => TroubleKind::Other,

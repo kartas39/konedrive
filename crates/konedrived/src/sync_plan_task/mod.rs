@@ -105,21 +105,21 @@ use crate::onedrive_steps::session_cancellations::SessionCancellations;
 use crate::sync_parts::sending_holds::{SendingHold, SendingHolds};
 
 /// The first filling of a folder: no event per item shown, one at its start and its end.
-pub mod first_filling;
+pub(crate) mod first_filling;
 /// The failed tries of the steps towards the folder and of the rows, kept for the run.
-pub mod local_step_tries;
+pub(crate) mod local_step_tries;
 /// Whether a pinned file may be missing its content.
-pub mod missing_pinned_files;
+pub(crate) mod missing_pinned_files;
 /// What a plan is made from: read from the store, closed, described.
-pub mod plan_input;
+pub(crate) mod plan_input;
 /// The steps of the rows alone.
-pub mod row_steps;
+pub(crate) mod row_steps;
 /// Which steps of a plan start now.
-pub mod step_choice;
+pub(crate) mod step_choice;
 /// The runners of steps, as the task takes them.
-pub mod step_runners;
+pub(crate) mod step_runners;
 /// What is written and asked for after a step, by what came of it.
-pub mod step_settlement;
+pub(crate) mod step_settlement;
 
 use first_filling::{FirstFilling, FirstFillingFact};
 use local_step_tries::{LocalStep, LocalStepTries};
@@ -130,51 +130,51 @@ use step_runners::{RunningFuture, StepRunners};
 use step_settlement::{CycleRequest, StepSettlement};
 
 /// The parts a plan's task is made of: each made before it by the folder's start.
-pub struct SyncPlanTaskParts {
-    pub store: Store,
-    pub sync_plan_wake: Arc<SyncPlanWake>,
+pub(crate) struct SyncPlanTaskParts {
+    pub(crate) store: Store,
+    pub(crate) sync_plan_wake: Arc<SyncPlanWake>,
     /// What runs the steps: the three runners behind one seam, or the tests' stand-in.
-    pub step_runners: StepRunners,
-    pub session_cancellations: SessionCancellations,
-    pub running_steps: Arc<RunningSteps>,
-    pub sending_holds: Arc<SendingHolds>,
-    pub onedrive_space: Arc<OneDriveSpace>,
-    pub published_plan: Arc<PublishedPlan>,
+    pub(crate) step_runners: StepRunners,
+    pub(crate) session_cancellations: SessionCancellations,
+    pub(crate) running_steps: Arc<RunningSteps>,
+    pub(crate) sending_holds: Arc<SendingHolds>,
+    pub(crate) onedrive_space: Arc<OneDriveSpace>,
+    pub(crate) published_plan: Arc<PublishedPlan>,
     /// Asks the listing for a cycle.
-    pub poll: ListingPollHandle,
+    pub(crate) poll: ListingPollHandle,
     /// The account's transfer pool: how many uploads and downloads it has slots for. The
     /// task only counts against them; the slot itself is taken by who sends or downloads.
-    pub pool: Arc<TransferPool>,
-    pub state: SyncStateHandle,
-    pub settings: PlanSettings,
+    pub(crate) pool: Arc<TransferPool>,
+    pub(crate) state: SyncStateHandle,
+    pub(crate) settings: PlanSettings,
     /// What the check at start left: the rows sending is held back for.
-    pub start_check: StartCheckFindings,
+    pub(crate) start_check: StartCheckFindings,
     /// The folder's path, which is the mount: the activity log holds full paths.
-    pub folder: std::path::PathBuf,
+    pub(crate) folder: std::path::PathBuf,
     /// Unix seconds: the account's clock.
-    pub clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+    pub(crate) clock: Arc<dyn Fn() -> i64 + Send + Sync>,
     /// Reads the account's quota from OneDrive (`DriveClient::quota`); `None` when it
     /// could not be read. Asked when the quota's next read is due
     /// (`OneDriveSpace::find_next_read`) and for a refresh the user asked for
     /// (`WakeCause::RefreshAsked`: the ONE read of a refresh, nobody else reads for it),
     /// and what it answers is applied by the task (`OneDriveSpace::apply_quota`). On
     /// `WakeCause::QuotaRead` it is NOT asked: another read the quota and applied it.
-    pub quota_reader: Arc<dyn Fn() -> RunningFuture<Option<DriveQuota>> + Send + Sync>,
+    pub(crate) quota_reader: Arc<dyn Fn() -> RunningFuture<Option<DriveQuota>> + Send + Sync>,
     /// The folder's activity log: every event the settlement of a step wrote into the
     /// store is announced through it (`Activity::announce`: `ActivityLog.Added`), and
     /// `Conflicts.Count` read again after a conflict (`Activity::prune`). The task is the
     /// one writer of a step's events, so it is the one that announces them.
-    pub activity: Arc<Activity>,
+    pub(crate) activity: Arc<Activity>,
     /// Tells whoever watches the folder that the sync mark of these items changed
     /// (`FolderSteps::announce_marks_changed`, or a test's stand-in): the task changes
     /// what the mark is answered from (`RunningSteps`, `PublishedPlan`), so it says so.
-    pub marks_announcer: Arc<dyn Fn(Vec<LocalItemId>) + Send + Sync>,
+    pub(crate) marks_announcer: Arc<dyn Fn(Vec<LocalItemId>) + Send + Sync>,
     /// Nudged after a round in which a step towards the folder was written: the
     /// thumbnail filler's, the very `Notify` the listing's cycle nudges at a listing's
     /// end (`ListingCycleSetup::after_listing`). A listing ends before the plan shows what
     /// it brought, so the nudge of the cycle alone finds no file to make a thumbnail
     /// for. `None` with no filler.
-    pub after_folder_steps: Option<Arc<tokio::sync::Notify>>,
+    pub(crate) after_folder_steps: Option<Arc<tokio::sync::Notify>>,
     /// Called after every published plan with how many changes are unsent and will be
     /// sent without the user doing anything (`PlannedRound::unsent_to_send_count`, of the
     /// plan's own reading): every unsent change but those OneDrive refuses for good, those
@@ -185,7 +185,7 @@ pub struct SyncPlanTaskParts {
     /// count a Forget warns with (`SyncService::count_unsent`: every unsent change, as
     /// all of them stay only here). The task is the ONE that says it; nobody asks the
     /// count on a timer. It must not block.
-    pub unsent_count_report: Arc<dyn Fn(u64) + Send + Sync>,
+    pub(crate) unsent_count_report: Arc<dyn Fn(u64) + Send + Sync>,
 }
 
 /// How often the bytes of the uploads that run are published while one runs, in seconds
@@ -202,7 +202,7 @@ const READ_RETRY_WAIT: i64 = 60;
 
 /// The plan's task of one folder. It holds its parts and runs the loop; what each part
 /// does is the part's.
-pub struct SyncPlanTask {
+pub(crate) struct SyncPlanTask {
     parts: SyncPlanTaskParts,
     /// How many events of what OneDrive changed were logged since the last listing ended:
     /// what `step_settlement::decide_events_to_log` caps by. Set to 0 at
@@ -257,18 +257,18 @@ struct EndedStep {
 
 /// What a round's settlement says of the steps it settled: what `decide_round` asks.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct SettledSteps {
+pub(crate) struct SettledSteps {
     /// One of them changed something a plan is made from
     /// (`step_settlement::has_changed_anything`).
-    pub has_change: bool,
+    pub(crate) has_change: bool,
     /// A plan was made since one of them began: that plan answered its item as one a step
     /// runs for, and gave it no step.
-    pub is_plan_made_since_start: bool,
+    pub(crate) is_plan_made_since_start: bool,
 }
 
 /// What a round does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RoundDecision {
+pub(crate) enum RoundDecision {
     /// A plan is made: a cause other than a finished step came, a time was reached, a
     /// step that was settled in this round changed something, or a plan was made while
     /// one of them ran.
@@ -292,7 +292,7 @@ pub enum RoundDecision {
 /// step that cannot run (the mount's take-down asked for, the write-operation thread
 /// gone) would be planned and ended without a wait between: the steps left that can start
 /// are started, else the task sleeps until a cause or a time. Pure.
-pub fn decide_round(causes: &BTreeSet<WakeCause>, settled: SettledSteps, steps_left_to_start: usize) -> RoundDecision {
+pub(crate) fn decide_round(causes: &BTreeSet<WakeCause>, settled: SettledSteps, steps_left_to_start: usize) -> RoundDecision {
     let is_only_finished_steps = !causes.is_empty() && causes.iter().all(|cause| *cause == WakeCause::StepFinished);
     match (is_only_finished_steps, settled.has_change || settled.is_plan_made_since_start, steps_left_to_start) {
         (false, _, _) | (true, true, _) => RoundDecision::MakePlan,
@@ -305,7 +305,7 @@ pub fn decide_round(causes: &BTreeSet<WakeCause>, settled: SettledSteps, steps_l
 /// task that was aborted (a stop: `RunningSteps::abort_requests` took its step off
 /// already), a failure for any other end — a panic of the runner —, so that the step
 /// ends, counts a try and waits. Pure.
-pub fn decide_outcome_of_ended_task(is_cancelled: bool, detail: String) -> Option<StepOutcome> {
+pub(crate) fn decide_outcome_of_ended_task(is_cancelled: bool, detail: String) -> Option<StepOutcome> {
     (!is_cancelled).then_some(StepOutcome::Failed(StepFailure::RunnerPanicked { detail }))
 }
 
@@ -316,7 +316,7 @@ pub fn decide_outcome_of_ended_task(is_cancelled: bool, detail: String) -> Optio
 /// again — unless the plan's own time ([`decide_next_wake`]) was reached too. The loop
 /// tells the two apart itself, by the times (it kept both): for a wake at the tick alone
 /// it does not ask [`decide_round`], whose three cases stay as they are. Pure.
-pub fn decide_progress_tick(running: &[RunningStep], now: i64) -> Option<i64> {
+pub(crate) fn decide_progress_tick(running: &[RunningStep], now: i64) -> Option<i64> {
     let is_content_sent = running.iter().any(|step| match step.class {
         StepClass::Content => true,
         StepClass::Metadata | StepClass::Download | StepClass::Folder | StepClass::Row => false,
@@ -332,7 +332,7 @@ pub fn decide_progress_tick(running: &[RunningStep], now: i64) -> Option<i64> {
 /// that is being made; `None` when nothing is due.
 /// Never sooner than a second from `now`. Pure. Today's `Engine::next_due`
 /// (`upload/engine.rs:480`).
-pub fn decide_next_wake(plan: &SyncPlan, hold_end: Option<i64>, next_quota_read: Option<i64>, next_cleaning_try: Option<i64>, now: i64) -> Option<i64> {
+pub(crate) fn decide_next_wake(plan: &SyncPlan, hold_end: Option<i64>, next_quota_read: Option<i64>, next_cleaning_try: Option<i64>, now: i64) -> Option<i64> {
     let waits = plan.waits.iter().filter_map(|wait| if let WaitReason::Time { until, .. } = wait.reason { Some(until) } else { None });
     waits.chain(hold_end).chain(next_quota_read).chain(next_cleaning_try.filter(|at| *at > now)).min().map(|soonest| soonest.max(now.saturating_add(1)))
 }
@@ -347,7 +347,7 @@ impl SyncPlanTask {
     /// returns only when no step towards the folder or of the rows runs. Spawned by the
     /// folder's start after the listing's poller; `SyncTasks::stop` cancels `stop` and
     /// awaits this.
-    pub async fn run(self: Arc<Self>, stop: CancellationToken) {
+    pub(crate) async fn run(self: Arc<Self>, stop: CancellationToken) {
         let parts = &self.parts;
         parts.session_cancellations.forget_old_openings().await;
         let mut old_openings_forgotten_at = (parts.clock)();

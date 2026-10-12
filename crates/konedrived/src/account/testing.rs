@@ -42,7 +42,7 @@ pub struct MemoryWallet {
 
 impl MemoryWallet {
     /// A wallet holding version 1's item, as the single-account daemon left it.
-    pub fn with_v1(token: &str) -> Self {
+    pub(crate) fn with_v1(token: &str) -> Self {
         let wallet = Self::default();
         wallet.items.lock().unwrap().insert(Slot::V1, (V1_LABEL.into(), token.to_owned()));
         wallet

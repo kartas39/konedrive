@@ -55,74 +55,74 @@ use super::local_step_tries::LocalStepTries;
 
 /// What a plan is given that does not change while the sync runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlanSettings {
+pub(crate) struct PlanSettings {
     /// This computer's name, for a conflict copy's name.
-    pub computer_name: String,
+    pub(crate) computer_name: String,
     /// The largest size of a file OneDrive takes, in bytes.
-    pub largest_file_size: u64,
+    pub(crate) largest_file_size: u64,
     /// How long after its last change a file's content is not sent, in seconds.
-    pub quiet_time: i64,
+    pub(crate) quiet_time: i64,
     /// How many unsent items, and how many OneDrive changed, are read at first.
-    pub items_read_at_once: usize,
+    pub(crate) items_read_at_once: usize,
 }
 
 /// How long after its last change a file's content is not sent, in seconds: a program
 /// that saves in several writes is not sent half-way. Today's value (`local::QUIET` of the
 /// watcher that went: 2 s).
-pub const QUIET_TIME: i64 = 2;
+pub(crate) const QUIET_TIME: i64 = 2;
 
 /// How many unsent items, and how many OneDrive changed, a plan reads at first.
 /// The number is not tuned and need not be: a plan reads rows of the store, which takes far less
 /// time than sending what it plans, so the window never holds the sync back.
-pub const ITEMS_READ_AT_ONCE: usize = 1000;
+pub(crate) const ITEMS_READ_AT_ONCE: usize = 1000;
 
 impl PlanSettings {
     /// The settings of a folder's sync: `computer_name` (the account's machine name, as a
     /// conflict copy's name holds it), the largest file OneDrive takes
     /// (`local::names::MAX_FILE_SIZE`), [`QUIET_TIME`] and [`ITEMS_READ_AT_ONCE`]. What
     /// the owner of the folder's state gives a start (`FolderStartInput::settings`).
-    pub fn of(computer_name: String) -> Self {
+    pub(crate) fn of(computer_name: String) -> Self {
         PlanSettings { computer_name, largest_file_size: crate::local::names::MAX_FILE_SIZE, quiet_time: QUIET_TIME, items_read_at_once: ITEMS_READ_AT_ONCE }
     }
 }
 
 /// What the daemon knows beside the rows when a plan is made, as values.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DaemonFacts {
+pub(crate) struct DaemonFacts {
     /// Every item a step runs for (`RunningSteps::list_items`). The plan's
     /// `items_with_running_step` are these AND the items of the request records that
     /// stand (`ItemReader::list_request_records`, read by [`describe_folder`] in the
     /// plan's own reading): a request to OneDrive whose answer was lost, or that a stop
     /// or a kill of the daemon left between its request and its commit, is on record
     /// until what became of it was read from OneDrive (`onedrive_steps::lost_answers`).
-    pub items_with_running_step: BTreeSet<LocalItemId>,
+    pub(crate) items_with_running_step: BTreeSet<LocalItemId>,
     /// The directories of OneDrive the `MakeDirectory`, `SendNewFile` and `SendMove`
     /// running steps send into (`RunningSteps::list_destinations`:
     /// `RunningStep::destination` of each running step). Their rows, and the rows of the
     /// directories the request records that stand send into
     /// (`RecordedRequest::destination`), are the plan's `destinations_of_running_steps`.
-    pub destinations_of_running_steps: Vec<OneDriveItemReference>,
-    pub is_onedrive_full: bool,
+    pub(crate) destinations_of_running_steps: Vec<OneDriveItemReference>,
+    pub(crate) is_onedrive_full: bool,
     /// Unix seconds: the plan's `now`.
-    pub now: i64,
+    pub(crate) now: i64,
     /// The rows the check at start left (`StartCheckFindings::held_items`): the plan's
     /// `items_left_by_start_up_check`, those of them that are given.
-    pub left_by_start_up_check: BTreeSet<LocalItemId>,
+    pub(crate) left_by_start_up_check: BTreeSet<LocalItemId>,
     /// The tries the task keeps of the steps towards the folder and of the rows that
     /// failed, as they are when the round begins: a copy. The plan's reading voids those
     /// whose rows changed or went, and tells the plan the rest.
-    pub local_step_tries: LocalStepTries,
+    pub(crate) local_step_tries: LocalStepTries,
     /// Whether the reading asks the reader of pinned files, which scans all below the
     /// pinned directories (`MissingPinnedFiles::is_reader_asked`: a pinned file may be
     /// missing its content). When not, no pinned file is given for its download alone:
     /// the last reading that asked found none.
-    pub is_pinned_files_reader_asked: bool,
-    pub settings: PlanSettings,
+    pub(crate) is_pinned_files_reader_asked: bool,
+    pub(crate) settings: PlanSettings,
 }
 
 /// What a plan's reading answers of the pinned files that are only to be downloaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PinnedFilesReading {
+pub(crate) enum PinnedFilesReading {
     /// The reader was not asked (`DaemonFacts::is_pinned_files_reader_asked`).
     NotAsked,
     /// Asked, and no pinned file is missing its content.
@@ -135,7 +135,7 @@ pub enum PinnedFilesReading {
 impl PinnedFilesReading {
     /// What is left to download of the pinned files as this reading knows it: nothing is
     /// known anew when the reader was not asked.
-    pub fn find_total(self) -> Option<PinnedDownloadTotal> {
+    pub(crate) fn find_total(self) -> Option<PinnedDownloadTotal> {
         match self {
             PinnedFilesReading::NotAsked => None,
             PinnedFilesReading::NoneMissing => Some(PinnedDownloadTotal::default()),
@@ -148,7 +148,7 @@ impl PinnedFilesReading {
 /// given, those the plan was not told of yet, and what the steps remember of each that
 /// was asked.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct GivenItems {
+pub(crate) struct GivenItems {
     rows: BTreeMap<LocalItemId, Item>,
     /// The rows given whose relatives were not given yet (`close_given_items`).
     unclosed: Vec<LocalItemId>,
@@ -224,36 +224,36 @@ impl GivenItems {
 
 /// One round's plan, with what it was made from and what the task needs beside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlannedRound {
-    pub input: SyncPlanInput,
-    pub plan: SyncPlan,
+pub(crate) struct PlannedRound {
+    pub(crate) input: SyncPlanInput,
+    pub(crate) plan: SyncPlan,
     /// What the steps remember of each item given, as its row still says it: what the
     /// answers are published with (a refusal for good).
-    pub memories: BTreeMap<LocalItemId, ItemMemory>,
+    pub(crate) memories: BTreeMap<LocalItemId, ItemMemory>,
     /// The task's tries of `facts.local_step_tries` that the rows of this reading still
     /// say (`LocalStepTries::void_by_rows`): what the task keeps from now on, in place of
     /// what it gave. Nothing else changes them between the two: the loop that makes the
     /// plan is the loop that settles the steps.
-    pub local_step_tries: LocalStepTries,
+    pub(crate) local_step_tries: LocalStepTries,
     /// Whether every item that differs was read: when not, more is there than the plan
     /// was given.
-    pub is_all_read: bool,
+    pub(crate) is_all_read: bool,
     /// The folder's counts for the bus, of the same reading as the plan.
-    pub item_counts: ItemCounts,
+    pub(crate) item_counts: ItemCounts,
     /// How many changes are unsent and will be sent without the user doing anything, of
     /// the same reading: every unsent change (`ItemReader::count_unsent`) but those this
     /// plan answers will not be sent by themselves ([`count_unsent_not_to_send`]). What
     /// the task reports after the plan (`SyncPlanTaskParts::unsent_count_report`), and
     /// what a kept wish for read-only waits for to be 0. NOT the count a Forget warns
     /// with (`SyncService::count_unsent`), which is of every unsent change.
-    pub unsent_to_send_count: u64,
+    pub(crate) unsent_to_send_count: u64,
     /// How many unsent items this plan answers will not be sent by themselves
     /// ([`count_unsent_not_to_send`]): what the task publishes with the answers
     /// (`PublishedPlan::publish_unsent_not_to_send_count`).
-    pub unsent_not_to_send_count: u64,
+    pub(crate) unsent_not_to_send_count: u64,
     /// What the reading answered of the pinned files: what the task ends its asking by
     /// (`MissingPinnedFiles::note_reading`).
-    pub pinned_files_reading: PinnedFilesReading,
+    pub(crate) pinned_files_reading: PinnedFilesReading,
 }
 
 /// Where the wait of `item` ends, as `waits` say it: the item that waits for no other item
@@ -277,7 +277,7 @@ fn find_wait_end<'a>(waits: &BTreeMap<LocalItemId, &'a WaitReason>, item: LocalI
 /// A refusal for lack of space is not among them: a read of the quota ends it. Nor is any
 /// other wait for the user — a file held open, a name OneDrive cannot hold, OneDrive full.
 /// Pure.
-pub fn count_unsent_not_to_send(input: &SyncPlanInput, plan: &SyncPlan, memories: &BTreeMap<LocalItemId, ItemMemory>) -> u64 {
+pub(crate) fn count_unsent_not_to_send(input: &SyncPlanInput, plan: &SyncPlan, memories: &BTreeMap<LocalItemId, ItemMemory>) -> u64 {
     let waits: BTreeMap<LocalItemId, &WaitReason> = plan.waits.iter().map(|wait| (wait.item, &wait.reason)).collect();
     let is_not_to_send = |item: LocalItemId| match find_wait_end(&waits, item) {
         Some((_, WaitReason::StartUpCheck)) => true,
@@ -290,30 +290,30 @@ pub fn count_unsent_not_to_send(input: &SyncPlanInput, plan: &SyncPlan, memories
 /// How many rows a plan's reading reads at most: of the unsent items, and of each other
 /// kind of item that differs ([`read_differing_items`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReadWindow {
-    pub unsent: usize,
-    pub of_each_other_kind: usize,
+pub(crate) struct ReadWindow {
+    pub(crate) unsent: usize,
+    pub(crate) of_each_other_kind: usize,
 }
 
 /// What a reading of a [`ReadWindow`] brought, and what the plan made of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WindowReading {
+pub(crate) struct WindowReading {
     /// How many unsent items were read, and whether those are all there are.
-    pub unsent_read: usize,
-    pub is_unsent_read_whole: bool,
+    pub(crate) unsent_read: usize,
+    pub(crate) is_unsent_read_whole: bool,
     /// How many of the unsent items read wait for the user, or were left by the check at
     /// start, themselves or by the item their wait ends at: none of them can have a step
     /// until the user did something ([`count_unsent_waiting_for_user`]).
-    pub unsent_waiting_for_user: usize,
+    pub(crate) unsent_waiting_for_user: usize,
     /// Whether every kind was read whole.
-    pub is_all_read: bool,
+    pub(crate) is_all_read: bool,
     /// Whether the plan has a step at all.
-    pub has_step: bool,
+    pub(crate) has_step: bool,
 }
 
 /// Whether a plan's reading is enough.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WindowDecision {
+pub(crate) enum WindowDecision {
     /// The plan stands.
     Enough,
     /// More is read, and the plan made again.
@@ -329,7 +329,7 @@ pub enum WindowDecision {
 /// of those read can have a step, twice as many unsent are read: the window moves on past
 /// those that wait for the user. Ends: each case that reads more is one of more being
 /// there. Pure.
-pub fn decide_window(items_read_at_once: usize, window: ReadWindow, reading: WindowReading) -> WindowDecision {
+pub(crate) fn decide_window(items_read_at_once: usize, window: ReadWindow, reading: WindowReading) -> WindowDecision {
     if reading.is_all_read {
         return WindowDecision::Enough;
     }
@@ -346,7 +346,7 @@ pub fn decide_window(items_read_at_once: usize, window: ReadWindow, reading: Win
 /// How many of `unsent`, the unsent items a reading read, `plan` answers cannot have a step
 /// until the user did something: a wait for the user, or for a check at start that
 /// decides, their own or that of the item their wait ends at. Pure.
-pub fn count_unsent_waiting_for_user(unsent: &[LocalItemId], plan: &SyncPlan) -> usize {
+pub(crate) fn count_unsent_waiting_for_user(unsent: &[LocalItemId], plan: &SyncPlan) -> usize {
     let waits: BTreeMap<LocalItemId, &WaitReason> = plan.waits.iter().map(|wait| (wait.item, &wait.reason)).collect();
     unsent.iter().filter(|item| matches!(find_wait_end(&waits, **item), Some((_, WaitReason::User(_) | WaitReason::StartUpCheck)))).count()
 }
@@ -369,7 +369,7 @@ pub fn count_unsent_waiting_for_user(unsent: &[LocalItemId], plan: &SyncPlan) ->
 /// Called by the plan's task as ONE read closure (`Store::read_items`): it must not await
 /// and reads nothing but the store. Bounded: the doubling ends when everything that
 /// differs was read.
-pub fn plan_next_steps(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<PlannedRound, TreeError> {
+pub(crate) fn plan_next_steps(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<PlannedRound, TreeError> {
     let local_step_tries = void_local_step_tries(items, &facts.local_step_tries)?;
     let folder_input = describe_folder(items, facts)?;
     let item_counts = items.count_items()?;
@@ -431,15 +431,15 @@ pub fn plan_next_steps(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Pl
 
 /// The rows one reading of a [`ReadWindow`] brought.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DifferingItemsRead {
+pub(crate) struct DifferingItemsRead {
     /// Every row read, of every kind.
-    pub rows: Vec<Item>,
+    pub(crate) rows: Vec<Item>,
     /// The unsent items among them, in the order read: the oldest first.
-    pub unsent: Vec<LocalItemId>,
-    pub is_unsent_read_whole: bool,
+    pub(crate) unsent: Vec<LocalItemId>,
+    pub(crate) is_unsent_read_whole: bool,
     /// Whether every kind was read whole.
-    pub is_all_read: bool,
-    pub pinned_files_reading: PinnedFilesReading,
+    pub(crate) is_all_read: bool,
+    pub(crate) pinned_files_reading: PinnedFilesReading,
 }
 
 /// The first `window.unsent` of what is unsent (`list_unsent`, the oldest first), and the
@@ -453,7 +453,7 @@ pub struct DifferingItemsRead {
 /// found none; when some are missing, all of them are counted beside the window read:
 /// one more scan of the same rows, for what the status says is left to download); and
 /// whether each was read whole.
-pub fn read_differing_items(items: &ItemReader<'_>, window: ReadWindow, is_pinned_files_reader_asked: bool) -> Result<DifferingItemsRead, TreeError> {
+pub(crate) fn read_differing_items(items: &ItemReader<'_>, window: ReadWindow, is_pinned_files_reader_asked: bool) -> Result<DifferingItemsRead, TreeError> {
     let read_at_once = window.of_each_other_kind;
     let unsent = items.list_unsent(None, window.unsent)?;
     let changed = items.list_changed_in_onedrive(None, read_at_once)?;
@@ -480,7 +480,7 @@ pub fn read_differing_items(items: &ItemReader<'_>, window: ReadWindow, is_pinne
 /// the last three with its count. A directory given for another's sake gets no count
 /// here: the plan asks for it when it needs it ([`give_items_in_directory`]). A directory
 /// OneDrive has that the folder does not show yet is given with nothing below it.
-pub fn close_given_items(items: &ItemReader<'_>, given: &mut GivenItems, computer_name: &str) -> Result<(), TreeError> {
+pub(crate) fn close_given_items(items: &ItemReader<'_>, given: &mut GivenItems, computer_name: &str) -> Result<(), TreeError> {
     while let Some(item) = given.unclosed.pop() {
         let Some(row) = given.rows.get(&item).cloned() else { continue };
         for place in list_places(&row) {
@@ -534,7 +534,7 @@ pub fn close_given_items(items: &ItemReader<'_>, given: &mut GivenItems, compute
 /// when the directory was removed here, or `list_children(directory)` with its length in
 /// `shown_item_count_in` when the folder shows it and OneDrive lacks it or cannot show
 /// it.
-pub fn give_items_in_directory(items: &ItemReader<'_>, given: &mut GivenItems, directory: LocalItemId) -> Result<(), TreeError> {
+pub(crate) fn give_items_in_directory(items: &ItemReader<'_>, given: &mut GivenItems, directory: LocalItemId) -> Result<(), TreeError> {
     let row = match given.rows.get(&directory) {
         Some(row) => Some(row.clone()),
         None => items.find_item(directory)?,
@@ -555,7 +555,7 @@ pub fn give_items_in_directory(items: &ItemReader<'_>, given: &mut GivenItems, d
 /// the plan reads this round) and leaves out every try one of whose rows went or is
 /// another piece of work (`LocalStepTries::void_by_rows`). As many reads by id as there
 /// are rows of steps that failed.
-pub fn void_local_step_tries(items: &ItemReader<'_>, local_step_tries: &LocalStepTries) -> Result<LocalStepTries, TreeError> {
+pub(crate) fn void_local_step_tries(items: &ItemReader<'_>, local_step_tries: &LocalStepTries) -> Result<LocalStepTries, TreeError> {
     let mut rows = BTreeMap::new();
     for item in local_step_tries.list_items() {
         if let Some(row) = items.find_item(item)? {
@@ -571,7 +571,7 @@ pub fn void_local_step_tries(items: &ItemReader<'_>, local_step_tries: &LocalSte
 /// whatever is given later. What the store says — whether a listing is under way — and what `facts` say: running, the
 /// destinations of the running steps (each reference turned into its row by
 /// `find_bound_item`), OneDrive full, the time, the settings.
-pub fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<SyncPlanInput, TreeError> {
+pub(crate) fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<SyncPlanInput, TreeError> {
     // A request on record is not settled either, whether its step runs or not: its item is busy, and the directory it sends into is a destination.
     let mut items_with_running_step = facts.items_with_running_step.clone();
     let mut destinations = facts.destinations_of_running_steps.clone();
@@ -625,7 +625,7 @@ pub fn describe_folder(items: &ItemReader<'_>, facts: &DaemonFacts) -> Result<Sy
 /// Then, of everything given so far: the rows by their id, the counts of the directories
 /// given whole, the next tries ([`describe_next_tries`], with `local_step_tries`: the
 /// task's own, voided by this reading) and the refusals ([`describe_sending_refusals`]).
-pub fn describe_given_items(items: &ItemReader<'_>, facts: &DaemonFacts, local_step_tries: &LocalStepTries, given: &mut GivenItems, input: &mut SyncPlanInput) -> Result<(), TreeError> {
+pub(crate) fn describe_given_items(items: &ItemReader<'_>, facts: &DaemonFacts, local_step_tries: &LocalStepTries, given: &mut GivenItems, input: &mut SyncPlanInput) -> Result<(), TreeError> {
     for item in std::mem::take(&mut given.undescribed) {
         let Some(row) = given.rows.get(&item).cloned() else { continue };
         if let Some(temporary_name) = given.find_memory(items, item)?.temporary_name.clone() {
@@ -683,7 +683,7 @@ pub fn describe_given_items(items: &ItemReader<'_>, facts: &DaemonFacts, local_s
 /// or a try the store could not be written; where both keep a try of what is sent of an
 /// item, the later time stands). Every entry is given, due or not: the plan compares
 /// with its `now`. Pure.
-pub fn describe_next_tries(memories: &BTreeMap<LocalItemId, ItemMemory>, local_step_tries: &LocalStepTries) -> BTreeMap<(LocalItemId, TriedStep), NextTry> {
+pub(crate) fn describe_next_tries(memories: &BTreeMap<LocalItemId, ItemMemory>, local_step_tries: &LocalStepTries) -> BTreeMap<(LocalItemId, TriedStep), NextTry> {
     let describe_sent = |(item, memory): (&LocalItemId, &ItemMemory)| {
         let failed_tries = memory.failed_tries.as_ref()?;
         Some(((*item, TriedStep::TowardsOneDrive), NextTry { not_before: failed_tries.next_try_at?, reason: failed_tries.last_failure.clone() }))
@@ -706,7 +706,7 @@ pub fn describe_next_tries(memories: &BTreeMap<LocalItemId, ItemMemory>, local_s
 /// The plan's `sending_refusals`: for each item OneDrive refuses for good as its row is
 /// now (`Refusal`), that reason; else, for a file too big for the space there is
 /// (`SpaceRefusal`), `Reason::TooBig` with what it needs and what is free. Pure.
-pub fn describe_sending_refusals(memories: &BTreeMap<LocalItemId, ItemMemory>) -> BTreeMap<LocalItemId, Reason> {
+pub(crate) fn describe_sending_refusals(memories: &BTreeMap<LocalItemId, ItemMemory>) -> BTreeMap<LocalItemId, Reason> {
     let describe = |(item, memory): (&LocalItemId, &ItemMemory)| {
         let refused = memory.refusal.as_ref().map(|refusal| refusal.reason.clone());
         let too_big = || memory.space_refusal.as_ref().map(|space_refusal| Reason::TooBig(Some((space_refusal.content.size(), space_refusal.free_space))));
@@ -720,7 +720,7 @@ pub fn describe_sending_refusals(memories: &BTreeMap<LocalItemId, ItemMemory>) -
 /// wrote from the backing file, and never later than `now + quiet_time` for a file whose
 /// time is in the future. (A tool that sets old times loses the quiet time, which costs
 /// a step that ends `ContentChanged`.)
-pub fn decide_quiet_until(content: &ContentVersion, quiet_time: i64, now: i64) -> Option<i64> {
+pub(crate) fn decide_quiet_until(content: &ContentVersion, quiet_time: i64, now: i64) -> Option<i64> {
     let (changed_at, _) = content.mtime();
     let until = changed_at.saturating_add(quiet_time).min(now.saturating_add(quiet_time));
     (until > now).then_some(until)
@@ -728,7 +728,7 @@ pub fn decide_quiet_until(content: &ContentVersion, quiet_time: i64, now: i64) -
 
 /// Why OneDrive cannot hold `name`, when it cannot: today's rule
 /// (`local/names.rs:51`, `refused`), unchanged. Design §6, "Names".
-pub fn find_name_refusal(name: &OsStr) -> Option<Reason> {
+pub(crate) fn find_name_refusal(name: &OsStr) -> Option<Reason> {
     crate::local::names::refused(name).map(|refused| refused.reason())
 }
 

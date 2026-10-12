@@ -21,7 +21,7 @@ use crate::account_folder::SyncService;
 
 /// The shortest time between two coalesced `PropertiesChanged`: at most four
 /// a second.
-pub const COALESCE: Duration = Duration::from_millis(250);
+pub(crate) const COALESCE: Duration = Duration::from_millis(250);
 
 /// What the properties of [`COALESCED`] were last sent from. Whoever sends them holds it
 /// from reading the published state until the message is out: [`coalesce`] on its schedule,

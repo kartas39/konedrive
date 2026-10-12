@@ -12,10 +12,10 @@ pub struct Paths {
     pub state_dir: PathBuf,
     /// The cached name and quota of version 1, where the migration finds them. Per account:
     /// [`Paths::account`].
-    pub account_cache: PathBuf,
+    pub(crate) account_cache: PathBuf,
     /// The tree store of version 1, where the migration finds it. Per account:
     /// [`Paths::account`].
-    pub tree_db: PathBuf,
+    pub(crate) tree_db: PathBuf,
     /// The freedesktop thumbnail cache, shared by every account (keyed by file URI).
     pub thumbnails: PathBuf,
 }
@@ -24,16 +24,16 @@ pub struct Paths {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountPaths {
     /// `accounts/<id>/` under the state directory: everything in it goes with the account.
-    pub dir: PathBuf,
+    pub(crate) dir: PathBuf,
     /// Its cached name and quota.
     pub account_cache: PathBuf,
     /// Its tree store, activity log and conflicts.
-    pub tree_db: PathBuf,
+    pub(crate) tree_db: PathBuf,
 }
 
 /// The tree store's file. Not the name an older konedrive kept its store under: that one
 /// described a folder of placeholders, and is never read.
-pub const TREE_DB: &str = "fuse.sqlite";
+pub(crate) const TREE_DB: &str = "fuse.sqlite";
 
 impl Paths {
     /// Standard XDG locations for the current user.

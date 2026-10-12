@@ -11,7 +11,7 @@
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// The message of `panic`, as `catch_unwind` or a task's `JoinError` hands it over.
-pub fn message(panic: Box<dyn std::any::Any + Send>) -> String {
+pub(crate) fn message(panic: Box<dyn std::any::Any + Send>) -> String {
     match panic.downcast::<String>() {
         Ok(message) => *message,
         Err(panic) => panic.downcast::<&'static str>().map(|message| (*message).to_owned()).unwrap_or_else(|_| "no message".into()),
@@ -24,12 +24,12 @@ pub fn lock<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// `lock`, held for reading; also after a writer of it panicked.
-pub fn read<T: ?Sized>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+pub(crate) fn read<T: ?Sized>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
     lock.read().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// `lock`, held for writing; also after a writer of it panicked.
-pub fn write<T: ?Sized>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+pub(crate) fn write<T: ?Sized>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
     lock.write().unwrap_or_else(PoisonError::into_inner)
 }
 

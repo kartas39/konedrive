@@ -8,7 +8,7 @@ use std::path::Path;
 /// first, a crash soon after could leave `path` naming an empty or partial file —
 /// `config.toml` holds the registered folder, and one lost is a folder the next start never
 /// recovers; without the second, the rename itself could be lost.
-pub fn write_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
+pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let dir = path

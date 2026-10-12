@@ -3,22 +3,22 @@
 //! `crate::account`/`crate::dbus` uses for `Account`). There is one `SyncService` per
 //! account; the list of them is the daemon's, in `registry.rs`.
 
-pub mod bring_up;
+pub(crate) mod bring_up;
 mod folder;
-pub mod free_up;
-pub mod hydrate;
-pub mod menu;
-pub mod mode;
+pub(crate) mod free_up;
+pub(crate) mod hydrate;
+pub(crate) mod menu;
+pub(crate) mod mode;
 pub mod upload_queue;
-pub mod pause;
+pub(crate) mod pause;
 mod persisted;
 pub mod pins;
 mod publish;
-pub mod queries;
+pub(crate) mod queries;
 pub mod registry;
-pub mod settings;
-pub mod start_stop;
-pub mod take_down;
+pub(crate) mod settings;
+pub(crate) mod start_stop;
+pub(crate) mod take_down;
 #[cfg(any(test, feature = "fault-injection"))]
 pub mod testing;
 pub mod wiring;
@@ -297,7 +297,7 @@ impl SyncService {
     }
 
     /// The account's transfer pool.
-    pub fn pool(&self) -> &Arc<konedrive_graph::pool::TransferPool> {
+    pub(crate) fn pool(&self) -> &Arc<konedrive_graph::pool::TransferPool> {
         &self.pool
     }
 
@@ -324,17 +324,17 @@ impl SyncService {
         folders
     }
 
-    pub fn root(&self) -> Option<SyncRoot> {
+    pub(crate) fn root(&self) -> Option<SyncRoot> {
         self.record().map(|r| r.root)
     }
 
     /// `RootState` as published ([`published_state`]).
-    pub fn root_state(&self) -> String {
+    pub(crate) fn root_state(&self) -> String {
         published_state(&self.state.get()).to_owned()
     }
 
     /// `LastError` as published ([`published_error`]).
-    pub fn last_error(&self) -> String {
+    pub(crate) fn last_error(&self) -> String {
         published_error(&self.state.get())
     }
 
@@ -379,7 +379,7 @@ impl SyncService {
     }
 
     /// `RootSource`.
-    pub fn root_source(&self) -> String {
+    pub(crate) fn root_source(&self) -> String {
         self.record().map(|_| persisted::ONEDRIVE.to_owned()).unwrap_or_default()
     }
 

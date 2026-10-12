@@ -47,7 +47,7 @@ use poll_wait::{decide_cycle_wait, decide_pause_wait, LastCycle, NotificationSoc
 /// What may be asked of a running poller by whoever does not own it. Asking a stopped
 /// poller does nothing.
 #[derive(Clone)]
-pub struct ListingPollHandle {
+pub(crate) struct ListingPollHandle {
     refresh: Arc<tokio::sync::Notify>,
     cancel: CancellationToken,
     live: Option<Arc<tokio::sync::Notify>>,
@@ -86,12 +86,12 @@ impl ListingPollHandle {
     /// (`ItemStore::request_full_listing`): the cycle begins it by the store's request,
     /// the handle only wakes. Counted in `asked_cycle_count` as [`refresh`](Self::refresh)
     /// is.
-    pub fn refresh_after_full_listing_request(&self) {
+    pub(crate) fn refresh_after_full_listing_request(&self) {
         self.refresh();
     }
 
     /// The live socket is to be looked at again: the network is back.
-    pub fn wake_live(&self) {
+    pub(crate) fn wake_live(&self) {
         if let Some(live) = &self.live {
             live.notify_one();
         }
@@ -99,7 +99,7 @@ impl ListingPollHandle {
 }
 
 /// The poller of one folder's listing.
-pub struct ListingPoller {
+pub(crate) struct ListingPoller {
     handle: ListingPollHandle,
     /// `None` once it has been waited for.
     task: Option<tokio::task::JoinHandle<()>>,
@@ -131,13 +131,13 @@ impl ListingPoller {
     }
 
     /// What others ask the poller through.
-    pub fn handle(&self) -> ListingPollHandle {
+    pub(crate) fn handle(&self) -> ListingPollHandle {
         self.handle.clone()
     }
 
     /// Stops the poller and waits for it: a cycle is cancelled between two requests; the
     /// page being written is written whole. Called first in the stop of a folder's sync.
-    pub async fn stop(mut self) {
+    pub(crate) async fn stop(mut self) {
         self.handle.cancel.cancel();
         if let Some(task) = self.task.take() {
             if let Err(error) = task.await {
@@ -217,17 +217,17 @@ async fn run_cycles(cycle: Arc<ListingCycle>, schedule: Schedule, running: Arc<R
 
 /// How often the poller runs a cycle, and how soon after a failure.
 #[derive(Debug, Clone)]
-pub struct Schedule {
-    pub interval: Duration,
+pub(crate) struct Schedule {
+    pub(crate) interval: Duration,
     /// The waits after the first, second, … failure in a row; after the last,
     /// the ordinary interval.
-    pub retry: Vec<Duration>,
+    pub(crate) retry: Vec<Duration>,
     /// The interval while the notification socket is up (`live`): the poll is only the safety
     /// net for an event OneDrive never sent.
-    pub live_interval: Duration,
+    pub(crate) live_interval: Duration,
     /// The live task's waits; `None` runs none, and the poll alone brings changes (the tests
     /// that do not ask for it).
-    pub live: Option<super::live::Timing>,
+    pub(crate) live: Option<super::live::Timing>,
 }
 
 impl Default for Schedule {
@@ -243,7 +243,7 @@ impl Default for Schedule {
 
 impl Schedule {
     /// The poll alone, every `interval`, with these retries: no live task.
-    pub fn polled(interval: Duration, retry: Vec<Duration>) -> Self {
+    pub(crate) fn polled(interval: Duration, retry: Vec<Duration>) -> Self {
         Self { interval, retry, live: None, ..Self::default() }
     }
 }

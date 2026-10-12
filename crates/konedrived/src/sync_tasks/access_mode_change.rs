@@ -66,7 +66,7 @@ const RUNNING_STEPS_WAITED_FOR: std::time::Duration = std::time::Duration::from_
 
 /// Whether the steps towards OneDrive had ended when a switch to read-only returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StepsTowardsOneDrive {
+pub(crate) enum StepsTowardsOneDrive {
     /// None runs: no request that changes OneDrive is in flight.
     Ended,
     /// The wait ran out with one still running.
@@ -94,7 +94,7 @@ fn has_step_towards_onedrive(steps: &[RunningStep]) -> bool {
 /// the Graph client. Whether the account gives its token up all the same is the
 /// caller's: a request sent under a token that cannot write is refused, and that
 /// refusal is kept.
-pub async fn switch_to_read_only(mount: &ItemMount, sending_holds: &SendingHolds, running_steps: &RunningSteps) -> Result<StepsTowardsOneDrive, String> {
+pub(crate) async fn switch_to_read_only(mount: &ItemMount, sending_holds: &SendingHolds, running_steps: &RunningSteps) -> Result<StepsTowardsOneDrive, String> {
     // Nothing towards OneDrive is started from here on.
     sending_holds.set_folder_read_only(true);
     let switched = mount.switch_to_read_only().await;
@@ -115,7 +115,7 @@ pub async fn switch_to_read_only(mount: &ItemMount, sending_holds: &SendingHolds
 /// under the hold is planned at once. `Err`, with the hold left on, for a mount whose
 /// take-down was asked: the mount's own switch refuses it (`ItemMount::switch_to_read_write`,
 /// in one step with the switch), and this passes the answer on.
-pub async fn switch_to_read_write(mount: &ItemMount, sending_holds: &SendingHolds) -> Result<(), String> {
+pub(crate) async fn switch_to_read_write(mount: &ItemMount, sending_holds: &SendingHolds) -> Result<(), String> {
     mount.switch_to_read_write().map_err(|error| error.to_string())?;
     sending_holds.set_folder_read_only(false);
     Ok(())
@@ -144,7 +144,7 @@ pub async fn apply_wanted_access_mode(mount: &ItemMount, sending_holds: &Sending
 /// `account_folder/settings.rs` for a folder whose mount is served, whether or not its
 /// sync runs: `sync_plan_wake` is the one the mount was built with
 /// (`KeptFolderParts::sync_plan_wake`). How many rows changed. MISSING-4.f.
-pub async fn apply_ignore_list_change(mount: &ItemMount, sync_plan_wake: &SyncPlanWake) -> Result<u64, String> {
+pub(crate) async fn apply_ignore_list_change(mount: &ItemMount, sync_plan_wake: &SyncPlanWake) -> Result<u64, String> {
     let rewritten = mount.rewrite_ignored_names().await.map_err(|error| format!("the ignored names of the folder's rows could not be gone over: {error}"))?;
     sync_plan_wake.wake(WakeCause::SendingHoldChanged);
     Ok(rewritten)

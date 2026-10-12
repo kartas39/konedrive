@@ -24,17 +24,17 @@ use std::time::Duration;
 /// that went on for a minute before OneDrive answered `429`, which leaves the account's
 /// allowance to the listing and to what is sent; a few thousand photos still get their
 /// thumbnails within an hour.
-pub const REQUESTS_AT_ONCE: usize = 2;
+pub(crate) const REQUESTS_AT_ONCE: usize = 2;
 
 /// How long the filler waits before it asks again whether a request may start, while it
 /// gives way to an open or to what waits at the pool, or is at its limit. A choice: the
 /// pool tells nobody that its line emptied, a thumbnail is in no hurry, and reading three
 /// counts of the pool every two seconds costs nothing.
-pub const ASKED_AGAIN_AFTER: Duration = Duration::from_secs(2);
+pub(crate) const ASKED_AGAIN_AFTER: Duration = Duration::from_secs(2);
 
 /// How far the folder's listing is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ListingProgress {
+pub(crate) enum ListingProgress {
     /// The folder's first listing has not ended, or a full listing asked for later has
     /// not: the store has no delta link.
     FullNotEnded,
@@ -46,22 +46,22 @@ pub enum ListingProgress {
 
 /// What the decision is made from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RequestFacts {
-    pub listing: ListingProgress,
+pub(crate) struct RequestFacts {
+    pub(crate) listing: ListingProgress,
     /// What is left of OneDrive's `Retry-After`; zero when the account is not throttled.
-    pub throttle_left: Duration,
+    pub(crate) throttle_left: Duration,
     /// A file being opened holds a slot of the pool.
-    pub is_file_being_opened: bool,
+    pub(crate) is_file_being_opened: bool,
     /// Something waits for a slot of the pool: an open, a metadata operation, an upload
     /// or a download of a pinned file.
-    pub is_transfer_waiting: bool,
+    pub(crate) is_transfer_waiting: bool,
     /// The filler's thumbnail requests under way.
-    pub requests_under_way: usize,
+    pub(crate) requests_under_way: usize,
 }
 
 /// Why no thumbnail request starts now; the first that holds, in this order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RequestWait {
+pub(crate) enum RequestWait {
     /// The folder's first listing has not ended, or a later full one has not. Ends with
     /// the listing, which nudges the filler.
     FullListingNotEnded,
@@ -78,13 +78,13 @@ pub enum RequestWait {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RequestStart {
+pub(crate) enum RequestStart {
     Start,
     Wait(RequestWait),
 }
 
 /// Whether a thumbnail request may start, given `facts`. Pure.
-pub fn decide_request_start(facts: &RequestFacts) -> RequestStart {
+pub(crate) fn decide_request_start(facts: &RequestFacts) -> RequestStart {
     let wait = match facts.listing {
         ListingProgress::FullNotEnded => Some(RequestWait::FullListingNotEnded),
         ListingProgress::UnderWay => Some(RequestWait::ListingUnderWay),

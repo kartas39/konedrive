@@ -59,7 +59,7 @@ impl AccountManager {
     /// The sign-in ends once: when its browser sign-in ends
     /// ([`finish_sign_in`](Self::finish_sign_in)), at a [`cancel_sign_in`](Self::cancel_sign_in),
     /// or at the next `SignIn` or `SetClientId`.
-    pub async fn sign_in(self: &Arc<Self>, connection: &Connection) -> Result<(u32, String), ManagerError> {
+    pub(crate) async fn sign_in(self: &Arc<Self>, connection: &Connection) -> Result<(u32, String), ManagerError> {
         let _changing = self.changing.lock().await;
         // The account could not be written at the end: said before the browser is opened.
         self.config.check_writable().map_err(|e| ManagerError::Failed(e.to_string()))?;
@@ -103,7 +103,7 @@ impl AccountManager {
     /// it did. `false` for a number that is not under way — ended already, or being made
     /// an account: then nothing changes, and for the second `signed-in` or `failed`
     /// follows. It waits for nothing: not for a change of the accounts, nor for the wallet.
-    pub async fn cancel_sign_in(&self, number: u32) -> bool {
+    pub(crate) async fn cancel_sign_in(&self, number: u32) -> bool {
         self.end_sign_in(Some(number)).await
     }
 

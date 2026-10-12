@@ -203,7 +203,7 @@ impl Drop for DownloadCancel {
 }
 
 /// The runner of the steps towards the folder, for one mount.
-pub struct FolderSteps {
+pub(crate) struct FolderSteps {
     place_changes: Arc<PlaceChanges>,
     /// The writer: a step's reads and its commit are jobs of the store's thread.
     store: Store,
@@ -223,7 +223,7 @@ impl FolderSteps {
     /// Made by the start of the folder's sync (`sync_tasks::start_order`), of the parts the
     /// mount hands out for it (`ItemMount::folder_step_parts`).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         place_changes: Arc<PlaceChanges>,
         store: Store,
         write_operation_thread: Arc<WriteOperationThread>,
@@ -249,7 +249,7 @@ impl FolderSteps {
     /// published plan, for the items whose answer turned to or from what the mark shows
     /// as blocked. Never waits for the kernel: the bridge's queue takes them. The pin's
     /// change is announced by who sets it (`ItemFilesInterface::set_pin`).
-    pub fn announce_marks_changed(&self, items: Vec<LocalItemId>) {
+    pub(crate) fn announce_marks_changed(&self, items: Vec<LocalItemId>) {
         // After a take-down was asked the folder is on its way down: nobody is told of marks.
         if items.is_empty() || self.mount_take_down.is_asked() {
             return;
@@ -289,7 +289,7 @@ impl FolderSteps {
     /// calls the two named functions itself for the show steps of a plan and for a
     /// download). A job dropped because the thread stopped, and any step after a
     /// take-down was asked for, is `StepOutcome::NotRun(SendingStopped)`.
-    pub async fn run(self: &Arc<Self>, step: FolderStep) -> StepOutcome {
+    pub(crate) async fn run(self: &Arc<Self>, step: FolderStep) -> StepOutcome {
         match step {
             FolderStep::ShowItem { item } => self.run_show_items(vec![item]).await.pop().unwrap_or(StepOutcome::NotRun(StepObstacle::SendingStopped)),
             FolderStep::DownloadContent { item } => self.run_download_content(item).await,
@@ -326,7 +326,7 @@ impl FolderSteps {
     /// [`order_shown_items`]); each answered by itself, in the order given;
     /// `Appeared` announced for those written. Design §6, "new in OneDrive". A first
     /// listing of N items is a few jobs, not N.
-    pub async fn run_show_items(self: &Arc<Self>, items: Vec<ItemVersions>) -> Vec<StepOutcome> {
+    pub(crate) async fn run_show_items(self: &Arc<Self>, items: Vec<ItemVersions>) -> Vec<StepOutcome> {
         let (steps, count) = (Arc::clone(self), items.len());
         let shown = self.write_operation_thread.run_and_wait(move || steps.show_items(&items)).await;
         shown.unwrap_or_else(|_| vec![StepOutcome::NotRun(StepObstacle::SendingStopped); count])
@@ -396,7 +396,7 @@ impl FolderSteps {
     /// download (`ItemDownloader::cancel`: aborted when the plan alone asked for it). The plan's task runs it as its own class of step
     /// (`StepClass::Download`), held by the pause and the sign-out, never holding back
     /// the other steps towards the folder. Replaces `pinned_file_downloader.rs`.
-    pub async fn run_download_content(self: &Arc<Self>, item: ItemVersions) -> StepOutcome {
+    pub(crate) async fn run_download_content(self: &Arc<Self>, item: ItemVersions) -> StepOutcome {
         if self.mount_take_down.is_asked() {
             return StepOutcome::NotRun(StepObstacle::SendingStopped);
         }

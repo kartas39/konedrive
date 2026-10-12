@@ -80,7 +80,7 @@ pub trait Bus: Send + Sync {
 
 /// A path that is in no account's folder ([`AccountManager::route_all`]).
 #[derive(Debug)]
-pub struct Outside(pub String);
+pub(crate) struct Outside(pub String);
 
 /// One account: its sign-in, its folder, and the tasks that turn their state into
 /// `PropertiesChanged`.
@@ -216,7 +216,7 @@ impl AccountManager {
     /// until [`resume_all`](Self::resume_all) brings it up. An account that repeats an earlier one's id, label, drive
     /// or folder is loaded but held back (§4.1); one whose id cannot name an object or a
     /// directory, or repeats an id, is not loaded at all, and `Accounts.LastError` says so.
-    pub async fn load(&self) {
+    pub(crate) async fn load(&self) {
         let config = self.config.snapshot();
         for (entry, held) in config.accounts.iter().zip(config.holds()) {
             let taken = self.accounts().iter().any(|a| a.id == entry.id);
@@ -296,7 +296,7 @@ impl AccountManager {
     }
 
     /// Puts `account`'s objects on the bus.
-    pub(crate) async fn export(&self, connection: &Connection, account: &Account) -> zbus::Result<()> {
+    pub async fn export(&self, connection: &Connection, account: &Account) -> zbus::Result<()> {
         let path = account.path.as_ref();
         let signals = self.options.bus.export(connection, &path, Arc::clone(&account.account), Arc::clone(&account.sync)).await?;
         crate::panic::lock(&account.signals).extend(signals);
@@ -366,7 +366,7 @@ impl AccountManager {
     /// What the steps before did is not taken back (a folder forgotten is unmounted, and
     /// its tree store is gone), and the refusal, under the name
     /// the failure always had, says what was done.
-    pub async fn remove(&self, path: &ObjectPath<'_>, connection: &Connection) -> Result<(), ManagerError> {
+    pub(crate) async fn remove(&self, path: &ObjectPath<'_>, connection: &Connection) -> Result<(), ManagerError> {
         let _changing = self.changing.lock().await;
         let account = self.account(path).ok_or_else(|| ManagerError::NoAccount(path.to_string()))?;
         if self.config.is_poisoned() {
@@ -401,7 +401,7 @@ impl AccountManager {
     }
 
     /// `Accounts.SetClientId`: refused while any account is signing in or signed in.
-    pub async fn set_client_id(&self, id: &str) -> Result<(), ManagerError> {
+    pub(crate) async fn set_client_id(&self, id: &str) -> Result<(), ManagerError> {
         let _changing = self.changing.lock().await;
         let id = id.trim();
         if !is_valid_client_id(id) {
@@ -429,13 +429,13 @@ impl AccountManager {
 
     /// `Accounts.SetPauseOnMetered`: written to `config.toml`, then taken by every account
     /// at once.
-    pub async fn set_pause_on_metered(&self, on: bool) -> Result<(), ManagerError> {
+    pub(crate) async fn set_pause_on_metered(&self, on: bool) -> Result<(), ManagerError> {
         self.change_hold_settings(|config| config.set_pause_on_metered(on)).await
     }
 
     /// `Accounts.SetOnBattery`: `sync`, `power-saver` or `pause`, refused `InvalidArgs`
     /// otherwise; written to `config.toml`, then taken by every account at once.
-    pub async fn set_on_battery(&self, choice: &str) -> Result<(), ManagerError> {
+    pub(crate) async fn set_on_battery(&self, choice: &str) -> Result<(), ManagerError> {
         let Some(choice) = OnBattery::parse(choice) else {
             return Err(ManagerError::InvalidArgs(format!("{choice:?}: not sync, power-saver or pause")));
         };
@@ -461,7 +461,7 @@ impl AccountManager {
     /// folder is a component prefix of it with its directory part resolved — a folder
     /// reached through a link (`/home` → `/var/home`) — or, only when that cannot be
     /// resolved, taken as given. The file itself is never opened.
-    pub async fn route(&self, path: &Path) -> Option<Arc<Account>> {
+    pub(crate) async fn route(&self, path: &Path) -> Option<Arc<Account>> {
         let folders = self.folders();
         let given = path.to_path_buf();
         let resolved = tokio::task::spawn_blocking(move || resolve_parent(&given)).await.ok().flatten();
@@ -493,7 +493,7 @@ impl AccountManager {
     /// Every path routed to its account, grouped by account in the order the accounts are
     /// first named; the first path in no account's folder (`OutsideRoot` on the bus), before
     /// anything is done.
-    pub(crate) async fn route_all(&self, paths: &[String]) -> Result<Vec<(Arc<Account>, Vec<PathBuf>)>, Outside> {
+    pub async fn route_all(&self, paths: &[String]) -> Result<Vec<(Arc<Account>, Vec<PathBuf>)>, Outside> {
         let mut groups: Vec<(Arc<Account>, Vec<PathBuf>)> = Vec::new();
         for path in paths {
             let account = self.route(Path::new(path)).await.ok_or_else(|| Outside(path.clone()))?;
@@ -553,7 +553,7 @@ impl AccountManager {
     /// An account whose bring-up panics is left down, saying so, and the next account is
     /// brought up all the same: a defect that one account's folder meets would otherwise
     /// keep the daemon from starting.
-    pub async fn resume_all(&self) {
+    pub(crate) async fn resume_all(&self) {
         use futures_util::FutureExt;
         for account in self.accounts() {
             let Err(panic) = std::panic::AssertUnwindSafe(account.sync.resume()).catch_unwind().await else { continue };

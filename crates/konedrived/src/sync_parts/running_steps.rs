@@ -32,7 +32,7 @@ use tokio::task::AbortHandle;
 
 /// What kind of step it is: what bounds how many run at once, and what a stop does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum StepClass {
+pub(crate) enum StepClass {
     /// Towards OneDrive, sending a file's content: in the pool's upload slots. Held by
     /// what holds all sending.
     Content,
@@ -50,22 +50,22 @@ pub enum StepClass {
 
 /// A step that runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunningStep {
-    pub class: StepClass,
+pub(crate) struct RunningStep {
+    pub(crate) class: StepClass,
     /// The item the step is of (`SyncStep::local_item_id`).
-    pub item: LocalItemId,
+    pub(crate) item: LocalItemId,
     /// Every other row the step carries the versions of.
-    pub other_items: Vec<LocalItemId>,
+    pub(crate) other_items: Vec<LocalItemId>,
     /// The directory of OneDrive a `MakeDirectory`, `SendNewFile` or `SendMove` sends
     /// into: the plan is told the rows of these (`destinations_of_running_steps`).
-    pub destination: Option<OneDriveItemReference>,
-    pub sent: u64,
-    pub total: u64,
+    pub(crate) destination: Option<OneDriveItemReference>,
+    pub(crate) sent: u64,
+    pub(crate) total: u64,
 }
 
 /// How far a running step got, for what a stop does to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StepPhase {
+pub(crate) enum StepPhase {
     /// Its request is in flight — or its hash, or its download: nothing of the step is
     /// written yet. A stop aborts its task, unless it is a step towards the folder.
     RequestInFlight,
@@ -78,7 +78,7 @@ pub enum StepPhase {
 /// Whether a stop aborts the task of a step of `class` that is in `phase`. Pure. Never a
 /// step towards the folder: it is between a disk change and its commit. Never one whose
 /// commit has begun.
-pub fn decide_is_aborted_at_stop(class: StepClass, phase: StepPhase) -> bool {
+pub(crate) fn decide_is_aborted_at_stop(class: StepClass, phase: StepPhase) -> bool {
     class != StepClass::Folder && phase == StepPhase::RequestInFlight
 }
 
@@ -96,7 +96,7 @@ impl RunningStep {
 }
 
 /// The running steps of one folder.
-pub struct RunningSteps {
+pub(crate) struct RunningSteps {
     steps: std::sync::Mutex<Steps>,
 }
 
@@ -128,7 +128,7 @@ impl RunningSteps {
 
     /// `step` runs from now on; `false`, and nothing begun, when one of its rows has a
     /// running step already. Called by the plan's task before it spawns the step's task.
-    pub fn begin(&self, step: RunningStep) -> bool {
+    pub(crate) fn begin(&self, step: RunningStep) -> bool {
         let mut steps = crate::panic::lock(&self.steps);
         if step.list_rows().any(|row| steps.step_items_by_row.contains_key(&row)) {
             return false;
@@ -142,29 +142,29 @@ impl RunningSteps {
 
     /// The task of the step of `item` is aborted by `abort`. Called by the plan's task
     /// right after the spawn.
-    pub fn keep_abort_handle(&self, item: LocalItemId, abort: AbortHandle) {
+    pub(crate) fn keep_abort_handle(&self, item: LocalItemId, abort: AbortHandle) {
         if let Some(running) = crate::panic::lock(&self.steps).by_item.get_mut(&item) {
             running.abort = Some(abort);
         }
     }
 
     /// The step of `item` was settled: none of its rows has a running step any more.
-    pub fn end(&self, item: LocalItemId) {
+    pub(crate) fn end(&self, item: LocalItemId) {
         crate::panic::lock(&self.steps).remove(item);
     }
 
     /// Every row a step runs for: the plan's `items_with_running_step`.
-    pub fn list_items(&self) -> BTreeSet<LocalItemId> {
+    pub(crate) fn list_items(&self) -> BTreeSet<LocalItemId> {
         crate::panic::lock(&self.steps).step_items_by_row.keys().copied().collect()
     }
 
     /// Whether a step runs for `item`. Called by the mount's `make` and its sync mark.
-    pub fn has_running_step(&self, item: LocalItemId) -> bool {
+    pub(crate) fn has_running_step(&self, item: LocalItemId) -> bool {
         crate::panic::lock(&self.steps).step_items_by_row.contains_key(&item)
     }
 
     /// The directories the running steps send into: for the plan's input.
-    pub fn list_destinations(&self) -> Vec<OneDriveItemReference> {
+    pub(crate) fn list_destinations(&self) -> Vec<OneDriveItemReference> {
         let mut destinations = Vec::new();
         for running in crate::panic::lock(&self.steps).by_item.values() {
             if let Some(destination) = running.step.destination.as_ref().filter(|destination| !destinations.contains(*destination)) {
@@ -176,13 +176,13 @@ impl RunningSteps {
 
     /// Every running step. Called for the choice of what to start, for the queue's
     /// entries and for `Transfers.Uploads`.
-    pub fn list_steps(&self) -> Vec<RunningStep> {
+    pub(crate) fn list_steps(&self) -> Vec<RunningStep> {
         crate::panic::lock(&self.steps).by_item.values().map(|running| running.step.clone()).collect()
     }
 
     /// The upload or download of `item` got as far as `sent` of `total`. Called by the
     /// upload's progress and the download's.
-    pub fn tell_progress(&self, item: LocalItemId, sent: u64, total: u64) {
+    pub(crate) fn tell_progress(&self, item: LocalItemId, sent: u64, total: u64) {
         if let Some(running) = crate::panic::lock(&self.steps).by_item.get_mut(&item) {
             (running.step.sent, running.step.total) = (sent, total);
         }
@@ -195,7 +195,7 @@ impl RunningSteps {
     /// of the store's thread that commits, and by the landing of the plan's download
     /// (`mount::item_download_landing`), which commits as that step; any other step
     /// towards the folder need not say it.
-    pub fn begin_commit(&self, item: LocalItemId) -> bool {
+    pub(crate) fn begin_commit(&self, item: LocalItemId) -> bool {
         match crate::panic::lock(&self.steps).by_item.get_mut(&item) {
             Some(running) => {
                 running.phase = StepPhase::CommitBegun;
@@ -213,7 +213,7 @@ impl RunningSteps {
     /// has begun, is left running: the loop settles it
     /// ([`count_steps_to_settle`](Self::count_steps_to_settle)). Called by the plan's
     /// loop when its stop comes.
-    pub fn abort_requests(&self) -> Vec<LocalItemId> {
+    pub(crate) fn abort_requests(&self) -> Vec<LocalItemId> {
         let aborted: Vec<Running> = {
             let mut steps = crate::panic::lock(&self.steps);
             let items: Vec<LocalItemId> = steps.by_item.values().filter(|running| decide_is_aborted_at_stop(running.step.class, running.phase)).map(|running| running.step.item).collect();
@@ -229,7 +229,7 @@ impl RunningSteps {
     /// How many running steps a stop does not abort: those towards the folder, and those
     /// whose commit has begun. What the plan's loop goes on settling before it returns at
     /// a stop.
-    pub fn count_steps_to_settle(&self) -> usize {
+    pub(crate) fn count_steps_to_settle(&self) -> usize {
         crate::panic::lock(&self.steps).by_item.values().filter(|running| !decide_is_aborted_at_stop(running.step.class, running.phase)).count()
     }
 }

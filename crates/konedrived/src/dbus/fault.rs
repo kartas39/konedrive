@@ -16,7 +16,7 @@ use crate::account_folder::SyncError;
 /// `TokenExport` under theirs (`docs/design/desktop.md` §2.6), and an argument that is not
 /// one (a label, a client id, a mode, an ignore pattern) under the bus's own `InvalidArgs`.
 #[derive(Debug)]
-pub enum Fault {
+pub(crate) enum Fault {
     /// Anything zbus itself reports, passed through unchanged; it goes out under
     /// [`Refusal::Internal`].
     ZBus(zbus::Error),
@@ -139,7 +139,7 @@ impl From<ModeError> for Fault {
 /// What `TokenExport.ReadWrite` refuses: [`ModeError`]'s names, but a mode that is not one —
 /// which nothing there raises — under `Failed`, not the bus's `InvalidArgs`.
 #[cfg(feature = "dev-tools")]
-pub(crate) fn export_fault(error: ModeError) -> Fault {
+pub fn export_fault(error: ModeError) -> Fault {
     match error {
         ModeError::InvalidMode(why) => Fault::Refused(Refusal::Failed, why),
         other => other.into(),

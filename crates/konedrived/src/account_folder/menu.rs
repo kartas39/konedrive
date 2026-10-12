@@ -22,7 +22,7 @@ use crate::mount::{FreeUpDecision, PinHolder};
 
 /// "Always keep on this device" in the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlwaysKeep {
+pub(crate) enum AlwaysKeep {
     Hidden,
     /// Unchecked: checking it is `Pin`, which takes every path of the answer.
     Off,
@@ -45,7 +45,7 @@ impl AlwaysKeep {
 
 /// "Free up space" and "Open in OneDrive" in the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Offer {
+pub(crate) enum Offer {
     Hidden,
     Enabled,
     /// Shown, and the call behind it would be refused.
@@ -82,34 +82,34 @@ impl FreeUpWhy {
 
 /// The answer of `Files.Menu`, under the names of its keys.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Menu {
+pub(crate) struct Menu {
     /// The selected paths `Pin` takes, in the order given: what `Pin`, `Unpin` or
     /// `FreeUp` is then called with.
-    pub paths: Vec<String>,
-    pub always_keep: AlwaysKeep,
-    pub free_up: Offer,
+    pub(crate) paths: Vec<String>,
+    pub(crate) always_keep: AlwaysKeep,
+    pub(crate) free_up: Offer,
     /// Why `free_up` is `Disabled`; `None` when it is not.
-    pub free_up_why: Option<FreeUpWhy>,
+    pub(crate) free_up_why: Option<FreeUpWhy>,
     /// The name of the folder above that keeps an item pinned, when that is why
     /// `always_keep` is `OnLocked` or `free_up` is `Disabled`; empty otherwise.
-    pub blocked_by: String,
-    pub open_online: Offer,
+    pub(crate) blocked_by: String,
+    pub(crate) open_online: Offer,
     /// The path `WebUrl` is then called with; empty when `open_online` is `Hidden`.
-    pub open_online_path: String,
+    pub(crate) open_online_path: String,
 }
 
 /// One selected path `Pin` takes, as the menu's rules need it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Taken {
-    pub is_dir: bool,
+    pub(crate) is_dir: bool,
     /// It carries a pin of its own.
-    pub own: bool,
+    pub(crate) own: bool,
     /// It is pinned: by itself, or by a folder above it.
-    pub pinned: bool,
+    pub(crate) pinned: bool,
     /// A file that is downloaded.
-    pub hydrated: bool,
+    pub(crate) hydrated: bool,
     /// It carries an item id: `WebUrl` has a page to ask for.
-    pub in_onedrive: bool,
+    pub(crate) in_onedrive: bool,
 }
 
 /// One account's share of a selection.

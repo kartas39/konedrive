@@ -40,7 +40,7 @@ pub fn save(path: &Path, info: &AccountInfo) -> anyhow::Result<()> {
     write_atomic(path, &serde_json::to_vec_pretty(info)?)
 }
 
-pub fn remove(path: &Path) {
+pub(crate) fn remove(path: &Path) {
     if let Err(e) = std::fs::remove_file(path) {
         if e.kind() != std::io::ErrorKind::NotFound {
             tracing::warn!("cannot remove {}: {e}", path.display());

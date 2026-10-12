@@ -2,25 +2,25 @@
 
 pub mod config;
 pub mod account;
-pub mod folder;
+pub(crate) mod folder;
 pub mod conditions;
 pub mod status;
-pub mod content_source;
-pub mod local;
-pub mod sync_parts;
+pub(crate) mod content_source;
+pub(crate) mod local;
+pub(crate) mod sync_parts;
 pub mod mount;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
-pub mod folder_steps;
+pub(crate) mod folder_steps;
 // The four below have no caller until the owner of a folder's state starts a sync through
 // `sync_tasks`.
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
-pub mod onedrive_steps;
-pub mod listing;
+pub(crate) mod onedrive_steps;
+pub(crate) mod listing;
 pub mod desktop;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
-pub mod sync_plan_task;
+pub(crate) mod sync_plan_task;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
-pub mod sync_tasks;
+pub(crate) mod sync_tasks;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub mod upload_queue;
 pub mod account_folder;
@@ -28,7 +28,7 @@ pub mod daemon;
 pub mod dbus;
 
 /// Not a layer: the wall clock, read in one place.
-pub mod clock;
+pub(crate) mod clock;
 
 /// Not a layer: what a caught panic said, and a lock taken after one.
 pub mod panic;

@@ -8,7 +8,7 @@ use crate::dbus::fault::Fault;
 use crate::daemon::manager::AccountManager;
 
 /// `org.konedrive.Accounts` (`dbus/org.konedrive.Accounts.xml`).
-pub struct Accounts {
+pub(crate) struct Accounts {
     pub(crate) manager: Arc<AccountManager>,
 }
 
@@ -31,7 +31,7 @@ impl Accounts {
     /// How the sign-in `sign_in` ended (`konedrive_dbus::sign_in`), once for each: the
     /// account it made, or the one that has the drive already; `/` otherwise.
     #[zbus(signal)]
-    pub(crate) async fn sign_in_finished(emitter: &SignalEmitter<'_>, sign_in: u32, outcome: &str, message: &str, account: ObjectPath<'_>) -> zbus::Result<()>;
+    pub async fn sign_in_finished(emitter: &SignalEmitter<'_>, sign_in: u32, outcome: &str, message: &str, account: ObjectPath<'_>) -> zbus::Result<()>;
 
     async fn remove(
         &self,

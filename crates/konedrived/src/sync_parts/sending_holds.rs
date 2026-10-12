@@ -36,7 +36,7 @@ use crate::sync_parts::sync_plan_wake::{SyncPlanWake, WakeCause};
 
 /// Why nothing is sent to OneDrive now; the first that holds, in this order.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SendingHold {
+pub(crate) enum SendingHold {
     /// The folder's sync is stopping.
     Stopping,
     /// The account is signed out.
@@ -136,7 +136,7 @@ impl Holds {
 }
 
 /// What holds one folder's sending.
-pub struct SendingHolds {
+pub(crate) struct SendingHolds {
     holds: std::sync::Mutex<Holds>,
     sync_plan_wake: Arc<SyncPlanWake>,
 }
@@ -170,7 +170,7 @@ impl SendingHolds {
     /// passed holds no more. For what the bus and the published plan say. Whether a step
     /// is held is not asked of it ([`is_held`](Self::is_held)): a later cause may hold a
     /// class the first does not.
-    pub fn find(&self, now: i64) -> Option<SendingHold> {
+    pub(crate) fn find(&self, now: i64) -> Option<SendingHold> {
         crate::panic::lock(&self.holds).list(now).into_iter().next()
     }
 
@@ -178,7 +178,7 @@ impl SendingHolds {
     /// seconds; `None` when nothing that holds does. Of every hold, not of the one shown
     /// alone: a timed pause behind a hold that ends by nothing still frees the downloads
     /// at its end. For the plan's task's timer.
-    pub fn find_end(&self, now: i64) -> Option<i64> {
+    pub(crate) fn find_end(&self, now: i64) -> Option<i64> {
         let ends = crate::panic::lock(&self.holds).list(now).into_iter().filter_map(|hold| match hold {
             SendingHold::Paused { until } => until,
             SendingHold::Throttled { until } => Some(until),
@@ -188,12 +188,12 @@ impl SendingHolds {
     }
 
     /// The account's pause began or ended. Called by `account_folder/pause.rs`.
-    pub fn set_paused(&self, paused_until: Option<Option<i64>>) {
+    pub(crate) fn set_paused(&self, paused_until: Option<Option<i64>>) {
         self.change(|holds| holds.paused_until = paused_until);
     }
 
     /// A step was answered that the account is signed out; or the account signed in.
-    pub fn set_signed_out(&self, is_signed_out: bool) {
+    pub(crate) fn set_signed_out(&self, is_signed_out: bool) {
         self.change(|holds| holds.is_signed_out = is_signed_out);
     }
 
@@ -206,7 +206,7 @@ impl SendingHolds {
     /// (`StandingSendingHolds::writes_refusal`). That the folder is read-only is NOT
     /// given here: that is a hold of its own
     /// ([`set_folder_read_only`](Self::set_folder_read_only)), with another setter.
-    pub fn set_writes_refusal(&self, refusal: Option<String>) {
+    pub(crate) fn set_writes_refusal(&self, refusal: Option<String>) {
         self.change(|holds| holds.writes_refusal = refusal);
     }
 
@@ -216,7 +216,7 @@ impl SendingHolds {
     /// `sync_tasks::access_mode_change` alone — at a switch, and at a start for a folder
     /// wanted read-only — which is its one setter: the account's own refusal is
     /// `set_writes_refusal`'s, and neither clears the other.
-    pub fn set_folder_read_only(&self, is_read_only: bool) {
+    pub(crate) fn set_folder_read_only(&self, is_read_only: bool) {
         self.change(|holds| holds.is_folder_read_only = is_read_only);
     }
 
@@ -227,13 +227,13 @@ impl SendingHolds {
     }
 
     /// A step towards OneDrive went through: a chosen wait starts from ten seconds again.
-    pub fn pass(&self) {
+    pub(crate) fn pass(&self) {
         // Nothing that holds changes: the plan is not woken.
         crate::panic::lock(&self.holds).chosen_wait = None;
     }
 
     /// A listing ended. Called by the plan's task on `WakeCause::ListingEnded`.
-    pub fn set_listing_ended(&self) {
+    pub(crate) fn set_listing_ended(&self) {
         self.change(|holds| holds.has_listing_ended = true);
     }
 
@@ -241,14 +241,14 @@ impl SendingHolds {
     /// not by the first alone — a pause holds a download also while the hold that is
     /// shown is one that holds no download. What the plan's task and an upload between
     /// two fragments ask; [`find`](Self::find) is what is shown.
-    pub fn is_held(&self, class: StepClass, now: i64) -> bool {
+    pub(crate) fn is_held(&self, class: StepClass, now: i64) -> bool {
         crate::panic::lock(&self.holds).list(now).iter().any(|hold| decide_is_held(Some(hold), class))
     }
 
     /// Every class of step that is held at `now`, as [`is_held`](Self::is_held) answers
     /// each: read once, under one lock, for the pure choice of which steps start
     /// (`sync_plan_task::step_choice::decide_steps_to_start`).
-    pub fn list_held_classes(&self, now: i64) -> BTreeSet<StepClass> {
+    pub(crate) fn list_held_classes(&self, now: i64) -> BTreeSet<StepClass> {
         let holds = crate::panic::lock(&self.holds).list(now);
         let classes = [StepClass::Content, StepClass::Metadata, StepClass::Download, StepClass::Folder, StepClass::Row];
         classes.into_iter().filter(|class| holds.iter().any(|hold| decide_is_held(Some(hold), *class))).collect()
@@ -256,17 +256,17 @@ impl SendingHolds {
 
     /// The folder's sync is stopping: nothing new is started, uploads stop after their
     /// fragment.
-    pub fn set_stopping(&self) {
+    pub(crate) fn set_stopping(&self) {
         self.change(|holds| holds.is_stopping = true);
     }
 }
 
 /// Retries of a step that failed for a reason expected to pass: 1 s,
 /// doubling, at most an hour (provisional). Never dropped.
-pub const BACKOFF_FIRST: Duration = Duration::from_secs(1);
-pub const BACKOFF_MAX: Duration = Duration::from_secs(3600);
+pub(crate) const BACKOFF_FIRST: Duration = Duration::from_secs(1);
+pub(crate) const BACKOFF_MAX: Duration = Duration::from_secs(3600);
 /// Throttled without `Retry-After`: 10 s, doubling, at most an hour (provisional).
-pub const THROTTLE_FIRST: Duration = Duration::from_secs(10);
+pub(crate) const THROTTLE_FIRST: Duration = Duration::from_secs(10);
 
 #[cfg(test)]
 mod tests;

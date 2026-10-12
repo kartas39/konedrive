@@ -15,22 +15,22 @@ pub(super) const ONEDRIVE: &str = "onedrive";
 /// A root as `config.toml` records it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Persisted {
-    pub path: PathBuf,
+    pub(crate) path: PathBuf,
     /// Empty in a config written before the id was recorded.
-    pub root_id: String,
+    pub(crate) root_id: String,
     /// What `config.toml` has for `source` when it is not `"onedrive"` (a hand edit:
     /// `"OneDrive"`; a folder of another kind). Such a folder is never brought up
     /// ([`Down::UnreadSource`]), and is held for a Forget alone. Written back as it was
     /// read.
-    pub source_as_written: Option<String>,
+    pub(crate) source_as_written: Option<String>,
     /// Whether this daemon is the one that excluded the root from Baloo; `false` in a
     /// config written before this existed.
-    pub baloo_excluded: bool,
+    pub(crate) baloo_excluded: bool,
 }
 
 impl Persisted {
     /// What records a folder at `root`.
-    pub fn of(root: &SyncRoot, baloo_excluded: bool) -> Self {
+    pub(crate) fn of(root: &SyncRoot, baloo_excluded: bool) -> Self {
         Self { path: root.path.clone(), root_id: root.root_id.clone(), source_as_written: None, baloo_excluded }
     }
 

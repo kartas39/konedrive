@@ -133,17 +133,17 @@ use crate::onedrive_steps::content_upload::Limits;
 /// every part (each is a handle); the owner drops every clone before a take-down or a
 /// Forget closes the store.
 #[derive(Clone)]
-pub struct KeptFolderParts {
-    pub store: Store,
+pub(crate) struct KeptFolderParts {
+    pub(crate) store: Store,
     /// Built and served.
-    pub mount: Arc<ItemMount>,
-    pub sync_plan_wake: Arc<SyncPlanWake>,
-    pub running_steps: Arc<RunningSteps>,
-    pub published_plan: Arc<PublishedPlan>,
+    pub(crate) mount: Arc<ItemMount>,
+    pub(crate) sync_plan_wake: Arc<SyncPlanWake>,
+    pub(crate) running_steps: Arc<RunningSteps>,
+    pub(crate) published_plan: Arc<PublishedPlan>,
     /// The folder's drive: the one the check at start was given when the mount was built
     /// (`CheckDrive::Known`). The store's own `drive_id` may still be empty when a sync
     /// was stopped before its first cycle, so the next start takes it from here.
-    pub drive_id: DriveId,
+    pub(crate) drive_id: DriveId,
 }
 
 /// What holds all sending when a folder's sync starts, as the account has it then: set
@@ -152,75 +152,75 @@ pub struct KeptFolderParts {
 /// nothing else). What changes afterwards is set by its own cause through
 /// `SyncTasks::sending_holds`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StandingSendingHolds {
+pub(crate) struct StandingSendingHolds {
     /// `None`: not paused. `Some(None)`: paused until resumed. `Some(Some(t))`: paused
     /// until `t`, Unix seconds. As `SendingHolds::set_paused` takes it. The account's
     /// background work is stopped by the user's pause and by the automatic hold alike
     /// (metered connection, battery: `Running::stop`), as today: the user's pause is
     /// given with its end, a hold as `Some(None)` — it ends when the owner says so
     /// (`show_pause`), by no time. Both read `SendingHold::Paused`.
-    pub paused_until: Option<Option<i64>>,
-    pub is_signed_out: bool,
+    pub(crate) paused_until: Option<Option<i64>>,
+    pub(crate) is_signed_out: bool,
     /// Why the account may not write to OneDrive now, as the account says it; `None` when
     /// it may. As `SendingHolds::set_writes_refusal` takes it. Computed by the owner with
     /// the same function its watcher of the account sets it by afterwards
     /// (`account_folder::mode::decide_account_holds`), from the account's snapshot read
     /// when the start begins.
-    pub writes_refusal: Option<String>,
+    pub(crate) writes_refusal: Option<String>,
 }
 
 /// Everything a folder's start needs.
-pub struct FolderStartInput {
-    pub root: SyncRoot,
+pub(crate) struct FolderStartInput {
+    pub(crate) root: SyncRoot,
     /// The store's file.
-    pub tree_db: PathBuf,
-    pub drive: DriveClient,
+    pub(crate) tree_db: PathBuf,
+    pub(crate) drive: DriveClient,
     /// The drive `config.toml` recorded for the account, and the one the account's token
     /// was last seen to reach (`AccountSnapshot::live_drive`, read from `GET /me/drive` at
     /// a sign-in; none before the first): for the check at start.
-    pub recorded_drive: Option<DriveId>,
-    pub account_drive: Option<DriveId>,
-    pub drive_record: Option<DriveRecord>,
-    pub neighbours: Option<Neighbours>,
-    pub source: Arc<dyn ContentSource>,
-    pub report: Report,
-    pub pool: Arc<TransferPool>,
-    pub split_download_share: Arc<Share>,
+    pub(crate) recorded_drive: Option<DriveId>,
+    pub(crate) account_drive: Option<DriveId>,
+    pub(crate) drive_record: Option<DriveRecord>,
+    pub(crate) neighbours: Option<Neighbours>,
+    pub(crate) source: Arc<dyn ContentSource>,
+    pub(crate) report: Report,
+    pub(crate) pool: Arc<TransferPool>,
+    pub(crate) split_download_share: Arc<Share>,
     /// `[transfers] download_after`.
-    pub download_after: u64,
+    pub(crate) download_after: u64,
     /// The folder's tree lock, kept with the folder's record.
-    pub tree_lock: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) tree_lock: Arc<tokio::sync::Mutex<()>>,
     /// The folder's lease: a step towards the folder holds it.
-    pub lease: Lease,
-    pub ignore: SharedIgnore,
-    pub state: SyncStateHandle,
+    pub(crate) lease: Lease,
+    pub(crate) ignore: SharedIgnore,
+    pub(crate) state: SyncStateHandle,
     /// The account's one quota.
-    pub quota: Quota,
-    pub limits: Limits,
+    pub(crate) quota: Quota,
+    pub(crate) limits: Limits,
     /// What the plan is given that does not change while the sync runs
     /// (`PlanSettings::of` the account's machine name).
-    pub settings: PlanSettings,
-    pub schedule: Schedule,
-    pub running: Arc<Running>,
+    pub(crate) settings: PlanSettings,
+    pub(crate) schedule: Schedule,
+    pub(crate) running: Arc<Running>,
     /// Where the thumbnails of the folder's files are written; `None` with no cache to
     /// fill: no thumbnail filler is started then.
-    pub thumbnail_cache: Option<PathBuf>,
+    pub(crate) thumbnail_cache: Option<PathBuf>,
     /// What holds all sending now.
-    pub standing_holds: StandingSendingHolds,
+    pub(crate) standing_holds: StandingSendingHolds,
     /// Unix seconds: the account's clock.
-    pub clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+    pub(crate) clock: Arc<dyn Fn() -> i64 + Send + Sync>,
     /// The access mode the account wants.
-    pub wanted: Mode,
+    pub(crate) wanted: Mode,
     /// Who is told that the mount must be taken down: the caller itself
     /// (`SyncService::take_down_report`), whose task then stops the sync, calls
     /// `stop_order::take_folder_down` inside a change of the folder, and starts the folder
     /// again after its pause.
-    pub take_down_report: TakeDownReport,
+    pub(crate) take_down_report: TakeDownReport,
     /// Called by the plan's task after every published plan with how many changes are
     /// unsent and will be sent by themselves (`SyncPlanTaskParts::unsent_count_report`, which says what is left out): the owner tells the account
     /// (`FolderAccount::tell_unsent_count`), which may show the count and wait for 0 with
     /// a switch to read-only. It must not block.
-    pub unsent_count_report: Arc<dyn Fn(u64) + Send + Sync>,
+    pub(crate) unsent_count_report: Arc<dyn Fn(u64) + Send + Sync>,
     /// What the folder keeps from an earlier sync; `None` at the folder's first start and
     /// after a take-down. With kept parts the fields the mount was made with at its build
     /// are not read: `tree_db`, `recorded_drive`, `account_drive`, `source`,
@@ -228,31 +228,31 @@ pub struct FolderStartInput {
     /// `clock` as far as the mount took them. `tree_lock`, `ignore` and `lease` must be
     /// the very values of that first start: the kept mount holds them, and the runners
     /// made now must share them with it.
-    pub kept: Option<KeptFolderParts>,
+    pub(crate) kept: Option<KeptFolderParts>,
 }
 
 /// A folder whose sync runs: what the owner of the folder's state keeps.
-pub struct StartedFolder {
-    pub store: Store,
-    pub mount: Arc<ItemMount>,
-    pub tasks: SyncTasks,
-    pub sync_plan_wake: Arc<SyncPlanWake>,
-    pub running_steps: Arc<RunningSteps>,
-    pub published_plan: Arc<PublishedPlan>,
-    pub onedrive_space: Arc<OneDriveSpace>,
+pub(crate) struct StartedFolder {
+    pub(crate) store: Store,
+    pub(crate) mount: Arc<ItemMount>,
+    pub(crate) tasks: SyncTasks,
+    pub(crate) sync_plan_wake: Arc<SyncPlanWake>,
+    pub(crate) running_steps: Arc<RunningSteps>,
+    pub(crate) published_plan: Arc<PublishedPlan>,
+    pub(crate) onedrive_space: Arc<OneDriveSpace>,
     /// The folder's drive, as [`KeptFolderParts::drive_id`]: `stop_order::stop_folder_sync`
     /// passes it on.
-    pub drive_id: DriveId,
+    pub(crate) drive_id: DriveId,
     /// How the store came to be: said to the user where a rebuild lost something. `Kept`
     /// for a folder that was started with the parts it kept. Read by the owner's
     /// `start_sync` right after the start, once (`describe_rebuild_loss`).
-    pub store_origin: StoreOrigin,
+    pub(crate) store_origin: StoreOrigin,
 }
 
 /// Why a folder's sync did not start: said as the folder's blocking trouble. Nothing of
 /// this layer tries again by itself: no task exists after a refusal.
 #[derive(Debug)]
-pub enum StartRefusal {
+pub(crate) enum StartRefusal {
     /// The store: it cannot be opened, or a read or a write of it failed in a stage.
     Store(String),
     /// Neither the store, nor `config.toml`, nor the account knows a drive yet: the check
@@ -268,17 +268,17 @@ pub enum StartRefusal {
 }
 
 /// A start that was refused: why, and what is left of it.
-pub struct RefusedStart {
-    pub refusal: StartRefusal,
+pub(crate) struct RefusedStart {
+    pub(crate) refusal: StartRefusal,
     /// Read by the owner's `start_sync`, as `StartedFolder::store_origin` is.
     /// What the rebuild of the store lost, when stage 1 of THIS start rebuilt a store: the
     /// next start finds the new store as one that was kept and cannot say it any more.
     /// `None` when no store was rebuilt, and when nothing could be counted in the one
     /// that was.
-    pub rebuild_loss: Option<RebuildLoss>,
+    pub(crate) rebuild_loss: Option<RebuildLoss>,
     /// The parts the start was given as kept, given back as they were: the mount still
     /// served, the store open. `None` when none were given.
-    pub kept: Option<KeptFolderParts>,
+    pub(crate) kept: Option<KeptFolderParts>,
 }
 
 /// Starts the folder's sync: the stages of the module's doc, in their order. Called by
@@ -311,7 +311,7 @@ pub struct RefusedStart {
 /// the store of this start dropped. Parts given as kept are never stopped or dropped
 /// here: they are given back in [`RefusedStart::kept`], and with them only 5 and 6 can be
 /// reached. `RefusedStart::rebuild_loss` is what stage 1 answered.
-pub async fn start_folder_sync(input: FolderStartInput) -> Result<StartedFolder, RefusedStart> {
+pub(crate) async fn start_folder_sync(input: FolderStartInput) -> Result<StartedFolder, RefusedStart> {
     let mut input = input;
     if let Some(kept) = input.kept.take() {
         return match start_sync_over_parts(&input, kept, StoreOrigin::Kept).await {
@@ -500,7 +500,7 @@ const OLD_SESSIONS_CANCELLED_WITHIN: std::time::Duration = std::time::Duration::
 
 /// The drive the check at start binds an unknown mark in.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CheckDrive {
+pub(crate) enum CheckDrive {
     Known(DriveId),
     NotKnownYet,
 }
@@ -566,7 +566,7 @@ pub fn decide_check_drive(store_drive: Option<DriveId>, recorded_drive: Option<D
 /// which the check bound entries by marks no row had. A store that was made empty has no
 /// delta link and lists in full by itself. Pure. Not asked for a folder that was started
 /// with the parts it kept: its check ran at an earlier start, which asked already.
-pub fn decide_first_listing(origin: &StoreOrigin, findings: &StartCheckFindings) -> Option<FullListingCause> {
+pub(crate) fn decide_first_listing(origin: &StoreOrigin, findings: &StartCheckFindings) -> Option<FullListingCause> {
     match origin {
         StoreOrigin::Kept if findings.bound_by_mark_count > 0 => Some(FullListingCause::BoundByMarkAtStart),
         StoreOrigin::Kept | StoreOrigin::MadeEmpty { .. } => None,

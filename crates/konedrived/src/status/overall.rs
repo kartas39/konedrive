@@ -14,14 +14,14 @@ use crate::status::snapshot::{published_error, published_state, running_trouble,
 
 /// What [`overall`] decides.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Overall {
+pub(crate) struct Overall {
     /// Why the account is in its state; the state is the reason's ([`Reason::state`]).
-    pub reason: Reason,
+    pub(crate) reason: Reason,
     /// `Folder.Trouble` ([`trouble`]): the trouble there is now, whatever the reason is.
-    pub trouble: String,
+    pub(crate) trouble: String,
     /// `Folder.NotUpdated`: always empty. A file that changed in OneDrive has its downloaded
     /// copy removed, and is read from OneDrive again: no update can fail and wait.
-    pub not_updated: String,
+    pub(crate) not_updated: String,
 }
 
 /// The overall state of an account whose sign-in stands at `sign_in`, whose folder

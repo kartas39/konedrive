@@ -39,22 +39,22 @@ pub struct Totals {
     pub left_count: u32,
     pub left_bytes: u64,
     /// Bytes moved in this run.
-    pub done_bytes: u64,
+    pub(crate) done_bytes: u64,
     /// Seconds; 0 when unknown.
-    pub time_left: u32,
+    pub(crate) time_left: u32,
 }
 
 /// Both directions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct QueueTotals {
     pub down: Totals,
-    pub up: Totals,
+    pub(crate) up: Totals,
 }
 
 /// Counts the totals, and remembers where each direction's run began: the pool's count of
 /// bytes moved when nothing was last left that way.
 #[derive(Debug, Default)]
-pub struct Counter {
+pub(crate) struct Counter {
     began: [u64; 2],
 }
 
@@ -96,7 +96,7 @@ impl Counter {
 /// less what the downloads of pinned files under way have received; and each file being
 /// opened that is downloaded now, with what it has still to receive. A download of a
 /// pinned file is of one of `pinned`: the plan gives a step to no other. Pure.
-pub fn count_downloads_left(pinned: PinnedDownloadTotal, transfers: &BTreeMap<u64, Transfer>) -> (u32, u64) {
+pub(crate) fn count_downloads_left(pinned: PinnedDownloadTotal, transfers: &BTreeMap<u64, Transfer>) -> (u32, u64) {
     let (opened, of_pins): (Vec<&Transfer>, Vec<&Transfer>) = transfers.values().partition(|t| t.open);
     // TODO: check whether a pinned file a program opens before its step ran (it is then a file being opened, and among `pinned` too) is worth telling apart, and fix if needed: it is counted twice while it downloads.
     let count = pinned.count.saturating_add(opened.len() as u64);

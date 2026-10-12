@@ -68,14 +68,14 @@ use crate::listing::listing_poller::{ListingPollHandle, ListingPoller};
 use crate::sync_parts::sending_holds::SendingHolds;
 
 /// The switch between read-only and read-write.
-pub mod access_mode_change;
+pub(crate) mod access_mode_change;
 /// A folder's start, stage by stage.
-pub mod start_order;
+pub(crate) mod start_order;
 /// A folder's stop, its sign-out and its forgetting.
-pub mod stop_order;
+pub(crate) mod stop_order;
 
 /// The running tasks of one folder's sync.
-pub struct SyncTasks {
+pub(crate) struct SyncTasks {
     /// The listing's poller: a cycle on its schedule, on a refresh, when the live socket
     /// says so. `None` once [`stop`](Self::stop) took it to stop it.
     listing_poller: Option<ListingPoller>,
@@ -97,17 +97,17 @@ pub struct SyncTasks {
 impl SyncTasks {
     /// What holds this folder's sending: the pause, the sign-out and why the account may not
     /// write are set through it.
-    pub fn sending_holds(&self) -> &Arc<SendingHolds> {
+    pub(crate) fn sending_holds(&self) -> &Arc<SendingHolds> {
         &self.sending_holds
     }
 
     /// Asks the listing for a cycle.
-    pub fn poll(&self) -> ListingPollHandle {
+    pub(crate) fn poll(&self) -> ListingPollHandle {
         self.poll.clone()
     }
 
     /// Wakes the plan: after the user's answer, a change of the ignore list, a pin.
-    pub fn sync_plan_wake(&self) -> &Arc<SyncPlanWake> {
+    pub(crate) fn sync_plan_wake(&self) -> &Arc<SyncPlanWake> {
         &self.sync_plan_wake
     }
 
@@ -118,7 +118,7 @@ impl SyncTasks {
     /// lease when the token is cancelled ends as `StepOutcome::NotRun(SendingStopped)`
     /// (`StepRunners::of_runners`), so the plan's loop has no step left that waits for
     /// the lock its stopper holds.
-    pub fn stop_handle(&self) -> CancellationToken {
+    pub(crate) fn stop_handle(&self) -> CancellationToken {
         self.stop.clone()
     }
 }

@@ -177,7 +177,7 @@ pub(crate) struct ItemToDownload {
 
 /// Why the content source did not give a file, by what the plan's task does about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DownloadRefusal {
+pub(crate) enum DownloadRefusal {
     /// The account is signed out (401): all downloads wait for the sign-in.
     SignedOut,
     /// 429 or 503, with the time the source named.
@@ -359,7 +359,7 @@ pub(crate) struct ItemDownloader {
 impl ItemDownloader {
     /// Made by the mount's build, after the landing and the bridge.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         backing_directory: Arc<BackingDirectory>,
         download_states: Arc<ItemDownloadStates>,
         download_landing: Arc<ItemDownloadLanding>,

@@ -89,7 +89,7 @@ use crate::sync_parts::sending_holds::{BACKOFF_FIRST, BACKOFF_MAX};
 /// towards OneDrive: nothing is written to the store for a step towards the folder or of
 /// the rows that failed ([`LocalStepTriesChange`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MemoryWrite {
+pub(crate) enum MemoryWrite {
     /// `StepMemory::remember_failed_try(item, unsent_since, reason, next_try_at)`, of a
     /// step towards OneDrive. `FailedTryStanding::ChangeGone`: the row is another unsent
     /// change by now, nothing was counted, and the next plan decides.
@@ -108,7 +108,7 @@ pub enum MemoryWrite {
 /// What a step's end says of the tries the task keeps (`LocalStepTries`). A failed try
 /// only for a step whose tries are the task's (`LocalStep::of`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LocalStepTriesChange {
+pub(crate) enum LocalStepTriesChange {
     Nothing,
     /// `LocalStepTries::remember_failed_try(step, reason, next_try_at)`.
     FailedTry { reason: Reason, next_try_at: Option<i64> },
@@ -118,7 +118,7 @@ pub enum LocalStepTriesChange {
 
 /// Whether the listing is asked for a cycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CycleRequest {
+pub(crate) enum CycleRequest {
     None,
     /// The changes since the delta link (`ListingPollHandle::refresh`).
     Changes,
@@ -128,23 +128,23 @@ pub enum CycleRequest {
 
 /// What follows a step.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StepSettlement {
-    pub item: LocalItemId,
+pub(crate) struct StepSettlement {
+    pub(crate) item: LocalItemId,
     /// The stamp of the unsent change a step towards OneDrive was planned for
     /// (`ItemVersions::unsent_since`): what the store keeps each write of `memory` under.
     /// None for a step towards the folder or of the rows, which writes none.
-    pub unsent_since: Option<u64>,
-    pub memory: Vec<MemoryWrite>,
+    pub(crate) unsent_since: Option<u64>,
+    pub(crate) memory: Vec<MemoryWrite>,
     /// What the task's own tries of the step become.
-    pub local_step_tries: LocalStepTriesChange,
-    pub cycle: CycleRequest,
+    pub(crate) local_step_tries: LocalStepTriesChange,
+    pub(crate) cycle: CycleRequest,
     /// What holds all sending from now on, when the outcome says so. For a throttle
     /// OneDrive named no time for, `until` is `now`: the end is chosen by `SendingHolds`,
     /// which the task gives the outcome's own `retry_after`.
-    pub hold: Option<SendingHold>,
+    pub(crate) hold: Option<SendingHold>,
     /// Whether a step towards OneDrive went through (`SendingHolds::pass`).
-    pub went_through: bool,
-    pub events: Vec<StepEvent>,
+    pub(crate) went_through: bool,
+    pub(crate) events: Vec<StepEvent>,
 }
 
 /// Whether an event of this kind says what OneDrive changed: what the cap per listing is
@@ -181,7 +181,7 @@ fn find_refused_version(step: &SyncStep) -> RefusedVersion {
 // Written as: each step's events are logged as they come, up to today's cap per listing;
 // a removed directory is one event because its children's `RemoveItem` steps answer
 // none. Pure, and can change without touching a signature.
-pub fn decide_events_to_log(events: &[StepEvent], logged_since_listing_ended: usize, is_first_filling: bool) -> Vec<StepEvent> {
+pub(crate) fn decide_events_to_log(events: &[StepEvent], logged_since_listing_ended: usize, is_first_filling: bool) -> Vec<StepEvent> {
     let mut left = crate::status::activity::PER_KIND.saturating_sub(logged_since_listing_ended);
     let mut logged = Vec::new();
     for event in events {
@@ -209,7 +209,7 @@ pub fn decide_next_try(count: u32, now: i64) -> i64 {
 
 /// What follows `step` ended as `outcome`: the table of the module's doc. `tries` is how
 /// many tries of the step failed before this one ([`count_failed_tries`]). Pure.
-pub fn decide_step_settlement(step: &SyncStep, outcome: &StepOutcome, tries: u32, now: i64) -> StepSettlement {
+pub(crate) fn decide_step_settlement(step: &SyncStep, outcome: &StepOutcome, tries: u32, now: i64) -> StepSettlement {
     let is_towards_onedrive = matches!(step, SyncStep::OneDrive(_));
     // A step with no stamp of an unsent change: the store keeps no fact of it.
     let is_try_kept_by_task = LocalStep::of(step).is_some();
@@ -310,7 +310,7 @@ pub fn decide_step_settlement(step: &SyncStep, outcome: &StepOutcome, tries: u32
 
 /// What came of a step, as the journal says it at `debug`: the case, and for a step that
 /// was not written why — with no event of a written step, which names its path. Pure.
-pub fn describe_outcome(outcome: &StepOutcome) -> String {
+pub(crate) fn describe_outcome(outcome: &StepOutcome) -> String {
     match outcome {
         StepOutcome::Written { events } => format!("written, {} event(s)", events.len()),
         StepOutcome::RowsChanged(follow_up) => format!("the rows changed ({follow_up:?})"),
@@ -326,7 +326,7 @@ pub fn describe_outcome(outcome: &StepOutcome) -> String {
 /// that did not run for a cause that ends by itself, and one whose undo failed, changed
 /// nothing: the plan made after it would be the plan before it. What the plan's task
 /// asks before it makes a plan for finished steps alone (`decide_round`). Pure.
-pub fn has_changed_anything(outcome: &StepOutcome, settlement: &StepSettlement) -> bool {
+pub(crate) fn has_changed_anything(outcome: &StepOutcome, settlement: &StepSettlement) -> bool {
     matches!(outcome, StepOutcome::Written { .. } | StepOutcome::RowsChanged(_) | StepOutcome::Refused(_))
         || !settlement.memory.is_empty()
         || settlement.local_step_tries != LocalStepTriesChange::Nothing
@@ -340,7 +340,7 @@ pub fn has_changed_anything(outcome: &StepOutcome, settlement: &StepSettlement) 
 /// (`store_counts`, read for the settlement by [`read_failed_try_counts`]) — or the task's
 /// own count when that is more: tries the store could not be written
 /// ([`keep_unwritten_tries`]). Pure.
-pub fn count_failed_tries(step: &SyncStep, tries: &LocalStepTries, store_counts: &BTreeMap<LocalItemId, u32>) -> u32 {
+pub(crate) fn count_failed_tries(step: &SyncStep, tries: &LocalStepTries, store_counts: &BTreeMap<LocalItemId, u32>) -> u32 {
     let kept_by_task = tries.count_tries(&LocalStep::describe(step));
     match LocalStep::of(step) {
         Some(_) => kept_by_task,
@@ -353,7 +353,7 @@ pub fn count_failed_tries(step: &SyncStep, tries: &LocalStepTries, store_counts:
 /// read when the step is settled, so that the count is the store's own whatever the last
 /// plan was given. An item with no try kept, or whose row has another stamp by now, is
 /// left out.
-pub fn read_failed_try_counts(items: &konedrive_tree::ItemReader<'_>, steps: &[(LocalItemId, Option<u64>)]) -> Result<BTreeMap<LocalItemId, u32>, TreeError> {
+pub(crate) fn read_failed_try_counts(items: &konedrive_tree::ItemReader<'_>, steps: &[(LocalItemId, Option<u64>)]) -> Result<BTreeMap<LocalItemId, u32>, TreeError> {
     let mut counts = BTreeMap::new();
     for (item, unsent_since) in steps {
         let memory = items.find_item_memory(*item)?;
@@ -369,7 +369,7 @@ pub fn read_failed_try_counts(items: &konedrive_tree::ItemReader<'_>, steps: &[(
 /// task's own tries, with the reason of its failed try, or `Reason::Store` for a fact of
 /// another kind, and its next try at the time the count gives. So a step whose try was
 /// not written waits as one whose try was. No store, no clock.
-pub fn keep_unwritten_tries(tries: &mut LocalStepTries, settled: &[(SyncStep, StepSettlement)], unwritten: &BTreeSet<LocalItemId>, now: i64) {
+pub(crate) fn keep_unwritten_tries(tries: &mut LocalStepTries, settled: &[(SyncStep, StepSettlement)], unwritten: &BTreeSet<LocalItemId>, now: i64) {
     for (step, settlement) in settled {
         if !matches!(step, SyncStep::OneDrive(_)) || settlement.memory.is_empty() || !unwritten.contains(&settlement.item) {
             continue;
@@ -386,7 +386,7 @@ pub fn keep_unwritten_tries(tries: &mut LocalStepTries, settled: &[(SyncStep, St
 /// for a step towards OneDrive whose try the store could not be written
 /// (`LocalStep::describe`). No store, no clock. Called by `SyncPlanTask::settle_steps`,
 /// under the lock of the task's tries.
-pub fn change_local_step_tries(tries: &mut LocalStepTries, ended: &[(SyncStep, StepSettlement)]) {
+pub(crate) fn change_local_step_tries(tries: &mut LocalStepTries, ended: &[(SyncStep, StepSettlement)]) {
     for (step, settlement) in ended {
         let local_step = LocalStep::describe(step);
         match &settlement.local_step_tries {
@@ -410,7 +410,7 @@ pub fn change_local_step_tries(tries: &mut LocalStepTries, ended: &[(SyncStep, S
 /// (`SettlementsWritten::unwritten_items`) and is that item's alone: the other writes and
 /// every event are written all the same.
 /// Called by `SyncPlanTask::settle_steps`.
-pub fn write_step_settlements(store: &mut TreeStore, settlements: &[StepSettlement], folder: &std::path::Path, logged_since_listing_ended: usize, is_first_filling: bool, now: i64) -> Result<SettlementsWritten, TreeError> {
+pub(crate) fn write_step_settlements(store: &mut TreeStore, settlements: &[StepSettlement], folder: &std::path::Path, logged_since_listing_ended: usize, is_first_filling: bool, now: i64) -> Result<SettlementsWritten, TreeError> {
     let mut events = Vec::new();
     let mut logged_count = 0;
     let mut unwritten_items = BTreeSet::new();
@@ -441,16 +441,16 @@ pub fn write_step_settlements(store: &mut TreeStore, settlements: &[StepSettleme
 
 /// What one job of [`write_step_settlements`] wrote into the activity log.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SettlementsWritten {
+pub(crate) struct SettlementsWritten {
     /// How many events of what OneDrive changed were logged: what the cap per listing
     /// counts.
-    pub logged_count: usize,
+    pub(crate) logged_count: usize,
     /// Every row written, in the order written: what the task announces
     /// (`SyncPlanTask::announce_settled_steps`).
-    pub rows: Vec<ActivityRow>,
+    pub(crate) rows: Vec<ActivityRow>,
     /// The items a write of the step memory failed for: what the task keeps a try of
     /// itself ([`keep_unwritten_tries`]).
-    pub unwritten_items: BTreeSet<LocalItemId>,
+    pub(crate) unwritten_items: BTreeSet<LocalItemId>,
 }
 
 /// Writes one `write` of `settlement` into the step memory, and answers the event a

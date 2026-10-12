@@ -30,7 +30,7 @@ pub(crate) fn http_client() -> reqwest::Result<reqwest::Client> {
 
 /// A client asking for `mode`'s scope, for the authorization, the code exchange or a
 /// refresh.
-pub(crate) fn oauth_client(http: reqwest::Client, endpoints: Endpoints, client_id: &str, mode: Mode) -> OAuthClient {
+pub fn oauth_client(http: reqwest::Client, endpoints: Endpoints, client_id: &str, mode: Mode) -> OAuthClient {
     OAuthClient::new(http, endpoints, client_id.to_owned()).with_scope(scopes_for(mode == Mode::ReadWrite))
 }
 

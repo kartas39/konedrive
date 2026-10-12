@@ -104,17 +104,17 @@ mod start_check;
 #[cfg(test)]
 pub(crate) mod item_fixture;
 
-pub use access_mode_switch::AccessModeSwitch;
-pub use backing_directory::{restore_write_bits, BackingDirectory};
-pub use item_announcements::ItemAnnouncement;
-pub use item_content_files::{ItemContentFiles, LocalContentFile};
-pub use item_files_interface::{DownloadedSpace, FilesRefusal, FreedSpace, ItemFilesInterface, ItemPathStatus, PinHolder};
-pub use item_free_up::FreeUpDecision;
-pub use item_handles::ItemHandles;
-pub use item_mount::{ItemMount, ItemMountError, ItemMountSetup};
-pub use mount_take_down::{MountTakeDown, TakeDownCause, TakeDownReport};
-pub use stale_mount::unmount_stale_mount;
-pub use start_check::StartCheckFindings;
+pub(crate) use access_mode_switch::AccessModeSwitch;
+pub(crate) use backing_directory::{restore_write_bits, BackingDirectory};
+pub(crate) use item_announcements::ItemAnnouncement;
+pub(crate) use item_content_files::{ItemContentFiles, LocalContentFile};
+pub(crate) use item_files_interface::{DownloadedSpace, FilesRefusal, FreedSpace, ItemFilesInterface, ItemPathStatus, PinHolder};
+pub(crate) use item_free_up::FreeUpDecision;
+pub(crate) use item_handles::ItemHandles;
+pub(crate) use item_mount::{ItemMount, ItemMountError, ItemMountSetup};
+pub(crate) use mount_take_down::{MountTakeDown, TakeDownCause, TakeDownReport};
+pub(crate) use stale_mount::unmount_stale_mount;
+pub(crate) use start_check::StartCheckFindings;
 pub use tidy_step::{list_directories, tidy_folder, tidy_served_folders};
 
 // What the runner of the plan's steps towards the folder (`crate::folder_steps`) is made of and

@@ -20,15 +20,15 @@ use crate::sync_plan_task::step_choice::describe_running_step;
 /// every part of the steps towards OneDrive made over them as the folder's start makes
 /// them. The first listing has ended: nothing holds the sending.
 pub(in crate::onedrive_steps) struct StepsFolder {
-    pub fixture: ItemFixture,
-    pub graph: FakeGraph,
-    pub steps: OneDriveSteps,
-    pub name_holders: NameHolders,
-    pub lost_answers: LostAnswers,
-    pub made_items: MadeItems,
-    pub cancellations: SessionCancellations,
+    pub(crate) fixture: ItemFixture,
+    pub(crate) graph: FakeGraph,
+    pub(crate) steps: OneDriveSteps,
+    pub(crate) name_holders: NameHolders,
+    pub(crate) lost_answers: LostAnswers,
+    pub(crate) made_items: MadeItems,
+    pub(crate) cancellations: SessionCancellations,
     /// The pool of the client every part asks Graph through.
-    pub pool: Arc<konedrive_graph::pool::TransferPool>,
+    pub(crate) pool: Arc<konedrive_graph::pool::TransferPool>,
 }
 
 impl StepsFolder {
@@ -61,7 +61,7 @@ impl StepsFolder {
     }
 
     /// Runs `step` as the plan's task does: begun in the running steps, run, ended.
-    pub async fn run(&self, step: OneDriveStep) -> StepOutcome {
+    pub(crate) async fn run(&self, step: OneDriveStep) -> StepOutcome {
         let running = describe_running_step(&SyncStep::OneDrive(step.clone()));
         let item = running.item;
         assert!(self.fixture.running_steps.begin(running), "no step runs for item {item}");
@@ -72,26 +72,26 @@ impl StepsFolder {
 
     /// Runs `step` as one whose task a stop took off the running steps while its request
     /// was in flight: its commit may not begin.
-    pub async fn run_stopped_before_its_commit(&self, step: OneDriveStep) -> StepOutcome {
+    pub(crate) async fn run_stopped_before_its_commit(&self, step: OneDriveStep) -> StepOutcome {
         self.steps.run(step).await
     }
 
-    pub fn root() -> OneDriveItemReference {
+    pub(crate) fn root() -> OneDriveItemReference {
         ItemFixture::onedrive_reference_of("")
     }
 
     /// The requests on record now.
-    pub fn records(&self) -> Vec<RequestRecord> {
+    pub(crate) fn records(&self) -> Vec<RequestRecord> {
         self.fixture.read_rows(|items| items.list_request_records(usize::MAX))
     }
 
     /// What the steps remember of `item` that its row still says.
-    pub fn memory(&self, item: LocalItemId) -> ItemMemory {
+    pub(crate) fn memory(&self, item: LocalItemId) -> ItemMemory {
         self.fixture.read_rows(move |items| items.find_item_memory(item))
     }
 
     /// Every path of the fake drive, sorted.
-    pub fn cloud_paths(&self) -> Vec<String> {
+    pub(crate) fn cloud_paths(&self) -> Vec<String> {
         self.graph.with(|cloud| cloud.paths())
     }
 
@@ -102,7 +102,7 @@ impl StepsFolder {
 
     /// The next `times` requests of `method` whose path holds `fragment` are answered
     /// `status`, with Graph's error body, and are not carried out.
-    pub fn refuse(&self, method: &str, fragment: &str, status: u16, times: u32) {
+    pub(crate) fn refuse(&self, method: &str, fragment: &str, status: u16, times: u32) {
         let code = match status {
             409 => "nameAlreadyExists",
             507 => "quotaLimitReached",
@@ -113,7 +113,7 @@ impl StepsFolder {
     }
 
     /// Settles the records that stand, one round of the cleaning task.
-    pub async fn settle_records(&self) -> super::session_cancellations::CancellationRound {
+    pub(crate) async fn settle_records(&self) -> super::session_cancellations::CancellationRound {
         self.cancellations.settle_request_records(10).await
     }
 }

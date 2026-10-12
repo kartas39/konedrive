@@ -73,35 +73,35 @@ use crate::status::report::Report;
 pub(in crate::mount) mod build_order;
 
 /// What a mount over the rows is made with: what the folder's start hands it.
-pub struct ItemMountSetup {
-    pub root: SyncRoot,
+pub(crate) struct ItemMountSetup {
+    pub(crate) root: SyncRoot,
     /// The folder's tree store: its file, for the reading connections, and its one writer.
-    pub store_path: PathBuf,
-    pub store: Store,
+    pub(crate) store_path: PathBuf,
+    pub(crate) store: Store,
     /// The folder's drive, for the check at start (`sync_tasks::start_order`).
-    pub drive_id: DriveId,
-    pub source: Arc<dyn ContentSource>,
-    pub report: Report,
-    pub pool: Arc<TransferPool>,
-    pub split_download_share: Arc<Share>,
+    pub(crate) drive_id: DriveId,
+    pub(crate) source: Arc<dyn ContentSource>,
+    pub(crate) report: Report,
+    pub(crate) pool: Arc<TransferPool>,
+    pub(crate) split_download_share: Arc<Share>,
     /// `[transfers] download_after`.
-    pub download_after: u64,
+    pub(crate) download_after: u64,
     /// The folder's tree lock: each job of the write-operation thread runs under it, and
     /// each commit of a step.
-    pub tree_lock: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) tree_lock: Arc<tokio::sync::Mutex<()>>,
     /// The account's ignore list: what is never uploaded.
-    pub ignore: SharedIgnore,
+    pub(crate) ignore: SharedIgnore,
     /// Woken after every row a write operation writes.
-    pub sync_plan_wake: Arc<SyncPlanWake>,
+    pub(crate) sync_plan_wake: Arc<SyncPlanWake>,
     /// Read for the sync mark and by `make`.
-    pub running_steps: Arc<RunningSteps>,
-    pub published_plan: Arc<PublishedPlan>,
+    pub(crate) running_steps: Arc<RunningSteps>,
+    pub(crate) published_plan: Arc<PublishedPlan>,
     /// Who is told that the mount must be taken down: the owner of the folder's state.
-    pub take_down_report: TakeDownReport,
+    pub(crate) take_down_report: TakeDownReport,
     /// Unix seconds: the account's clock, which the tests hold. Asked once, at the build:
     /// the time the mount started at, which a directory with nothing on disk shows as its
     /// own (`item_attributes::decide_directory_mtime`).
-    pub clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+    pub(crate) clock: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 
 /// The parts of a mount that the runner of the plan's steps towards the folder is made of
@@ -124,7 +124,7 @@ pub(crate) struct FolderStepParts {
 }
 
 /// A folder's mount over the rows.
-pub struct ItemMount {
+pub(crate) struct ItemMount {
     backing_directory: Arc<BackingDirectory>,
     access_mode_switch: Arc<AccessModeSwitch>,
     /// What the runner of the steps towards the folder is made of: the mount holds the
@@ -197,7 +197,7 @@ impl ItemMount {
     /// failure leaves the mount for the caller to stop, which takes it off the folder if
     /// it went over it. Blocking: called off the runtime's threads, from where the
     /// runtime's handle is still reached. The `Filesystem` is `kernel_requests::KernelRequests`.
-    pub fn serve(self: &Arc<Self>, kernel_requests: ItemKernelRequests) -> std::io::Result<()> {
+    pub(crate) fn serve(self: &Arc<Self>, kernel_requests: ItemKernelRequests) -> std::io::Result<()> {
         let folder = &self.folder_step_parts.folder;
         // What a read of a range and a download before a write are run on.
         let runtime = tokio::runtime::Handle::try_current().map_err(to_io_error)?;
@@ -240,7 +240,7 @@ impl ItemMount {
     /// but for what only a served mount has: the abort of its connection before the
     /// unmount and the daemon's own way to the folder (`folder::root::mount_gone`) come
     /// with `serve`.
-    pub fn stop(&self) {
+    pub(crate) fn stop(&self) {
         if self.is_stopped.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -272,7 +272,7 @@ impl ItemMount {
 
     /// As [`stop`](Self::stop), and the folder left a plain directory with its write
     /// bits: a Forget.
-    pub fn stop_and_restore_write_bits(&self) {
+    pub(crate) fn stop_and_restore_write_bits(&self) {
         self.stop();
         self.backing_directory.restore_write_bits();
     }
@@ -284,7 +284,7 @@ impl ItemMount {
     /// be taken down (`MountTakeDown::ask`): the refusal and the switch are one step of
     /// the mount's switch, so no asking falls between them — one that comes after a
     /// switch that went through puts the folder back to read-only itself.
-    pub fn switch_to_read_write(&self) -> std::io::Result<bool> {
+    pub(crate) fn switch_to_read_write(&self) -> std::io::Result<bool> {
         let changed = self.access_mode_switch.switch_to_read_write();
         // True for good once it is: read after the switch, it says of this very switch
         // that it was refused, or undone since.
@@ -300,7 +300,7 @@ impl ItemMount {
     /// that were open. `Err` when the write-operation thread is gone (the mount was
     /// stopped): the switch is made all the same, here — the thread runs no write
     /// operation any more —, and the caller is told that this mount takes no job.
-    pub async fn switch_to_read_only(&self) -> std::io::Result<bool> {
+    pub(crate) async fn switch_to_read_only(&self) -> std::io::Result<bool> {
         self.access_mode_switch.switch_to_read_only_on_thread(&self.parts_to_stop.write_operation_thread).await
     }
 
@@ -311,7 +311,7 @@ impl ItemMount {
     /// one scan (reading 100 000 rows whole was measured at 0.02 s: design §13; only the
     /// rows whose flag changes are written). How many rows changed. A mount that is
     /// stopped answers an error: its thread runs no job.
-    pub async fn rewrite_ignored_names(&self) -> Result<u64, TreeError> {
+    pub(crate) async fn rewrite_ignored_names(&self) -> Result<u64, TreeError> {
         let (store, upload_rules) = (self.store.clone(), Arc::clone(&self.upload_rules));
         let rewritten = self.parts_to_stop.write_operation_thread.run_and_wait(move || store.call_blocking(move |tree_store| tree_store.item_store().rewrite_ignored_names(&|name| upload_rules.is_name_ignored(name))));
         rewritten.await.map_err(|_| TreeError::Io(to_io_error("the mount is stopped: its write-operation thread runs no job")))?
@@ -326,37 +326,37 @@ impl ItemMount {
     /// Whether this mount asked for its take-down (`MountTakeDown::is_asked`): what the owner of the folder's
     /// state asks of the mount it holds when a report of a take-down reaches it, so that a report of a mount
     /// that is the folder's no more takes nothing down.
-    pub fn is_take_down_asked(&self) -> bool {
+    pub(crate) fn is_take_down_asked(&self) -> bool {
         self.folder_step_parts.mount_take_down.is_asked()
     }
 
     /// The local contents: the steps towards OneDrive's and the row steps'.
-    pub fn item_content_files(&self) -> &Arc<ItemContentFiles> {
+    pub(crate) fn item_content_files(&self) -> &Arc<ItemContentFiles> {
         &self.item_content_files
     }
 
     /// What programs hold open: whether a file is open for writing.
-    pub fn item_handles(&self) -> &Arc<ItemHandles> {
+    pub(crate) fn item_handles(&self) -> &Arc<ItemHandles> {
         &self.item_handles
     }
 
     /// The `Files` interface of the bus.
-    pub fn files_interface(&self) -> &Arc<ItemFilesInterface> {
+    pub(crate) fn files_interface(&self) -> &Arc<ItemFilesInterface> {
         &self.files_interface
     }
 
     /// The holder of the access mode: the bus's `Writable`.
-    pub fn access_mode_switch(&self) -> &AccessModeSwitch {
+    pub(crate) fn access_mode_switch(&self) -> &AccessModeSwitch {
         &self.access_mode_switch
     }
 
     /// What the check at start found, before this mount went over the folder.
-    pub fn start_check_findings(&self) -> &StartCheckFindings {
+    pub(crate) fn start_check_findings(&self) -> &StartCheckFindings {
         &self.start_check_findings
     }
 
     /// The directory on disk the mount lies over: for the measure of the folder's space.
-    pub fn backing_directory(&self) -> &BackingDirectory {
+    pub(crate) fn backing_directory(&self) -> &BackingDirectory {
         &self.backing_directory
     }
 }
@@ -370,7 +370,7 @@ impl Drop for ItemMount {
 
 /// Why a mount could not be built or served.
 #[derive(Debug)]
-pub enum ItemMountError {
+pub(crate) enum ItemMountError {
     /// The backing directory, the mount or a thread.
     Io(std::io::Error),
     /// The store, under the check at start: nothing was written.

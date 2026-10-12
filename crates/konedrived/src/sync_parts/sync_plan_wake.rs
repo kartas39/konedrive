@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 
 /// Why the plan is made again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum WakeCause {
+pub(crate) enum WakeCause {
     /// A write operation of the mount wrote a local version, or the last writer closed.
     LocalVersionWritten,
     /// The listing cycle wrote a page into the rows.
@@ -51,7 +51,7 @@ pub enum WakeCause {
 }
 
 /// The wake of one folder's plan.
-pub struct SyncPlanWake {
+pub(crate) struct SyncPlanWake {
     given: std::sync::Mutex<BTreeSet<WakeCause>>,
     signal: tokio::sync::Notify,
 }
@@ -67,7 +67,7 @@ impl SyncPlanWake {
     /// The plan is to be made again, for `cause`. Called from any thread, async or not;
     /// never waits. Called after the row is written, never before: the task reads the
     /// rows when it wakes.
-    pub fn wake(&self, cause: WakeCause) {
+    pub(crate) fn wake(&self, cause: WakeCause) {
         crate::panic::lock(&self.given).insert(cause);
         // After the lock is let go. With nobody waiting the signal is kept for the next
         // wait, which finds the cause either way.
@@ -76,7 +76,7 @@ impl SyncPlanWake {
 
     /// Waits until a cause is given and takes all that were. Called by the plan's task
     /// alone, in a `select` with its timer and its stop (`sync_plan_task`).
-    pub async fn wait(&self) -> BTreeSet<WakeCause> {
+    pub(crate) async fn wait(&self) -> BTreeSet<WakeCause> {
         loop {
             let given = std::mem::take(&mut *crate::panic::lock(&self.given));
             if !given.is_empty() {

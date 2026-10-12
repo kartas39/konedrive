@@ -23,7 +23,7 @@ use crate::status::transfers::TransferHandle;
 /// download may use is below it.
 ///
 /// [`Transfers`]: crate::status::transfers::Transfers
-pub struct Tracked<'a> {
+pub(crate) struct Tracked<'a> {
     source: &'a dyn ContentSource,
     entry: TransferHandle,
 }

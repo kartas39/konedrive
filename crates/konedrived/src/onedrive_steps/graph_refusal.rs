@@ -22,7 +22,7 @@ use crate::sync_parts::step_outcome::StepRefusal;
 
 /// What a refused request leaves the step to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RefusedRequest {
+pub(crate) enum RefusedRequest {
     /// 409: the step asks who holds the name (`name_holders`).
     NameExists,
     /// 412: the step asks once whether its own earlier request went through
@@ -56,7 +56,7 @@ pub enum RefusedRequest {
 /// answer that the request changed nothing. The
 /// text of a lost answer is kept without any address in it (`engine/outcome.rs:158`,
 /// `without_urls`).
-pub fn decide_refusal(error: &WriteError) -> RefusedRequest {
+pub(crate) fn decide_refusal(error: &WriteError) -> RefusedRequest {
     match error {
         WriteError::Changed => RefusedRequest::Changed,
         WriteError::NameExists => RefusedRequest::NameExists,
@@ -83,7 +83,7 @@ pub fn decide_refusal(error: &WriteError) -> RefusedRequest {
 /// item, a gone session and a lack of space have no meaning of their own for the request:
 /// a read, a cancel, a removal of a leftover. A lost answer is `StepRefusal::Transient`
 /// at once: such a request is asked again whatever became of it. Pure.
-pub fn decide_plain_refusal(error: &WriteError) -> StepRefusal {
+pub(crate) fn decide_plain_refusal(error: &WriteError) -> StepRefusal {
     match decide_refusal(error) {
         RefusedRequest::Settled(refusal) => refusal,
         RefusedRequest::AnswerLost { detail } => StepRefusal::Transient { detail },
@@ -97,7 +97,7 @@ pub fn decide_plain_refusal(error: &WriteError) -> StepRefusal {
 /// What a READ of OneDrive that failed leaves a step to answer: [`decide_plain_refusal`]
 /// of the error through `WriteError::from`. `DriveError::NotFound` is not asked here: it
 /// is the read's answer "nothing is there". Pure.
-pub fn decide_read_refusal(error: DriveError) -> StepRefusal {
+pub(crate) fn decide_read_refusal(error: DriveError) -> StepRefusal {
     decide_plain_refusal(&WriteError::from(error))
 }
 

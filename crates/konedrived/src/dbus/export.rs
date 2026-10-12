@@ -24,7 +24,7 @@ use crate::dbus::signals::start_signals;
 /// from a daemon that was already on the bus. Nothing
 /// that can fail, and nothing that can be slow, is left between the
 /// interfaces and the name.
-pub async fn export(
+pub(crate) async fn export(
     connection: &Connection,
     path: &ObjectPath<'_>,
     service: Arc<SyncService>,
@@ -42,7 +42,7 @@ pub async fn export(
 /// Takes one account's folder off the bus (`Accounts.Remove`, and an account whose adding
 /// failed while putting it there): every interface, whatever the one before answered.
 /// `partly`: see [`take_off`].
-pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
+pub(crate) async fn unexport(connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
     all_taken_off([
         take_off::<ActivityLog>(connection, path, partly).await,
         take_off::<LocalScan>(connection, path, partly).await,

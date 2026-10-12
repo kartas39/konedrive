@@ -26,7 +26,7 @@ use crate::conditions::running::Conditions;
 
 /// Every account of the daemon, as this area's watchers tell them: the registry of their
 /// folders implements it (`account_folder::registry::Registry`).
-pub trait Accounts: Send + Sync {
+pub(crate) trait Accounts: Send + Sync {
     /// What the hold's sources say now: every account decides by the hold's settings.
     fn set_conditions(&self, conditions: Conditions);
     /// The machine is online again: every account's folder is asked for a cycle.
@@ -92,7 +92,7 @@ pub async fn watch(accounts: Arc<impl Accounts>) {
 
 /// Calls `tell` with what the sources on `connection` say, once at the start and again at
 /// each change. Returns when every source's signals have ended.
-pub async fn watch_on(connection: &zbus::Connection, tell: impl Fn(Conditions)) {
+pub(crate) async fn watch_on(connection: &zbus::Connection, tell: impl Fn(Conditions)) {
     let profiles = match has_owner(connection, PROFILES_OLD.service).await && !has_owner(connection, PROFILES.service).await {
         true => PROFILES_OLD,
         false => PROFILES,

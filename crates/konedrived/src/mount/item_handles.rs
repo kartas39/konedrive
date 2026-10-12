@@ -95,7 +95,7 @@ impl Handles {
 
 /// The files and directories programs hold open.
 #[derive(Default)]
-pub struct ItemHandles {
+pub(crate) struct ItemHandles {
     handles: Mutex<Handles>,
 }
 
@@ -149,7 +149,7 @@ impl ItemHandles {
 
     /// Whether a program holds `item` open for writing. Called by free-up and by a step
     /// before it touches or sends the file.
-    pub fn is_open_for_writing(&self, item: LocalItemId) -> bool {
+    pub(crate) fn is_open_for_writing(&self, item: LocalItemId) -> bool {
         crate::panic::lock(&self.handles).has_writer(item)
     }
 

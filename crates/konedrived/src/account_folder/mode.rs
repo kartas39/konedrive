@@ -94,13 +94,13 @@ async fn switch_kept_mount(mount: &crate::mount::ItemMount, mode: Mode) {
 
 /// What of the account holds the folder's sending, beside the folder's own access mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AccountHolds {
+pub(crate) struct AccountHolds {
     /// Nobody is signed in.
-    pub is_signed_out: bool,
+    pub(crate) is_signed_out: bool,
     /// Why the account may not write to OneDrive now; `None` when it may, and when the
     /// only cause is that the account or the folder is read-only (that is the folder's
     /// own hold, `SendingHold::FolderReadOnly`).
-    pub writes_refusal: Option<String>,
+    pub(crate) writes_refusal: Option<String>,
 }
 
 /// What `snapshot`, the account's state, and `standing`, what `config.toml` says of its

@@ -91,14 +91,14 @@ use crate::sync_parts::step_outcome::{StepFailure, StepObstacle, StepOutcome, St
 /// Where in OneDrive a new file is sent: the directory, by its reference, and the name
 /// there.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NewFilePlace {
-    pub parent: OneDriveItemReference,
-    pub name: OsString,
+pub(crate) struct NewFilePlace {
+    pub(crate) parent: OneDriveItemReference,
+    pub(crate) name: OsString,
 }
 
 /// What a content is sent to.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ContentTarget {
+pub(crate) enum ContentTarget {
     /// A new file at this place, refused with a 409 when the name is taken there
     /// (`UploadTarget::New`).
     NewFile(NewFilePlace),
@@ -108,26 +108,26 @@ pub enum ContentTarget {
 
 /// A content OneDrive has by now, as the step's commit takes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SentContent {
+pub(crate) struct SentContent {
     /// The item as Graph answered the last request, or as it was read when the upload
     /// was found to have gone through before.
-    pub item: ConfirmedItem,
+    pub(crate) item: ConfirmedItem,
     /// The QuickXorHash, base64, of the bytes that were read here for it.
-    pub sent_hash: String,
+    pub(crate) sent_hash: String,
     /// The upload session that ended with the upload: what the commit forgets. None for
     /// an empty file, and for an upload found in OneDrive with no session of the item
     /// kept.
-    pub ended_session: Option<UploadSessionAddress>,
+    pub(crate) ended_session: Option<UploadSessionAddress>,
     /// For a new file: the place the request that made it named — the target's, or, for
     /// a session that was gone on with, the place of its empty file, whatever the file is
     /// called here by now. What `commit_send_new_file` takes as `parent` and `name`.
     /// None for an existing item.
-    pub new_file_place: Option<NewFilePlace>,
+    pub(crate) new_file_place: Option<NewFilePlace>,
 }
 
 /// How an upload of a content begins.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UploadStart {
+pub(crate) enum UploadStart {
     /// The content is empty: one request, no session.
     Empty,
     /// The step memory holds a session of this very content: it is asked how far it got
@@ -141,7 +141,7 @@ pub enum UploadStart {
 /// says of the item. Pure. A session is resumed only for the full content version, change
 /// count included (the map's F15): the step memory answers no other. Wherever the file
 /// is by now: a session of a new file is gone on with at the place of its empty file.
-pub fn decide_upload_start(memory: &ItemMemory, size: u64) -> UploadStart {
+pub(crate) fn decide_upload_start(memory: &ItemMemory, size: u64) -> UploadStart {
     match (&memory.upload_session, size) {
         (_, 0) => UploadStart::Empty,
         (Some(session), _) => UploadStart::Resume(session.clone()),
@@ -156,7 +156,7 @@ pub fn decide_upload_start(memory: &ItemMemory, size: u64) -> UploadStart {
 /// `StepOutcome::Refused(StepRefusal::NoSpace { free_space: None })`, which the settlement
 /// writes nothing for. Either way the session is kept. Today's `stop_between_fragments`
 /// (`upload/content/session.rs:57`).
-pub fn decide_stop_between_fragments(is_content_held: bool, is_onedrive_full: bool) -> Option<StepOutcome> {
+pub(crate) fn decide_stop_between_fragments(is_content_held: bool, is_onedrive_full: bool) -> Option<StepOutcome> {
     match (is_content_held, is_onedrive_full) {
         (true, _) => Some(StepOutcome::NotRun(StepObstacle::SendingStopped)),
         (false, true) => Some(StepOutcome::Refused(StepRefusal::NoSpace { free_space: None })),
@@ -167,7 +167,7 @@ pub fn decide_stop_between_fragments(is_content_held: bool, is_onedrive_full: bo
 /// What is done about an upload into an existing item that ended with other content in
 /// OneDrive than was sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OwnUploadFollowUp {
+pub(crate) enum OwnUploadFollowUp {
     /// The local content is sent again into the item, guarded by what the upload left:
     /// what today's worker does (`upload/content.rs:503-511`).
     SendAgain,
@@ -180,13 +180,13 @@ pub enum OwnUploadFollowUp {
 /// decision), for a new file and for an existing item alike. The fact is kept
 /// (`ItemStore::remember_own_upload_content`) and a listing cycle asked for, so that the
 /// row has OneDrive's version and eTag, and the content is sent again guarded by them.
-pub fn decide_own_upload_follow_up(_upload: &OwnUploadContent) -> OwnUploadFollowUp {
+pub(crate) fn decide_own_upload_follow_up(_upload: &OwnUploadContent) -> OwnUploadFollowUp {
     OwnUploadFollowUp::SendAgain
 }
 
 /// Why a content was not sent to its end.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SendContentError {
+pub(crate) enum SendContentError {
     /// 409 on the request that makes a new file or opens its session, and on a fragment
     /// of a new file's session, which was given up then (`abandon_upload_session`): the
     /// runner asks who holds the name (`NameHolders::find_name_holder`) and, for the
@@ -237,7 +237,7 @@ fn find_new_file_place(target: &ContentTarget) -> Option<&NewFilePlace> {
 
 /// What sends a file's content.
 #[derive(Clone)]
-pub struct ContentUpload {
+pub(crate) struct ContentUpload {
     graph: GraphAccess,
     lost_answers: LostAnswers,
     /// Asked between two fragments and before a session is opened.
@@ -361,7 +361,7 @@ impl ContentUpload {
     /// OneDrive by its hash.
     ///
     /// Called by the runner's `run_send_new_file` and `run_send_content`.
-    pub async fn send_content(&self, item: &ItemVersions, target: &ContentTarget, file: &Arc<LocalContentFile>) -> Result<SentContent, SendContentError> {
+    pub(crate) async fn send_content(&self, item: &ItemVersions, target: &ContentTarget, file: &Arc<LocalContentFile>) -> Result<SentContent, SendContentError> {
         let id = item.local_item_id;
         let size = file.size();
         if let ContentTarget::NewFile(place) = target {
@@ -839,7 +839,7 @@ impl ContentUpload {
     /// item's reference, drive and id —; a read or a removal that fails otherwise leaves it
     /// remembered and is the step's outcome. Today `Job::clear_bad_item`
     /// (`upload/content.rs:165`).
-    pub async fn remove_mismatched_item(&self, item: &ItemVersions, memory: &ItemMemory, file: &Arc<LocalContentFile>) -> Result<Option<SentContent>, StepOutcome> {
+    pub(crate) async fn remove_mismatched_item(&self, item: &ItemVersions, memory: &ItemMemory, file: &Arc<LocalContentFile>) -> Result<Option<SentContent>, StepOutcome> {
         let Some(left) = memory.mismatched_item.clone() else { return Ok(None) };
         // Removed or gone: the row a listing made of it loses its OneDrive version with it. Another's by now, or adopted: OneDrive has it still.
         let forget = |is_gone: bool| {
@@ -901,10 +901,10 @@ impl ContentUpload {
 /// How files are cut (provisional numbers; the tests make them small). How many
 /// run at once is the account's transfer pool's (`konedrive_graph::pool`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Limits {
+pub(crate) struct Limits {
     /// The fragment a file goes up in, a multiple of 320 KiB: a file up to
     /// this size is one fragment.
-    pub chunk: u64,
+    pub(crate) chunk: u64,
 }
 
 impl Default for Limits {

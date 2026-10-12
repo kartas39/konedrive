@@ -43,25 +43,25 @@ const FILES_AT_ONCE: usize = 500;
 
 /// What the bus shows of one path.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ItemPathStatus {
-    pub item: LocalItemId,
-    pub kind: ItemKind,
+pub(crate) struct ItemPathStatus {
+    pub(crate) item: LocalItemId,
+    pub(crate) kind: ItemKind,
     /// The binding: what `WebUrl` asks OneDrive by.
-    pub onedrive_item: OneDriveItemReference,
+    pub(crate) onedrive_item: OneDriveItemReference,
     /// `None` for a directory.
-    pub sync_state: Option<FileSyncState>,
+    pub(crate) sync_state: Option<FileSyncState>,
     /// Whether a pin holds for the item, its own or that of a directory above it.
-    pub is_pinned: bool,
+    pub(crate) is_pinned: bool,
     /// Whose pin holds for it.
-    pub pin_holder: PinHolder,
-    pub is_downloading: bool,
-    pub is_open_for_writing: bool,
+    pub(crate) pin_holder: PinHolder,
+    pub(crate) is_downloading: bool,
+    pub(crate) is_open_for_writing: bool,
 }
 
 /// Whose pin holds for an item: what `Unpin`, `FreeUp`, `Dehydrate` and `Files.Menu`
 /// refuse and name by.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PinHolder {
+pub(crate) enum PinHolder {
     /// No pin holds for it.
     Nobody,
     /// The item's own pin, and no directory above it has one.
@@ -75,7 +75,7 @@ impl ItemPathStatus {
     /// What `user.konedrive.state` says of the item (`item_lookup::decide_state_attribute`
     /// of `sync_state` and `is_downloading`): what `Files.Menu` shows a file as. `None`
     /// for a directory and for a file that is no file of OneDrive's.
-    pub fn find_state_attribute(&self) -> Option<konedrive_fs::placeholder::State> {
+    pub(crate) fn find_state_attribute(&self) -> Option<konedrive_fs::placeholder::State> {
         super::item_lookup::decide_state_attribute(self.sync_state, self.is_downloading)
     }
 }
@@ -103,7 +103,7 @@ fn to_refusal(error: TreeError) -> FilesRefusal {
 }
 
 /// The `Files` interface of one mount.
-pub struct ItemFilesInterface {
+pub(crate) struct ItemFilesInterface {
     /// The folder's path, which is the mount.
     folder: PathBuf,
     store: Store,
@@ -161,7 +161,7 @@ impl ItemFilesInterface {
     /// the store's reading connection, its pin (`is_pinned`), and what runs for it.
     /// `OutsideFolder` for a path that is not below the folder, `NotInOneDrive` for a name
     /// the folder does not show and for an item with no binding.
-    pub async fn find_path_status(&self, path: &Path) -> Result<ItemPathStatus, FilesRefusal> {
+    pub(crate) async fn find_path_status(&self, path: &Path) -> Result<ItemPathStatus, FilesRefusal> {
         let (item, is_pinned) = self.find_onedrive_item(path).await?;
         let Some(onedrive_item) = item.onedrive_item.clone() else { return Err(FilesRefusal::NotInOneDrive) };
         let id = item.local_item_id;
@@ -212,7 +212,7 @@ impl ItemFilesInterface {
     /// directory, every file below it that is not on disk
     /// (`ItemReader::list_shown_files_below`), a part of them at a time. A file whose
     /// content is on disk has nothing to download.
-    pub async fn download(&self, path: &Path) -> Result<(), FilesRefusal> {
+    pub(crate) async fn download(&self, path: &Path) -> Result<(), FilesRefusal> {
         let (item, _) = self.find_onedrive_item(path).await?;
         if item.kind == ItemKind::File {
             return self.download_files(find_file_to_download(&item).into_iter().collect()).await;
@@ -256,13 +256,13 @@ impl ItemFilesInterface {
     /// `Files.FreeUp` / `Dehydrate`: frees the copy at `path`, or of every file below a
     /// directory, each as one job of the write-operation thread
     /// (`ItemFreeUp::free_downloaded_copy`); what was freed and what was left.
-    pub async fn free_up(&self, path: &Path) -> Result<FreedSpace, FilesRefusal> {
+    pub(crate) async fn free_up(&self, path: &Path) -> Result<FreedSpace, FilesRefusal> {
         let (item, _) = self.find_onedrive_item(path).await?;
         self.free_up_below(&item).await
     }
 
     /// `Folder.FreeUpSpace`: as [`free_up`](Self::free_up) of the root.
-    pub async fn free_up_all(&self) -> Result<FreedSpace, FilesRefusal> {
+    pub(crate) async fn free_up_all(&self) -> Result<FreedSpace, FilesRefusal> {
         let folder = self.folder.clone();
         self.free_up(&folder).await
     }
@@ -274,7 +274,7 @@ impl ItemFilesInterface {
     /// its place: the emblem is read from `user.konedrive.pin`). It is the item's OWN pin
     /// that is set or taken off, whatever a directory above it has. Answers whether the
     /// item's own pin changed: `false` for a pin that was there already, or was not.
-    pub async fn set_pin(&self, path: &Path, is_pinned: bool) -> Result<bool, FilesRefusal> {
+    pub(crate) async fn set_pin(&self, path: &Path, is_pinned: bool) -> Result<bool, FilesRefusal> {
         let (item, _) = self.find_onedrive_item(path).await?;
         let id = item.local_item_id;
         match self.store.call(move |store| store.item_store().set_item_pin(id, is_pinned)).await.map_err(to_refusal)? {
@@ -301,7 +301,7 @@ impl ItemFilesInterface {
     /// that holds for its own row and nothing else; its files are decided each by itself
     /// when the free-up runs. For a file that is not on disk: `NothingToFree`, whatever
     /// keeps it, as the free-up answers it (`item_free_up::find_copy_on_disk`).
-    pub async fn decide_free_up(&self, path: &Path, is_own_pin_taken_off: bool) -> Result<FreeUpDecision, FilesRefusal> {
+    pub(crate) async fn decide_free_up(&self, path: &Path, is_own_pin_taken_off: bool) -> Result<FreeUpDecision, FilesRefusal> {
         let relative = path.strip_prefix(&self.folder).map(Path::to_owned).map_err(|_| FilesRefusal::OutsideFolder)?;
         // The row and whose pin holds for it, of one moment.
         let read = self.store.read_items(move |reader| {
@@ -339,7 +339,7 @@ impl ItemFilesInterface {
     /// its checkpoint (`user.konedrive.progress`; none where none was written). For the
     /// test support of the daemon (`account_folder::testing::staged`); no member of the
     /// bus asks it.
-    pub async fn list_unfinished_downloads(&self) -> Result<Vec<(PathBuf, u64, Option<u64>)>, FilesRefusal> {
+    pub(crate) async fn list_unfinished_downloads(&self) -> Result<Vec<(PathBuf, u64, Option<u64>)>, FilesRefusal> {
         let files = self.download_states.list_unfinished_files();
         let items: Vec<LocalItemId> = files.iter().map(|(item, _)| *item).collect();
         let paths = self.store.read_items(move |reader| items.into_iter().map(|item| reader.find_path(item)).collect::<Result<Vec<_>, _>>()).await.map_err(to_refusal)?;
@@ -355,7 +355,7 @@ impl ItemFilesInterface {
     }
 
     /// `Folder.PinnedCount` (`ItemReader::count_pins`).
-    pub async fn count_pins(&self) -> u64 {
+    pub(crate) async fn count_pins(&self) -> u64 {
         self.store.read_items(|reader| reader.count_pins()).await.unwrap_or_else(|error| {
             tracing::warn!("the pins could not be counted: {error}");
             0
@@ -365,7 +365,7 @@ impl ItemFilesInterface {
     /// How much is downloaded at and below `path`: the sizes of the local contents of the
     /// rows there that say on disk (`ItemReader::list_shown_files_below`); the backing
     /// directory is not walked.
-    pub async fn count_downloaded_below(&self, path: &Path) -> Result<DownloadedSpace, FilesRefusal> {
+    pub(crate) async fn count_downloaded_below(&self, path: &Path) -> Result<DownloadedSpace, FilesRefusal> {
         let (item, _) = self.find_onedrive_item(path).await?;
         let count = |counted: DownloadedSpace, file: &Item| match (file.content_presence, file.local.as_ref().and_then(|local| local.content.as_ref())) {
             (ContentPresence::OnDisk, Some(content)) if file.kind == ItemKind::File => DownloadedSpace { files: counted.files + 1, bytes: counted.bytes + content.size() },
@@ -386,25 +386,25 @@ impl ItemFilesInterface {
 
 /// What a free-up did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct FreedSpace {
-    pub files: u64,
-    pub bytes: u64,
+pub(crate) struct FreedSpace {
+    pub(crate) files: u64,
+    pub(crate) bytes: u64,
     /// Downloaded files left as they are: pinned, being downloaded, or changed here and not
     /// uploaded yet.
-    pub kept: u64,
+    pub(crate) kept: u64,
 }
 
 /// The space the downloaded copies at and below a path take: how many files, and their
 /// bytes on disk.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct DownloadedSpace {
-    pub files: u64,
-    pub bytes: u64,
+pub(crate) struct DownloadedSpace {
+    pub(crate) files: u64,
+    pub(crate) bytes: u64,
 }
 
 /// Why the mount refuses what the `Files` interface asked.
 #[derive(Debug, thiserror::Error)]
-pub enum FilesRefusal {
+pub(crate) enum FilesRefusal {
     #[error("not inside this folder")]
     OutsideFolder,
     /// A file or directory that is not in OneDrive yet, or a name the folder does not have.

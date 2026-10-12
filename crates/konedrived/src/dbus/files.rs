@@ -22,7 +22,7 @@ impl From<Outside> for Fault {
 
 /// `org.konedrive.Files` (`dbus/org.konedrive.Files.xml`): the per-file calls, each
 /// routed by path to the account whose folder holds it.
-pub struct Files {
+pub(crate) struct Files {
     pub(crate) manager: Arc<AccountManager>,
 }
 

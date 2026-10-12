@@ -22,20 +22,20 @@ pub use konedrive_tree::ActivityKind as Kind;
 /// One event of the activity log: unix seconds, a [`Kind`], a full path and a
 /// detail. `ActivityLog.Recent` and `ActivityLog.Added` carry exactly these
 /// four fields, the kind by its name.
-pub type Event = ActivityRow;
+pub(crate) type Event = ActivityRow;
 
 /// At most this many events of what OneDrive changed are logged between the ends of two
 /// listings (`step_settlement::decide_events_to_log`).
-pub const PER_KIND: usize = 50;
+pub(crate) const PER_KIND: usize = 50;
 
 /// An event that happens now.
-pub fn event(kind: Kind, path: impl Into<String>, detail: impl Into<String>) -> Event {
+pub(crate) fn event(kind: Kind, path: impl Into<String>, detail: impl Into<String>) -> Event {
     Event { at: unix_now(), kind, path: path.into(), detail: detail.into() }
 }
 
 /// `1536` → `1.5 KiB`: the size a `downloaded` or `freed` event's detail
 /// gives, in the same form `konedrivectl` prints sizes in.
-pub fn human_size(bytes: u64) -> String {
+pub(crate) fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
     let mut unit = 0;
@@ -59,7 +59,7 @@ pub const NO_DISK_SPACE: &str = "not enough disk space";
 /// full disk (or quota). `EIO` is everything a fill could not get from
 /// OneDrive — a missing item, the network, a hash that does not match —
 /// which the daemon's log tells apart.
-pub fn failure_reason(errno: i32) -> String {
+pub(crate) fn failure_reason(errno: i32) -> String {
     match errno {
         libc::ENOSPC | libc::EDQUOT => NO_DISK_SPACE.to_owned(),
         libc::EIO => "it could not be downloaded".to_owned(),
@@ -69,7 +69,7 @@ pub fn failure_reason(errno: i32) -> String {
 
 /// Conflicts looked over at the end of each cycle ([`Activity::prune`], a
 /// guess): the whole list, a batch at a time.
-pub const PRUNE_BATCH: usize = 200;
+pub(crate) const PRUNE_BATCH: usize = 200;
 
 /// Whether the file at `path` is still there, by `lstat`: anything but "not
 /// found" says it is.
@@ -131,7 +131,7 @@ impl Activity {
     }
 
     /// Every event recorded from now on, as it is recorded.
-    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.added.subscribe()
     }
 
@@ -161,7 +161,7 @@ impl Activity {
     /// Lets go of the store — after every write under way has finished —
     /// and forgets what memory held: a Forget, or a sync that stops.
     /// Blocking.
-    pub fn detach(&self) {
+    pub(crate) fn detach(&self) {
         {
             let mut backing = self.backing();
             backing.store = None;
@@ -173,7 +173,7 @@ impl Activity {
     /// Records `events`, oldest first, and announces each — those inside the
     /// folder registered now; the rest are dropped. Blocking: call it from a
     /// blocking thread, or through [`record`](Self::record).
-    pub fn record_blocking(&self, events: Vec<Event>) {
+    pub(crate) fn record_blocking(&self, events: Vec<Event>) {
         let kept: Vec<Event> = {
             let mut backing = self.backing();
             let root = self.state.get().folder.root_path;
@@ -210,7 +210,7 @@ impl Activity {
     /// worker writes its events into the store in the same transaction as
     /// the commit they belong to. Dropped when it is not inside the folder
     /// registered now.
-    pub fn announce(&self, event: Event) {
+    pub(crate) fn announce(&self, event: Event) {
         if inside(&self.state.get().folder.root_path, &event.path) {
             // Nobody listening is not an error.
             let _ = self.added.send(event);
@@ -218,7 +218,7 @@ impl Activity {
     }
 
     /// [`record_blocking`](Self::record_blocking) on a blocking thread.
-    pub async fn record(self: &Arc<Self>, events: Vec<Event>) {
+    pub(crate) async fn record(self: &Arc<Self>, events: Vec<Event>) {
         let this = Arc::clone(self);
         if let Err(e) = tokio::task::spawn_blocking(move || this.record_blocking(events)).await {
             tracing::warn!("the task recording activity failed: {e}");
@@ -226,7 +226,7 @@ impl Activity {
     }
 
     /// The newest `limit` events, newest first. Blocking.
-    pub fn recent(&self, limit: usize) -> Result<Vec<Event>, TreeError> {
+    pub(crate) fn recent(&self, limit: usize) -> Result<Vec<Event>, TreeError> {
         let backing = self.backing();
         match backing.store.as_ref() {
             Some(store) => store.call_blocking(move |s| s.recent_activity(limit)),
@@ -278,7 +278,7 @@ impl Activity {
     /// batch at a time, round and round — drops those whose file
     /// is gone in one job, and sets `Conflicts.Count` to what is left on
     /// record. Blocking.
-    pub fn prune(&self) {
+    pub(crate) fn prune(&self) {
         let counted = {
             let backing = self.backing();
             let Some(store) = backing.store.as_ref() else { return };
@@ -313,7 +313,7 @@ impl Activity {
 
     /// Takes the conflict whose kept copy is `kept_copy` off the list; the
     /// file itself is not touched. Whether there was one. Blocking.
-    pub fn dismiss(&self, kept_copy: &str) -> Result<bool, TreeError> {
+    pub(crate) fn dismiss(&self, kept_copy: &str) -> Result<bool, TreeError> {
         let removed = {
             let backing = self.backing();
             match backing.store.as_ref() {

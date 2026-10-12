@@ -2,6 +2,6 @@
 //! ([`names`]).
 
 mod ignore;
-pub mod names;
+pub(crate) mod names;
 
-pub use ignore::{IgnoreList, SharedIgnore, DEFAULT_PATTERNS};
+pub(crate) use ignore::{IgnoreList, SharedIgnore, DEFAULT_PATTERNS};

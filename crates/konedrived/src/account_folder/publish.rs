@@ -16,16 +16,16 @@ use crate::status::snapshot::{RootState, SyncSnapshot, SyncTrouble, TroubleKind}
 #[derive(Clone)]
 pub(super) struct Published {
     /// `Path`: the folder recorded, up or not; empty with none.
-    pub path: String,
+    pub(crate) path: String,
     /// `State`, before the sync has its say (`published_state`).
-    pub state: RootState,
+    pub(crate) state: RootState,
     /// The registration's part of `LastError`: what it ran into.
-    pub error: String,
+    pub(crate) error: String,
     /// `Writable`: the folder takes changes, and what is changed in it is uploaded.
-    pub writable: bool,
+    pub(crate) writable: bool,
     /// Why the folder's sync could not start: blocking trouble, until one does.
-    pub cannot_start: Option<String>,
-    pub view: View,
+    pub(crate) cannot_start: Option<String>,
+    pub(crate) view: View,
 }
 
 /// What `folder` comes to. It reads the folder's state, and of its mount whether it takes

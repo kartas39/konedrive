@@ -10,16 +10,16 @@ use tokio::sync::RwLock;
 
 /// Gives out the lease ([`Lease::hold`]).
 #[derive(Clone)]
-pub struct Lease(Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Held> + Send>> + Send + Sync>);
+pub(crate) struct Lease(Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Held> + Send>> + Send + Sync>);
 
 /// The lease while it is held: let go of when dropped, on whatever thread that is.
-pub struct Held(#[allow(dead_code)] Box<dyn Send>);
+pub(crate) struct Held(#[allow(dead_code)] Box<dyn Send>);
 
 impl Lease {
     /// A lease on `lock`, held for reading. It does not keep `lock` alive: what `lock`
     /// guards may own the very cycle that holds the lease. Once `lock` is gone there is
     /// nothing left to wait for, and the lease is given at once.
-    pub fn on<T: Send + Sync + 'static>(lock: &Arc<RwLock<T>>) -> Self {
+    pub(crate) fn on<T: Send + Sync + 'static>(lock: &Arc<RwLock<T>>) -> Self {
         let lock = Arc::downgrade(lock);
         Self(Arc::new(move || {
             let lock = lock.upgrade();
@@ -34,7 +34,7 @@ impl Lease {
 
     /// Waits for the lease. The caller gives up when it is cancelled (`cancellable`): a
     /// change of the folder cancels the cycle before it waits for it.
-    pub async fn hold(&self) -> Held {
+    pub(crate) async fn hold(&self) -> Held {
         (self.0)().await
     }
 }

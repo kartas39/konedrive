@@ -10,17 +10,17 @@ use tokio::sync::watch;
 /// bytes done, bytes total); and whether it is a file being opened (or
 /// `Hydrate`), which `LargeFiles` leaves out.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Transfer {
-    pub path: String,
-    pub done: u64,
-    pub total: u64,
-    pub open: bool,
+pub(crate) struct Transfer {
+    pub(crate) path: String,
+    pub(crate) done: u64,
+    pub(crate) total: u64,
+    pub(crate) open: bool,
 }
 
 /// `Transfers.LargeFiles`: the large files ([`LARGE_FROM`](konedrive_graph::pool::LARGE_FROM)
 /// and up) the sync moves now, each once however many streams it runs — the downloads of that
 /// size but the files being opened, and the uploads of that size.
-pub fn large_files(downloads: &BTreeMap<u64, Transfer>, uploads: &[(String, u64, u64)]) -> u32 {
+pub(crate) fn large_files(downloads: &BTreeMap<u64, Transfer>, uploads: &[(String, u64, u64)]) -> u32 {
     let large = |total: u64| total >= konedrive_graph::pool::LARGE_FROM;
     let down = downloads.values().filter(|t| !t.open && large(t.total)).count();
     let up = uploads.iter().filter(|(_, _, total)| large(*total)).count();
@@ -66,11 +66,11 @@ impl Transfers {
     }
 
     /// Every download under way, oldest first.
-    pub fn list(&self) -> Vec<Transfer> {
+    pub(crate) fn list(&self) -> Vec<Transfer> {
         self.tx.borrow().values().cloned().collect()
     }
 
-    pub fn subscribe(&self) -> watch::Receiver<BTreeMap<u64, Transfer>> {
+    pub(crate) fn subscribe(&self) -> watch::Receiver<BTreeMap<u64, Transfer>> {
         self.tx.subscribe()
     }
 
@@ -102,12 +102,12 @@ impl TransferEntry {
 
     /// Something that can move the entry on but does not keep it: the
     /// source a download fetches through, and the stream it reads.
-    pub fn handle(&self) -> TransferHandle {
+    pub(crate) fn handle(&self) -> TransferHandle {
         self.handle.clone()
     }
 
     /// How big the download is, as far as is known.
-    pub fn total(&self) -> u64 {
+    pub(crate) fn total(&self) -> u64 {
         self.handle.total()
     }
 }
@@ -119,18 +119,18 @@ impl Drop for TransferEntry {
 }
 
 #[derive(Clone)]
-pub struct TransferHandle {
+pub(crate) struct TransferHandle {
     id: u64,
     transfers: Transfers,
 }
 
 impl TransferHandle {
-    pub fn progress(&self, done: u64, total: u64) {
+    pub(crate) fn progress(&self, done: u64, total: u64) {
         self.transfers.progress(self.id, done, total);
     }
 
     /// How big the download is, as far as is known; 0 once its entry is gone.
-    pub fn total(&self) -> u64 {
+    pub(crate) fn total(&self) -> u64 {
         self.transfers.tx.borrow().get(&self.id).map_or(0, |t| t.total)
     }
 }

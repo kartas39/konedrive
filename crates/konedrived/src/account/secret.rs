@@ -51,7 +51,7 @@ pub(super) const V1_LABEL: &str = "KOneDrive refresh token";
 ///
 /// A crash between storing the new item and deleting the old leaves both; the next load
 /// prefers the new one and deletes the old.
-pub struct AccountSecrets {
+pub(crate) struct AccountSecrets {
     wallet: Arc<dyn Wallet>,
     config: Arc<ConfigStore>,
     id: AccountId,
@@ -162,7 +162,7 @@ impl SecretServiceWallet {
     }
 
     /// Other `kind` attributes keep test items apart from the real tokens.
-    pub fn for_tests() -> Self {
+    pub(crate) fn for_tests() -> Self {
         Self { v1_kind: "test-refresh-token", account_kind: "test-account-refresh-token" }
     }
 

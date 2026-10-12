@@ -33,8 +33,8 @@ use super::guards::{drop_checkpoint, usable_checkpoint};
 /// they were checked as — the one the first answer of the source gave, `None` when the
 /// source said none.
 pub(crate) struct Downloaded {
-    pub size: u64,
-    pub version: Option<Version>,
+    pub(crate) size: u64,
+    pub(crate) version: Option<Version>,
 }
 
 /// Streams the file's bytes into `target`, from `resume` if there is one, and checks them:

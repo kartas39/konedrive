@@ -64,7 +64,7 @@ const LONGEST_WAIT: i64 = 60 * 60;
 /// When the next try of a cancel or a removal that failed `failed_count` times is due,
 /// Unix seconds: a minute after the first failure, doubling to an hour; after a throttle
 /// not before the time OneDrive named. Pure.
-pub fn decide_next_cancellation_try(failed_count: u32, retry_after: Option<std::time::Duration>, now: i64) -> i64 {
+pub(crate) fn decide_next_cancellation_try(failed_count: u32, retry_after: Option<std::time::Duration>, now: i64) -> i64 {
     let wait = FIRST_WAIT.saturating_mul(1i64 << failed_count.saturating_sub(1).min(20)).min(LONGEST_WAIT);
     let named = retry_after.map_or(0, |named| i64::try_from(named.as_secs()).unwrap_or(i64::MAX));
     now.saturating_add(wait.max(named))
@@ -74,21 +74,21 @@ pub fn decide_next_cancellation_try(failed_count: u32, retry_after: Option<std::
 /// [`SessionCancellations::remove_mismatched_items`] or
 /// [`SessionCancellations::settle_request_records`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct CancellationRound {
+pub(crate) struct CancellationRound {
     /// How many are cleaned and forgotten: cancelled or removed, found gone, or — an
     /// item — found changed by another and left; a record settled.
-    pub done_count: usize,
+    pub(crate) done_count: usize,
     /// How many were asked and failed: each waits for its next try.
-    pub failed_count: usize,
+    pub(crate) failed_count: usize,
     /// How many were passed over because their next try is not due.
-    pub waiting_count: usize,
+    pub(crate) waiting_count: usize,
     /// When the soonest next try of what failed or waits is due, Unix seconds; none when
     /// nothing does.
-    pub next_try_at: Option<i64>,
+    pub(crate) next_try_at: Option<i64>,
     /// How many request records went with nothing learnt, because OneDrive refuses the
     /// read for certain (counted in `done_count` too): the caller asks the listing for a
     /// cycle, which brings what OneDrive has.
-    pub left_to_listing_count: usize,
+    pub(crate) left_to_listing_count: usize,
 }
 
 /// What became of one thing asked.
@@ -99,7 +99,7 @@ enum CleanedOutcome {
 
 /// What cancels and removes this folder's leftovers in OneDrive.
 #[derive(Clone)]
-pub struct SessionCancellations {
+pub(crate) struct SessionCancellations {
     graph: GraphAccess,
     /// What settles a request record that stands.
     lost_answers: LostAnswers,
@@ -190,7 +190,7 @@ impl SessionCancellations {
     /// whatever its next try: called by `NameHolders` for a session whose empty file
     /// holds the name a step needs now. A failure is counted as a failed try all the
     /// same.
-    pub async fn cancel_session(&self, address: &UploadSessionAddress) -> bool {
+    pub(crate) async fn cancel_session(&self, address: &UploadSessionAddress) -> bool {
         let thing = CleanedThing::UploadSession(address.clone());
         let outcome = self.cancel_one_session(address).await;
         let is_gone = matches!(outcome, CleanedOutcome::Done);
@@ -207,7 +207,7 @@ impl SessionCancellations {
     /// held, while the list is not empty: a removal of a file by a program puts a session
     /// there with no step at all. The task goes on while `done_count` is not 0, and
     /// otherwise leaves what is left to a later plan.
-    pub async fn cancel_sessions(&self, limit: usize) -> CancellationRound {
+    pub(crate) async fn cancel_sessions(&self, limit: usize) -> CancellationRound {
         let is_session = |thing: &CleanedThing| matches!(thing, CleanedThing::UploadSession(_));
         let mut round = CancellationRound::default();
         let listed_count = limit.saturating_add(self.count_tried(is_session));
@@ -288,7 +288,7 @@ impl SessionCancellations {
     /// another (`StepMemory::forget_mismatched_item`). The list never holds an item the folder
     /// has. One that fails waits, and those that wait are passed over, as
     /// [`cancel_sessions`](Self::cancel_sessions) does; called as it is.
-    pub async fn remove_mismatched_items(&self, limit: usize) -> CancellationRound {
+    pub(crate) async fn remove_mismatched_items(&self, limit: usize) -> CancellationRound {
         let is_item = |thing: &CleanedThing| matches!(thing, CleanedThing::MismatchedItem(_));
         let mut round = CancellationRound::default();
         let listed_count = limit.saturating_add(self.count_tried(is_item));
@@ -327,7 +327,7 @@ impl SessionCancellations {
     /// timer takes `next_try_at` (`sync_plan_task::decide_next_wake`). Called by the plan's task as
     /// [`cancel_sessions`](Self::cancel_sessions) is, which is after the first listing of
     /// a start ended.
-    pub async fn settle_request_records(&self, limit: usize) -> CancellationRound {
+    pub(crate) async fn settle_request_records(&self, limit: usize) -> CancellationRound {
         let is_record = |thing: &CleanedThing| matches!(thing, CleanedThing::RequestRecord(_));
         let mut round = CancellationRound::default();
         // Those of the running steps are listed too, and passed over.
@@ -369,7 +369,7 @@ impl SessionCancellations {
     /// Forgets the openings that name no file and whose last try is older than
     /// `UPLOAD_SESSION_OPENING_KEPT` (`StepMemory::forget_upload_session_openings_before`).
     /// Called by the plan's task at its start and once a day.
-    pub async fn forget_old_openings(&self) {
+    pub(crate) async fn forget_old_openings(&self) {
         let before = (self.graph.clock)().saturating_sub(UPLOAD_SESSION_OPENING_KEPT);
         match self.graph.store.call(move |store| store.step_memory().forget_upload_session_openings_before(before)).await {
             Ok(0) => {}

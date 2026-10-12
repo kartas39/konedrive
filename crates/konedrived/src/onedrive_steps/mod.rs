@@ -117,20 +117,20 @@ use crate::sync_parts::running_steps::RunningSteps;
 use crate::sync_parts::step_outcome::{RowsChangedFollowUp, StepEvent, StepFailure, StepObstacle, StepOutcome, StepRefusal, StepTrouble};
 
 /// Graph's answer to a step as its commit takes it, and the guard of a request.
-pub mod confirmed_item;
+pub(crate) mod confirmed_item;
 /// A file's content sent: empty at once, otherwise through an upload session.
-pub mod content_upload;
+pub(crate) mod content_upload;
 /// A refusal of Graph, by what a step does about it.
-pub mod graph_refusal;
+pub(crate) mod graph_refusal;
 /// A step's own earlier request whose answer was lost.
-pub mod lost_answers;
+pub(crate) mod lost_answers;
 /// What a step made in OneDrive that its commit did not write.
-pub mod made_items;
+pub(crate) mod made_items;
 /// Who holds a name OneDrive answered is taken.
-pub mod name_holders;
+pub(crate) mod name_holders;
 /// What is left to clean in OneDrive: sessions to cancel, items uploads left, requests
 /// whose answer was never committed.
-pub mod session_cancellations;
+pub(crate) mod session_cancellations;
 
 use confirmed_item::{decide_guard, to_confirmed_item, to_graph_name, RequestGuard};
 use content_upload::{hash_content, ContentTarget, ContentUpload, NewFilePlace, SendContentError, SentContent};
@@ -141,17 +141,17 @@ use name_holders::{NameHolder, NameHolders};
 
 /// What every part that asks Graph is made with.
 #[derive(Clone)]
-pub struct GraphAccess {
-    pub drive: konedrive_graph::drive::DriveClient,
+pub(crate) struct GraphAccess {
+    pub(crate) drive: konedrive_graph::drive::DriveClient,
     /// The folder's drive: what an answer's item and parent are referenced in. The Graph
     /// client asks by item id in the account's own drive, and nothing of another drive is
     /// ever shown (a shared folder; the map's RISK-1.r), so every reference a step meets
     /// is of this drive; a step whose reference names another is answered
     /// `StepFailure::AnswerUnreadable`, and nothing is sent.
-    pub drive_id: konedrive_tree::DriveId,
-    pub store: Store,
+    pub(crate) drive_id: konedrive_tree::DriveId,
+    pub(crate) store: Store,
     /// Unix seconds: the account's clock, which the tests hold.
-    pub clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+    pub(crate) clock: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 
 /// What the job of a commit answers: the commit's outcome, and the item's paths for the
@@ -200,7 +200,7 @@ fn describe_name_taken(item: &ItemVersions, name: &OsStr, holder_name: std::ffi:
 }
 
 /// The runner of the steps towards OneDrive, for one folder.
-pub struct OneDriveSteps {
+pub(crate) struct OneDriveSteps {
     graph: GraphAccess,
     /// Held across each commit and nothing else (design §7: "its commit, under the
     /// lock"): never across a request, a hash or a sync of a file.
@@ -235,7 +235,7 @@ impl OneDriveSteps {
     /// whose answer was lost —, and never once its commit has begun
     /// (`RunningSteps::begin_commit`): what the step memory holds — the record of the
     /// request among it — lets the next run go on or adopt.
-    pub async fn run(&self, step: OneDriveStep) -> StepOutcome {
+    pub(crate) async fn run(&self, step: OneDriveStep) -> StepOutcome {
         match &step {
             OneDriveStep::MakeDirectory { item, parent, name } => self.run_make_directory(item, parent, name).await,
             OneDriveStep::SendNewFile { item, parent, name } => self.run_send_new_file(item, parent, name).await,

@@ -17,23 +17,23 @@ use crate::config::{
 
 /// `config.toml`, version 1: no `config_version`, one account, one folder. Only read.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct V1Config {
+pub(crate) struct V1Config {
     #[serde(default)]
-    pub client_id: String,
+    pub(crate) client_id: String,
     /// The registered sync root, empty when none.
     #[serde(default)]
-    pub sync_root: String,
+    pub(crate) sync_root: String,
     /// The root id the folder carried when it was registered. Empty in a
     /// config written before it existed; the folder's own
     /// `user.konedrive.root` stands in for it then.
     #[serde(default)]
-    pub sync_root_id: String,
+    pub(crate) sync_root_id: String,
     /// What the folder shows: `"onedrive"` — listed from the
     /// signed-in drive — or `"local"`, a folder filled by hand, which is
     /// not brought up. A config written before this existed describes a
     /// local folder.
     #[serde(default = "local_source")]
-    pub sync_root_source: String,
+    pub(crate) sync_root_source: String,
     /// Whether *this daemon* excluded the root from KDE's Baloo indexer
     /// — `false` when the folder was already excluded (the
     /// user's own doing, or a parent directory's), since a Forget must never
@@ -42,7 +42,7 @@ pub struct V1Config {
     /// removed from Baloo's settings that this daemon cannot be sure it put
     /// there.
     #[serde(default)]
-    pub sync_root_baloo_excluded: bool,
+    pub(crate) sync_root_baloo_excluded: bool,
     /// The drive a OneDrive folder was listed from, recorded
     /// when its sync first learns it, so the check that the account signed
     /// in is still that drive's survives a tree store rebuilt empty.
@@ -50,7 +50,7 @@ pub struct V1Config {
     /// config written before it existed. It goes with `sync_root_id`: a
     /// different root never inherits it.
     #[serde(default)]
-    pub sync_root_drive_id: String,
+    pub(crate) sync_root_drive_id: String,
 }
 
 fn local_source() -> String {
@@ -58,7 +58,7 @@ fn local_source() -> String {
 }
 
 /// Where the version-1 file is kept once migrated: `config.toml.v1`, the way back by hand.
-pub fn v1_copy(config_file: &Path) -> PathBuf {
+pub(crate) fn v1_copy(config_file: &Path) -> PathBuf {
     with_suffix(config_file, ".v1")
 }
 

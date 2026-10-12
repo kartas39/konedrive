@@ -26,41 +26,41 @@ use crate::sync_parts::running_steps::{RunningStep, StepClass};
 /// start for good. A choice: one waiter is enough for the pool to grow on a success; four
 /// are there so that the transfers that end before the plan's next round started their
 /// successors each still find one waiting, and a freed slot is taken at once.
-pub const STEPS_BEYOND_SLOTS: usize = 4;
+pub(crate) const STEPS_BEYOND_SLOTS: usize = 4;
 
 /// How many steps of each bounded class run at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StepLimits {
+pub(crate) struct StepLimits {
     /// The pool's slots and [`STEPS_BEYOND_SLOTS`]: counted here; the slot is taken by
     /// the content upload, which waits for it.
-    pub content: usize,
+    pub(crate) content: usize,
     /// One, as today's worker sends what is not content one at a time.
-    pub metadata: usize,
+    pub(crate) metadata: usize,
     /// The pool's slots and [`STEPS_BEYOND_SLOTS`]: counted here; the slot is taken by
     /// the downloader, which waits for it.
-    pub download: usize,
+    pub(crate) download: usize,
 }
 
 /// The limits for a pool of `slot_count` slots. Pure.
-pub fn decide_step_limits(slot_count: usize) -> StepLimits {
+pub(crate) fn decide_step_limits(slot_count: usize) -> StepLimits {
     let transfer_count = slot_count + STEPS_BEYOND_SLOTS;
     StepLimits { content: transfer_count, metadata: 1, download: transfer_count }
 }
 
 /// What starts now.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct StartChoice {
+pub(crate) struct StartChoice {
     /// The `ShowItem` steps, run as one job, a directory before what is in it.
-    pub show_steps: Vec<SyncStep>,
+    pub(crate) show_steps: Vec<SyncStep>,
     /// Every other step that starts, in the plan's order.
-    pub steps: Vec<SyncStep>,
+    pub(crate) steps: Vec<SyncStep>,
     /// The steps that stay for a later round of this plan.
-    pub left: Vec<SyncStep>,
+    pub(crate) left: Vec<SyncStep>,
 }
 
 /// The name of the case `step` is of, with nothing it carries: what the journal says a
 /// step by at `debug`, where no name of an item and no path is written. Pure.
-pub fn find_step_name(step: &SyncStep) -> String {
+pub(crate) fn find_step_name(step: &SyncStep) -> String {
     match step {
         SyncStep::OneDrive(OneDriveStep::MakeDirectory { .. }) => "MakeDirectory".to_owned(),
         SyncStep::OneDrive(OneDriveStep::SendNewFile { .. }) => "SendNewFile".to_owned(),
@@ -77,7 +77,7 @@ pub fn find_step_name(step: &SyncStep) -> String {
 /// below a removed directory, the second row of a merge) and the directory it sends into
 /// (`MakeDirectory`, `SendNewFile`, `SendMove`), as `RunningSteps` is told it.
 /// Pure.
-pub fn describe_running_step(step: &SyncStep) -> RunningStep {
+pub(crate) fn describe_running_step(step: &SyncStep) -> RunningStep {
     let (other_items, destination) = match step {
         SyncStep::OneDrive(OneDriveStep::MakeDirectory { parent, .. } | OneDriveStep::SendNewFile { parent, .. } | OneDriveStep::SendMove { parent, .. }) => (Vec::new(), Some(parent.clone())),
         SyncStep::OneDrive(OneDriveStep::SendDirectoryRemoval { below, .. }) => (below.iter().map(|row| row.local_item_id).collect(), None),
@@ -91,7 +91,7 @@ pub fn describe_running_step(step: &SyncStep) -> RunningStep {
 /// running step; of each bounded class as many as `limits` leave beside what runs; none
 /// of a class in `held_classes` (`SendingHolds::list_held_classes`: every cause that
 /// holds, not the one shown alone). Pure.
-pub fn decide_steps_to_start(planned: Vec<SyncStep>, running: &[RunningStep], limits: &StepLimits, held_classes: &BTreeSet<StepClass>) -> StartChoice {
+pub(crate) fn decide_steps_to_start(planned: Vec<SyncStep>, running: &[RunningStep], limits: &StepLimits, held_classes: &BTreeSet<StepClass>) -> StartChoice {
     let mut rows_with_running_step: BTreeSet<LocalItemId> = running.iter().flat_map(|step| std::iter::once(step.item).chain(step.other_items.iter().copied())).collect();
     let count_running = |class: StepClass| running.iter().filter(|step| step.class == class).count();
     let mut content_count = count_running(StepClass::Content);
@@ -126,7 +126,7 @@ pub fn decide_steps_to_start(planned: Vec<SyncStep>, running: &[RunningStep], li
 }
 
 /// The class of a step, for `decide_steps_to_start` and the published answers. Pure.
-pub fn decide_step_class(step: &SyncStep) -> StepClass {
+pub(crate) fn decide_step_class(step: &SyncStep) -> StepClass {
     match step {
         SyncStep::OneDrive(OneDriveStep::SendNewFile { .. } | OneDriveStep::SendContent { .. }) => StepClass::Content,
         SyncStep::OneDrive(_) => StepClass::Metadata,

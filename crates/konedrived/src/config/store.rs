@@ -39,15 +39,15 @@ pub enum ConfigError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteStanding {
     /// The mode the user chose.
-    pub mode: Mode,
+    pub(crate) mode: Mode,
     /// The drive recorded for the account; `None` for an account with no drive yet, which
     /// is read-only whatever its mode says.
-    pub recorded_drive: Option<DriveId>,
+    pub(crate) recorded_drive: Option<DriveId>,
 }
 
 impl WriteStanding {
     /// Whether the file lets the account write: read-write chosen, and a drive recorded.
-    pub fn allows_writes(&self) -> bool {
+    pub(crate) fn allows_writes(&self) -> bool {
         self.mode == Mode::ReadWrite && self.recorded_drive.is_some()
     }
 }
@@ -171,18 +171,18 @@ impl ConfigStore {
 
     /// The application's client ID: the one set in `config.toml`, or else konedrive's own
     /// ([`DEFAULT_CLIENT_ID`]), so that signing in needs nothing from the user.
-    pub fn client_id(&self) -> String {
+    pub(crate) fn client_id(&self) -> String {
         let set = self.lock().config.client_id.clone();
         if set.is_empty() { DEFAULT_CLIENT_ID.to_owned() } else { set }
     }
 
-    pub fn is_poisoned(&self) -> bool {
+    pub(crate) fn is_poisoned(&self) -> bool {
         self.lock().poisoned.is_some()
     }
 
     /// `Accounts.LastError`: why the file could not be loaded, or which migration step
     /// failed. Empty when there is nothing.
-    pub fn last_error(&self) -> String {
+    pub(crate) fn last_error(&self) -> String {
         self.lock().last_error.clone()
     }
 

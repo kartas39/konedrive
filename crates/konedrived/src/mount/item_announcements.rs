@@ -26,7 +26,7 @@ use konedrive_tree::{ItemKind, ItemPlace, LocalItemId};
 
 /// One change of the folder to announce.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ItemAnnouncement {
+pub(crate) enum ItemAnnouncement {
     /// `item` is at `place` now and was not shown before.
     Appeared { item: LocalItemId, place: ItemPlace },
     /// `item` was at `former_place` and is not there any more.

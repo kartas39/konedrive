@@ -25,9 +25,9 @@ use konedrive_graph::drive::{DriveClient, RetryPolicy};
 use konedrive_graph::quickxor::QuickXor;
 use konedrive_graph::token::StaticToken;
 
-pub use sockets::{Early, FakeSockets, PING_INTERVAL};
+pub(crate) use sockets::{Early, FakeSockets, PING_INTERVAL};
 
-pub const ROOT: &str = "R";
+pub(crate) const ROOT: &str = "R";
 
 #[derive(Debug, Clone)]
 pub struct FakeItem {
@@ -55,7 +55,7 @@ struct Session {
     mtime: i64,
 }
 
-pub fn qx(content: &[u8]) -> String {
+pub(crate) fn qx(content: &[u8]) -> String {
     let mut hasher = QuickXor::new();
     hasher.update(content);
     hasher.finish_base64()
@@ -86,7 +86,7 @@ fn decode(segment: &str) -> String {
 
 #[derive(Default)]
 pub struct Cloud {
-    pub items: BTreeMap<String, FakeItem>,
+    pub(crate) items: BTreeMap<String, FakeItem>,
     /// OneDrive's recycle bin.
     pub bin: BTreeMap<String, FakeItem>,
     sessions: HashMap<String, Session>,
@@ -102,13 +102,13 @@ pub struct Cloud {
     /// Every request: method and decoded path below the server.
     pub log: Vec<(String, String)>,
     /// The `If-Match` of every request that had one: path, tag.
-    pub guards: Vec<(String, String)>,
+    pub(crate) guards: Vec<(String, String)>,
     /// Every item that changed, in order: the delta feed's cursor is a
     /// position in it (the read-write reconcile), as Graph's is.
     changes: Vec<String>,
     /// Each delta answers the whole drive again, whatever its token: a feed
     /// that repeats what did not change (an opt-in; Graph may do it).
-    pub full_deltas: bool,
+    pub(crate) full_deltas: bool,
     /// Throttled requests: (method, a fragment of the path, how many to let
     /// through first, `Retry-After` seconds, how many to throttle, the status).
     throttles: Vec<(String, String, u32, u32, u32, u16)>,
@@ -119,12 +119,12 @@ pub struct Cloud {
     /// When items were made (`createdDateTime`, Unix seconds): every
     /// placeholder and every file a request made, at the wall clock; others
     /// as a test sets them. None for an item not in it.
-    pub created: HashMap<String, i64>,
+    pub(crate) created: HashMap<String, i64>,
     /// A delete of a session's placeholder (`DELETE /items/{its id}`) is
     /// refused `403` while set; otherwise it deletes the placeholder and ends
     /// its session. What OneDrive does is unmeasured: both are
     /// modelled.
-    pub refuse_placeholder_delete: bool,
+    pub(crate) refuse_placeholder_delete: bool,
     /// Requests carried out whose answer is lost (a timeout after OneDrive
     /// acted): (method, a fragment of the path, how many times), answered
     /// `504`.
@@ -137,10 +137,10 @@ pub struct Cloud {
     socket_url: String,
     /// How long, in seconds from the request, an endpoint lives: `expirationDateTime`.
     /// Left out of the answer while `None`.
-    pub socket_lifetime: Option<i64>,
+    pub(crate) socket_lifetime: Option<i64>,
     /// The drive an item's `parentReference` names; `D` while `None`. A test whose store
     /// knows another drive sets it, so that an answer is of the store's drive.
-    pub drive_id: Option<String>,
+    pub(crate) drive_id: Option<String>,
 }
 
 impl Cloud {
@@ -190,7 +190,7 @@ impl Cloud {
     }
 
     /// Where item `id` is, `a/b/c` below the root.
-    pub fn path_of(&self, id: &str) -> Option<String> {
+    pub(crate) fn path_of(&self, id: &str) -> Option<String> {
         let mut parts = Vec::new();
         let mut at = self.items.get(id)?;
         while let Some(parent) = &at.parent {
@@ -233,7 +233,7 @@ impl Cloud {
     }
 
     /// Something changed below folder `id` in OneDrive: its cTag moves.
-    pub fn touch(&mut self, id: &str) {
+    pub(crate) fn touch(&mut self, id: &str) {
         self.touch_above(Some(id.into()));
     }
 
@@ -270,13 +270,13 @@ impl Cloud {
     }
 
     /// As [`throttle`](Self::throttle), answering `429 Too Many Requests`.
-    pub fn throttle_429(&mut self, method: &str, fragment: &str, pass: u32, seconds: u32, times: u32) {
+    pub(crate) fn throttle_429(&mut self, method: &str, fragment: &str, pass: u32, seconds: u32, times: u32) {
         self.throttles.push((method.into(), fragment.into(), pass, seconds, times, 429));
     }
 
     /// The names the open sessions' empty placeholders hold, `a/b/c` below
     /// the root, sorted.
-    pub fn placeholders(&self) -> Vec<String> {
+    pub(crate) fn placeholders(&self) -> Vec<String> {
         let mut out: Vec<String> = self
             .placeholders
             .values()
@@ -290,7 +290,7 @@ impl Cloud {
     }
 
     /// How many upload sessions are open.
-    pub fn open_sessions(&self) -> usize {
+    pub(crate) fn open_sessions(&self) -> usize {
         self.sessions.len()
     }
 
@@ -308,7 +308,7 @@ impl Cloud {
     }
 
     /// How many times the quota was read (`GET me/drive`).
-    pub fn quota_reads(&self) -> usize {
+    pub(crate) fn quota_reads(&self) -> usize {
         self.log.iter().filter(|(m, p)| m == "GET" && p == "me/drive").count()
     }
 
@@ -316,7 +316,7 @@ impl Cloud {
     /// another device (or abandoned by an older version): its placeholder
     /// holds the name, and nothing of this folder knows it — made `age`
     /// seconds ago. Its id.
-    pub fn open_elsewhere(&mut self, parent: &str, name: &str, age: i64) -> String {
+    pub(crate) fn open_elsewhere(&mut self, parent: &str, name: &str, age: i64) -> String {
         self.open_session(Target::New { parent: parent.into(), name: name.into() }, &json!({ "item": {} }));
         self.created.insert(format!("P{}", self.counter), crate::clock::unix_now() - age);
         format!("s{}", self.counter)
@@ -324,14 +324,14 @@ impl Cloud {
 
     /// That device's session `sid` completes with `content`: the file lands
     /// at the placeholder's name.
-    pub fn complete_elsewhere(&mut self, sid: &str, content: &[u8]) {
+    pub(crate) fn complete_elsewhere(&mut self, sid: &str, content: &[u8]) {
         let session = self.sessions.remove(sid).expect("no such session");
         self.placeholders.remove(sid);
         assert!(self.land(&session.target, content.to_vec(), 0).is_ok(), "landed");
     }
 
     /// That device cancels its session `sid`: the name is free.
-    pub fn cancel_elsewhere(&mut self, sid: &str) {
+    pub(crate) fn cancel_elsewhere(&mut self, sid: &str) {
         self.sessions.remove(sid).expect("no such session");
         self.placeholders.remove(sid);
     }
@@ -351,7 +351,7 @@ impl Cloud {
     }
 
     /// Every open upload session expires: its URL answers `404` from now on.
-    pub fn expire_sessions(&mut self) {
+    pub(crate) fn expire_sessions(&mut self) {
         self.sessions.clear();
         self.placeholders.clear();
     }
@@ -364,7 +364,7 @@ impl Cloud {
     /// what went to the recycle bin as deleted — a feed may repeat what did
     /// not change, and the store takes an entry for what it holds already as
     /// no change. One page, ending with a delta link.
-    pub fn delta_body(&self) -> Value {
+    pub(crate) fn delta_body(&self) -> Value {
         let mut value: Vec<Value> = self.items.values().map(|item| self.json(item)).collect();
         value.extend(self.bin.values().map(|item| json!({ "id": item.id, "deleted": {}, "parentReference": { "id": item.parent } })));
         json!({ "value": value, "@odata.deltaLink": self.delta_link() })
@@ -377,7 +377,7 @@ impl Cloud {
 
     /// What changed since cursor `from`, each item once, as it is now — a
     /// deleted one as deleted — with the link to go on from.
-    pub fn delta_since(&self, from: usize) -> Value {
+    pub(crate) fn delta_since(&self, from: usize) -> Value {
         let mut seen = std::collections::HashSet::new();
         let mut value = Vec::new();
         for id in self.changes.iter().skip(from) {
@@ -788,9 +788,9 @@ impl Respond for Responder {
 
 pub struct FakeGraph {
     pub server: MockServer,
-    pub cloud: Arc<Mutex<Cloud>>,
+    pub(crate) cloud: Arc<Mutex<Cloud>>,
     /// The drive's notification socket.
-    pub sockets: Arc<FakeSockets>,
+    pub(crate) sockets: Arc<FakeSockets>,
 }
 
 impl FakeGraph {

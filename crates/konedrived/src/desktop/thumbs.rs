@@ -25,7 +25,7 @@ use md5::Digest;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-pub mod request_start;
+pub(crate) mod request_start;
 
 use crate::folder::root::SyncRoot;
 use crate::conditions::running::Running;
@@ -37,7 +37,7 @@ use konedrive_tree::{LocalItemId, Store, ThumbnailCandidate as Wanted};
 /// The cache directories KIO consults, and the longest edge of each
 /// (`docs/kio-behavior.md` §A). `xx-large` is deliberately absent: it would be a second
 /// request per image (`docs/design/desktop.md` §8).
-pub const SIZES: &[(&str, u32)] = &[("normal", 128), ("large", 256), ("x-large", 512)];
+pub(crate) const SIZES: &[(&str, u32)] = &[("normal", 128), ("large", 256), ("x-large", 512)];
 /// The one size asked of Graph; the smaller ones are scaled from it.
 const GRAPH_SIZE: &str = "c512x512";
 /// Asked instead when Graph answers [`GRAPH_SIZE`] with `406 Not Acceptable`,
@@ -55,7 +55,7 @@ const MAX_DECODE_ALLOC: u64 = 64 * 1024 * 1024;
 /// `file://` and the path, as KIO spells the URI it hashes (§A of the
 /// measurements): every byte percent-encoded except the unreserved
 /// characters, `/`, and the sub-delimiters a path segment may hold.
-pub fn file_uri(path: &Path) -> String {
+pub(crate) fn file_uri(path: &Path) -> String {
     let mut out = String::from("file://");
     for &byte in path.as_os_str().as_bytes() {
         if byte.is_ascii_alphanumeric() || b"-._~/!$&'()*+,;=:@".contains(&byte) {
@@ -67,7 +67,7 @@ pub fn file_uri(path: &Path) -> String {
     out
 }
 
-pub struct ThumbnailFiller {
+pub(crate) struct ThumbnailFiller {
     drive: DriveClient,
     store: Store,
     root: SyncRoot,
@@ -80,9 +80,9 @@ pub struct ThumbnailFiller {
 /// What one `run_once` did: `taken` is how many candidates it
 /// looked at, `written` how many thumbnails it actually wrote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct RunOutcome {
-    pub taken: usize,
-    pub written: usize,
+pub(crate) struct RunOutcome {
+    pub(crate) taken: usize,
+    pub(crate) written: usize,
 }
 
 /// What making a thumbnail from the bytes Graph gave back can fail at, once
@@ -129,7 +129,7 @@ impl ThumbnailFiller {
 
     /// Makes up to `limit` missing thumbnails, a request starting whenever
     /// [`decide_request_start`] lets one.
-    pub async fn run_once(&self, cancel: &CancellationToken, limit: usize) -> RunOutcome {
+    pub(crate) async fn run_once(&self, cancel: &CancellationToken, limit: usize) -> RunOutcome {
         self.run_from(cancel, limit, None).await.0
     }
 
@@ -220,7 +220,7 @@ impl ThumbnailFiller {
     /// Runs in the background: after every cycle (`kick`), when thumbnails are
     /// turned on again, and every ten minutes in case a kick was missed, draining
     /// 200 thumbnails at a time until every candidate has been looked at.
-    pub fn spawn(self, kick: Arc<Notify>, cancel: CancellationToken) -> tokio::task::JoinHandle<()> {
+    pub(crate) fn spawn(self, kick: Arc<Notify>, cancel: CancellationToken) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             loop {
                 tokio::select! {

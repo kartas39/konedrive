@@ -36,22 +36,22 @@ use konedrive_tree::Store;
 
 /// The live task's waits.
 #[derive(Debug, Clone)]
-pub struct Timing {
+pub(crate) struct Timing {
     /// Events within this of the first give one cycle.
-    pub debounce: Duration,
+    pub(crate) debounce: Duration,
     /// The first wait after a failure; each one after doubles it, up to `backoff_max`.
-    pub backoff: Duration,
-    pub backoff_max: Duration,
+    pub(crate) backoff: Duration,
+    pub(crate) backoff_max: Duration,
     /// The shortest time an endpoint is kept before it is renewed, whatever its expiry says:
     /// an endpoint that expires within `RENEW_EARLY` would otherwise be renewed in a loop.
-    pub renew_floor: Duration,
+    pub(crate) renew_floor: Duration,
     /// While the account is stopped, how often it is looked at again besides the wake-ups.
-    pub stopped_look: Duration,
+    pub(crate) stopped_look: Duration,
     /// A connection counts as up after the server's first ping, or after this much life
     /// without one; one that ends sooner counts as a failure.
-    pub settle: Duration,
+    pub(crate) settle: Duration,
     /// The wall clock, for the renewal deadline (the tests move it).
-    pub clock: fn() -> SystemTime,
+    pub(crate) clock: fn() -> SystemTime,
 }
 
 impl Default for Timing {
@@ -70,15 +70,15 @@ impl Default for Timing {
 
 /// What the live task works with: the account's drive and what decides whether it runs, the
 /// poller's wake-up and the flag the poller reads.
-pub struct LiveContext {
-    pub drive: DriveClient,
-    pub store: Store,
-    pub running: Arc<Running>,
-    pub state: SyncStateHandle,
+pub(crate) struct LiveContext {
+    pub(crate) drive: DriveClient,
+    pub(crate) store: Store,
+    pub(crate) running: Arc<Running>,
+    pub(crate) state: SyncStateHandle,
     /// The poller's `refresh`: a cycle now.
-    pub refresh: Arc<Notify>,
+    pub(crate) refresh: Arc<Notify>,
     /// Whether the socket is up, for the poller's interval.
-    pub up: Arc<watch::Sender<bool>>,
+    pub(crate) up: Arc<watch::Sender<bool>>,
 }
 
 impl LiveContext {
@@ -96,7 +96,7 @@ impl LiveContext {
 }
 
 /// The running live task of one account.
-pub struct Live {
+pub(crate) struct Live {
     wake: Arc<Notify>,
     /// `None` once it has been waited for.
     task: Option<tokio::task::JoinHandle<()>>,
@@ -111,17 +111,17 @@ impl Live {
     }
 
     /// What wakes the task ([`wake`](Self::wake)), for whoever does not own it.
-    pub fn waker(&self) -> Arc<Notify> {
+    pub(crate) fn waker(&self) -> Arc<Notify> {
         Arc::clone(&self.wake)
     }
 
     /// The pause, the hold or the network may have changed: the task looks again at once.
-    pub fn wake(&self) {
+    pub(crate) fn wake(&self) {
         self.wake.notify_one();
     }
 
     /// Waits for the task, once its token is cancelled.
-    pub async fn join(&mut self) {
+    pub(crate) async fn join(&mut self) {
         if let Some(task) = self.task.as_mut() {
             let _ = task.await;
             self.task = None;

@@ -1,4 +1,4 @@
 pub mod baloo;
 pub mod dirnotify;
-pub mod thumbs;
+pub(crate) mod thumbs;
 

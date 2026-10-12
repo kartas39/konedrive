@@ -72,7 +72,7 @@ impl SyncService {
     /// has. The folder is not brought up, `State` reads `error`,
     /// `LastError` says why, and a registration is refused the same way. The folder it
     /// records is held as recorded, for a Forget.
-    pub async fn hold_back(&self, why: &str) {
+    pub(crate) async fn hold_back(&self, why: &str) {
         let message = format!("this account is held back: {why}; correct config.toml and start konedrived again");
         tracing::warn!("{message}");
         let mut stopped = self.change().await;

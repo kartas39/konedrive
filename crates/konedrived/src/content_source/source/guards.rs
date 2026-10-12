@@ -31,9 +31,9 @@ pub(super) const BUFFER: usize = 256 * 1024;
 pub(super) struct Tuning {
     /// The bytes between two checkpoints; `None` for a download that makes none
     /// (`download_into`: a file nobody else can see does not survive a crash).
-    pub checkpoint_every: Option<u64>,
+    pub(crate) checkpoint_every: Option<u64>,
     /// The pause after the first break.
-    pub back_off: Duration,
+    pub(crate) back_off: Duration,
 }
 
 impl Default for Tuning {
