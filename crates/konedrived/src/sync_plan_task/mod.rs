@@ -43,9 +43,9 @@
 //!
 //! **How many steps run at once** (one per item): of the rows, all at once, in the plan's
 //! order; towards the folder, as they come — each is one job of the write-operation
-//! thread, which runs one at a time; downloads of pinned files, as the pool's download
-//! slots allow; towards OneDrive, content as the pool's upload slots allow and the rest
-//! one at a time. What holds all sending holds the last two, and a pause and a sign-out
+//! thread, which runs one at a time; downloads of pinned files, as many as the pool has
+//! slots and a few more, which wait at the pool (`step_choice::STEPS_BEYOND_SLOTS`);
+//! towards OneDrive, content likewise and the rest one at a time. What holds all sending holds the last two, and a pause and a sign-out
 //! the downloads; while OneDrive is full no content is started.
 //!
 //! **What wakes it** (`WakeCause`): a local version written by the mount; a listing's
@@ -690,12 +690,12 @@ impl SyncPlanTask {
         Ok(round)
     }
 
-    /// How many steps of each class may run at once: as many uploads and downloads as the
-    /// pool has slots for (the map's F19), and one for the metadata. A count only: no
-    /// slot is taken by the task.
+    /// How many steps of each class may run at once (`step_choice::decide_step_limits`):
+    /// a few more uploads and downloads than the pool has slots for now, so that some
+    /// wait at the pool and it can grow, and one for the metadata. A count only: no slot
+    /// is taken by the task.
     fn read_step_limits(&self) -> StepLimits {
-        let slot_count = self.parts.pool.size();
-        StepLimits { content: slot_count, metadata: 1, download: slot_count }
+        step_choice::decide_step_limits(self.parts.pool.size())
     }
 
     /// The steps that ended since the loop last took them.

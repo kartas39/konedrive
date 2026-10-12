@@ -11,6 +11,7 @@
 // test: nothing_towards_onedrive_is_started_while_sending_is_held
 // test: a_step_one_of_whose_rows_has_a_running_step_is_not_started
 // test: the_steps_are_started_in_the_order_the_plan_gave_them
+// test: a_few_more_uploads_and_downloads_are_started_than_the_pool_has_slots (`sync_plan_task/tests.rs`)
 
 use std::collections::BTreeSet;
 
@@ -18,17 +19,32 @@ use konedrive_tree::{FolderStep, LocalItemId, OneDriveStep, RowStep, SyncStep};
 
 use crate::sync_parts::running_steps::{RunningStep, StepClass};
 
+/// How many uploads, and how many downloads, are started beyond the slots the account's
+/// transfer pool has: they wait at the pool for a slot. The pool grows only while a
+/// transfer waits there, and the files still to move are rows of the store, which it
+/// never sees: with exactly as many steps started as there are slots it stayed at its
+/// start for good. A choice: one waiter is enough for the pool to grow on a success; four
+/// are there so that the transfers that end before the plan's next round started their
+/// successors each still find one waiting, and a freed slot is taken at once.
+pub const STEPS_BEYOND_SLOTS: usize = 4;
+
 /// How many steps of each bounded class run at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StepLimits {
-    /// As many as the account's transfer pool has upload slots: counted here, taken by
-    /// the content upload.
+    /// The pool's slots and [`STEPS_BEYOND_SLOTS`]: counted here; the slot is taken by
+    /// the content upload, which waits for it.
     pub content: usize,
     /// One, as today's worker sends what is not content one at a time.
     pub metadata: usize,
-    /// As many as the pool has download slots for pinned files: counted here, taken by
-    /// the downloader, and by nobody else.
+    /// The pool's slots and [`STEPS_BEYOND_SLOTS`]: counted here; the slot is taken by
+    /// the downloader, which waits for it.
     pub download: usize,
+}
+
+/// The limits for a pool of `slot_count` slots. Pure.
+pub fn decide_step_limits(slot_count: usize) -> StepLimits {
+    let transfer_count = slot_count + STEPS_BEYOND_SLOTS;
+    StepLimits { content: transfer_count, metadata: 1, download: transfer_count }
 }
 
 /// What starts now.

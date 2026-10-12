@@ -280,3 +280,50 @@ fn a_refresh_reads_the_quota_once_and_a_quota_read_by_another_is_not_read_again(
         assert_eq!(task_fixture.quota_read_count.load(Ordering::SeqCst), 1);
     });
 }
+
+#[test]
+fn a_few_more_uploads_and_downloads_are_started_than_the_pool_has_slots() {
+    let limits = step_choice::decide_step_limits(16);
+    assert_eq!(limits, StepLimits { content: 16 + step_choice::STEPS_BEYOND_SLOTS, metadata: 1, download: 16 + step_choice::STEPS_BEYOND_SLOTS });
+}
+
+/// Moves `file_count` files through `pool` as the plan's task has its downloads run: as
+/// many at once as `decide_step_limits` allows for the pool's size at the time, each
+/// waiting for its slot, taking its time (each file another, by the runtime's clock, as
+/// files of many sizes do), succeeding and letting the slot go.
+async fn download_files(pool: &Arc<TransferPool>, file_count: usize) {
+    let mut left = file_count;
+    let mut running = tokio::task::JoinSet::new();
+    while left > 0 || !running.is_empty() {
+        while left > 0 && running.len() < step_choice::decide_step_limits(pool.size()).download {
+            left -= 1;
+            let pool = Arc::clone(pool);
+            running.spawn(async move {
+                let mut slot = pool.acquire(konedrive_graph::pool::Class::Download).await;
+                tokio::time::sleep(Duration::from_millis(50 + (left as u64 * 37) % 100)).await;
+                slot.succeeded();
+            });
+        }
+        // A round of the plan: every download that ended is taken off before the next
+        // ones are started.
+        running.join_next().await;
+        while running.try_join_next().is_some() {}
+    }
+}
+
+/// With more files to download than the pool has slots, and no throttle, the pool grows
+/// to its ceiling: the steps started beyond the slots wait at the pool, which is how it
+/// learns of them. With no more files than slots it stays as it started.
+#[tokio::test(start_paused = true)]
+async fn the_pool_reaches_its_ceiling_while_there_is_work_beyond_its_slots_and_not_without() {
+    use konedrive_graph::pool::{DEFAULT_CEILING, START};
+    let pool = TransferPool::new(DEFAULT_CEILING);
+    download_files(&pool, 1329).await;
+    assert_eq!(pool.size(), DEFAULT_CEILING);
+
+    let pool = TransferPool::new(DEFAULT_CEILING);
+    for _ in 0..10 {
+        download_files(&pool, START).await;
+    }
+    assert_eq!(pool.size(), START, "nothing ever waited for a slot");
+}
