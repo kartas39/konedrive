@@ -176,7 +176,7 @@ impl QueueState {
 /// The state of the sending as a whole, as an entry is described under it: read once per
 /// answer of the bus ([`read_queue_conditions`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct QueueConditions {
+pub struct QueueConditions {
     /// The hold that is shown (`SendingHolds::find`): the first that holds. The entries
     /// read `paused` while it is `SendingHold::Paused`, and under no other hold: while
     /// the account is signed out, may not write, is throttled or has not ended its first
@@ -200,7 +200,7 @@ pub(crate) fn describe_stopped_sync() -> QueueConditions {
 /// An unsent item with the sources read for it. It has no path: the counts need none,
 /// and what lists files reads the paths of those it lists ([`read_entry_paths`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UnsentEntry {
+pub struct UnsentEntry {
     pub(crate) item: Item,
     /// `None` for an item the last plan was not given.
     pub(crate) answer: Option<ItemAnswer>,
@@ -357,7 +357,7 @@ pub fn describe_queue_change(entry: &UnsentEntry, path: &Path, sending: &QueueCo
 /// `QuotaWaitingCount`/`Bytes`, `TooBigCount`; `too_big_bytes` is on no
 /// member of the bus and is taken off what is left to upload (`status::totals`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct QueueCounts {
+pub struct QueueCounts {
     pub(crate) pending: u32,
     pub(crate) pending_bytes: u64,
     pub(crate) blocked: u32,

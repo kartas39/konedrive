@@ -116,7 +116,7 @@ impl ListingPoller {
         // Whether the notification socket is up: the live task says, the poller's task reads.
         let up = Arc::new(watch::channel(false).0);
         let live = schedule.live.clone().map(|timing| {
-            let context = LiveContext { drive: cycle.drive().clone(), store: cycle.store().clone(), running: Arc::clone(&running), state: cycle.state().clone(), refresh: Arc::clone(&refresh), up: Arc::clone(&up) };
+            let context = LiveContext { drive: cycle.drive().clone(), running: Arc::clone(&running), state: cycle.state().clone(), refresh: Arc::clone(&refresh), up: Arc::clone(&up) };
             Live::start(context, timing, cancel.clone())
         });
         let task = tokio::spawn(run_cycles(Arc::clone(&cycle), schedule, running, Arc::clone(&refresh), cancel.clone(), up.subscribe()));

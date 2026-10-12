@@ -10,7 +10,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use konedrive_graph::oauth::Endpoints;
 
-use crate::account::secret::{SecretError, SecretStore, Slot, Wallet, V1_LABEL};
+#[cfg(test)]
+use crate::account::secret::V1_LABEL;
+use crate::account::secret::{SecretError, SecretStore, Slot, Wallet};
 use crate::account::AccountService;
 use crate::config::{ConfigStore, Paths, MIGRATED_LABEL};
 
@@ -42,6 +44,7 @@ pub struct MemoryWallet {
 
 impl MemoryWallet {
     /// A wallet holding version 1's item, as the single-account daemon left it.
+    #[cfg(test)]
     pub(crate) fn with_v1(token: &str) -> Self {
         let wallet = Self::default();
         wallet.items.lock().unwrap().insert(Slot::V1, (V1_LABEL.into(), token.to_owned()));

@@ -162,6 +162,7 @@ impl SecretServiceWallet {
     }
 
     /// Other `kind` attributes keep test items apart from the real tokens.
+    #[cfg(test)]
     pub(crate) fn for_tests() -> Self {
         Self { v1_kind: "test-refresh-token", account_kind: "test-account-refresh-token" }
     }

@@ -32,7 +32,7 @@ use tokio::task::AbortHandle;
 
 /// What kind of step it is: what bounds how many run at once, and what a stop does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum StepClass {
+pub enum StepClass {
     /// Towards OneDrive, sending a file's content: in the pool's upload slots. Held by
     /// what holds all sending.
     Content,
@@ -50,7 +50,7 @@ pub(crate) enum StepClass {
 
 /// A step that runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RunningStep {
+pub struct RunningStep {
     pub(crate) class: StepClass,
     /// The item the step is of (`SyncStep::local_item_id`).
     pub(crate) item: LocalItemId,

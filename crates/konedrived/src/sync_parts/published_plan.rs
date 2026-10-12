@@ -26,7 +26,7 @@ use super::running_steps::StepClass;
 
 /// What the plan answers for one item.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ItemAnswer {
+pub enum ItemAnswer {
     /// A step of this class is planned and can run.
     Planned(StepClass),
     /// It waits, as the plan said: for another item, a time, the user, a running step, a

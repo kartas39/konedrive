@@ -66,6 +66,7 @@ impl Transfers {
     }
 
     /// Every download under way, oldest first.
+    #[cfg(test)]
     pub(crate) fn list(&self) -> Vec<Transfer> {
         self.tx.borrow().values().cloned().collect()
     }

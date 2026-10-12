@@ -224,11 +224,6 @@ impl ListingCycle {
         &self.drive
     }
 
-    /// The folder's store, for the live task.
-    pub(super) fn store(&self) -> &Store {
-        &self.store
-    }
-
     /// The folder's published state, for the live task and the poller's stop.
     pub(super) fn state(&self) -> &SyncStateHandle {
         &self.state

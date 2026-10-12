@@ -8,7 +8,7 @@ use crate::dbus::fault::Fault;
 use crate::daemon::manager::AccountManager;
 
 /// `org.konedrive.Accounts` (`dbus/org.konedrive.Accounts.xml`).
-pub(crate) struct Accounts {
+pub struct Accounts {
     pub(crate) manager: Arc<AccountManager>,
 }
 

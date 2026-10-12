@@ -87,6 +87,7 @@ fn not_a_directory(path: &Path) -> RegisterError {
 ///
 /// The write probe (`probe_dir`, `konedrive_fs::probe`) runs *here* and
 /// nowhere else.
+#[cfg(test)]
 pub(crate) fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {
     let dir = open_root_dir(path)?;
     check_root_dir(&dir, path)

@@ -229,7 +229,7 @@ pub(crate) struct SyncTrouble {
 
 /// The kinds of [`SyncTrouble`] that the account's overall state tells apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TroubleKind {
+pub enum TroubleKind {
     /// OneDrive cannot be reached: the account reads offline when nothing else is wrong.
     Unreachable,
     /// Anything else.

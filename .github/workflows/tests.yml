@@ -61,6 +61,10 @@ jobs:
       - name: Test the daemon
         run: cargo test --locked -p konedrived -p konedrive-graph -p konedrive-reason -p konedrive-tree --lib --features konedrived/dev-tools
 
+      # Nothing in the daemon that nothing calls (issue #262).
+      - name: Check for dead code in the daemon
+        run: scripts/check-dead-code.sh
+
   # The window and the Dolphin plugins, with the libraries the packages are
   # built with. Their tests use private buses and an offscreen display.
   window:

@@ -129,6 +129,7 @@ impl ThumbnailFiller {
 
     /// Makes up to `limit` missing thumbnails, a request starting whenever
     /// [`decide_request_start`] lets one.
+    #[cfg(test)]
     pub(crate) async fn run_once(&self, cancel: &CancellationToken, limit: usize) -> RunOutcome {
         self.run_from(cancel, limit, None).await.0
     }

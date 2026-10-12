@@ -32,7 +32,6 @@ use crate::status::snapshot::{LiveChanges, SyncStateHandle};
 
 use konedrive_graph::drive::socket::{Heard, NotificationSocket, SocketEndpoint};
 use konedrive_graph::drive::DriveClient;
-use konedrive_tree::Store;
 
 /// The live task's waits.
 #[derive(Debug, Clone)]
@@ -72,7 +71,6 @@ impl Default for Timing {
 /// poller's wake-up and the flag the poller reads.
 pub(crate) struct LiveContext {
     pub(crate) drive: DriveClient,
-    pub(crate) store: Store,
     pub(crate) running: Arc<Running>,
     pub(crate) state: SyncStateHandle,
     /// The poller's `refresh`: a cycle now.

@@ -62,11 +62,13 @@ pub(crate) struct ManualClock {
 
 impl ManualClock {
     /// A clock that reads `start` (unix seconds).
+    #[cfg(test)]
     pub fn at(start: i64) -> Arc<Self> {
         Arc::new(Self { now: watch::Sender::new(start) })
     }
 
     /// Moves the clock ahead by `seconds`, and wakes whoever waited for less.
+    #[cfg(test)]
     pub(crate) fn advance(&self, seconds: i64) {
         self.now.send_modify(|now| *now += seconds);
     }
@@ -110,6 +112,7 @@ impl Account {
     }
 
     /// The account's state: a test signs it in or out, or changes its mode, here.
+    #[cfg(test)]
     pub(crate) fn state(&self) -> &StateHandle {
         &self.state
     }
@@ -210,13 +213,12 @@ impl ContentSource for Replaceable {
 
 /// What a test's service was made with, for the test to act on: found again by
 /// [`parts`].
+// Read by this crate's tests alone; a build for another crate's tests only keeps them alive.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone)]
 pub(crate) struct Parts {
     pub(crate) account: Arc<Account>,
     pub(crate) persist: Persist,
-    pub(crate) sources: Arc<Sources>,
-    /// `None`: the service runs on the system's clock.
-    pub(crate) clock: Option<Arc<ManualClock>>,
     /// The directory of a `config.toml` made for the service, kept as long as its parts.
     _config: Option<Arc<tempfile::TempDir>>,
 }
@@ -225,6 +227,7 @@ pub(crate) struct Parts {
 static MADE: Mutex<Vec<(Weak<SyncService>, Parts)>> = Mutex::new(Vec::new());
 
 /// What `service` was made with. It was made by [`Builder::build`].
+#[cfg(test)]
 pub(crate) fn parts(service: &SyncService) -> Parts {
     let made = MADE.lock().unwrap();
     let found = made.iter().find(|(made, _)| std::ptr::eq(made.as_ptr(), service));
@@ -273,6 +276,7 @@ impl Builder {
     }
 
     /// The account's pause is kept by `clock`.
+    #[cfg(test)]
     pub(crate) fn clock(mut self, clock: &Arc<ManualClock>) -> Self {
         self.clock = Some(Arc::clone(clock));
         self
@@ -280,6 +284,7 @@ impl Builder {
 
     /// The desktop's programs are told on `connection`, a private bus of the test's: without
     /// it the service tells the desktop nothing.
+    #[cfg(test)]
     pub(crate) fn desktop_bus(mut self, connection: zbus::Connection) -> Self {
         self.desktop_bus = Some(connection);
         self
@@ -318,7 +323,7 @@ impl Builder {
         }
         let service = SyncService::new(wiring);
         registry.add(&service);
-        let parts = Parts { account, persist, sources, clock: self.clock, _config: config };
+        let parts = Parts { account, persist, _config: config };
         let mut made = MADE.lock().unwrap();
         made.retain(|(service, _)| service.strong_count() > 0);
         made.push((Arc::downgrade(&service), parts));

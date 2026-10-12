@@ -80,7 +80,7 @@ pub trait Bus: Send + Sync {
 
 /// A path that is in no account's folder ([`AccountManager::route_all`]).
 #[derive(Debug)]
-pub(crate) struct Outside(pub String);
+pub struct Outside(pub String);
 
 /// One account: its sign-in, its folder, and the tasks that turn their state into
 /// `PropertiesChanged`.

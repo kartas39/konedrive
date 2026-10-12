@@ -34,7 +34,9 @@ use tokio::sync::watch;
 
 use crate::status::report::Report;
 use crate::folder::root::{RegisterError, SyncRoot};
-use crate::status::snapshot::{published_error, published_state, SyncSnapshot, SyncStateHandle};
+#[cfg(test)]
+use crate::status::snapshot::{published_error, published_state};
+use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
 use crate::conditions::running;
 use crate::content_source::source;
 use crate::local;
@@ -324,11 +326,13 @@ impl SyncService {
     }
 
     /// `RootState` as published ([`published_state`]).
+    #[cfg(test)]
     pub(crate) fn root_state(&self) -> String {
         published_state(&self.state.get()).to_owned()
     }
 
     /// `LastError` as published ([`published_error`]).
+    #[cfg(test)]
     pub(crate) fn last_error(&self) -> String {
         published_error(&self.state.get())
     }

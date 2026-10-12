@@ -50,6 +50,7 @@ impl LocalSpace {
         Self { kick: Arc::new(Notify::new()), state, measure, task: Mutex::new(None), at: Arc::default(), enabled: true }
     }
 
+    #[cfg(test)]
     pub(super) fn inert(state: SyncStateHandle) -> Self {
         let mut space = Self::new(state);
         space.enabled = false;

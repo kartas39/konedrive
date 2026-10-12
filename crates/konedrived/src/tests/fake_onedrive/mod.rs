@@ -265,12 +265,14 @@ impl Cloud {
     }
 
     /// As [`throttle`](Self::throttle), answering `429 Too Many Requests`.
+    #[cfg(test)]
     pub(crate) fn throttle_429(&mut self, method: &str, fragment: &str, pass: u32, seconds: u32, times: u32) {
         self.throttles.push((method.into(), fragment.into(), pass, seconds, times, 429));
     }
 
     /// The names the open sessions' empty placeholders hold, `a/b/c` below
     /// the root, sorted.
+    #[cfg(test)]
     pub(crate) fn placeholders(&self) -> Vec<String> {
         let mut out: Vec<String> = self
             .placeholders
@@ -285,6 +287,7 @@ impl Cloud {
     }
 
     /// How many upload sessions are open.
+    #[cfg(test)]
     pub(crate) fn open_sessions(&self) -> usize {
         self.sessions.len()
     }
@@ -303,6 +306,7 @@ impl Cloud {
     }
 
     /// How many times the quota was read (`GET me/drive`).
+    #[cfg(test)]
     pub(crate) fn quota_reads(&self) -> usize {
         self.log.iter().filter(|(m, p)| m == "GET" && p == "me/drive").count()
     }
@@ -311,6 +315,7 @@ impl Cloud {
     /// another device (or abandoned by an older version): its placeholder
     /// holds the name, and nothing of this folder knows it — made `age`
     /// seconds ago. Its id.
+    #[cfg(test)]
     pub(crate) fn open_elsewhere(&mut self, parent: &str, name: &str, age: i64) -> String {
         self.open_session(Target::New { parent: parent.into(), name: name.into() }, &json!({ "item": {} }));
         self.created.insert(format!("P{}", self.counter), crate::clock::unix_now() - age);
@@ -332,6 +337,7 @@ impl Cloud {
     }
 
     /// Every open upload session expires: its URL answers `404` from now on.
+    #[cfg(test)]
     pub(crate) fn expire_sessions(&mut self) {
         self.sessions.clear();
         self.placeholders.clear();

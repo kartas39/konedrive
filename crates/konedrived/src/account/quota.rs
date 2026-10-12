@@ -80,7 +80,7 @@ pub(crate) type Keep = Arc<dyn Fn(&AccountSnapshot) + Send + Sync>;
 
 /// The account's one quota. Cheap to clone: every clone is the same quota.
 #[derive(Clone)]
-pub(crate) struct Quota {
+pub struct Quota {
     state: StateHandle,
     keep: Option<Keep>,
 }
@@ -92,6 +92,7 @@ impl Quota {
     }
 
     /// A quota of its own, kept nowhere: for a folder with no account (tests).
+    #[cfg(test)]
     pub(crate) fn detached() -> Self {
         Self::new(StateHandle::new(AccountSnapshot::default()), None)
     }

@@ -82,7 +82,7 @@ impl FreeUpWhy {
 
 /// The answer of `Files.Menu`, under the names of its keys.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Menu {
+pub struct Menu {
     /// The selected paths `Pin` takes, in the order given: what `Pin`, `Unpin` or
     /// `FreeUp` is then called with.
     pub(crate) paths: Vec<String>,
