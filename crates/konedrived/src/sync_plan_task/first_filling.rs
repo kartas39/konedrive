@@ -6,7 +6,7 @@
 //! two events of the folder instead, one when the filling begins in this run
 //! (`ActivityKind::FirstSyncBegan`) and one when it ends (`ActivityKind::FirstSyncEnded`).
 //!
-//! **State owned:** how far the filling is ([`FirstFillingProgress`]), for the life of the
+//! **State owned:** how far the filling is (`FirstFillingProgress`), for the life of the
 //! task's run. Set when the run begins, from whether the store says a listing ever ended
 //! (`TreeStore::last_checked`); changed by the plan's loop alone, at
 //! `WakeCause::ListingEnded` and after each plan.
