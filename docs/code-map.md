@@ -441,6 +441,8 @@ Baloo, KDE's directory notifications and thumbnails.
 - `dirnotify.rs` — telling KDE's programs to read directories again (`org.kde.KDirNotify`).
 - `thumbs.rs` — thumbnails from OneDrive, written into the freedesktop thumbnail cache.
   `[tests]`
+- `thumbs/request_start.rs` — `decide_request_start`: whether a thumbnail request may start
+  now. `[tests]`
 
 ### `crates/konedrived/src/upload_queue/`
 

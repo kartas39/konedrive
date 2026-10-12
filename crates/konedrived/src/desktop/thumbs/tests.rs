@@ -173,3 +173,107 @@ async fn a_filler_that_is_told_to_stop_asks_for_nothing_more() {
     assert_eq!(made.written, 0);
     assert!(w.server.received_requests().await.unwrap().is_empty());
 }
+
+/// The requests Graph was asked for thumbnails.
+async fn asked_count(w: &World) -> usize {
+    w.server.received_requests().await.unwrap().len()
+}
+
+/// A run that would wait for its turn is given a quarter of a second, then stopped.
+async fn run_briefly(filler: &ThumbnailFiller) -> RunOutcome {
+    let stop = CancellationToken::new();
+    let stopper = {
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            stop.cancel();
+        })
+    };
+    let made = filler.run_once(&stop, 100).await;
+    stopper.abort();
+    made
+}
+
+/// No more than `REQUESTS_AT_ONCE` requests are under way together, however many
+/// candidates there are and however many slots the pool has free; none takes a slot.
+#[tokio::test]
+async fn a_few_thumbnails_are_asked_for_at_once_and_none_takes_a_slot_of_the_pool() {
+    let names: Vec<String> = (0..5).map(|i| format!("p{i}.jpg")).collect();
+    let files: Vec<(&str, &str)> = names.iter().map(|name| (name.as_str(), "image/jpeg")).collect();
+    let w = world(&files).await;
+    // Each answer takes long enough for the first two to be under way together, and for
+    // the filler to ask once more whether the third may start.
+    Mock::given(method("GET")).and(path_regex(r"^/me/drive/items/p\d\.jpg/thumbnails/0/c512x512/content$")).respond_with(ResponseTemplate::new(404).set_delay(Duration::from_millis(600))).mount(&w.server).await;
+    let filler = Arc::new(w.filler());
+    let pool = Arc::clone(filler.drive.pool());
+    let run = {
+        let filler = Arc::clone(&filler);
+        tokio::spawn(async move { filler.run_once(&CancellationToken::new(), 100).await })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(asked_count(&w).await, request_start::REQUESTS_AT_ONCE, "the rest wait for these");
+    assert_eq!(pool.held(Class::Download), 0, "a thumbnail takes no slot");
+    assert_eq!(run.await.unwrap().taken, 5);
+    assert_eq!(asked_count(&w).await, 5, "each was asked in its turn");
+    assert_eq!(pool.size(), konedrive_graph::pool::START, "and none made the pool grow");
+}
+
+/// While a listing is under way nothing is asked, and the run ends at once: the
+/// listing's end nudges the filler.
+#[tokio::test]
+async fn nothing_is_asked_while_a_listing_is_under_way() {
+    let w = world(&[("p.jpg", "image/jpeg")]).await;
+    w.fixture.write_rows(|store| store.item_store().begin_delta_listing().map(|_| ()));
+    let filler = w.filler();
+    let (made, next) = filler.run_from(&CancellationToken::new(), 1, None).await;
+    assert_eq!((made.written, next), (0, None), "the drain ends here");
+    assert_eq!(asked_count(&w).await, 0);
+}
+
+/// Before a full listing ended (the store has no delta link) nothing is asked.
+#[tokio::test]
+async fn nothing_is_asked_before_the_first_listing_ended() {
+    let w = world(&[("p.jpg", "image/jpeg")]).await;
+    w.fixture.write_rows(|store| store.item_store().begin_full_listing().map(|_| ()));
+    assert_eq!(w.filler().run_once(&CancellationToken::new(), 100).await.written, 0);
+    assert_eq!(asked_count(&w).await, 0);
+}
+
+/// Thumbnails give way: none is asked while a file is being opened, while a transfer
+/// waits for a slot of the pool, or during a throttle's wait.
+#[tokio::test]
+async fn nothing_is_asked_while_a_file_is_opened_a_transfer_waits_or_onedrive_throttles() {
+    let w = world(&[("p.jpg", "image/jpeg")]).await;
+    let filler = w.filler();
+    let pool = Arc::clone(filler.drive.pool());
+
+    let opened = pool.acquire(Class::Open).await;
+    run_briefly(&filler).await;
+    assert_eq!(asked_count(&w).await, 0, "a file is being opened");
+    drop(opened);
+
+    let mut downloads = Vec::new();
+    for _ in 0..pool.size() {
+        downloads.push(pool.acquire(Class::Download).await);
+    }
+    let waiting = {
+        let pool = Arc::clone(&pool);
+        tokio::spawn(async move { pool.acquire(Class::Upload).await })
+    };
+    while !pool.waiting() {
+        tokio::task::yield_now().await;
+    }
+    run_briefly(&filler).await;
+    assert_eq!(asked_count(&w).await, 0, "an upload waits for a slot");
+    waiting.abort();
+    let _ = waiting.await;
+    run_briefly(&filler).await;
+    assert_eq!(asked_count(&w).await, 1, "every slot busy and nothing waiting: a thumbnail needs no slot");
+    drop(downloads);
+
+    let w = world(&[("p.jpg", "image/jpeg")]).await;
+    let filler = w.filler();
+    filler.drive.pool().throttled(Some(Duration::from_secs(300)));
+    run_briefly(&filler).await;
+    assert_eq!(asked_count(&w).await, 0, "OneDrive asked to wait");
+}
