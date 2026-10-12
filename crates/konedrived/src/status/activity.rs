@@ -67,15 +67,6 @@ pub fn failure_reason(errno: i32) -> String {
     }
 }
 
-/// `n items`, `1 item`: a `listed` event's detail.
-pub fn items(n: u64) -> String {
-    if n == 1 {
-        "1 item".to_owned()
-    } else {
-        format!("{n} items")
-    }
-}
-
 /// At most `per_kind` events of each kind, in the order they
 /// came, then — for each kind that had more — one event of that kind at
 /// `root` saying "and N more", in the order the kinds first appeared.
