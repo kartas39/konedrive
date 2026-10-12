@@ -36,7 +36,7 @@ pub(crate) struct LocalSpace {
     /// mount that serves it. A walk through the mount would ask the mount
     /// about every name of the drive.
     at: Arc<Mutex<Option<std::path::PathBuf>>>,
-    /// False for a report that reports nowhere ([`Report::nowhere`](crate::status::report::Report::nowhere)): no
+    /// False for a report that reports nowhere (`Report::nowhere`): no
     /// walker is ever started for it.
     enabled: bool,
 }

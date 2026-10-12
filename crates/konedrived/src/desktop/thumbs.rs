@@ -134,7 +134,7 @@ impl ThumbnailFiller {
         self.run_from(cancel, limit, None).await.0
     }
 
-    /// [`run_once`](Self::run_once) over the candidates after the item `after`
+    /// `run_once` over the candidates after the item `after`
     /// (`ItemReader::list_thumbnail_candidates`, by local item id);
     /// with the item the next batch goes on from, `None` once every candidate
     /// has been looked at.
