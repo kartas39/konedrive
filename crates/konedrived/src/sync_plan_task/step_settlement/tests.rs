@@ -195,3 +195,13 @@ fn a_written_step_is_said_in_the_journal_without_the_path_of_its_event() {
     assert_eq!(super::super::step_choice::find_step_name(&send_content(unsent(2, 7))), "SendContent");
     assert_eq!(super::super::step_choice::find_step_name(&SyncStep::Folder(FolderStep::DownloadContent { item: not_unsent(2) })), "DownloadContent");
 }
+
+#[test]
+fn the_first_filling_logs_no_item_shown_and_every_other_event() {
+    let event = |kind| StepEvent { kind, path: "a.txt".into(), former_path: None };
+    let events = [event(ActivityKind::Added), event(ActivityKind::Downloaded), event(ActivityKind::Conflict), event(ActivityKind::Added)];
+    assert_eq!(decide_events_to_log(&events, 0, true), [event(ActivityKind::Downloaded), event(ActivityKind::Conflict)]);
+    assert_eq!(decide_events_to_log(&events, 0, false), events);
+    // The cap per listing is of what OneDrive changed alone.
+    assert_eq!(decide_events_to_log(&events, crate::status::activity::PER_KIND, false), [event(ActivityKind::Downloaded), event(ActivityKind::Conflict)]);
+}

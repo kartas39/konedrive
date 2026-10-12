@@ -88,7 +88,8 @@ private Q_SLOTS:
         start();
         for (const QString &kind : {QStringLiteral("downloaded"), QStringLiteral("freed"), QStringLiteral("added"), QStringLiteral("updated"),
                                     QStringLiteral("removed"), QStringLiteral("moved"), QStringLiteral("listed"), QStringLiteral("uploaded"),
-                                    QStringLiteral("cloud-moved"), QStringLiteral("cloud-deleted"), QStringLiteral("restored")}) {
+                                    QStringLiteral("cloud-moved"), QStringLiteral("cloud-deleted"), QStringLiteral("restored"),
+                                    QStringLiteral("first-sync-began"), QStringLiteral("first-sync-ended")}) {
             report(kind, QStringLiteral("a.txt"), QString());
         }
         QCOMPARE(m_sink.sent.size(), 0);

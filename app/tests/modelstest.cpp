@@ -80,7 +80,8 @@ private Q_SLOTS:
         QCOMPARE(uploadReasonText(QStringLiteral("blocked")), QStringLiteral("KOneDrive's record of this change is incomplete (blocked): it stays here until the file is changed again."));
         QCOMPARE(uploadReasonText(QStringLiteral("not allowed now: the folder is read-only")), QStringLiteral("Uploads are not allowed now: it goes on when they are (the folder is read-only)."));
         for (const QString &kind : {QStringLiteral("uploaded"), QStringLiteral("cloud-moved"), QStringLiteral("cloud-deleted"), QStringLiteral("restored"),
-                                    QStringLiteral("not-uploaded"), QStringLiteral("not-removed-here"), QStringLiteral("store-rebuilt")}) {
+                                    QStringLiteral("not-uploaded"), QStringLiteral("not-removed-here"), QStringLiteral("store-rebuilt"),
+                                    QStringLiteral("first-sync-began"), QStringLiteral("first-sync-ended")}) {
             QVERIFY2(ActivityModel::describe(kind, QString()) != kind, qPrintable(kind));
         }
         // A store that was made anew and lost something: the folder's row, the daemon's sentence as its detail, a warning.
