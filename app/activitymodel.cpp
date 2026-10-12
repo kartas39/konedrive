@@ -54,8 +54,12 @@ QString ActivityModel::describe(const QString &kind, const QString &detail)
     if (kind == QLatin1String("moved")) {
         return i18nc("@info activity", "Moved in OneDrive");
     }
-    if (kind == QLatin1String("listed")) {
-        return i18nc("@info activity", "Listed");
+    if (kind == QLatin1String("first-sync-began")) {
+        // The path is the folder: one row for its first filling, none per item.
+        return i18nc("@info activity", "First sync started");
+    }
+    if (kind == QLatin1String("first-sync-ended")) {
+        return i18nc("@info activity", "First sync finished");
     }
     if (kind == QLatin1String("store-rebuilt")) {
         // The path is the folder; the detail says what was lost with the old records.
@@ -155,8 +159,11 @@ QVariant ActivityModel::data(const QModelIndex &index, int role) const
         if (row.kind == QLatin1String("removed")) {
             return QStringLiteral("edit-delete");
         }
-        if (row.kind == QLatin1String("listed")) {
-            return QStringLiteral("view-list-details");
+        if (row.kind == QLatin1String("first-sync-began")) {
+            return QStringLiteral("view-refresh");
+        }
+        if (row.kind == QLatin1String("first-sync-ended")) {
+            return QStringLiteral("checkmark");
         }
         return QStringLiteral("cloud-download");
     }

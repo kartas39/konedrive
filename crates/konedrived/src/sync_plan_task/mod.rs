@@ -104,6 +104,8 @@ use crate::sync_parts::onedrive_space::{OneDriveSpace, SpaceChange};
 use crate::onedrive_steps::session_cancellations::SessionCancellations;
 use crate::sync_parts::sending_holds::{SendingHold, SendingHolds};
 
+/// The first filling of a folder: no event per item shown, one at its start and its end.
+pub mod first_filling;
 /// The failed tries of the steps towards the folder and of the rows, kept for the run.
 pub mod local_step_tries;
 /// Whether a pinned file may be missing its content.
@@ -119,6 +121,7 @@ pub mod step_runners;
 /// What is written and asked for after a step, by what came of it.
 pub mod step_settlement;
 
+use first_filling::{FirstFilling, FirstFillingFact};
 use local_step_tries::{LocalStep, LocalStepTries};
 use missing_pinned_files::MissingPinnedFiles;
 use plan_input::{DaemonFacts, PlanSettings, PlannedRound};
@@ -205,6 +208,8 @@ pub struct SyncPlanTask {
     /// what `step_settlement::decide_events_to_log` caps by. Set to 0 at
     /// `WakeCause::ListingEnded`.
     logged_since_listing_ended: AtomicUsize,
+    /// The first filling of the folder (`FirstFilling`). Changed by the loop alone.
+    first_filling: FirstFilling,
     /// The failed tries the task keeps itself, for this run (`LocalStepTries`).
     /// Changed by the loop alone: when a plan is made, to what the rows of that plan's
     /// reading still say (`PlannedRound::local_step_tries`); at a settlement
@@ -335,7 +340,7 @@ pub fn decide_next_wake(plan: &SyncPlan, hold_end: Option<i64>, next_quota_read:
 impl SyncPlanTask {
     /// Made by the folder's start (`sync_tasks::start_order::start_sync_tasks`).
     pub fn new(parts: SyncPlanTaskParts) -> Arc<Self> {
-        Arc::new(SyncPlanTask { parts, logged_since_listing_ended: AtomicUsize::new(0), local_step_tries: std::sync::Mutex::new(LocalStepTries::default()), missing_pinned_files: MissingPinnedFiles::new(), ended_steps: std::sync::Mutex::default(), told_faults: std::sync::Mutex::default(), full_listings_asked: std::sync::Mutex::default(), plan_count: AtomicU64::new(0), quota_read_failed_at: std::sync::Mutex::new(None), session_cancellations_task: std::sync::Mutex::new(None), queue_counts: std::sync::Mutex::default(), next_cleaning_try: std::sync::Mutex::new(None) })
+        Arc::new(SyncPlanTask { parts, logged_since_listing_ended: AtomicUsize::new(0), first_filling: FirstFilling::new(), local_step_tries: std::sync::Mutex::new(LocalStepTries::default()), missing_pinned_files: MissingPinnedFiles::new(), ended_steps: std::sync::Mutex::default(), told_faults: std::sync::Mutex::default(), full_listings_asked: std::sync::Mutex::default(), plan_count: AtomicU64::new(0), quota_read_failed_at: std::sync::Mutex::new(None), session_cancellations_task: std::sync::Mutex::new(None), queue_counts: std::sync::Mutex::default(), next_cleaning_try: std::sync::Mutex::new(None) })
     }
 
     /// Runs the loop until `stop`, then ends its steps as the module's doc says, and
@@ -346,6 +351,15 @@ impl SyncPlanTask {
         let parts = &self.parts;
         parts.session_cancellations.forget_old_openings().await;
         let mut old_openings_forgotten_at = (parts.clock)();
+        // A store that cannot be read says nothing of a first filling: the events are logged as for a folder that was filled.
+        let has_listing_ended_before = match parts.store.call(|store| store.last_checked()).await {
+            Ok(last_checked) => last_checked.is_some(),
+            Err(error) => {
+                tracing::warn!("cannot read whether a listing of {} ever ended: {error}", parts.folder.display());
+                true
+            }
+        };
+        self.note_first_filling(FirstFillingFact::RunBegan { has_listing_ended_before }).await;
         let mut steps_left_to_start: Vec<SyncStep> = Vec::new();
         let mut next_wake = None;
         // The first round is one of a time reached: a plan is made.
@@ -381,6 +395,8 @@ impl SyncPlanTask {
                             let next_cleaning_try = *crate::panic::lock(&self.next_cleaning_try);
                             next_wake = decide_next_wake(&round.plan, parts.sending_holds.find_end(now), next_quota_read, next_cleaning_try, now);
                             steps_left_to_start = self.start_steps(round.plan.steps, now);
+                            let has_folder_steps = steps_left_to_start.iter().any(|step| step_choice::decide_step_class(step) == StepClass::Folder) || parts.running_steps.list_steps().iter().any(|step| step.class == StepClass::Folder);
+                            self.note_first_filling(FirstFillingFact::PlanMade { has_folder_steps }).await;
                         }
                         Err(error) => {
                             tracing::warn!("cannot make the sync plan of {}: {error}", parts.folder.display());
@@ -429,6 +445,16 @@ impl SyncPlanTask {
             None => None,
         } {
             tracing::warn!("the task that cancels upload sessions ended: {error}");
+        }
+    }
+
+    /// Tells the first filling `fact`, and logs the event of the folder it answers
+    /// (`Activity::record`: written and announced), with the folder's path.
+    async fn note_first_filling(&self, fact: FirstFillingFact) {
+        let parts = &self.parts;
+        if let Some(kind) = self.first_filling.note(fact) {
+            tracing::info!("{}: {}", parts.folder.display(), kind.as_str());
+            parts.activity.record(vec![crate::status::activity::event(kind, parts.folder.display().to_string(), "")]).await;
         }
     }
 
@@ -492,6 +518,7 @@ impl SyncPlanTask {
         }
         if causes.contains(&WakeCause::ListingEnded) {
             parts.sending_holds.set_listing_ended();
+            self.note_first_filling(FirstFillingFact::ListingEnded).await;
             self.logged_since_listing_ended.store(0, Ordering::SeqCst);
             // A request the store still keeps has not begun: the listing that ended is not the one asked for.
             match parts.store.read_items(|items| items.is_full_listing_requested()).await {
@@ -872,8 +899,8 @@ impl SyncPlanTask {
             }
         }
         let settlements: Vec<StepSettlement> = settled.iter().map(|(_, settlement)| settlement.clone()).collect();
-        let (folder, logged_since_listing_ended) = (parts.folder.clone(), self.logged_since_listing_ended.load(Ordering::SeqCst));
-        let written = match parts.store.call(move |store| step_settlement::write_step_settlements(store, &settlements, &folder, logged_since_listing_ended, now)).await {
+        let (folder, logged_since_listing_ended, is_first_filling) = (parts.folder.clone(), self.logged_since_listing_ended.load(Ordering::SeqCst), self.first_filling.is_under_way());
+        let written = match parts.store.call(move |store| step_settlement::write_step_settlements(store, &settlements, &folder, logged_since_listing_ended, is_first_filling, now)).await {
             Ok(written) => {
                 self.logged_since_listing_ended.fetch_add(written.logged_count, Ordering::SeqCst);
                 step_settlement::keep_unwritten_tries(&mut crate::panic::lock(&self.local_step_tries), &settled, &written.unwritten_items, now);

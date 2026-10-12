@@ -106,9 +106,7 @@ private:
     void onSyncChanged();
     /// The sign-out, once SignOutDelayMs has passed with the account still signed out.
     void announceSignOut();
-    /// `count` > 1 (a capped cycle's own "and N more" conflict event, M3)
-    /// folds straight into the window's count rather than as one more event.
-    void post(const Notice &notice, int count = 1);
+    void post(const Notice &notice);
     Notice summary(const Window &window) const;
     void arm();
 

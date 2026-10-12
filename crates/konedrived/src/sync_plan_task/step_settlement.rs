@@ -70,6 +70,7 @@
 // test: a_settlement_the_store_could_not_be_written_is_a_try_the_task_keeps
 // test: the_count_of_tries_is_the_stores_of_the_stamp_the_step_was_planned_from
 // test: a_written_step_is_said_in_the_journal_without_the_path_of_its_event
+// test: the_first_filling_logs_no_item_shown_and_every_other_event
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -172,16 +173,21 @@ fn find_refused_version(step: &SyncStep) -> RefusedVersion {
 
 /// The events of `events` that go to the activity log, when `logged_since_listing_ended`
 /// (the plan's task's count) were logged for what OneDrive changed since the last
-/// listing ended. Pure.
+/// listing ended. While the folder is filled for the first time (`is_first_filling`,
+/// `FirstFilling::is_under_way`) an item shown is no event: nothing was added in OneDrive.
+/// Pure.
 // OPEN: the map's MISSING-4.c: today a cycle logs one batch, capped, and "a folder
 // removed with everything in it is one removal" (`remote/listing/reconcile.rs:376-391`).
 // Written as: each step's events are logged as they come, up to today's cap per listing;
 // a removed directory is one event because its children's `RemoveItem` steps answer
 // none. Pure, and can change without touching a signature.
-pub fn decide_events_to_log(events: &[StepEvent], logged_since_listing_ended: usize) -> Vec<StepEvent> {
+pub fn decide_events_to_log(events: &[StepEvent], logged_since_listing_ended: usize, is_first_filling: bool) -> Vec<StepEvent> {
     let mut left = crate::status::activity::PER_KIND.saturating_sub(logged_since_listing_ended);
     let mut logged = Vec::new();
     for event in events {
+        if is_first_filling && event.kind == ActivityKind::Added {
+            continue;
+        }
         if is_onedrive_change(event.kind) {
             if left == 0 {
                 continue;
@@ -404,7 +410,7 @@ pub fn change_local_step_tries(tries: &mut LocalStepTries, ended: &[(SyncStep, S
 /// (`SettlementsWritten::unwritten_items`) and is that item's alone: the other writes and
 /// every event are written all the same.
 /// Called by `SyncPlanTask::settle_steps`.
-pub fn write_step_settlements(store: &mut TreeStore, settlements: &[StepSettlement], folder: &std::path::Path, logged_since_listing_ended: usize, now: i64) -> Result<SettlementsWritten, TreeError> {
+pub fn write_step_settlements(store: &mut TreeStore, settlements: &[StepSettlement], folder: &std::path::Path, logged_since_listing_ended: usize, is_first_filling: bool, now: i64) -> Result<SettlementsWritten, TreeError> {
     let mut events = Vec::new();
     let mut logged_count = 0;
     let mut unwritten_items = BTreeSet::new();
@@ -419,7 +425,7 @@ pub fn write_step_settlements(store: &mut TreeStore, settlements: &[StepSettleme
                 }
             }
         }
-        for event in decide_events_to_log(&settlement.events, logged_since_listing_ended + logged_count) {
+        for event in decide_events_to_log(&settlement.events, logged_since_listing_ended + logged_count, is_first_filling) {
             if is_onedrive_change(event.kind) {
                 logged_count += 1;
             }

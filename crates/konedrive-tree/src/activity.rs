@@ -50,8 +50,11 @@ activity_kinds! {
     Removed => "removed",
     /// Moved or renamed in OneDrive. Detail: where it was.
     Moved => "moved",
-    /// A listing, or a Full reconcile: one event for the whole folder.
-    Listed => "listed",
+    /// The folder began to be filled for the first time: its first listing. One event
+    /// for the whole folder, in place of one per item shown. The path is the folder.
+    FirstSyncBegan => "first-sync-began",
+    /// Every item the first listing named is shown. The path is the folder.
+    FirstSyncEnded => "first-sync-ended",
     /// A local version moved out of the way. The path is where
     /// it was; the detail, where it is now.
     Conflict => "conflict",

@@ -329,7 +329,7 @@ private Q_SLOTS:
     {
         startFake();
         m_fake->log = {{200, QStringLiteral("downloaded"), QStringLiteral("/home/u/OneDrive/b.txt"), QStringLiteral("7 bytes")},
-                       {100, QStringLiteral("listed"), QStringLiteral("/home/u/OneDrive"), QStringLiteral("12 items")}};
+                       {100, QStringLiteral("first-sync-ended"), QStringLiteral("/home/u/OneDrive"), QString()}};
         SyncController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.activity()->count(), 2);
         QVERIFY(m_fake->calls.contains(QStringLiteral("Recent:50")));
@@ -341,7 +341,7 @@ private Q_SLOTS:
         QCOMPARE(added.first().at(1).toString(), QStringLiteral("freed"));
         QCOMPARE(controller.activity()->count(), 3);
         QCOMPARE(text(controller.activity(), 0, ActivityModel::PathRole), QStringLiteral("/home/u/OneDrive/c.bin"));
-        QCOMPARE(text(controller.activity(), 2, ActivityModel::KindRole), QStringLiteral("listed"));
+        QCOMPARE(text(controller.activity(), 2, ActivityModel::KindRole), QStringLiteral("first-sync-ended"));
     }
 
     /// Dismissing a conflict asks for the list again, whether or not a
@@ -408,7 +408,7 @@ private Q_SLOTS:
     void liveEventsDuringALoadAreKeptOnce()
     {
         startFake();
-        m_fake->log = {{100, QStringLiteral("listed"), QStringLiteral("/home/u/OneDrive"), QStringLiteral("12 items")}};
+        m_fake->log = {{100, QStringLiteral("first-sync-ended"), QStringLiteral("/home/u/OneDrive"), QString()}};
         m_fake->holdActivity = true;
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("Recent:50")));
@@ -427,7 +427,7 @@ private Q_SLOTS:
         QCOMPARE(controller.activity()->count(), 3);
         QCOMPARE(text(controller.activity(), 0, ActivityModel::PathRole), QStringLiteral("/home/u/OneDrive/early.txt"));
         QCOMPARE(text(controller.activity(), 1, ActivityModel::PathRole), QStringLiteral("/home/u/OneDrive/both.txt"));
-        QCOMPARE(text(controller.activity(), 2, ActivityModel::KindRole), QStringLiteral("listed"));
+        QCOMPARE(text(controller.activity(), 2, ActivityModel::KindRole), QStringLiteral("first-sync-ended"));
     }
 
     /// M9: the daemon stores an event before it signals it, so a
