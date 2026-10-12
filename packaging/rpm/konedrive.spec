@@ -120,14 +120,21 @@ export CARGO_TARGET_DIR="%{cargo_target}"
 # The version and the commit the binaries show; the tree has no .git to ask.
 export KONEDRIVE_BUILD_VERSION="%{build_version}"
 export KONEDRIVE_COMMIT="%{commit}"
+# The feature is named plainly: both packages have it. `konedrived/dev-tools` would be
+# read as a feature of konedrived's dependency on itself, which only its tests have.
 cargo build --release --offline --locked \
     -p konedrived -p konedrivectl \
-    %{?with_dev_tools:--features konedrived/dev-tools,konedrivectl/dev-tools}
+    %{?with_dev_tools:--features dev-tools}
 # A released daemon hands out no access token: only a development build
 # (dev-tools) serves org.konedrive.TokenExport.
 %if %{without dev_tools}
 if grep -aq org.konedrive.TokenExport %{cargo_target}/release/konedrived; then
     echo "konedrived was built with the dev-tools feature" >&2
+    exit 1
+fi
+%else
+if ! grep -aq org.konedrive.TokenExport %{cargo_target}/release/konedrived; then
+    echo "konedrived was built without the dev-tools feature" >&2
     exit 1
 fi
 %endif
