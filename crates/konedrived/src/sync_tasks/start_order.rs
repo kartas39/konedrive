@@ -4,24 +4,24 @@
 //! **State owned:** none.
 //!
 //! **Who calls it, and with what:** the owner of the folder's state (`SyncService`), inside
-//! a change of the folder, with a [`FolderStartInput`]: everything the folder's record,
+//! a change of the folder, with a `FolderStartInput`: everything the folder's record,
 //! the account and the daemon's wiring hold that a start needs. The answer
-//! ([`StartedFolder`]) is kept in the folder's state by that owner; a start that is
-//! refused answers a [`RefusedStart`].
+//! (`StartedFolder`) is kept in the folder's state by that owner; a start that is
+//! refused answers a `RefusedStart`.
 //!
-//! **The stages, in order** ([`start_folder_sync`]). A folder that keeps its parts from an
+//! **The stages, in order** (`start_folder_sync`). A folder that keeps its parts from an
 //! earlier sync (`FolderStartInput::kept`) skips the stages before 1 and 1 to 4: its store
 //! is open, its mount is served, its check was run, and nothing asks for a full listing;
 //! `StartedFolder::store_origin` is then `StoreOrigin::Kept`.
 //!
-//! 0. [`cancel_upload_sessions_of_old_store`]: the upload sessions a store of an older
+//! 0. `cancel_upload_sessions_of_old_store`: the upload sessions a store of an older
 //!    version holds are cancelled in OneDrive before stage 1 removes that store;
-//! 1. [`open_folder_store`]: the store opened, and how it came to be. Then the activity
+//! 1. `open_folder_store`: the store opened, and how it came to be. Then the activity
 //!    log is attached to it (`Report::activity`, `Activity::attach`, off the runtime's
 //!    threads) and the store's `last_checked` put into `state`: the listing's cycle
 //!    prunes the log through the store, and the bus shows the time before the first cycle
 //!    ends;
-//! 2. [`decide_check_drive`]: the drive for the check at start;
+//! 2. `decide_check_drive`: the drive for the check at start;
 //! 3. the leaf state made (`SyncPlanWake`, `RunningSteps`, `PublishedPlan`), then the
 //!    mount built (`mount::ItemMount::build`: inside it the check at start; read-only) and
 //!    served (`ItemMount::serve`, which takes the `ItemKernelRequests` the build
@@ -29,20 +29,20 @@
 //!    `LocalScan` on the bus says the check (`state`'s `local.scan`: running with the
 //!    time it began, then finished with the time it took and, from
 //!    `StartCheckFindings`, how much it left) — this function is the one writer of it;
-//! 4. [`request_first_listing`]: a full listing asked for where the check bound entries
+//! 4. `request_first_listing`: a full listing asked for where the check bound entries
 //!    by their marks;
 //! 5. `SendingHolds::new(wake)` with `input.standing_holds` set on it, then
-//!    [`apply_wanted_access_mode`](super::access_mode_change::apply_wanted_access_mode):
+//!    `apply_wanted_access_mode`:
 //!    the mount's access mode and the hold of a read-only folder, BEFORE any task plans;
-//! 6. `OneDriveSpace::new(input.quota)`, then [`read_quota_before_first_plan`];
-//! 7. [`start_sync_tasks`]: the runner of the steps towards the folder made of the mount's
-//!    parts ([`make_folder_steps`]), then the listing's poller, the thumbnail filler, the
+//! 6. `OneDriveSpace::new(input.quota)`, then `read_quota_before_first_plan`;
+//! 7. `start_sync_tasks`: the runner of the steps towards the folder made of the mount's
+//!    parts (`make_folder_steps`), then the listing's poller, the thumbnail filler, the
 //!    plan's task. In either access mode. Nothing is awaited in it.
 //!
-//! **Two functions.** Stages 5 to 7 are [`start_sync_over_parts`], over the parts of a
+//! **Two functions.** Stages 5 to 7 are `start_sync_over_parts`, over the parts of a
 //! folder whether they were kept or made in this start, and whether the mount is served
 //! or only built: it stops nothing and gives the parts back when it refuses.
-//! [`start_folder_sync`] is stages 0 to 4 for a folder that keeps nothing, then that
+//! `start_folder_sync` is stages 0 to 4 for a folder that keeps nothing, then that
 //! function, and what is undone after a refusal. It is never cut: the owner runs it in a
 //! task of its own (`sync_tasks`' module doc).
 //!

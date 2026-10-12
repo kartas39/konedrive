@@ -4,7 +4,7 @@
 //! are rows of a listing that is being written, page by page — the page that moves the
 //! first away is still to come — or rows a full listing mends.
 //!
-//! Under two names the plan's own rule folds to one ([`FoldedName`]), OneDrive is the
+//! Under two names the plan's own rule folds to one (`FoldedName`), OneDrive is the
 //! judge: once no listing is under way it has listed both, so they are two items, and each
 //! is shown under its own name. While a listing is being written the second waits for it,
 //! as the first may only have been renamed.

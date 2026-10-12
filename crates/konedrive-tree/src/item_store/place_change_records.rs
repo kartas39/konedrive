@@ -14,7 +14,7 @@
 //! **Who changes it:** whoever is about to change a name writes a record
 //! ([`ItemStore::record_place_change`]) in a transaction of its own, before the disk. The
 //! record goes with the row of the change, in that row's transaction
-//! ([`forget_place_change_record`], for a writer that has a transaction open;
+//! (`forget_place_change_record`, for a writer that has a transaction open;
 //! [`ItemStore::settle_place_change_record`], which writes the row and takes the record in
 //! one), or by itself when the change was undone or left nothing to write
 //! ([`ItemStore::forget_place_change_record`]). A record that stands when the daemon

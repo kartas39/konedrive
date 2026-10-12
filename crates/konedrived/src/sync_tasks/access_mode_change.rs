@@ -14,14 +14,14 @@
 //!   account then makes the switch by itself. Nothing of that is this module's: until
 //!   the switch itself the folder is a read-write folder;
 //! - the switch itself — forced, or with nothing unsent — goes through at once
-//!   ([`switch_to_read_only`]): what is unsent then stays here, not sent and not lost,
+//!   (`switch_to_read_only`): what is unsent then stays here, not sent and not lost,
 //!   under the hold, and is sent when the folder is read-write again. Nothing is
 //!   dropped, ever, and no stamp of the switch is kept: a read-only folder sends
 //!   nothing at all;
 //! - no request that changes OneDrive leaves under a token that cannot write: the hold
 //!   is set, and what is in flight has ended — or the bounded wait for it ran out, which
-//!   the answer says ([`StepsTowardsOneDrive::StillRunning`]) —, BEFORE
-//!   [`switch_to_read_only`] returns, and
+//!   the answer says (`StepsTowardsOneDrive::StillRunning`) —, BEFORE
+//!   `switch_to_read_only` returns, and
 //!   the account gives its token up only after it returned
 //!   (`AccountFolder::hold_unsent_changes`; the account's order is `config.toml`, its
 //!   mode worked out again, this switch awaited, the token). So no 403 comes from a switch, and nothing

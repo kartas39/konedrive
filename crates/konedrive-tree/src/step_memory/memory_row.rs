@@ -1,5 +1,5 @@
 //! A row of `step_memory` in the database: its columns, the one place it is read from SQLite
-//! and written to it, and the table as the schema has it ([`schema`], [`item_gone_statements`]).
+//! and written to it, and the table as the schema has it ([`schema`], `item_gone_statements`).
 //! What is here writes a row as it is told and asks no rule.
 
 use std::ffi::{OsStr, OsString};

@@ -1,7 +1,7 @@
 //! Remove: unlink and rmdir. The disk first, the row second (design §8) — the other way
 //! round from today, which records first (`write_operations/remove.rs:26-36`).
 //!
-//! **Decides:** [`decide_remove`]. **Writes:** `LocalVersionChange::Removed`: a row with
+//! **Decides:** `decide_remove`. **Writes:** `LocalVersionChange::Removed`: a row with
 //! no binding goes; a bound one keeps its binding and what was agreed on, which is the
 //! unsent removal.
 //!

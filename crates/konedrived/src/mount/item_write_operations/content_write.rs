@@ -1,7 +1,7 @@
 //! A file's content changed by a program: open for writing, truncate, the time set, and
 //! the last close. The row first (design §8).
 //!
-//! **Decides:** [`decide_open_change`] and [`decide_close_change`]. **Writes:**
+//! **Decides:** `decide_open_change` and `decide_close_change`. **Writes:**
 //! `OpenedForWriting` at the first writer's open, before a byte goes to disk;
 //! `ClosedChanged` with the size and the times read from the backing file through the
 //! handle, or `ClosedUnchanged`, at the last close; `Truncated` for a truncation with no

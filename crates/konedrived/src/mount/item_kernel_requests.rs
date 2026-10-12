@@ -56,7 +56,7 @@
 //! path read through the writer — never on the connection of a thread of the mount, which
 //! that thread has none of.
 //!
-//! **Through a handle, bytes of the content it was opened as, or none.** [`decide_read`]
+//! **Through a handle, bytes of the content it was opened as, or none.** `decide_read`
 //! answers bytes from three places: the handle's own backing file; the backing file the
 //! row names once the content landed (the row and its path are read in one read
 //! transaction, and the row must still say that content is on disk, or kept from before
@@ -64,7 +64,7 @@
 //! that very item and content, below a mark the download's source raises only for
 //! answers it has told to be of that content (`item_downloader::download_source`), and
 //! which is taken back to 0 the moment the download finds what it wrote not to be the
-//! content. [`fetch_read_range`] answers what the range fetcher lets through
+//! content. `fetch_read_range` answers what the range fetcher lets through
 //! (`item_range_fetcher::decide_is_another_content`), which through Graph cannot tell
 //! another content of the item until a download or a listing did.
 //!
@@ -73,7 +73,7 @@
 //! from one answer, and it only changes what the read asks of OneDrive. No range is
 //! trusted for it, so the read asks for the whole download of the content — or joins
 //! the one that runs and has no answer yet — and waits for it
-//! ([`fetch_range_after_download`]): the download asks OneDrive anew, and what was
+//! (`fetch_range_after_download`): the download asks OneDrive anew, and what was
 //! remembered is void at the first answer it accepts, not before: until then every read
 //! of the content joins that one download. Stated another content again:
 //! `ESTALE`, remembered again. Stated the asked content: the download lands, and the

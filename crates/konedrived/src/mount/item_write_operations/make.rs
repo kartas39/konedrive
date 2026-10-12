@@ -1,6 +1,6 @@
 //! Make: mkdir, mknod and create. The disk first, the row second (design §8).
 //!
-//! **Decides:** [`decide_make`], a pure function of what the rows say at the place.
+//! **Decides:** `decide_make`, a pure function of what the rows say at the place.
 //! **Writes:** `LocalVersionChange::Made`, with `replaced` when a file is made where a
 //! file was removed here whose removal is not sent (design §5: the made file takes the
 //! binding over, and OneDrive sees one item whose content changed); for a created file

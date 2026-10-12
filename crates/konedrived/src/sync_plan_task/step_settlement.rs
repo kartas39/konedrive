@@ -1,8 +1,8 @@
 //! What is written and asked for after a step, by what came of it: the one place that
 //! counts tries, keeps a refusal and asks the listing for a cycle.
 //!
-//! **State owned:** none. [`decide_step_settlement`] is a pure function of the step and
-//! its outcome; [`write_step_settlements`] writes the answers of the steps that ended
+//! **State owned:** none. `decide_step_settlement` is a pure function of the step and
+//! its outcome; `write_step_settlements` writes the answers of the steps that ended
 //! together in one job of the store.
 //!
 //! **Answers for:** design §7: "a step that OneDrive refuses decides nothing" — it is
@@ -37,10 +37,10 @@
 //! **Whose the failed tries are.** `remember_failed_try` in the table is two things, by
 //! whether the step has a stamp of an unsent change (`LocalStep::of`). A step towards
 //! OneDrive planned from an unsent row: the store's (`StepMemory::remember_failed_try`,
-//! [`MemoryWrite::FailedTry`]), kept under the stamp of the unsent change the step sends.
+//! `MemoryWrite::FailedTry`), kept under the stamp of the unsent change the step sends.
 //! Every other step — towards the folder, of the rows, and towards OneDrive from a row
-//! that is not unsent —: the task's own ([`LocalStepTriesChange::FailedTry`], applied to
-//! its [`LocalStepTries`](super::local_step_tries::LocalStepTries)), kept with the
+//! that is not unsent —: the task's own (`LocalStepTriesChange::FailedTry`, applied to
+//! its `LocalStepTries`), kept with the
 //! versions the step was planned from, for the daemon's run; the store keeps nothing of
 //! such a try. Either way the plan is told the next try
 //! (`plan_input::describe_next_tries`) and answers the wait.
@@ -52,9 +52,9 @@
 //! step each of those is a failed try of the task's, with the refusal's reason; what the
 //! table says beside the step memory (a cycle asked for) stands.
 //!
-//! **A write of the store that failed** ([`write_step_settlements`] answers the items, or
+//! **A write of the store that failed** (`write_step_settlements` answers the items, or
 //! its job failed as a whole) leaves a step towards OneDrive with nothing kept: the task
-//! counts a try of its own for it ([`keep_unwritten_tries`]), so that it waits.
+//! counts a try of its own for it (`keep_unwritten_tries`), so that it waits.
 //!
 //! **Tested without the rest**, a test per line of the table:
 // test: each_outcome_is_settled_as_its_line_of_the_table_says

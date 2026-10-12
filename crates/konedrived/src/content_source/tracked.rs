@@ -66,7 +66,7 @@ impl ContentSource for Tracked<'_> {
     }
 }
 
-/// A download's stream, moving its [`Transfers`] entry on as it is read.
+/// A download's stream, moving its `Transfers` entry on as it is read.
 struct Counting {
     inner: Box<dyn AsyncRead + Send + Unpin>,
     at: u64,

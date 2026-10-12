@@ -8,7 +8,7 @@
 //! such a step wait, and the plan is told of them (`SyncPlanInput::next_tries`) together
 //! with what the store keeps of the tries of what is sent to OneDrive.
 //!
-//! **State owned:** the tries, by the item and the kind of the step ([`LocalStepKind`]),
+//! **State owned:** the tries, by the item and the kind of the step (`LocalStepKind`),
 //! each with the versions of the rows the step was planned from. Changed by the plan's
 //! task alone: at the settlement of a step that ended, and when a plan is made.
 //!

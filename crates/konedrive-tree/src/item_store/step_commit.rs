@@ -1,6 +1,6 @@
 //! What a step of the sync plan writes into the rows once it is done: its commit. A step
 //! runs outside the lock, for seconds or minutes; its commit, in one transaction, asks
-//! whether the versions the step was planned from ([`ItemVersions`]) are still the row's,
+//! whether the versions the step was planned from (`ItemVersions`) are still the row's,
 //! and writes what the step's confirmation writes, or nothing.
 //!
 //! One function for each case of a [`SyncStep`](crate::SyncStep), named after it. Each is
@@ -20,9 +20,9 @@
 //!
 //! **Which versions are asked.** A step towards the folder and a step of the rows alone
 //! ask all of them, and whether the content is on disk as it was
-//! ([`ItemVersions::are_those_of`]). A step that made, moved or filled an item in OneDrive
+//! (`ItemVersions::are_those_of`). A step that made, moved or filled an item in OneDrive
 //! asks the OneDrive version and what was agreed on
-//! ([`ItemVersions::are_onedrive_and_synced_those_of`]): while its request ran a program
+//! (`ItemVersions::are_onedrive_and_synced_those_of`): while its request ran a program
 //! may have renamed the item or changed its content again, and what OneDrive confirmed is
 //! written all the same, in the part that was confirmed — OneDrive's version as Graph answered it,
 //! the place that was sent as the place agreed on, the content that was sent as the content
@@ -33,7 +33,7 @@
 //! **Which row is written.** What OneDrive confirmed of an item it had is written to the
 //! row that has the item's binding at the commit. That is the row the step was planned
 //! from, unless a file was saved by a rename over it meanwhile and took the binding
-//! ([`take_over_binding`](super::bindings)): the client's own upload is then confirmed of
+//! (`take_over_binding`): the client's own upload is then confirmed of
 //! the replacing file, and is never read as a change OneDrive made.
 //!
 //! **A directory's removal** is sent on a positive condition, which the plan decides, the
@@ -47,7 +47,7 @@
 //! with it.
 //!
 //! **What a commit of a step towards OneDrive writes of OneDrive** goes through the one
-//! confirmation ([`confirm_onedrive_version`]): the version, the eTag and the stamp of the
+//! confirmation (`confirm_onedrive_version`): the version, the eTag and the stamp of the
 //! guard against an outdated listing, in one statement.
 //!
 //! **What the steps remember of the item** ([`step_memory`](crate::step_memory)). What a
@@ -57,12 +57,12 @@
 //! binding: none of them says a word here. A commit says what the rows do not:
 //!
 //! - the commit of an upload is told the upload session that ended with it, which is
-//!   forgotten and not cancelled ([`forget_ended_upload_session`]);
+//!   forgotten and not cancelled (`forget_ended_upload_session`);
 //! - the commits of an upload into an item OneDrive has and of a move may leave the item
 //!   unsent, changed here again while the request ran, under the stamp it had: the failed
 //!   tries of the request that went through are forgotten, the taken name of the place a
 //!   move was confirmed to, and the temporary name once OneDrive confirmed the item at
-//!   another place ([`ConfirmedRequest`]);
+//!   another place (`ConfirmedRequest`);
 //! - a commit that writes that OneDrive does not have an item any more — a removal sent,
 //!   a removal of OneDrive's taken by the folder — forgets the temporary name of what
 //!   OneDrive does not have;
@@ -198,7 +198,7 @@ impl ItemStore<'_> {
     /// its binding), is the folder's own and not one it never showed: it is not of
     /// `below`, holds the removal back by nothing, and goes with the directory. And a
     /// content an upload of this folder left in a file in place of what it sent
-    /// ([`ItemReader::find_own_upload_content`]) is no change of OneDrive's: such a file,
+    /// (`ItemReader::find_own_upload_content`) is no change of OneDrive's: such a file,
     /// removed here, is of `below` like any other.
     ///
     /// What the rows do not say, the caller gives, as it gives it to the plan

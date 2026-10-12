@@ -42,7 +42,7 @@
 //!
 //! What becomes of the facts when something other than the row's versions changes is
 //! decided here too, each a function of the memory and of typed cases: a request OneDrive
-//! confirmed ([`ConfirmedRequest`]), an operation on the item's binding, a directory that
+//! confirmed (`ConfirmedRequest`), an operation on the item's binding, a directory that
 //! gave its binding up, a content told by its hash from now on.
 
 use std::ffi::OsString;

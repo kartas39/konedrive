@@ -275,7 +275,7 @@ pub struct SyncPlanInput {
 }
 
 /// The next try of a step of an item, after a try that failed: of what is sent of it, as
-/// the steps remember it ([`ItemStore::find_item_memory`](crate::ItemStore::find_item_memory)),
+/// the steps remember it (`ItemStore::find_item_memory`),
 /// or of a step towards the folder or of the rows, as the caller remembers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NextTry {

@@ -5,7 +5,7 @@
 //! This module only puts their rows into the transaction of a step's commit, so
 //! that a stop never leaves a conflict copy nothing knows of.
 //! One transaction for the conflict's record, where a loss costs the user the notice of
-//! a copy ([`add_conflicts_in`], the form of `TreeStore::add_conflicts` over a
+//! a copy (`add_conflicts_in`, the form of `TreeStore::add_conflicts` over a
 //! transaction); the plain events of the activity log are a second write by the plan's
 //! task (`sync_plan_task::step_settlement`), which a death in between loses.
 //!

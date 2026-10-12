@@ -1,6 +1,6 @@
 //! Rename. The disk first, the row second (design §8).
 //!
-//! **Decides:** [`decide_rename`], a pure function of the two places as the rows say
+//! **Decides:** `decide_rename`, a pure function of the two places as the rows say
 //! them. **Writes:** `LocalVersionChange::Moved` where nothing is at the new place,
 //! `SavedOver` over an entry (a file saved over a file takes its binding over: design
 //! §5). What is below a renamed directory needs no write: its rows name their parent by

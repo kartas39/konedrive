@@ -1,7 +1,7 @@
 //! Which steps of an item a next try holds ([`TriedStep`]), and the steps towards the folder
-//! and of the rows that wait for theirs ([`hold_steps_until_next_try`]). A step towards
+//! and of the rows that wait for theirs (`hold_steps_until_next_try`). A step towards
 //! OneDrive is held where everything that is not sent is decided
-//! ([`sending_obstacle`](super::sending_obstacle)). A decision of values the plan was
+//! (`sending_obstacle`). A decision of values the plan was
 //! given; it reads no row.
 
 use std::collections::BTreeMap;

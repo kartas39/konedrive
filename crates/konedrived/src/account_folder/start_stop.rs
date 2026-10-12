@@ -140,7 +140,7 @@ impl SyncService {
     }
 
     /// Tells the user, once, what a start whose store was made anew lost with the old one:
-    /// in the journal, and as an event of the activity log ([`make_rebuild_loss_event`]:
+    /// in the journal, and as an event of the activity log (`make_rebuild_loss_event`:
     /// `ActivityLog.Added` and `Recent`, so the window's activity list and
     /// `konedrivectl sync activity`). Nothing when nothing the user misses was lost. An
     /// event recorded while the log has no store (the start was refused) is kept in

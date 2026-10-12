@@ -5,8 +5,8 @@
 //!
 //! **State owned:** the tries that failed, for this run of the folder's sync: for each
 //! session and each item that could not be cleaned, how many tries failed and when the
-//! next is due ([`CancellationTries`]). In memory, shared by every copy of
-//! [`SessionCancellations`]; changed by its functions alone. What is left to clean is
+//! next is due (`CancellationTries`). In memory, shared by every copy of
+//! `SessionCancellations`; changed by its functions alone. What is left to clean is
 //! not kept here: the step memory's tables `upload_session_cancellations`,
 //! `mismatched_item_removals`, `upload_session_openings` and `request_records` are read
 //! and cleared through its own operations.

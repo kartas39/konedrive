@@ -5,13 +5,13 @@
 //!
 //! **State owned:** two flags, for the life of the task's run. The first is set when the
 //! task starts and by whatever can leave a pinned file with no content on disk
-//! ([`can_cause_leave_pinned_file_missing`], [`can_step_leave_pinned_file_missing`]);
+//! (`can_cause_leave_pinned_file_missing`, `can_step_leave_pinned_file_missing`);
 //! cleared when a reading that asked the reader answered that none is missing. Changed by
 //! the plan's loop alone, which also makes the plans: what sets it is taken before a plan
 //! is made, and a cause that comes while a plan is read is taken by the next round. The
 //! second is whether a download of pinned files is under way as the journal was told: set
 //! by the first reading that finds some missing, cleared by the one that finds none
-//! ([`decide_download_news`]), so that the journal has one line for each and none per file.
+//! (`decide_download_news`), so that the journal has one line for each and none per file.
 //!
 //! While it is set the reader is asked with every plan — a plan that left the pinned
 //! files out would drop the downloads the last one planned —, so the scans go on until

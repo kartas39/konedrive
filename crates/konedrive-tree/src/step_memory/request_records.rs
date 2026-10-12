@@ -8,7 +8,7 @@
 //! with no step running any more, after a stop or a kill of the daemon. While a record
 //! stands its item is busy to the plan, and the directory it was sent into is a
 //! destination no removal is sent for: the plan's input reads them beside the running
-//! steps ([`list_records`]).
+//! steps (`list_records`).
 //!
 //! An upload through an upload session writes none: its record is the opening and the
 //! session the step memory keeps (`upload_session_openings`, the item's memory).

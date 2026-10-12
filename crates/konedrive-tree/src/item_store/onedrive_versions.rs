@@ -4,9 +4,9 @@
 //! content is on disk. What then differs between the sides is the plan's to act on.
 //!
 //! This module answers for the writing of one page. Beside it, each with its own state:
-//! what a listing says of one item and what becomes of it ([`listed_change`]); the listing
-//! under way, from its beginning to its end ([`listing_under_way`]); and what OneDrive
-//! confirmed to a step, with the count of confirmations ([`confirmed_onedrive_version`]).
+//! what a listing says of one item and what becomes of it (`listed_change`); the listing
+//! under way, from its beginning to its end (`listing_under_way`); and what OneDrive
+//! confirmed to a step, with the count of confirmations (`confirmed_onedrive_version`).
 //!
 //! **One entry**, [`ItemStore::write_listed_changes`]: the changes of one page of a
 //! listing, with the link that follows the page, in one transaction. The changes come in
@@ -20,7 +20,7 @@
 //!    the folder shows.
 //! 3. Every item the page says OneDrive has, each by itself: the row that has its item id
 //!    and the row that has its parent's are found; what becomes of the change is decided
-//!    from them ([`listed_change`]); and only for a change that is written a row is made
+//!    from them (`listed_change`); and only for a change that is written a row is made
 //!    for the parent when it has none (its first mention, with the binding alone) and for
 //!    the item when it has none, and one statement writes the OneDrive columns of the
 //!    item's row. The parent has a row and is a directory when that statement runs, which
@@ -53,7 +53,7 @@
 //! **The guard against an outdated listing.** The store counts confirmations
 //! ([`ItemStore::confirmation_count`]); a step that OneDrive confirmed something to writes
 //! what was confirmed, with its eTag, and the row is stamped with the next count, in one
-//! statement ([`confirmed_onedrive_version`]). A cycle reads the count when a fetch begins
+//! statement (`confirmed_onedrive_version`). A cycle reads the count when a fetch begins
 //! and gives it with every page of that fetch. What a page says of a row stamped later may
 //! be older than what was confirmed: it is taken only when it is what was confirmed, and
 //! otherwise the row is left and the item is answered, to be read again from OneDrive. A
@@ -79,7 +79,7 @@
 //!   end then takes what it did not see below it.
 //!
 //! **A listing, from its beginning to its end** is the store's to keep
-//! ([`listing_under_way`]): a full listing (the first one, and after OneDrive asks to start
+//! (`listing_under_way`): a full listing (the first one, and after OneDrive asks to start
 //! over) and a listing of changes are each begun by a call, which gives the listing's id;
 //! every page is given with that id, and a page of another listing than the one under way
 //! is refused whole. The store keeps, of the listing under way: its id; the count it began

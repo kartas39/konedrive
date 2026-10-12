@@ -116,7 +116,7 @@ pub struct ItemCounts {
     /// left out.
     pub in_onedrive: u64,
     /// The items the folder shows, the user's own unsent ones among them, the root left
-    /// out ([`ItemStore::count_shown_items`](super::ItemStore::count_shown_items)).
+    /// out (`ItemStore::count_shown_items`).
     pub shown: u64,
     /// The items OneDrive has that the folder cannot show: each with all OneDrive has
     /// below it.

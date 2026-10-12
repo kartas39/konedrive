@@ -1,32 +1,32 @@
 //! What a step remembers beyond the versions: what it keeps of an item between tries and
 //! across a stop of the daemon, by local item id, apart from the rows of `items`. It is no
 //! source of truth for what an item is: the row is, and a fact is answered only for what it
-//! was learnt for, which the rows say ([`item_memory`]).
+//! was learnt for, which the rows say (`item_memory`).
 //!
 //! **Five tables**, and why more than one. `step_memory` has one row per item, every fact
 //! of the item in it. Three things a step keeps are not of the item they came from, and
 //! would be lost with its row:
 //!
 //! - an upload session the folder was about to open is of the place its empty file takes in
-//!   OneDrive (`upload_session_openings`, [`upload_session_openings`]): the file that asked
+//!   OneDrive (`upload_session_openings`, `upload_session_openings`): the file that asked
 //!   may be removed or renamed while the empty file still holds the name, and the next file
 //!   of that name must be able to tell it is the folder's own;
 //! - the address of an upload session nothing goes on with is what is left to cancel
-//!   (`upload_session_cancellations`, [`upload_session_cancellations`]): it is kept until
+//!   (`upload_session_cancellations`, `upload_session_cancellations`): it is kept until
 //!   the session is cancelled, so that its empty file does not hold a name for days;
 //! - the item an upload left in OneDrive with other content than was sent is left to remove
 //!   also when the file's row went first (`mismatched_item_removals`,
-//!   [`mismatched_item_removals`]).
-//! A request that changes OneDrive is on record until it is settled ([`request_records`]).
+//!   `mismatched_item_removals`).
+//! A request that changes OneDrive is on record until it is settled (`request_records`).
 //!
 //! **Every fact names what voids it**, and the voider is something that happens for every
 //! way the fact can stop being true. What a fact says of OneDrive is void when OneDrive
 //! has answered again about that item: by the step's own next answer, or by a listing
 //! that names the item, changed or removed — in the transaction that writes the page
 //! (`onedrive_versions`, and the schema's triggers on `items` for what any writer of a
-//! row voids). Each type says its voiders where it is declared ([`item_memory`],
-//! [`upload_session_openings`], [`upload_session_cancellations`],
-//! [`mismatched_item_removals`]). A fact that can name no such voider is not kept here:
+//! row voids). Each type says its voiders where it is declared (`item_memory`,
+//! `upload_session_openings`, `upload_session_cancellations`,
+//! `mismatched_item_removals`). A fact that can name no such voider is not kept here:
 //! the failed tries of a step towards the folder or of the rows are kept by the plan's
 //! task, with the versions the step was planned from, for its run.
 //!
@@ -40,18 +40,18 @@
 //!   while the row has that stamp ([`ItemMemory::split_by_standing`], the one decision). A
 //!   row with nothing unsent answers none of them, so a commit that makes the two sides
 //!   agree forgets them by that alone. Every write for an item first takes away what its
-//!   row does not say any more ([`change_memory`]); the first call of a new try of an
-//!   upload ([`remember_upload_session_opening`]) is such a write.
+//!   row does not say any more (`change_memory`); the first call of a new try of an
+//!   upload (`remember_upload_session_opening`) is such a write.
 //! - *A fact of what OneDrive has* is of the binding, or of an item of OneDrive by its own
-//!   id. An operation on an item's binding ([`follow_binding`], [`drop_facts_of_binding`],
+//!   id. An operation on an item's binding (`follow_binding`, `drop_facts_of_binding`,
 //!   called by the operations on bindings in their transaction) drops every fact of an
 //!   unsent change from the items it changes — each was an answer about the item as it was
 //!   bound —, the upload session to the cancellations, and the temporary name goes with
 //!   the binding. The item an upload left is void once the folder has that item, which the
-//!   schema holds whoever writes the row ([`mismatched_item_removals`]), and once a
+//!   schema holds whoever writes the row (`mismatched_item_removals`), and once a
 //!   listing says it has another content or is gone. A name found taken is of both kinds:
 //!   it is answered while the item is the unsent change at the place that was sent, and
-//!   is void once OneDrive answers again about the name ([`onedrive_answers`]). When a directory
+//!   is void once OneDrive answers again about the name (`onedrive_answers`). When a directory
 //!   gives its binding up, what OneDrive answered about sending items into it — a
 //!   refusal, a taken name, the session of a new file — is dropped from those items, and
 //!   the openings and empty files in it are with the row that has the binding.
@@ -62,15 +62,15 @@
 //!   is among the cancellations, never neither: a session taken away because the row does
 //!   not say it, one given for an item whose row went or is another unsent change, one
 //!   replaced by another, one whose item's binding changed. The one exception is said by
-//!   the caller: a session that ended ([`forget_ended_upload_session`], which the commit
+//!   the caller: a session that ended (`forget_ended_upload_session`, which the commit
 //!   of an upload calls with the address it is told). The reader of the sessions at a
 //!   place answers a session as the item's only where the item's memory answers it too.
 //! - *A fact does not outlive its item.* The schema's trigger `step_memory_item_gone`, run
 //!   when a row of `items` is deleted, whoever deletes it ([`schema`]).
 //! - *What a confirmed request ends where the stamp does not say it* is forgotten with its
-//!   commit ([`forget_confirmed_request`]): the item may be unsent still, changed again
+//!   commit (`forget_confirmed_request`): the item may be unsent still, changed again
 //!   while the request ran. And the same bytes told by their hash go on being the bytes a
-//!   fact holds ([`carry_content`]).
+//!   fact holds (`carry_content`).
 //! - *A crash loses nothing that costs the user.* Every operation is one transaction; a
 //!   step writes an opening before the request that opens a session, the session before its
 //!   first byte, and a temporary name before the request that takes it.

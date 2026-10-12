@@ -1,6 +1,6 @@
 //! What becomes of the facts of what OneDrive has when OneDrive answers again about an
 //! item: a listing that names it, changed or removed, and the answer to a request that
-//! says where it is. Each fact names what voids it ([`item_memory`](super::item_memory));
+//! says where it is. Each fact names what voids it (`item_memory`);
 //! here are the voiders that are not the fact's own step: called by the writer of a
 //! listing's page and by the commits of the steps, in their transaction, or held by the
 //! schema whoever writes the row.

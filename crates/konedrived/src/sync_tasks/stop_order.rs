@@ -5,10 +5,10 @@
 //!
 //! **Answers for:** the map's §7.2 and §7.3. Every function that ends something takes
 //! what it ends by value from the owner of the folder's state, inside a change of the
-//! folder. The order of an end: the sync is stopped ([`stop_folder_sync`]), which answers
+//! folder. The order of an end: the sync is stopped (`stop_folder_sync`), which answers
 //! the parts the folder keeps; these are then started again
-//! (`start_order::start_folder_sync`), taken down ([`take_folder_down`]) or forgotten
-//! ([`forget_folder`]).
+//! (`start_order::start_folder_sync`), taken down (`take_folder_down`) or forgotten
+//! (`forget_folder`).
 //!
 //! **Tested without the rest:**
 // test: a_stop_ends_the_listing_before_the_plans_task

@@ -1,6 +1,6 @@
 //! One thing the sync plan does: a request to OneDrive, a change of the folder, or a change of
 //! the rows alone. Every step carries the versions of the row it was planned from
-//! ([`ItemVersions`]): it runs outside the lock, and its commit, under the lock, changes
+//! (`ItemVersions`): it runs outside the lock, and its commit, under the lock, changes
 //! nothing unless those are still the row's.
 //!
 //! A case holds what the step needs to run without deciding again, and nothing it could read

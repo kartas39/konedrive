@@ -3,8 +3,8 @@
 //! **State owned:** the table `pins`, which holds OneDrive item ids (design §5: a pin
 //! follows the binding). Written here alone once the switch is made: set and taken off by
 //! [`ItemStore::set_item_pin`], and taken off by the store itself where OneDrive ceases to
-//! have the item of a binding, or the row of a binding goes — [`forget_pin_of_binding`]
-//! and [`forget_pins_of_rows`], called in their own transaction by every statement that
+//! have the item of a binding, or the row of a binding goes — `forget_pin_of_binding`
+//! and `forget_pins_of_rows`, called in their own transaction by every statement that
 //! takes a row's OneDrive version because the item is gone there, or deletes the row:
 //! `confirm_onedrive_version(Removed)` and `confirm_removal_below` (a removal OneDrive
 //! confirmed, of an item and of all it had in it), `clear_onedrive_version`,
