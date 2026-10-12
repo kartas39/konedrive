@@ -428,11 +428,6 @@ impl AccountService {
         &self.state
     }
 
-    /// The account's one quota, which its folder's uploads read and adjust too.
-    pub(crate) fn quota(&self) -> &Quota {
-        &self.quota
-    }
-
     /// Access tokens for Graph callers.
     pub fn tokens(&self) -> &Arc<TokenManager> {
         &self.tokens

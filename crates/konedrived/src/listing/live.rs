@@ -115,11 +115,6 @@ impl Live {
         Arc::clone(&self.wake)
     }
 
-    /// The pause, the hold or the network may have changed: the task looks again at once.
-    pub(crate) fn wake(&self) {
-        self.wake.notify_one();
-    }
-
     /// Waits for the task, once its token is cancelled.
     pub(crate) async fn join(&mut self) {
         if let Some(task) = self.task.as_mut() {

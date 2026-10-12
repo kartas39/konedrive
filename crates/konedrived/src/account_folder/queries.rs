@@ -27,13 +27,6 @@ impl SyncService {
         Ok(not_shown.into_iter().map(|row| (row.path, row.reason, row.waits, row.here)).collect())
     }
 
-    /// `ItemsListed`, `ItemsPlaced`, `SkippedCount`, for the VM suite's listing of a real
-    /// drive and the tests.
-    pub(crate) fn items(&self) -> (u64, u64, u64) {
-        let s = self.state.get();
-        (s.cycle.items_listed, s.cycle.items_placed, s.cycle.skipped_count)
-    }
-
     /// `ActivityLog.Recent(limit)`: the newest `limit` events, newest first.
     pub async fn recent_activity(&self, limit: u32) -> Result<Vec<activity::Event>, SyncError> {
         let report = self.report.clone();

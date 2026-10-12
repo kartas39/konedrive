@@ -296,11 +296,6 @@ impl SyncService {
         self.wiring.onedrive.as_ref().map(|onedrive| &onedrive.paths)
     }
 
-    /// The account's transfer pool.
-    pub(crate) fn pool(&self) -> &Arc<konedrive_graph::pool::TransferPool> {
-        &self.pool
-    }
-
     pub fn state(&self) -> &SyncStateHandle {
         &self.state
     }

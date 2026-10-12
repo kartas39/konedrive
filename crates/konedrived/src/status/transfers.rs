@@ -105,11 +105,6 @@ impl TransferEntry {
     pub(crate) fn handle(&self) -> TransferHandle {
         self.handle.clone()
     }
-
-    /// How big the download is, as far as is known.
-    pub(crate) fn total(&self) -> u64 {
-        self.handle.total()
-    }
 }
 
 impl Drop for TransferEntry {

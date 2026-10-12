@@ -37,19 +37,6 @@ use crate::content_source::source::{ContentSource, Fetched, SourceError};
 use crate::listing::listing_poller::Schedule;
 
 impl SyncService {
-    /// Stops the folder's sync and waits for every part of it, through the door every
-    /// change of the folder uses ([`SyncService::change`]); whether one ran. The sync
-    /// stays stopped until something starts it: `Refresh()`, a switch
-    /// of mode. A test ends with it, so that nothing of the sync is at work when its
-    /// temporary directories go.
-    pub(crate) async fn stop_sync(&self) -> bool {
-        let mut stopped = self.change().await;
-        let ran = stopped.ran();
-        if let Some(sync) = stopped.folder_mut().sync_mut() {
-            *sync = super::folder::Sync::Stopped(super::folder::Why::NotStarted);
-        }
-        ran
-    }
 }
 
 /// The downloads that never ended in a folder served through FUSE: each one's size on disk
@@ -65,12 +52,6 @@ pub async fn staged(service: &SyncService) -> Vec<(u64, Option<u64>)> {
     let Some(mount) = service.mount() else { return Vec::new() };
     let unfinished = mount.files_interface().list_unfinished_downloads().await.unwrap_or_default();
     unfinished.into_iter().map(|(_, bytes_on_disk, checkpoint)| (bytes_on_disk, checkpoint)).collect()
-}
-
-/// The tree store of the folder that is up, for a test that seeds a row only the
-/// worker would write (a blocked row): what the readers of the bus read. `None` before the folder's first sync start.
-pub(crate) fn tree_store(service: &SyncService) -> Option<konedrive_tree::Store> {
-    service.tree_store()
 }
 
 /// A clock that stands still until the test moves it. Whoever sleeps by it wakes when it
@@ -132,16 +113,6 @@ impl Account {
     pub(crate) fn state(&self) -> &StateHandle {
         &self.state
     }
-
-    /// How many times the folder asked for the mode to be worked out again.
-    pub(crate) fn mode_rechecks(&self) -> usize {
-        self.rechecks.load(Ordering::SeqCst)
-    }
-
-    /// Every drive a cycle said the account's token reaches though it is not the folder's.
-    pub(crate) fn drives_seen(&self) -> Vec<String> {
-        self.drives.lock().unwrap().clone()
-    }
 }
 
 impl FolderAccount for Account {
@@ -197,16 +168,6 @@ pub(crate) struct Sources {
 }
 
 impl Sources {
-    /// From now on every fetch goes to `source`; `None` gives the real source back.
-    pub(crate) fn replace(&self, source: Option<Arc<dyn ContentSource>>) {
-        *self.instead.lock().unwrap() = source;
-    }
-
-    /// Whether asking for a OneDrive folder's source panics from now on: a defect in the
-    /// middle of a bring-up.
-    pub(crate) fn break_bring_up(&self, broken: bool) {
-        self.broken.store(broken, Ordering::SeqCst);
-    }
 }
 
 impl wiring::Sources for Sources {
@@ -292,11 +253,6 @@ pub fn wiring() -> Builder {
 }
 
 impl Builder {
-    /// The service is added to `registry`, after the accounts it has.
-    pub(crate) fn registry(mut self, registry: &Arc<Registry>) -> Self {
-        self.registry = Some(Arc::clone(registry));
-        self
-    }
 
     /// The account's state is `state`, which the test keeps and changes.
     pub fn account(mut self, state: StateHandle) -> Self {
@@ -313,16 +269,6 @@ impl Builder {
     /// A folder registered while signed in shows `drive`.
     pub fn onedrive(mut self, drive: DriveClient, paths: SyncPaths) -> Self {
         self.onedrive = Some(OneDrive { drive, paths });
-        self
-    }
-
-    pub(crate) fn baloo(mut self, baloo: Baloo) -> Self {
-        self.baloo = Some(baloo);
-        self
-    }
-
-    pub(crate) fn schedule(mut self, schedule: Schedule) -> Self {
-        self.schedule = Some(schedule);
         self
     }
 

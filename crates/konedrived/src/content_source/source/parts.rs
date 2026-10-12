@@ -77,12 +77,6 @@ impl Share {
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Member>> {
         crate::panic::lock(&self.files)
     }
-
-    /// How many streams each file in parts has now (tests).
-    #[cfg(test)]
-    pub(crate) fn streams(&self) -> Vec<usize> {
-        self.lock().iter().map(|m| m.streams).collect()
-    }
 }
 
 /// One file's place in the [`Share`], taken out when dropped.
@@ -145,12 +139,6 @@ pub(crate) struct Split {
 impl Split {
     pub fn new(pool: Arc<TransferPool>, share: Arc<Share>) -> Self {
         Self { pool, share, piece: PIECE }
-    }
-
-    /// With pieces of `piece` bytes.
-    #[cfg(test)]
-    pub(crate) fn with_piece(pool: Arc<TransferPool>, share: Arc<Share>, piece: u64) -> Self {
-        Self { pool, share, piece: piece.max(1) }
     }
 }
 

@@ -25,7 +25,7 @@ use konedrive_graph::drive::{DriveClient, RetryPolicy};
 use konedrive_graph::quickxor::QuickXor;
 use konedrive_graph::token::StaticToken;
 
-pub(crate) use sockets::{Early, FakeSockets, PING_INTERVAL};
+pub(crate) use sockets::{FakeSockets, PING_INTERVAL};
 
 pub(crate) const ROOT: &str = "R";
 
@@ -232,11 +232,6 @@ impl Cloud {
         }
     }
 
-    /// Something changed below folder `id` in OneDrive: its cTag moves.
-    pub(crate) fn touch(&mut self, id: &str) {
-        self.touch_above(Some(id.into()));
-    }
-
     /// An edit made in OneDrive (another device).
     pub fn edit(&mut self, id: &str, content: &[u8]) {
         let (etag, ctag) = (self.tag("e", id), self.tag("c", id));
@@ -320,20 +315,6 @@ impl Cloud {
         self.open_session(Target::New { parent: parent.into(), name: name.into() }, &json!({ "item": {} }));
         self.created.insert(format!("P{}", self.counter), crate::clock::unix_now() - age);
         format!("s{}", self.counter)
-    }
-
-    /// That device's session `sid` completes with `content`: the file lands
-    /// at the placeholder's name.
-    pub(crate) fn complete_elsewhere(&mut self, sid: &str, content: &[u8]) {
-        let session = self.sessions.remove(sid).expect("no such session");
-        self.placeholders.remove(sid);
-        assert!(self.land(&session.target, content.to_vec(), 0).is_ok(), "landed");
-    }
-
-    /// That device cancels its session `sid`: the name is free.
-    pub(crate) fn cancel_elsewhere(&mut self, sid: &str) {
-        self.sessions.remove(sid).expect("no such session");
-        self.placeholders.remove(sid);
     }
 
     /// The next `times` requests of `method` whose path holds `fragment` are
