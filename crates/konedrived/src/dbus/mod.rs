@@ -15,21 +15,21 @@
 //! (`properties` is the table of it), and `fault` is how every call is refused.
 
 pub mod account;
-pub mod accounts;
-pub mod activity_log;
+pub(crate) mod accounts;
+pub(crate) mod activity_log;
 pub mod conflicts;
 #[cfg(feature = "dev-tools")]
-pub mod dev_tools;
+pub(crate) mod dev_tools;
 pub mod export;
-pub mod fault;
-pub mod files;
-pub mod folder;
-pub mod local_scan;
+pub(crate) mod fault;
+pub(crate) mod files;
+pub(crate) mod folder;
+pub(crate) mod local_scan;
 mod properties;
-pub mod signals;
+pub(crate) mod signals;
 #[cfg(feature = "dev-tools")]
-pub mod token_export;
-pub mod transfers;
+pub(crate) mod token_export;
+pub(crate) mod transfers;
 pub mod upload_queue;
 
 use std::sync::Arc;

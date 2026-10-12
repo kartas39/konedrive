@@ -17,7 +17,7 @@ impl SyncService {
     /// The folder it had is not brought back: it is forgotten, and its tree store is
     /// gone. An account that was
     /// held back is held back again, and says why.
-    pub async fn unretire(&self) {
+    pub(crate) async fn unretire(&self) {
         let mut stopped = self.change().await;
         let folder = stopped.folder_mut();
         if let Standing::Retiring { held } = &folder.standing {
@@ -61,7 +61,7 @@ impl SyncService {
     /// it (the rows below a held directory are in none). The bus's
     /// `UploadQueue.UnsentCount()` answers exactly this: the one member the window and
     /// `konedrivectl` read before `Folder.Unregister` and `Accounts.Remove`.
-    pub async fn count_unsent(&self) -> Result<u64, SyncError> {
+    pub(crate) async fn count_unsent(&self) -> Result<u64, SyncError> {
         // The open store of the folder, whether or not its sync runs.
         if let Some(parts) = self.view().parts {
             let unsent = parts.store.read_items(|reader| reader.count_unsent()).await;
@@ -87,7 +87,7 @@ impl SyncService {
     /// switch is made for it from then on. An account with no folder is
     /// retired all the same. The answer is the folder that was forgotten: `None` for an
     /// account with no folder.
-    pub async fn retire(&self) -> Result<Option<PathBuf>, SyncError> {
+    pub(crate) async fn retire(&self) -> Result<Option<PathBuf>, SyncError> {
         self.forget(true).await
     }
 

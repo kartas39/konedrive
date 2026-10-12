@@ -16,7 +16,7 @@ use crate::upload_queue::{self, QueueConditions};
 /// One change waiting to be uploaded, as `Changes()` lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
-    pub seq: u64,
+    pub(crate) seq: u64,
     /// What it does, as the upload queue spells it.
     pub kind: String,
     /// The full path.
@@ -24,12 +24,12 @@ pub struct Change {
     /// The row's state as stored, or `paused` while the account is.
     pub state: String,
     /// Bytes sent, and bytes in all.
-    pub sent: u64,
-    pub total: u64,
+    pub(crate) sent: u64,
+    pub(crate) total: u64,
     /// Why it waits, as stored; empty when nothing holds it.
     pub reason: String,
     /// Unix seconds of the next try; 0 when none is planned.
-    pub next_try: i64,
+    pub(crate) next_try: i64,
 }
 
 /// A file kept back from OneDrive, and why (`NotUploaded()`, `NotUploadedFiles()`).
@@ -127,7 +127,7 @@ impl SyncService {
 
     /// `NotUploadedSummary()`: what is kept back, one row per reason:
     /// (group, reason, count, bytes).
-    pub async fn not_uploaded_summary(&self) -> Result<Vec<(String, String, u32, u64)>, SyncError> {
+    pub(crate) async fn not_uploaded_summary(&self) -> Result<Vec<(String, String, u32, u64)>, SyncError> {
         let QueueSources { parts, answers, running, conditions, .. } = self.read_queue_sources()?;
         let summary = parts
             .store

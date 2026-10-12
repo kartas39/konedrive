@@ -37,19 +37,6 @@ use crate::content_source::source::{ContentSource, Fetched, SourceError};
 use crate::listing::listing_poller::Schedule;
 
 impl SyncService {
-    /// Stops the folder's sync and waits for every part of it, through the door every
-    /// change of the folder uses ([`SyncService::change`]); whether one ran. The sync
-    /// stays stopped until something starts it: `Refresh()`, a switch
-    /// of mode. A test ends with it, so that nothing of the sync is at work when its
-    /// temporary directories go.
-    pub async fn stop_sync(&self) -> bool {
-        let mut stopped = self.change().await;
-        let ran = stopped.ran();
-        if let Some(sync) = stopped.folder_mut().sync_mut() {
-            *sync = super::folder::Sync::Stopped(super::folder::Why::NotStarted);
-        }
-        ran
-    }
 }
 
 /// The downloads that never ended in a folder served through FUSE: each one's size on disk
@@ -67,26 +54,22 @@ pub async fn staged(service: &SyncService) -> Vec<(u64, Option<u64>)> {
     unfinished.into_iter().map(|(_, bytes_on_disk, checkpoint)| (bytes_on_disk, checkpoint)).collect()
 }
 
-/// The tree store of the folder that is up, for a test that seeds a row only the
-/// worker would write (a blocked row): what the readers of the bus read. `None` before the folder's first sync start.
-pub fn tree_store(service: &SyncService) -> Option<konedrive_tree::Store> {
-    service.tree_store()
-}
-
 /// A clock that stands still until the test moves it. Whoever sleeps by it wakes when it
 /// has been moved far enough, however the sleep and the move fall in time.
-pub struct ManualClock {
+pub(crate) struct ManualClock {
     now: watch::Sender<i64>,
 }
 
 impl ManualClock {
     /// A clock that reads `start` (unix seconds).
+    #[cfg(test)]
     pub fn at(start: i64) -> Arc<Self> {
         Arc::new(Self { now: watch::Sender::new(start) })
     }
 
     /// Moves the clock ahead by `seconds`, and wakes whoever waited for less.
-    pub fn advance(&self, seconds: i64) {
+    #[cfg(test)]
+    pub(crate) fn advance(&self, seconds: i64) {
         self.now.send_modify(|now| *now += seconds);
     }
 }
@@ -111,7 +94,7 @@ impl Clock for ManualClock {
 
 /// An account as its folder sees it: a state the test changes ([`state`](Self::state)),
 /// a quota kept in that state, and a count of what the folder told it.
-pub struct Account {
+pub(crate) struct Account {
     state: StateHandle,
     rechecks: AtomicUsize,
     drives: Mutex<Vec<String>>,
@@ -119,28 +102,19 @@ pub struct Account {
 
 impl Account {
     /// An account whose state is `state`.
-    pub fn over(state: StateHandle) -> Arc<Self> {
+    pub(crate) fn over(state: StateHandle) -> Arc<Self> {
         Arc::new(Self { state, rechecks: AtomicUsize::new(0), drives: Mutex::default() })
     }
 
     /// A signed-in, read-only account.
-    pub fn signed_in() -> Arc<Self> {
+    pub(crate) fn signed_in() -> Arc<Self> {
         Self::over(StateHandle::new(AccountSnapshot { state: SignInState::SignedIn, ..AccountSnapshot::default() }))
     }
 
     /// The account's state: a test signs it in or out, or changes its mode, here.
-    pub fn state(&self) -> &StateHandle {
+    #[cfg(test)]
+    pub(crate) fn state(&self) -> &StateHandle {
         &self.state
-    }
-
-    /// How many times the folder asked for the mode to be worked out again.
-    pub fn mode_rechecks(&self) -> usize {
-        self.rechecks.load(Ordering::SeqCst)
-    }
-
-    /// Every drive a cycle said the account's token reaches though it is not the folder's.
-    pub fn drives_seen(&self) -> Vec<String> {
-        self.drives.lock().unwrap().clone()
     }
 }
 
@@ -191,22 +165,12 @@ pub fn persist(file: &Path) -> Persist {
 /// place ([`replace`](Self::replace)) — for every folder made with them, also one whose
 /// source exists already.
 #[derive(Default)]
-pub struct Sources {
+pub(crate) struct Sources {
     instead: Arc<Mutex<Option<Arc<dyn ContentSource>>>>,
     broken: AtomicBool,
 }
 
 impl Sources {
-    /// From now on every fetch goes to `source`; `None` gives the real source back.
-    pub fn replace(&self, source: Option<Arc<dyn ContentSource>>) {
-        *self.instead.lock().unwrap() = source;
-    }
-
-    /// Whether asking for a OneDrive folder's source panics from now on: a defect in the
-    /// middle of a bring-up.
-    pub fn break_bring_up(&self, broken: bool) {
-        self.broken.store(broken, Ordering::SeqCst);
-    }
 }
 
 impl wiring::Sources for Sources {
@@ -249,13 +213,12 @@ impl ContentSource for Replaceable {
 
 /// What a test's service was made with, for the test to act on: found again by
 /// [`parts`].
+// Read by this crate's tests alone; a build for another crate's tests only keeps them alive.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone)]
-pub struct Parts {
-    pub account: Arc<Account>,
-    pub persist: Persist,
-    pub sources: Arc<Sources>,
-    /// `None`: the service runs on the system's clock.
-    pub clock: Option<Arc<ManualClock>>,
+pub(crate) struct Parts {
+    pub(crate) account: Arc<Account>,
+    pub(crate) persist: Persist,
     /// The directory of a `config.toml` made for the service, kept as long as its parts.
     _config: Option<Arc<tempfile::TempDir>>,
 }
@@ -264,7 +227,8 @@ pub struct Parts {
 static MADE: Mutex<Vec<(Weak<SyncService>, Parts)>> = Mutex::new(Vec::new());
 
 /// What `service` was made with. It was made by [`Builder::build`].
-pub fn parts(service: &SyncService) -> Parts {
+#[cfg(test)]
+pub(crate) fn parts(service: &SyncService) -> Parts {
     let made = MADE.lock().unwrap();
     let found = made.iter().find(|(made, _)| std::ptr::eq(made.as_ptr(), service));
     found.map(|(_, parts)| parts.clone()).expect("the service was made by account_folder::testing")
@@ -292,11 +256,6 @@ pub fn wiring() -> Builder {
 }
 
 impl Builder {
-    /// The service is added to `registry`, after the accounts it has.
-    pub fn registry(mut self, registry: &Arc<Registry>) -> Self {
-        self.registry = Some(Arc::clone(registry));
-        self
-    }
 
     /// The account's state is `state`, which the test keeps and changes.
     pub fn account(mut self, state: StateHandle) -> Self {
@@ -316,25 +275,17 @@ impl Builder {
         self
     }
 
-    pub fn baloo(mut self, baloo: Baloo) -> Self {
-        self.baloo = Some(baloo);
-        self
-    }
-
-    pub fn schedule(mut self, schedule: Schedule) -> Self {
-        self.schedule = Some(schedule);
-        self
-    }
-
     /// The account's pause is kept by `clock`.
-    pub fn clock(mut self, clock: &Arc<ManualClock>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn clock(mut self, clock: &Arc<ManualClock>) -> Self {
         self.clock = Some(Arc::clone(clock));
         self
     }
 
     /// The desktop's programs are told on `connection`, a private bus of the test's: without
     /// it the service tells the desktop nothing.
-    pub fn desktop_bus(mut self, connection: zbus::Connection) -> Self {
+    #[cfg(test)]
+    pub(crate) fn desktop_bus(mut self, connection: zbus::Connection) -> Self {
         self.desktop_bus = Some(connection);
         self
     }
@@ -372,7 +323,7 @@ impl Builder {
         }
         let service = SyncService::new(wiring);
         registry.add(&service);
-        let parts = Parts { account, persist, sources, clock: self.clock, _config: config };
+        let parts = Parts { account, persist, _config: config };
         let mut made = MADE.lock().unwrap();
         made.retain(|(service, _)| service.strong_count() > 0);
         made.push((Arc::downgrade(&service), parts));

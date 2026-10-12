@@ -55,7 +55,7 @@ impl SyncTasks {
     /// (`tokio::spawn`) and awaits that task: a caller that is cut then does not cut the
     /// stop half-way, and the next change waits for the same task. A `SyncTasks` dropped
     /// without it only tells its tasks to stop (`Drop`).
-    pub async fn stop(self) {
+    pub(crate) async fn stop(self) {
         let mut tasks = self;
         tasks.stop.cancel();
         if let Some(listing_poller) = tasks.listing_poller.take() {
@@ -79,7 +79,7 @@ impl SyncTasks {
     /// sets the same hold itself when a step is answered that the account is signed out
     /// (`sync_plan_task`'s settlement), whichever comes first: that hold too is ended by
     /// the owner's watcher, at the next snapshot that says signed in.
-    pub fn hold_for_sign_out(&self) {
+    pub(crate) fn hold_for_sign_out(&self) {
         self.sending_holds.set_signed_out(true);
     }
 
@@ -99,7 +99,7 @@ impl SyncTasks {
     /// (`ListingPollHandle::refresh`), and the plan's task is woken
     /// (`WakeCause::SendingHoldChanged`: "the network"). No next try is made due: a step
     /// that failed for the network is tried at its own time.
-    pub fn wake_for_network(&self) {
+    pub(crate) fn wake_for_network(&self) {
         self.poll.wake_live();
         self.poll.refresh();
         self.sync_plan_wake.wake(WakeCause::SendingHoldChanged);
@@ -117,7 +117,7 @@ impl SyncTasks {
 /// holds and the poll of the running sync (`StartedFolder::store`,
 /// `SyncTasks::sending_holds`, `SyncTasks::poll`). Since one task applies the snapshots
 /// in their order, no hold set from an older snapshot outlives a newer one.
-pub async fn release_after_sign_in(store: &Store, sending_holds: &SendingHolds, poll: &ListingPollHandle) {
+pub(crate) async fn release_after_sign_in(store: &Store, sending_holds: &SendingHolds, poll: &ListingPollHandle) {
     if let Err(error) = store.call(|store| store.step_memory().forget_refusals_for(&Reason::Forbidden)).await {
         tracing::warn!("cannot forget what OneDrive refused as not allowed: {error}");
     }
@@ -134,7 +134,7 @@ pub async fn release_after_sign_in(store: &Store, sending_holds: &SendingHolds, 
 /// by the owner of the folder's state where a sync ends, after it cancelled the stop's
 /// token and took the folder's write lock; what it answers is started again, taken down
 /// or forgotten.
-pub async fn stop_folder_sync(started: StartedFolder) -> KeptFolderParts {
+pub(crate) async fn stop_folder_sync(started: StartedFolder) -> KeptFolderParts {
     let StartedFolder { store, mount, tasks, sync_plan_wake, running_steps, published_plan, onedrive_space: _, drive_id, store_origin: _ } = started;
     tasks.stop().await;
     KeptFolderParts { store, mount, sync_plan_wake, running_steps, published_plan, drive_id }
@@ -142,7 +142,7 @@ pub async fn stop_folder_sync(started: StartedFolder) -> KeptFolderParts {
 
 /// Whether the store of a folder that was taken down or forgotten is closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TakeDownOutcome {
+pub(crate) enum TakeDownOutcome {
     /// The store is closed: its files may be removed, and the folder may be started
     /// again with nothing kept.
     StoreClosed,
@@ -212,7 +212,7 @@ async fn end_kept_parts(kept: KeptFolderParts, mount_end: MountEnd) -> TakeDownO
 /// `start_order::start_folder_sync` with nothing kept, which runs the check at start,
 /// which reads what the failed undo left as a change made while no daemon ran (design
 /// §8). `StoreStillOpen` is answered to that owner, which then does not start by itself.
-pub async fn take_folder_down(kept: KeptFolderParts) -> TakeDownOutcome {
+pub(crate) async fn take_folder_down(kept: KeptFolderParts) -> TakeDownOutcome {
     end_kept_parts(kept, MountEnd::Stopped).await
 }
 
@@ -224,7 +224,7 @@ pub async fn take_folder_down(kept: KeptFolderParts) -> TakeDownOutcome {
 /// the folder's record —, in a task of its own and under the daemon's stop bound. A
 /// caller that is cut at the bound leaves the task running until the process exits, and
 /// the unit's tidy step (`konedrived --tidy`) does for the folder what was not reached.
-pub async fn end_kept_folder_at_daemon_stop(kept: KeptFolderParts) {
+pub(crate) async fn end_kept_folder_at_daemon_stop(kept: KeptFolderParts) {
     let stopped = tokio::task::spawn_blocking(move || {
         kept.mount.stop();
         // Dropped here, off the runtime's threads: nothing is closed or waited for.
@@ -248,7 +248,7 @@ pub async fn end_kept_folder_at_daemon_stop(kept: KeptFolderParts) {
 ///
 /// A folder that keeps no parts — its start was refused, or it was taken down — has no
 /// mount to stop: for it the owner calls [`forget_folder_without_mount`] instead.
-pub async fn forget_folder(kept: KeptFolderParts) -> TakeDownOutcome {
+pub(crate) async fn forget_folder(kept: KeptFolderParts) -> TakeDownOutcome {
     end_kept_parts(kept, MountEnd::StoppedWithWriteBits).await
 }
 
@@ -260,7 +260,7 @@ pub async fn forget_folder(kept: KeptFolderParts) -> TakeDownOutcome {
 /// folder on disk (`mount::restore_write_bits`, which must be given the folder itself and
 /// not a mount over it). No store is open then, so there is none to close. Called by the
 /// owner of the folder's state, inside a change of the folder.
-pub async fn forget_folder_without_mount(root: &SyncRoot) {
+pub(crate) async fn forget_folder_without_mount(root: &SyncRoot) {
     let folder = root.path.clone();
     let restored = tokio::task::spawn_blocking(move || {
         crate::mount::unmount_stale_mount(&folder);
@@ -278,7 +278,7 @@ pub async fn forget_folder_without_mount(root: &SyncRoot) {
 /// database), nothing is unsent: a sync would rebuild that store empty, so it holds
 /// nothing a sync could send. Any other failure — a permission, the disk — is the error.
 /// It refuses nothing: a Forget is never refused for what is unsent.
-pub fn count_unsent_of_closed_store(tree_db: &std::path::Path) -> Result<UnsentTotal, konedrive_tree::TreeError> {
+pub(crate) fn count_unsent_of_closed_store(tree_db: &std::path::Path) -> Result<UnsentTotal, konedrive_tree::TreeError> {
     match konedrive_tree::decide_old_store(&konedrive_tree::find_stored_version(tree_db)?) {
         // A store of this version: what it cannot be asked is an error, not nothing.
         konedrive_tree::OldStoreDecision::Use => konedrive_tree::TreeStore::open_read_only(tree_db)?.read_items(|items| items.count_unsent()),

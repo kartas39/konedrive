@@ -27,20 +27,20 @@ use super::upload_rules::UploadRules;
 
 /// What the check at start found, as the start and the plan need it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StartCheckFindings {
+pub(crate) struct StartCheckFindings {
     /// The rows the check left as it found them: nothing of these, and of what the rows
     /// say is below them, is sent before a check decides them. Given to the plan as
     /// `items_left_by_start_up_check` for as long as the mount of this start is up — also
     /// when a program then writes that very item: a limit, until the next start's check
     /// decides it (to be recorded as an issue, not solved here).
-    pub held_items: BTreeSet<LocalItemId>,
+    pub(crate) held_items: BTreeSet<LocalItemId>,
     /// Whether a part of the backing directory was not read: for the journal.
-    pub has_unread_part: bool,
+    pub(crate) has_unread_part: bool,
     /// How many paths the check left (each said in the journal with its reason).
-    pub unresolved_path_count: usize,
+    pub(crate) unresolved_path_count: usize,
     /// How many entries were bound by a mark no row had: OneDrive's version of them is not
     /// known until a full listing says it.
-    pub bound_by_mark_count: usize,
+    pub(crate) bound_by_mark_count: usize,
 }
 
 /// Runs the check of `backing_directory` against the rows of `store`, as one job of the

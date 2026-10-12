@@ -22,7 +22,7 @@ use konedrive_tree::{ListingKind, ListingUnderWay};
 
 /// How a cycle begins.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ListingStart {
+pub(crate) enum ListingStart {
     /// A full listing was stopped after a page of it wrote the link to the next one: it
     /// goes on with its id, from that link (`next_link`, the store's own, carried here so
     /// that no full listing goes on without one).
@@ -61,7 +61,7 @@ pub enum ListingStart {
 /// with — as for an item removed while a listing that was never stopped goes on. It was
 /// not measured (design §13); a next link Graph refuses begins a full listing anew
 /// ([`decide_page_refusal`]).
-pub fn decide_listing_start(under_way: Option<&ListingUnderWay>, delta_link: Option<&str>, is_full_listing_requested: bool) -> ListingStart {
+pub(crate) fn decide_listing_start(under_way: Option<&ListingUnderWay>, delta_link: Option<&str>, is_full_listing_requested: bool) -> ListingStart {
     match (under_way, delta_link) {
         (Some(listing), _) if listing.kind == ListingKind::Full => match &listing.next_link {
             Some(next_link) => ListingStart::GoOnWithFullListing { listing: listing.clone(), next_link: next_link.clone() },
@@ -75,7 +75,7 @@ pub fn decide_listing_start(under_way: Option<&ListingUnderWay>, delta_link: Opt
 
 /// Where the link of a refused request came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PageLinkOrigin {
+pub(crate) enum PageLinkOrigin {
     /// The delta link the store kept: where a listing of changes begins.
     KeptDeltaLink,
     /// The next link the store kept of a full listing that was stopped: where it goes on.
@@ -87,7 +87,7 @@ pub enum PageLinkOrigin {
 /// Whether this cycle may still begin a full listing because OneDrive refused a link: it
 /// does so once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FullListingAllowance {
+pub(crate) enum FullListingAllowance {
     /// No refused link began a full listing in this cycle.
     Unused,
     /// A refused link began one already.
@@ -96,7 +96,7 @@ pub enum FullListingAllowance {
 
 /// What a refused page leads to.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AfterPageRefusal {
+pub(crate) enum AfterPageRefusal {
     /// A full listing begins in this cycle (`ItemStore::begin_full_listing`, which gives
     /// up the listing under way: a page of it that comes later is refused).
     BeginFullListing,
@@ -112,7 +112,7 @@ pub enum AfterPageRefusal {
 /// cycle was given and anything else fail the cycle too. And a full listing is begun for
 /// a refused link once in a cycle (`allowance`): a second refusal fails the cycle, and
 /// the next cycle decides anew ([`decide_listing_start`]).
-pub fn decide_page_refusal(error: &DriveError, origin: PageLinkOrigin, allowance: FullListingAllowance) -> AfterPageRefusal {
+pub(crate) fn decide_page_refusal(error: &DriveError, origin: PageLinkOrigin, allowance: FullListingAllowance) -> AfterPageRefusal {
     match (allowance, error, origin) {
         (FullListingAllowance::Used, _, _) => AfterPageRefusal::FailCycle,
         (FullListingAllowance::Unused, DriveError::ResyncRequired | DriveError::ResyncUpload, _) => AfterPageRefusal::BeginFullListing,

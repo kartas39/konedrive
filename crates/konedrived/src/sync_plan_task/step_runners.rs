@@ -28,16 +28,16 @@ use crate::sync_parts::lease::Lease;
 use crate::onedrive_steps::OneDriveSteps;
 
 /// A step being run.
-pub type RunningFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+pub(crate) type RunningFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 /// What runs the steps of one folder's plan.
 #[derive(Clone)]
-pub struct StepRunners {
+pub(crate) struct StepRunners {
     /// Runs one step, any case, and answers what came of it.
-    pub run_step: Arc<dyn Fn(SyncStep) -> RunningFuture<StepOutcome> + Send + Sync>,
+    pub(crate) run_step: Arc<dyn Fn(SyncStep) -> RunningFuture<StepOutcome> + Send + Sync>,
     /// Runs the `ShowItem` steps of one plan together, each answered by itself, in the
     /// order given.
-    pub run_show_steps: Arc<dyn Fn(Vec<ItemVersions>) -> RunningFuture<Vec<StepOutcome>> + Send + Sync>,
+    pub(crate) run_show_steps: Arc<dyn Fn(Vec<ItemVersions>) -> RunningFuture<Vec<StepOutcome>> + Send + Sync>,
 }
 
 impl StepRunners {
@@ -53,7 +53,7 @@ impl StepRunners {
     /// of the pool is
     /// taken here: an upload's by `OneDriveSteps`' content upload, a download's by the
     /// downloader. Made by the folder's start (`sync_tasks::start_order`).
-    pub fn of_runners(folder_steps: Arc<FolderSteps>, onedrive_steps: Arc<OneDriveSteps>, row_steps: Arc<RowSteps>, lease: Lease, stop: CancellationToken) -> Self {
+    pub(crate) fn of_runners(folder_steps: Arc<FolderSteps>, onedrive_steps: Arc<OneDriveSteps>, row_steps: Arc<RowSteps>, lease: Lease, stop: CancellationToken) -> Self {
         let for_show_steps = (Arc::clone(&folder_steps), lease.clone(), stop.clone());
         StepRunners {
             run_step: Arc::new(move |step| {

@@ -34,13 +34,13 @@ pub(crate) fn mount_gone(path: &Path) {
 }
 
 #[derive(Debug, Clone)]
-pub struct SyncRoot {
-    pub path: PathBuf,
-    pub root_id: String,
+pub(crate) struct SyncRoot {
+    pub(crate) path: PathBuf,
+    pub(crate) root_id: String,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum RegisterError {
+pub(crate) enum RegisterError {
     #[error("not a directory")]
     NotADirectory,
     #[error("the folder must be empty")]
@@ -87,7 +87,8 @@ fn not_a_directory(path: &Path) -> RegisterError {
 ///
 /// The write probe (`probe_dir`, `konedrive_fs::probe`) runs *here* and
 /// nowhere else.
-pub fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {
+#[cfg(test)]
+pub(crate) fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {
     let dir = open_root_dir(path)?;
     check_root_dir(&dir, path)
 }

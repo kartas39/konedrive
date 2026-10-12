@@ -100,13 +100,13 @@ pub(crate) use step_stand_in::make_stand_in_hash;
 /// The drive the fixture's store knows.
 pub(crate) const DRIVE_ID: &str = "d1";
 /// The id of the drive's root: the fake OneDrive's.
-pub(crate) const ROOT_ONEDRIVE_ID: &str = crate::fake_onedrive::ROOT;
+pub const ROOT_ONEDRIVE_ID: &str = crate::fake_onedrive::ROOT;
 /// Unix seconds: the time OneDrive says every file the fixture lists was modified at.
 pub(crate) const ONEDRIVE_MTIME: i64 = 1_600_000_000;
 /// Unix seconds: what the fixture's clock answers until the test sets another.
 pub(crate) const START_TIME: i64 = 1_700_000_000;
 /// `[transfers] download_after` of the fixture's download states and of a built mount.
-pub(crate) const DOWNLOAD_AFTER: u64 = 1 << 20;
+pub const DOWNLOAD_AFTER: u64 = 1 << 20;
 /// The names the fixture's folder never uploads.
 pub(crate) const IGNORED_NAMES: [&str; 2] = ["*.tmp", "cache"];
 
@@ -253,7 +253,7 @@ impl ItemFixture {
     /// A folder whose store knows its drive ([`DRIVE_ID`]) and whose root a full listing
     /// told of and ended ([`ROOT_ONEDRIVE_ID`]), with nothing in it, on disk or in the
     /// rows.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let directory = tempfile::tempdir().expect("a temporary directory");
         let (folder, store_path) = (directory.path().join("folder"), directory.path().join("tree.db"));
         fs::create_dir(&folder).expect("the folder");
@@ -330,7 +330,7 @@ impl ItemFixture {
     }
 
     /// The drive of the folder.
-    pub(crate) fn drive_id(&self) -> DriveId {
+    pub fn drive_id(&self) -> DriveId {
         DriveId::new(DRIVE_ID).expect("a drive id")
     }
 
@@ -391,7 +391,7 @@ impl ItemFixture {
     /// that one request is not applied to it. The store's delta link is the fake's from
     /// here on, unless a listing is under way or the store has none: a listing cycle over
     /// the fixture asks the changes made in `cloud` after this call.
-    pub(crate) async fn start_fake_onedrive(&self) -> FakeGraph {
+    pub async fn start_fake_onedrive(&self) -> FakeGraph {
         let graph = FakeGraph::start().await;
         let items = self.store.call(|store| store.item_store().list_items()).await.expect("the rows");
         let onedrive_id_of_row = |id: LocalItemId| items.iter().find(|item| item.local_item_id == id).and_then(|item| item.onedrive_item.as_ref()).map(|reference| reference.item_id.as_str().to_owned());
@@ -435,7 +435,7 @@ impl ItemFixture {
 
     /// What every part that asks Graph is made with, over `fake_onedrive`, with the
     /// fixture's store, drive and clock.
-    pub(crate) fn graph_access(&self, fake_onedrive: &FakeGraph) -> GraphAccess {
+    pub fn graph_access(&self, fake_onedrive: &FakeGraph) -> GraphAccess {
         GraphAccess { drive: fake_onedrive.client(), drive_id: self.drive_id(), store: self.store.clone(), clock: self.clock() }
     }
 
@@ -467,7 +467,7 @@ impl ItemFixture {
     /// A report that goes nowhere but for the wait OneDrive asked for, which is the
     /// fixture's (`sync_state`): what a downloader over the fixture's leaves is made
     /// with when a test starts a wait.
-    pub(crate) fn report(&self) -> Report {
+    pub fn report(&self) -> Report {
         Report { throttle_wait: ThrottleWait::new(self.sync_state.clone()), ..Report::nowhere() }
     }
 
@@ -589,7 +589,7 @@ impl ItemFixture {
     /// A listing of changes that begins now, says `changes` in one page and ends: what a
     /// cycle of the delta listing writes. Every change must be written whole. It ends
     /// with the delta link the store had, which stays the store's.
-    pub(crate) fn write_listing(&self, changes: Vec<Change>) {
+    pub fn write_listing(&self, changes: Vec<Change>) {
         let listed = self.write_rows(move |store| {
             let link = store.delta_link()?.unwrap_or_else(|| "link-0".to_owned());
             let listing = store.item_store().begin_delta_listing()?;

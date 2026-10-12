@@ -92,7 +92,7 @@ pub async fn watch(accounts: Arc<impl Accounts>) {
 
 /// Calls `tell` with what the sources on `connection` say, once at the start and again at
 /// each change. Returns when every source's signals have ended.
-pub async fn watch_on(connection: &zbus::Connection, tell: impl Fn(Conditions)) {
+pub(crate) async fn watch_on(connection: &zbus::Connection, tell: impl Fn(Conditions)) {
     let profiles = match has_owner(connection, PROFILES_OLD.service).await && !has_owner(connection, PROFILES.service).await {
         true => PROFILES_OLD,
         false => PROFILES,

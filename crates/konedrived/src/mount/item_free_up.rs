@@ -237,7 +237,7 @@ impl ItemFreeUp {
 
 /// What a free-up does with a file or directory of OneDrive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FreeUpDecision {
+pub(crate) enum FreeUpDecision {
     /// Its downloaded copy is removed: the file stays in the folder as a name.
     Free,
     /// A pin keeps it on this device: its own, or a directory's above it.

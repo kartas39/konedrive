@@ -31,11 +31,11 @@ use crate::content_source::source::ContentSource;
 /// An account's folder: whether the account takes one, the mode it is to follow, and what
 /// it is now.
 pub(super) struct Folder {
-    pub standing: Standing,
+    pub(crate) standing: Standing,
     /// The account's mode as the folder follows it (`docs/design/writes.md` §2, §2.2):
     /// a read-only folder's mount takes no change, a read-write one's does.
-    pub wanted: Mode,
-    pub is: Is,
+    pub(crate) wanted: Mode,
+    pub(crate) is: Is,
 }
 
 /// Whether the account takes a folder.
@@ -64,12 +64,12 @@ pub(super) enum Is {
 /// A folder as the daemon holds it, up or not: what `config.toml` records of it.
 #[derive(Debug, Clone)]
 pub(super) struct Record {
-    pub root: SyncRoot,
+    pub(crate) root: SyncRoot,
     /// Whether *this daemon* excluded the folder from Baloo, so that a Forget takes
     /// exactly that exclusion off again.
-    pub baloo: bool,
+    pub(crate) baloo: bool,
     /// What the daemon keeps for the folder for as long as it is recorded, up or down.
-    pub kept: Kept,
+    pub(crate) kept: Kept,
 }
 
 /// What is kept with a recorded folder until it is forgotten, its account removed, or
@@ -80,13 +80,13 @@ pub(super) struct Record {
 pub(super) struct Kept {
     /// Where the folder's files are downloaded from: the drive, from its first bring-up
     /// on (`None` when the daemon was given no drive).
-    pub source: Option<Arc<dyn ContentSource>>,
+    pub(crate) source: Option<Arc<dyn ContentSource>>,
     /// The per-root tree lock (`docs/design/writes.md` §9): the plan's task holds it
     /// across each commit that touches `onedrive_items`, the mount's recorder across each change it
     /// records, and a cycle must hold it from staging to swap, or the swap reverts the
     /// commit. One for as long as the folder is recorded, so that what took it before a
     /// sync was started again still keeps the new sync's cycle out.
-    pub tree_lock: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) tree_lock: Arc<tokio::sync::Mutex<()>>,
     /// What the folder's sync left when it was stopped: the store, the mount — still
     /// served, so that the folder shows its names also while no sync runs — and what the
     /// mount was made with. The very value `stop_order::stop_folder_sync` answered (or a
@@ -94,7 +94,7 @@ pub(super) struct Kept {
     /// (`FolderStartInput::kept`); never its fields apart. `None` before the folder's
     /// first sync, while a sync runs (the running sync holds them, `Sync::Running`), and
     /// after a take-down or a Forget ended them.
-    pub parts: Option<KeptFolderParts>,
+    pub(crate) parts: Option<KeptFolderParts>,
 }
 
 impl std::fmt::Debug for Kept {
@@ -108,7 +108,7 @@ impl Record {
     /// hold it for as long as a download lasts, which a Forget does not wait for, and must
     /// not keep the folder's tree store open past the Forget with it. What a reader needs
     /// of the kept parts is in the [`View`], beside the record.
-    pub fn bare(&self) -> Record {
+    pub(crate) fn bare(&self) -> Record {
         Record { kept: Kept::default(), ..self.clone() }
     }
 }
@@ -128,7 +128,7 @@ pub(super) enum Down {
 impl Down {
     /// The sentence `LastError` and a `NotUp` refusal say of a folder at `root` that is
     /// down for this; empty while it only waits.
-    pub fn why(&self, root: &SyncRoot) -> String {
+    pub(crate) fn why(&self, root: &SyncRoot) -> String {
         match self {
             Down::NotYetUp => String::new(),
             Down::Failed { why } => why.clone(),
@@ -142,7 +142,7 @@ impl Down {
 
     /// What a folder that only waits waits for, for a refusal that has to say why the
     /// folder is not up; `None` when it is down for a reason of its own ([`why`](Self::why)).
-    pub fn waits_for(&self) -> Option<&'static str> {
+    pub(crate) fn waits_for(&self) -> Option<&'static str> {
         match self {
             Down::NotYetUp => Some("it is being brought up"),
             Down::UnreadSource { .. } | Down::Failed { .. } => None,
@@ -187,8 +187,8 @@ pub(super) enum Why {
 
 /// A folder that is up.
 pub(super) struct Up {
-    pub record: Record,
-    pub sync: Sync,
+    pub(crate) record: Record,
+    pub(crate) sync: Sync,
     /// For a sync that was started after a fault took the folder's mount down — by the
     /// owner's own timer, or by the user's `Refresh()` of a folder that was
     /// `Why::TakenDown`, which is written with the attempt as it was, not counted up —:
@@ -197,7 +197,7 @@ pub(super) struct Up {
     /// here, beside the sync, because a running sync (`StartedFolder`) knows nothing of
     /// why it was started: what `take_folder_down_for_fault` reads when the mount is
     /// taken down again.
-    pub take_down_try: Option<TakeDownTry>,
+    pub(crate) take_down_try: Option<TakeDownTry>,
 }
 
 /// A start of the folder that the owner made by itself after a take-down.
@@ -205,9 +205,9 @@ pub(super) struct Up {
 pub(super) struct TakeDownTry {
     /// How many such starts were made since one stayed up, this one counted: 1 for the
     /// first.
-    pub attempt: u32,
+    pub(crate) attempt: u32,
     /// When this start was made, Unix seconds, by the account's clock.
-    pub started_at: i64,
+    pub(crate) started_at: i64,
 }
 
 impl Folder {
@@ -216,7 +216,7 @@ impl Folder {
     }
 
     /// The folder the daemon holds, up or not.
-    pub fn record(&self) -> Option<&Record> {
+    pub(crate) fn record(&self) -> Option<&Record> {
         match &self.is {
             Is::Absent => None,
             Is::Down(record, _) => Some(record),
@@ -226,7 +226,7 @@ impl Folder {
 
     /// The folder this account's calls act on, up or not: none for an account held back,
     /// whose folder nothing acts on but a Forget.
-    pub fn acted_on(&self) -> Option<&Record> {
+    pub(crate) fn acted_on(&self) -> Option<&Record> {
         match self.standing {
             Standing::HeldBack(_) => None,
             _ => self.record(),
@@ -234,7 +234,7 @@ impl Folder {
     }
 
     /// The folder that is up, to change its sync and the try it was started as.
-    pub fn up_mut(&mut self) -> Option<&mut Up> {
+    pub(crate) fn up_mut(&mut self) -> Option<&mut Up> {
         match &mut self.is {
             Is::Up(up) => Some(up),
             _ => None,
@@ -242,7 +242,7 @@ impl Folder {
     }
 
     /// The folder, when it is up.
-    pub fn up(&self) -> Option<&Up> {
+    pub(crate) fn up(&self) -> Option<&Up> {
         match &self.is {
             Is::Up(up) => Some(up),
             _ => None,
@@ -250,7 +250,7 @@ impl Folder {
     }
 
     /// The sync of the folder that is up, running or not, to put another in its place.
-    pub fn sync_mut(&mut self) -> Option<&mut Sync> {
+    pub(crate) fn sync_mut(&mut self) -> Option<&mut Sync> {
         match &mut self.is {
             Is::Up(up) => Some(&mut up.sync),
             _ => None,
@@ -258,7 +258,7 @@ impl Folder {
     }
 
     /// The folder's sync, when one runs.
-    pub fn running(&self) -> Option<&StartedFolder> {
+    pub(crate) fn running(&self) -> Option<&StartedFolder> {
         match self.up().map(|up| &up.sync) {
             Some(Sync::Running(sync)) => Some(sync),
             _ => None,
@@ -266,7 +266,7 @@ impl Folder {
     }
 
     /// The recorded folder, to change what is kept with it.
-    pub fn record_mut(&mut self) -> Option<&mut Record> {
+    pub(crate) fn record_mut(&mut self) -> Option<&mut Record> {
         match &mut self.is {
             Is::Absent => None,
             Is::Down(record, _) => Some(record),
@@ -276,7 +276,7 @@ impl Folder {
 
     /// The tree store of the recorded folder, once it has been opened: the running
     /// sync's, else the one a stopped sync kept.
-    pub fn store(&self) -> Option<Store> {
+    pub(crate) fn store(&self) -> Option<Store> {
         match self.running() {
             Some(started) => Some(started.store.clone()),
             None => self.record().and_then(|record| record.kept.parts.as_ref()).map(|parts| parts.store.clone()),
@@ -285,7 +285,7 @@ impl Folder {
 
     /// The folder's mount, once it has been mounted: the running sync's, else the one a
     /// stopped sync kept.
-    pub fn mount(&self) -> Option<&Arc<ItemMount>> {
+    pub(crate) fn mount(&self) -> Option<&Arc<ItemMount>> {
         match self.running() {
             Some(started) => Some(&started.mount),
             None => self.record().and_then(|record| record.kept.parts.as_ref()).map(|parts| &parts.mount),
@@ -295,7 +295,7 @@ impl Folder {
     /// What the queue's answers and the `Files` interface read of the folder's sync,
     /// running or stopped: the parts a stopped sync kept, or those of the running one
     /// (a clone: every part is a handle). `None` for a folder that keeps none.
-    pub fn parts(&self) -> Option<KeptFolderParts> {
+    pub(crate) fn parts(&self) -> Option<KeptFolderParts> {
         match self.running() {
             Some(started) => Some(KeptFolderParts {
                 store: started.store.clone(),
@@ -319,30 +319,30 @@ pub(super) struct View {
     /// The folder this account's calls act on, up or not, without what is kept with it
     /// ([`Record::bare`]). `None` with no folder, and for an
     /// account held back, whose folder nothing acts on but a Forget.
-    pub record: Option<Record>,
+    pub(crate) record: Option<Record>,
     /// Why the recorded folder is not up, when it is not: what `LastError` says, or what
     /// it waits for.
-    pub down: Option<String>,
+    pub(crate) down: Option<String>,
     /// The mode the folder follows.
-    pub wanted: Mode,
+    pub(crate) wanted: Mode,
     /// The parts of the folder's sync, running or stopped ([`Folder::parts`]), held as
     /// the one type they are: the store, the mount (with its `Files` interface), the
     /// published plan and the running steps the queue's answers are made over, and the
     /// wake of the plan, for the user's answers and a change of the ignore list. `None`
     /// for a folder that keeps none. The owner publishes a view without them before a
     /// take-down or a Forget closes the store: each holds it open.
-    pub parts: Option<KeptFolderParts>,
+    pub(crate) parts: Option<KeptFolderParts>,
     /// The poll of a RUNNING sync (`SyncTasks::poll`): what asks its listing for a cycle
     /// and has its live socket looked at again, for the callers that are not async and
     /// hold no lock of the folder (`show_pause`, `refresh_now`, `nudge`). `None` while no
     /// sync runs.
-    pub poll: Option<crate::listing::listing_poller::ListingPollHandle>,
+    pub(crate) poll: Option<crate::listing::listing_poller::ListingPollHandle>,
     /// What holds the sending of a RUNNING sync, and whether its OneDrive is full: `None`
     /// while no sync runs — the queue's answers then say them as not known
     /// (`upload_queue::describe_stopped_sync`).
-    pub sending_holds: Option<Arc<crate::sync_parts::sending_holds::SendingHolds>>,
-    pub onedrive_space: Option<Arc<crate::sync_parts::onedrive_space::OneDriveSpace>>,
-    pub sync: SyncView,
+    pub(crate) sending_holds: Option<Arc<crate::sync_parts::sending_holds::SendingHolds>>,
+    pub(crate) onedrive_space: Option<Arc<crate::sync_parts::onedrive_space::OneDriveSpace>>,
+    pub(crate) sync: SyncView,
 }
 
 /// The sync of the folder, as the readers see it.
@@ -359,7 +359,7 @@ pub(super) enum SyncView {
 impl View {
     /// The sync running now, as far as a reader may reach it. One that has been told to
     /// stop is not running, whatever this view was made from.
-    pub fn running(&self) -> Option<&CancellationToken> {
+    pub(crate) fn running(&self) -> Option<&CancellationToken> {
         match &self.sync {
             SyncView::Running(running) if !running.is_cancelled() => Some(running),
             _ => None,
@@ -384,24 +384,24 @@ pub(super) struct Stopped<'a> {
 }
 
 impl<'a> Stopped<'a> {
-    pub fn folder(&self) -> &Folder {
+    pub(crate) fn folder(&self) -> &Folder {
         &self.folder
     }
 
-    pub fn folder_mut(&mut self) -> &mut Folder {
+    pub(crate) fn folder_mut(&mut self) -> &mut Folder {
         &mut self.folder
     }
 
     /// Whether a sync ran when the change began — or when an earlier change, cut before
     /// its end, stopped it: one the change starts again if the folder is still one that
     /// syncs.
-    pub fn ran(&self) -> bool {
+    pub(crate) fn ran(&self) -> bool {
         self.ran
     }
 
     /// Tells the desktop's programs to read the folder's directories again: its mount
     /// came, or shows other modes now.
-    pub fn read_again(&mut self) {
+    pub(crate) fn read_again(&mut self) {
         self.told = true;
         self.service.tell_desktop_to_read_folder_again(&self.folder);
     }
@@ -412,7 +412,7 @@ impl<'a> Stopped<'a> {
     }
 
     /// Publishes the state as it is now.
-    pub fn publish(&self) {
+    pub(crate) fn publish(&self) {
         self.service.publish(&self.folder, |_| {});
     }
 
@@ -472,7 +472,7 @@ pub(super) struct SyncChangeTask {
 
 impl SyncChangeTask {
     /// Waits for the task that runs, if one does, and takes what it left.
-    pub async fn wait(&self) -> Option<SyncChange> {
+    pub(crate) async fn wait(&self) -> Option<SyncChange> {
         let _ended = self.gate.lock().await;
         crate::panic::lock(&self.left).take()
     }
@@ -486,7 +486,7 @@ impl SyncChangeTask {
     /// folder to come by itself ([`SyncService::adopt_left_sync_change`]). Until then a
     /// sync that was started runs outside the state and the view, where nothing of the
     /// account reaches it.
-    pub async fn run(&self, work: impl std::future::Future<Output = SyncChange> + Send + 'static, adopt: impl FnOnce() + Send + 'static) -> Option<SyncChange> {
+    pub(crate) async fn run(&self, work: impl std::future::Future<Output = SyncChange> + Send + 'static, adopt: impl FnOnce() + Send + 'static) -> Option<SyncChange> {
         // Nothing is awaited before the task is spawned: `work` owns what it starts or stops, and is not dropped
         // unrun. The gate is free: the caller waited under the folder's write lock.
         let gate = Arc::clone(&self.gate).try_lock_owned().ok();
@@ -544,7 +544,7 @@ pub(super) struct HeldFolder<'a> {
 }
 
 impl HeldFolder<'_> {
-    pub fn folder(&self) -> &Folder {
+    pub(crate) fn folder(&self) -> &Folder {
         &self.folder
     }
 

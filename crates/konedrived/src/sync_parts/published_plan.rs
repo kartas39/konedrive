@@ -53,7 +53,7 @@ pub enum ItemAnswer {
 /// from one read: the queue from its entry (`UnsentEntry::answer`, `memory`), the mount
 /// in the read of the row for `user.konedrive.sync` (`ItemReader::find_item_memory` in
 /// `ItemLookup::read_xattr_facts`, with `PublishedPlan::find_answer`).
-pub fn decide_is_shown_blocked(answer: Option<&ItemAnswer>, has_refusal_for_good: bool) -> bool {
+pub(crate) fn decide_is_shown_blocked(answer: Option<&ItemAnswer>, has_refusal_for_good: bool) -> bool {
     if has_refusal_for_good {
         return true;
     }
@@ -97,7 +97,7 @@ fn decide_is_reason_shown_blocked(reason: &Reason) -> bool {
 }
 
 /// The plan's answers of one folder.
-pub struct PublishedPlan {
+pub(crate) struct PublishedPlan {
     answers: std::sync::RwLock<BTreeMap<LocalItemId, ItemAnswer>>,
     /// How many unsent items the last plan answered will not be sent by themselves
     /// (`plan_input::count_unsent_not_to_send`); 0 before the first plan.
@@ -113,7 +113,7 @@ impl PublishedPlan {
 
     /// The answers of the plan made now replace those of the one before. Called by the
     /// plan's task after each plan.
-    pub fn publish(&self, answers: BTreeMap<LocalItemId, ItemAnswer>) {
+    pub(crate) fn publish(&self, answers: BTreeMap<LocalItemId, ItemAnswer>) {
         *crate::panic::write(&self.answers) = answers;
     }
 
@@ -127,18 +127,18 @@ impl PublishedPlan {
     /// the folder takes off every unsent change when its account asks how many are left
     /// to send (`AccountFolder::count_unsent_to_send`), so that the account asks the count
     /// the plan reports.
-    pub fn count_unsent_not_to_send(&self) -> u64 {
+    pub(crate) fn count_unsent_not_to_send(&self) -> u64 {
         self.unsent_not_to_send_count.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The answer for `item`, when the last plan was given it. Called by the queue's
     /// answers per entry and by the mount for the sync mark.
-    pub fn find_answer(&self, item: LocalItemId) -> Option<ItemAnswer> {
+    pub(crate) fn find_answer(&self, item: LocalItemId) -> Option<ItemAnswer> {
         crate::panic::read(&self.answers).get(&item).cloned()
     }
 
     /// Every answer, by item.
-    pub fn list_answers(&self) -> BTreeMap<LocalItemId, ItemAnswer> {
+    pub(crate) fn list_answers(&self) -> BTreeMap<LocalItemId, ItemAnswer> {
         crate::panic::read(&self.answers).clone()
     }
 }

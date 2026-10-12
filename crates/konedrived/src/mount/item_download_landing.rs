@@ -171,7 +171,7 @@ fn to_errno(error: &std::io::Error) -> i32 {
 impl ItemDownloadLanding {
     /// Made by the mount's build, with the folder's running steps and the mount's
     /// take-down.
-    pub(crate) fn new(place_changes: Arc<PlaceChanges>, store: Store, running_steps: Arc<RunningSteps>, mount_take_down: Arc<MountTakeDown>) -> Self {
+    pub fn new(place_changes: Arc<PlaceChanges>, store: Store, running_steps: Arc<RunningSteps>, mount_take_down: Arc<MountTakeDown>) -> Self {
         Self {
             place_changes,
             store,

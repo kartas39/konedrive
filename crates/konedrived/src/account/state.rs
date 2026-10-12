@@ -98,13 +98,13 @@ impl AccountSnapshot {
     }
 
     /// Says what went wrong, in place of whatever `LastError` said, the mode's note included.
-    pub fn set_error(&mut self, message: impl Into<String>) {
+    pub(crate) fn set_error(&mut self, message: impl Into<String>) {
         self.last_error = message.into();
         self.mode_note = None;
     }
 
     /// Empties `LastError`: the error and the mode's note.
-    pub fn clear_error(&mut self) {
+    pub(crate) fn clear_error(&mut self) {
         self.last_error.clear();
         self.mode_note = None;
     }
@@ -120,7 +120,7 @@ impl AccountSnapshot {
 
     /// What goes when the account is no longer signed in: its name and quota, and with its
     /// token what the token allowed — so it runs read-only until it signs in again.
-    pub fn clear_account(&mut self) {
+    pub(crate) fn clear_account(&mut self) {
         self.display_name.clear();
         self.email.clear();
         self.quota = QuotaFigures::default();
@@ -163,7 +163,7 @@ pub enum ModeNote {
 
 impl ModeNote {
     /// The note as `LastError` says it.
-    pub fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         use super::{CONFIG_UNREADABLE, DRIVE_MISMATCH, DRIVE_NOT_SEEN, NO_DRIVE_RECORDED, SIGN_IN_TO_WRITE, WIDER_GRANT};
         match self {
             Self::WiderGrant(granted) => format!(
@@ -203,7 +203,7 @@ impl StateHandle {
     }
 
     /// Atomically moves from `from` to `to`; returns false (and changes nothing) otherwise.
-    pub fn try_transition(&self, from: SignInState, to: SignInState) -> bool {
+    pub(crate) fn try_transition(&self, from: SignInState, to: SignInState) -> bool {
         self.tx.send_if_modified(|s| {
             if s.state == from {
                 s.state = to;

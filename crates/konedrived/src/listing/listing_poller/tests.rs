@@ -107,7 +107,7 @@ async fn a_full_refresh_asks_the_store_for_a_full_listing_before_the_cycle() {
     wait_for_first_cycle(&folder).await;
     let asked = count_page_requests(&folder);
     // The caller asks the store; the handle only wakes the poller.
-    folder.fixture.write_rows(|store| store.item_store().request_full_listing(FullListingCause::UserAsked));
+    folder.fixture.write_rows(|store| store.item_store().request_full_listing(FullListingCause::BoundByMarkAtStart));
 
     poller.handle().refresh_after_full_listing_request();
 

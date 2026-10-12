@@ -9,14 +9,14 @@ use std::os::unix::fs::MetadataExt;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 /// Where misplaced items wait during a reconcile.
-pub const HOLDING: &str = ".konedrive-holding";
+pub(crate) const HOLDING: &str = ".konedrive-holding";
 /// A new folder's name until it is labelled and marked.
 pub const NEW_PREFIX: &str = ".konedrive-new-";
 
 /// Whether `name` is one the daemon uses for itself in the folder: the holding
 /// directory, or a new folder before it has its name. Nothing under such a name is the
 /// user's: the mount shows none of it.
-pub fn daemon_owned(name: &OsStr) -> bool {
+pub(crate) fn daemon_owned(name: &OsStr) -> bool {
     name == OsStr::new(HOLDING) || name.as_bytes().starts_with(NEW_PREFIX.as_bytes())
 }
 
@@ -27,10 +27,10 @@ pub fn daemon_owned(name: &OsStr) -> bool {
 ///
 /// A folder has one, whoever asks ([`Modes::of`]), and another account's folder has its
 /// own. It is not re-entrant. Never held across an `.await`.
-pub struct Modes(Mutex<()>);
+pub(crate) struct Modes(Mutex<()>);
 
 /// A hold on a folder's [`Modes`], released when dropped.
-pub struct ModesHeld<'a>(#[allow(dead_code)] MutexGuard<'a, ()>);
+pub(crate) struct ModesHeld<'a>(#[allow(dead_code)] MutexGuard<'a, ()>);
 
 /// The folders whose [`Modes`] somebody holds a share of, by the root directory's device
 /// and inode. An entry goes when nobody does.
@@ -41,7 +41,7 @@ type RootKey = (u64, u64);
 
 impl Modes {
     /// The lock of the folder whose root directory `root` is open on.
-    pub fn of(root: &File) -> io::Result<Arc<Modes>> {
+    pub(crate) fn of(root: &File) -> io::Result<Arc<Modes>> {
         let meta = root.metadata()?;
         let key = (meta.dev(), meta.ino());
         let mut folders = crate::panic::lock(&FOLDERS);
@@ -54,7 +54,7 @@ impl Modes {
         Ok(modes)
     }
 
-    pub fn hold(&self) -> ModesHeld<'_> {
+    pub(crate) fn hold(&self) -> ModesHeld<'_> {
         // The lock guards no data a panic could leave half-written.
         ModesHeld(crate::panic::lock(&self.0))
     }
@@ -76,13 +76,13 @@ mod tests;
 /// before it is removed for good (`mount::place_changes`, `PlaceChange::set_aside`): an
 /// entry NO row says. After it comes the local item id of the item the entry was of.
 #[allow(dead_code)]
-pub const ASIDE_ENTRY_PREFIX: &str = ".konedrive-aside-";
+pub(crate) const ASIDE_ENTRY_PREFIX: &str = ".konedrive-aside-";
 
 /// How the temporary name of an exchange of names begins
 /// (`konedrive_tree::make_temporary_name`): the place of a ROW, with its file or directory
 /// on disk under that name.
 #[allow(dead_code)]
-pub const TEMPORARY_NAME_PREFIX: &str = ".konedrive-swap-";
+pub(crate) const TEMPORARY_NAME_PREFIX: &str = ".konedrive-swap-";
 
 /// The name the entry of `item` is set aside to: made of the local item id, which is never
 /// given twice, so that it is the same name at every start and no other item's. One item
@@ -90,7 +90,7 @@ pub const TEMPORARY_NAME_PREFIX: &str = ".konedrive-swap-";
 /// of a death is put back by the check at start from the record of the change, and what
 /// is still set aside after it removed (`PlaceChanges::remove_aside_entries`).
 #[allow(dead_code, unused_variables)]
-pub fn make_aside_entry_name(item: konedrive_tree::LocalItemId) -> std::ffi::OsString {
+pub(crate) fn make_aside_entry_name(item: konedrive_tree::LocalItemId) -> std::ffi::OsString {
     format!("{ASIDE_ENTRY_PREFIX}{item}").into()
 }
 
@@ -101,7 +101,7 @@ pub fn make_aside_entry_name(item: konedrive_tree::LocalItemId) -> std::ffi::OsS
 /// back what a death left. A temporary name is NOT among them: it is a row's place, and
 /// skipping it would make the check find the row's file gone.
 #[allow(dead_code, unused_variables)]
-pub fn is_rowless_entry_name(name: &OsStr) -> bool {
+pub(crate) fn is_rowless_entry_name(name: &OsStr) -> bool {
     daemon_owned(name) || name.as_bytes().starts_with(ASIDE_ENTRY_PREFIX.as_bytes())
 }
 
@@ -110,6 +110,6 @@ pub fn is_rowless_entry_name(name: &OsStr) -> bool {
 /// name of an exchange. Asked by the mount's lookup, directory readings, make and rename,
 /// and by the queue's answers, which show no such row.
 #[allow(dead_code, unused_variables)]
-pub fn is_hidden_name(name: &OsStr) -> bool {
+pub(crate) fn is_hidden_name(name: &OsStr) -> bool {
     is_rowless_entry_name(name) || name.as_bytes().starts_with(TEMPORARY_NAME_PREFIX.as_bytes())
 }

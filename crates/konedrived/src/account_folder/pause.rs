@@ -284,7 +284,7 @@ impl SyncService {
     /// `SyncAnyway()`: the hold is lifted now, until a source or the global
     /// `pause_on_metered` / `on_battery` changes. Not kept across a restart. Refused
     /// `Unsupported` for a folder not connected to OneDrive, as `Pause` is.
-    pub fn sync_anyway(&self) -> Result<(), SyncError> {
+    pub(crate) fn sync_anyway(&self) -> Result<(), SyncError> {
         self.require_record()?;
         self.running.sync_anyway();
         tracing::info!("syncing anyway, though the account would hold back");

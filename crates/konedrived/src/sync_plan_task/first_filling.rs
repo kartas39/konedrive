@@ -27,7 +27,7 @@ use konedrive_tree::ActivityKind;
 
 /// How far the first filling of the folder is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FirstFillingProgress {
+pub(crate) enum FirstFillingProgress {
     /// The first listing has not ended.
     ListingNotEnded,
     /// The first listing ended; items it named may still be to show.
@@ -38,7 +38,7 @@ pub enum FirstFillingProgress {
 
 /// What the plan's loop tells the filling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FirstFillingFact {
+pub(crate) enum FirstFillingFact {
     /// The run begins. `has_listing_ended_before`: the store says a listing ended.
     RunBegan { has_listing_ended_before: bool },
     /// A listing ended (`WakeCause::ListingEnded`).
@@ -50,7 +50,7 @@ pub enum FirstFillingFact {
 
 /// What `fact` makes of the filling that was at `progress`, and the event of the folder
 /// it is logged with, if any. Pure.
-pub fn decide_first_filling(progress: FirstFillingProgress, fact: FirstFillingFact) -> (FirstFillingProgress, Option<ActivityKind>) {
+pub(crate) fn decide_first_filling(progress: FirstFillingProgress, fact: FirstFillingFact) -> (FirstFillingProgress, Option<ActivityKind>) {
     use FirstFillingProgress::{Ended, ItemsLeftToShow, ListingNotEnded};
     match (progress, fact) {
         (_, FirstFillingFact::RunBegan { has_listing_ended_before: false }) => (ListingNotEnded, Some(ActivityKind::FirstSyncBegan)),
@@ -62,7 +62,7 @@ pub fn decide_first_filling(progress: FirstFillingProgress, fact: FirstFillingFa
 }
 
 /// The first filling of one folder, for its plan's task.
-pub struct FirstFilling {
+pub(crate) struct FirstFilling {
     progress: Mutex<FirstFillingProgress>,
 }
 
@@ -73,7 +73,7 @@ impl FirstFilling {
     }
 
     /// Takes `fact` ([`decide_first_filling`]); the event of the folder to log, if any.
-    pub fn note(&self, fact: FirstFillingFact) -> Option<ActivityKind> {
+    pub(crate) fn note(&self, fact: FirstFillingFact) -> Option<ActivityKind> {
         let mut progress = crate::panic::lock(&self.progress);
         let (next, event) = decide_first_filling(*progress, fact);
         *progress = next;
@@ -81,7 +81,7 @@ impl FirstFilling {
     }
 
     /// Whether the folder is being filled for the first time.
-    pub fn is_under_way(&self) -> bool {
+    pub(crate) fn is_under_way(&self) -> bool {
         *crate::panic::lock(&self.progress) != FirstFillingProgress::Ended
     }
 }

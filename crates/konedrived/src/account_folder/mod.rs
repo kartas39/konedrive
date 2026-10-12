@@ -3,22 +3,22 @@
 //! `crate::account`/`crate::dbus` uses for `Account`). There is one `SyncService` per
 //! account; the list of them is the daemon's, in `registry.rs`.
 
-pub mod bring_up;
+pub(crate) mod bring_up;
 mod folder;
-pub mod free_up;
-pub mod hydrate;
-pub mod menu;
-pub mod mode;
+pub(crate) mod free_up;
+pub(crate) mod hydrate;
+pub(crate) mod menu;
+pub(crate) mod mode;
 pub mod upload_queue;
-pub mod pause;
+pub(crate) mod pause;
 mod persisted;
 pub mod pins;
 mod publish;
-pub mod queries;
+pub(crate) mod queries;
 pub mod registry;
-pub mod settings;
-pub mod start_stop;
-pub mod take_down;
+pub(crate) mod settings;
+pub(crate) mod start_stop;
+pub(crate) mod take_down;
 #[cfg(any(test, feature = "fault-injection"))]
 pub mod testing;
 pub mod wiring;
@@ -34,7 +34,9 @@ use tokio::sync::watch;
 
 use crate::status::report::Report;
 use crate::folder::root::{RegisterError, SyncRoot};
-use crate::status::snapshot::{published_error, published_state, SyncSnapshot, SyncStateHandle};
+#[cfg(test)]
+use crate::status::snapshot::{published_error, published_state};
+use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
 use crate::conditions::running;
 use crate::content_source::source;
 use crate::local;
@@ -296,11 +298,6 @@ impl SyncService {
         self.wiring.onedrive.as_ref().map(|onedrive| &onedrive.paths)
     }
 
-    /// The account's transfer pool.
-    pub fn pool(&self) -> &Arc<konedrive_graph::pool::TransferPool> {
-        &self.pool
-    }
-
     pub fn state(&self) -> &SyncStateHandle {
         &self.state
     }
@@ -324,17 +321,19 @@ impl SyncService {
         folders
     }
 
-    pub fn root(&self) -> Option<SyncRoot> {
+    pub(crate) fn root(&self) -> Option<SyncRoot> {
         self.record().map(|r| r.root)
     }
 
     /// `RootState` as published ([`published_state`]).
-    pub fn root_state(&self) -> String {
+    #[cfg(test)]
+    pub(crate) fn root_state(&self) -> String {
         published_state(&self.state.get()).to_owned()
     }
 
     /// `LastError` as published ([`published_error`]).
-    pub fn last_error(&self) -> String {
+    #[cfg(test)]
+    pub(crate) fn last_error(&self) -> String {
         published_error(&self.state.get())
     }
 
@@ -373,13 +372,13 @@ impl SyncService {
     }
 
     /// `Writable`: whether the folder takes changes now, and what is changed in it is
-    /// uploaded: its mount says ([`AccessModeSwitch::is_read_write`](crate::mount::AccessModeSwitch::is_read_write)).
+    /// uploaded: its mount says (`AccessModeSwitch::is_read_write`).
     pub fn writable(&self) -> bool {
         self.state.get().folder.writable
     }
 
     /// `RootSource`.
-    pub fn root_source(&self) -> String {
+    pub(crate) fn root_source(&self) -> String {
         self.record().map(|_| persisted::ONEDRIVE.to_owned()).unwrap_or_default()
     }
 

@@ -36,7 +36,7 @@ pub async fn read_again(connection: &zbus::Connection, directories: Vec<PathBuf>
 
 /// [`read_again`] for the folder at `folder` and every directory `store` names in it: after
 /// its mount came, or the modes its mount shows changed.
-pub async fn read_folder_again(connection: zbus::Connection, store: Store, folder: PathBuf) {
+pub(crate) async fn read_folder_again(connection: zbus::Connection, store: Store, folder: PathBuf) {
     let mut directories = Vec::new();
     let mut after = None;
     while directories.len() < MOST {

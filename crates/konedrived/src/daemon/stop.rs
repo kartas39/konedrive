@@ -77,9 +77,9 @@ pub enum Need {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Died {
     /// What the task was, in words.
-    pub name: &'static str,
+    pub(crate) name: &'static str,
     /// The panic's message, or `None` for a task that returned.
-    pub panic: Option<String>,
+    pub(crate) panic: Option<String>,
 }
 
 impl std::fmt::Display for Died {

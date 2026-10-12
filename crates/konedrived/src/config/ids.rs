@@ -35,7 +35,7 @@ impl AccountId {
     }
 
     /// Whether it is an account id: 12 lowercase hex characters.
-    pub fn is_valid(&self) -> bool {
+    pub(crate) fn is_valid(&self) -> bool {
         is_account_id(&self.0)
     }
 
@@ -45,7 +45,7 @@ impl AccountId {
 }
 
 /// Whether `text` has the form of an account id: 12 lowercase hex characters.
-pub fn is_account_id(text: &str) -> bool {
+pub(crate) fn is_account_id(text: &str) -> bool {
     text.len() == 12 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 

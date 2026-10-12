@@ -73,7 +73,7 @@ use crate::sync_parts::step_outcome::{StepFailure, StepOutcome, StepRefusal};
 /// A request that changes OneDrive, by what it asked: what is compared with OneDrive to
 /// tell whether it went through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SentRequest<'a> {
+pub(crate) enum SentRequest<'a> {
     /// A directory made in `parent` under `name`. Read: `child` of that place.
     MakeDirectory { parent: &'a OneDriveItemReference, name: &'a OsStr },
     /// A file with the content of `sent_hash` made in `parent` under `name`. Read:
@@ -89,7 +89,7 @@ pub enum SentRequest<'a> {
 
 impl<'a> SentRequest<'a> {
     /// The request `recorded` says was sent.
-    pub fn of_record(recorded: &'a RecordedRequest) -> Self {
+    pub(crate) fn of_record(recorded: &'a RecordedRequest) -> Self {
         match recorded {
             RecordedRequest::MakeDirectory { parent, name } => SentRequest::MakeDirectory { parent, name },
             RecordedRequest::SendNewFile { parent, name, sent_hash } => SentRequest::SendNewFile { parent, name, sent_hash },
@@ -102,7 +102,7 @@ impl<'a> SentRequest<'a> {
 
 /// What became of a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LostAnswerFate {
+pub(crate) enum LostAnswerFate {
     /// OneDrive has what the request asked: the item as it is now, for the step's commit;
     /// none for a removal, whose item is gone.
     WentThrough(Option<ConfirmedItem>),
@@ -121,20 +121,20 @@ pub enum LostAnswerFate {
 
 /// What OneDrive has where a request names, with what the store says of it.
 #[derive(Debug, Clone, PartialEq)]
-pub struct FoundItem {
-    pub item: DriveItem,
+pub(crate) struct FoundItem {
+    pub(crate) item: DriveItem,
     /// Whether a row is bound to it: a listing told of it already.
-    pub is_bound: bool,
+    pub(crate) is_bound: bool,
     /// Whether it is an empty file at a place where the step memory names an upload
     /// session or an opening of this folder (`ItemReader::list_empty_file_sessions`,
     /// `list_opening_windows`): the empty file of that session, which no step adopts — a
     /// cancel of the session would take the item.
-    pub is_held_by_upload_session: bool,
+    pub(crate) is_held_by_upload_session: bool,
 }
 
 /// What a read of OneDrive that gave no fate leaves.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FailedRead {
+pub(crate) enum FailedRead {
     /// Nothing certain was answered — the network, a 408, a throttle, a 5xx, a sign-out,
     /// a token Graph rejects (a 401), the store —: asked again later, the read may say what became of the request.
     NothingCertain(StepOutcome),
@@ -147,7 +147,7 @@ pub enum FailedRead {
 
 impl FailedRead {
     /// The outcome of a step that ends with this read.
-    pub fn into_outcome(self) -> StepOutcome {
+    pub(crate) fn into_outcome(self) -> StepOutcome {
         match self {
             FailedRead::NothingCertain(outcome) | FailedRead::RefusedForCertain(outcome) => outcome,
         }
@@ -254,7 +254,7 @@ fn commit_settled_request(store: &mut TreeStore, record: &RequestRecord, version
 
 /// What reads OneDrive for what became of a step's request.
 #[derive(Clone)]
-pub struct LostAnswers {
+pub(crate) struct LostAnswers {
     graph: GraphAccess,
     /// Held across the commit of a record whose request went through, and nothing else.
     tree_lock: Arc<tokio::sync::Mutex<()>>,
@@ -329,7 +329,7 @@ impl LostAnswers {
     /// (`upload/steps/meta.rs:33-36`), a 412 of `SendMove` (`meta.rs:100-104`) and of
     /// `SendContent` (`upload/content.rs:400-403`), an upload session found gone —, and
     /// for a request whose answer said nothing certain.
-    pub async fn read_request_outcome(&self, item: &ItemVersions, request: SentRequest<'_>) -> Result<LostAnswerFate, FailedRead> {
+    pub(crate) async fn read_request_outcome(&self, item: &ItemVersions, request: SentRequest<'_>) -> Result<LostAnswerFate, FailedRead> {
         let found = match self.read_requested_item(item, &request).await? {
             Some(found) => Some(self.describe_found_item(item, &request, found).await.map_err(|error| FailedRead::NothingCertain(StepOutcome::Failed(StepFailure::Store { detail: error.to_string() })))?),
             None => None,
@@ -362,7 +362,7 @@ impl LostAnswers {
     /// marked on disk and no event is answered for a record committed here. A directory
     /// made in OneDrive so has no item id on disk: after a lost store it is sent as new,
     /// its 409 finds a directory that is not empty, and the plan merges the two rows.
-    pub async fn settle_lost_answer(&self, record: &RequestRecord) -> Result<SettledRecord, StepRefusal> {
+    pub(crate) async fn settle_lost_answer(&self, record: &RequestRecord) -> Result<SettledRecord, StepRefusal> {
         let store_failure = |error: TreeError| StepRefusal::Transient { detail: format!("the store: {error}") };
         let (item, onedrive_item) = (record.item, record.onedrive_item.clone());
         let row = self
@@ -423,7 +423,7 @@ impl LostAnswers {
 
 /// How a record that stood ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettledRecord {
+pub(crate) enum SettledRecord {
     /// What became of its request is known, and written where it went through.
     Settled,
     /// OneDrive refuses the read for certain: the record went with nothing learnt, and a

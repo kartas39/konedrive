@@ -17,14 +17,14 @@ pub(super) fn configured_ignore(persist: &Persist) -> SharedIgnore {
 
 impl SyncService {
     /// The account's own settings that decide what runs (`Folder.Thumbnails`).
-    pub fn run_settings(&self) -> Settings {
+    pub(crate) fn run_settings(&self) -> Settings {
         self.running.settings()
     }
 
     /// `SetThumbnails`, `Pause`, `Resume`: `change` is written to the account's section of
     /// `config.toml`, and taken at once. Refused `Unsupported` for a folder not connected to
     /// OneDrive. Nothing here needs the account's sync to be running.
-    pub async fn change_run_settings(&self, change: impl FnOnce(&mut Settings) + Send + 'static) -> Result<(), SyncError> {
+    pub(crate) async fn change_run_settings(&self, change: impl FnOnce(&mut Settings) + Send + 'static) -> Result<(), SyncError> {
         self.require_record()?;
         // `config.toml` first, and the settings in memory only once it is written: a change
         // that is refused changes nothing, here or on the bus. One change at a time
@@ -60,7 +60,7 @@ impl SyncService {
     }
 
     /// `IgnorePatterns`: the account's ignore list (`docs/design/writes.md` §4.2 rule 3).
-    pub fn ignore_patterns(&self) -> Vec<String> {
+    pub(crate) fn ignore_patterns(&self) -> Vec<String> {
         crate::panic::read(&self.ignore).patterns().to_vec()
     }
 
@@ -68,7 +68,7 @@ impl SyncService {
     /// written to `config.toml`: the folder's mount goes by it for every change made from
     /// now on. Refused `InvalidArgs` for a pattern that
     /// cannot match a name ([`IgnoreList::invalid`]).
-    pub async fn set_ignore_patterns(&self, patterns: Vec<String>) -> Result<(), SyncError> {
+    pub(crate) async fn set_ignore_patterns(&self, patterns: Vec<String>) -> Result<(), SyncError> {
         if let Some((pattern, why)) = patterns.iter().find_map(|p| IgnoreList::invalid(p).map(|why| (p, why))) {
             return Err(SyncError::InvalidArgs(format!("{pattern:?}: {why}")));
         }
@@ -108,7 +108,7 @@ impl SyncService {
 
     /// `MachineName`: what a conflict copy is named after (`docs/design/writes.md` §7):
     /// `machine_name` in `config.toml`, or the host's name.
-    pub fn machine_name(&self) -> String {
+    pub(crate) fn machine_name(&self) -> String {
         let persist = &self.wiring.persist;
         let configured = persist.store.account(&persist.account).map(|a| a.machine_name).unwrap_or_default();
         if configured.is_empty() {

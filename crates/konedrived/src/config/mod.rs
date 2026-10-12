@@ -13,12 +13,12 @@
 
 mod atomic;
 mod ids;
-pub mod migrate;
+pub(crate) mod migrate;
 mod model;
 mod paths;
 mod store;
 
-pub use atomic::write_atomic;
+pub(crate) use atomic::write_atomic;
 pub use ids::{AccountId, DriveId};
 pub use model::{DOWNLOAD_AFTER, 
     check_label, is_valid_client_id, signed_in_label, AccountConfig, Config, HoldSettings, Mode, OnBattery, Origin, RootConfig,

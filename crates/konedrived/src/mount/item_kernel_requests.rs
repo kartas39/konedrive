@@ -377,7 +377,7 @@ impl WriteReplyAttributes {
 
 /// The answers to the kernel's requests, over the rows. Opaque outside `fuse`: the
 /// switch's `fuser::Filesystem` is made over it.
-pub struct ItemKernelRequests {
+pub(crate) struct ItemKernelRequests {
     lookup: Arc<ItemLookup>,
     read_connections: Arc<ReadConnections>,
     place_changes: Arc<PlaceChanges>,

@@ -28,9 +28,9 @@ use crate::account_folder::SyncService;
 /// where the account's sign-in stands.
 #[derive(Debug, Clone)]
 pub(crate) struct Seen {
-    pub snapshot: SyncSnapshot,
-    pub downloads: BTreeMap<u64, Transfer>,
-    pub sign_in: SignInState,
+    pub(crate) snapshot: SyncSnapshot,
+    pub(crate) downloads: BTreeMap<u64, Transfer>,
+    pub(crate) sign_in: SignInState,
 }
 
 impl Default for Seen {
@@ -53,8 +53,8 @@ impl Seen {
 
 /// One property: where it is on the bus, and its value.
 pub(crate) struct Property<T> {
-    pub interface: &'static str,
-    pub name: &'static str,
+    pub(crate) interface: &'static str,
+    pub(crate) name: &'static str,
     read: fn(&Seen) -> T,
 }
 
@@ -93,7 +93,7 @@ pub(crate) type Changed = BTreeMap<&'static str, HashMap<&'static str, Value<'st
 
 /// The properties of `list` whose value in `new` is not the one in `old`. An interface with
 /// nothing changed is not there.
-pub(crate) fn changed(list: &[&dyn Announced], old: &Seen, new: &Seen) -> Changed {
+pub fn changed(list: &[&dyn Announced], old: &Seen, new: &Seen) -> Changed {
     let mut changed = Changed::new();
     for property in list {
         if let Some(value) = property.changed(old, new) {

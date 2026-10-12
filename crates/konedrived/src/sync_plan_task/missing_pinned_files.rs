@@ -40,7 +40,7 @@ use crate::sync_parts::step_outcome::StepOutcome;
 use crate::sync_parts::sync_plan_wake::WakeCause;
 
 /// Whether a pinned file may be missing its content, for one folder's plan's task.
-pub struct MissingPinnedFiles {
+pub(crate) struct MissingPinnedFiles {
     may_be_missing: AtomicBool,
     is_download_under_way: AtomicBool,
 }
@@ -48,7 +48,7 @@ pub struct MissingPinnedFiles {
 /// What a plan's reading says of the download of the pinned files that the one before
 /// did not: what the journal is told.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PinnedDownloadNews {
+pub(crate) enum PinnedDownloadNews {
     /// Some are missing and none was before: so many are to be downloaded.
     Began(PinnedDownloadTotal),
     /// None is missing any more.
@@ -59,7 +59,7 @@ pub enum PinnedDownloadNews {
 /// What `reading` says anew, when a download of pinned files was under way before it
 /// (`was_under_way`) or was not: it begins with the first reading that finds some missing
 /// and ends with the one that finds none; a reading that did not ask says nothing. Pure.
-pub fn decide_download_news(was_under_way: bool, reading: PinnedFilesReading) -> PinnedDownloadNews {
+pub(crate) fn decide_download_news(was_under_way: bool, reading: PinnedFilesReading) -> PinnedDownloadNews {
     match (was_under_way, reading) {
         (false, PinnedFilesReading::SomeMissing(total)) => PinnedDownloadNews::Began(total),
         (true, PinnedFilesReading::NoneMissing) => PinnedDownloadNews::Ended,
@@ -72,7 +72,7 @@ pub fn decide_download_news(was_under_way: bool, reading: PinnedFilesReading) ->
 /// answer (a pin set), and a refresh the user asked for, which looks at everything again.
 /// A local version written by the mount cannot by itself: what it leaves is unsent, and
 /// the step that settles it is asked ([`can_step_leave_pinned_file_missing`]). Pure.
-pub fn can_cause_leave_pinned_file_missing(cause: WakeCause) -> bool {
+pub(crate) fn can_cause_leave_pinned_file_missing(cause: WakeCause) -> bool {
     match cause {
         WakeCause::ListingPageWritten | WakeCause::ListingEnded | WakeCause::UserAnswered | WakeCause::RefreshAsked => true,
         WakeCause::LocalVersionWritten | WakeCause::StepFinished | WakeCause::QuotaRead | WakeCause::SendingHoldChanged | WakeCause::RequestRecordSettled | WakeCause::NextCleaningTryChanged => false,
@@ -84,7 +84,7 @@ pub fn can_cause_leave_pinned_file_missing(cause: WakeCause) -> bool {
 /// item shown, a content of OneDrive's taken (the copy goes), an item moved into a pinned
 /// directory here or its move confirmed, two rows agreeing: after it the item may agree
 /// on everything and be given to no plan but by the reader of pinned files. Pure.
-pub fn can_step_leave_pinned_file_missing(step: &SyncStep, outcome: &StepOutcome) -> bool {
+pub(crate) fn can_step_leave_pinned_file_missing(step: &SyncStep, outcome: &StepOutcome) -> bool {
     match (step, outcome) {
         (SyncStep::Folder(FolderStep::DownloadContent { .. }), StepOutcome::Written { .. }) => false,
         (SyncStep::Folder(FolderStep::DownloadContent { .. }), StepOutcome::RowsChanged(_) | StepOutcome::Refused(_) | StepOutcome::NotRun(_) | StepOutcome::Failed(_)) => true,
@@ -95,7 +95,7 @@ pub fn can_step_leave_pinned_file_missing(step: &SyncStep, outcome: &StepOutcome
 
 /// Says `news` of the pinned files of `folder` in the journal: one line as their download
 /// begins and one as it ends, none per file.
-pub fn log_download_news(news: PinnedDownloadNews, folder: &Path) {
+pub(crate) fn log_download_news(news: PinnedDownloadNews, folder: &Path) {
     // TODO: wording
     match news {
         PinnedDownloadNews::Began(total) => tracing::info!("the download of the pinned files of {} began: {} file(s), {}", folder.display(), total.count, crate::status::activity::human_size(total.bytes)),
@@ -111,19 +111,19 @@ impl MissingPinnedFiles {
     }
 
     /// Whether the next plan's reading asks the reader of pinned files.
-    pub fn is_reader_asked(&self) -> bool {
+    pub(crate) fn is_reader_asked(&self) -> bool {
         self.may_be_missing.load(Ordering::SeqCst)
     }
 
     /// The causes a round was woken by, taken before its plan is made.
-    pub fn note_wake_causes(&self, causes: &BTreeSet<WakeCause>) {
+    pub(crate) fn note_wake_causes(&self, causes: &BTreeSet<WakeCause>) {
         if causes.iter().any(|cause| can_cause_leave_pinned_file_missing(*cause)) {
             self.may_be_missing.store(true, Ordering::SeqCst);
         }
     }
 
     /// The steps that ended, as they are settled.
-    pub fn note_ended_steps(&self, ended: &[(SyncStep, StepOutcome)]) {
+    pub(crate) fn note_ended_steps(&self, ended: &[(SyncStep, StepOutcome)]) {
         if ended.iter().any(|(step, outcome)| can_step_leave_pinned_file_missing(step, outcome)) {
             self.may_be_missing.store(true, Ordering::SeqCst);
         }
@@ -132,7 +132,7 @@ impl MissingPinnedFiles {
     /// What a plan's reading answered of the pinned files: one that asked the reader and
     /// found none missing ends the asking. Answers what the reading says anew of their
     /// download ([`decide_download_news`]), for the journal.
-    pub fn note_reading(&self, reading: PinnedFilesReading) -> PinnedDownloadNews {
+    pub(crate) fn note_reading(&self, reading: PinnedFilesReading) -> PinnedDownloadNews {
         match reading {
             PinnedFilesReading::NoneMissing => self.may_be_missing.store(false, Ordering::SeqCst),
             PinnedFilesReading::NotAsked | PinnedFilesReading::SomeMissing(_) => {}

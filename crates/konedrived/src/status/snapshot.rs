@@ -29,7 +29,7 @@ impl LiveChanges {
 
 /// `LocalScan.State`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ScanState {
+pub(crate) enum ScanState {
     /// No check ran since the daemon started: the folder's sync was not started yet.
     #[default]
     None,
@@ -50,16 +50,16 @@ impl ScanState {
 /// The check of the folder on disk at its start, as `LocalScan`'s properties publish it.
 /// While idle, the reason and the start are the last check's.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LocalScan {
-    pub state: ScanState,
+pub(crate) struct LocalScan {
+    pub(crate) state: ScanState,
     /// Empty before the first scan.
-    pub reason: String,
+    pub(crate) reason: String,
     /// Unix seconds; 0 before the first scan.
-    pub started: i64,
+    pub(crate) started: i64,
     /// Unix seconds when the last scan finished; 0 for none since the daemon started.
-    pub finished: i64,
+    pub(crate) finished: i64,
     /// How long the last finished scan took, in seconds.
-    pub took: u32,
+    pub(crate) took: u32,
 }
 
 /// What `Folder.State` reports.
@@ -113,19 +113,19 @@ pub struct FolderStatus {
     /// `Writable`: the folder's mount takes changes, and what is changed in the folder is
     /// uploaded now — its account is read-write and its plan's task runs. False from the
     /// moment a change of the folder tells its sync to stop.
-    pub writable: bool,
+    pub(crate) writable: bool,
 }
 
 /// What the cycles with OneDrive say (`remote::listing`, `listing::live`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CycleStatus {
     /// An initial or `410` listing of the drive is running.
-    pub listing: bool,
+    pub(crate) listing: bool,
     pub items_listed: u64,
     pub items_placed: u64,
-    pub skipped_count: u64,
+    pub(crate) skipped_count: u64,
     /// What the folder's sync last ran into; `None` once a cycle succeeds.
-    pub sync_trouble: Option<SyncTrouble>,
+    pub(crate) sync_trouble: Option<SyncTrouble>,
     /// `LastChecked`: unix seconds of the last cycle that
     /// succeeded, 0 for never.
     pub last_checked: i64,
@@ -141,14 +141,14 @@ pub struct LocalStatus {
     /// (`status::space::LocalSpace`).
     pub local_bytes: u64,
     /// `Conflicts.Count`: conflicts whose kept copy is still there.
-    pub conflict_count: u32,
+    pub(crate) conflict_count: u32,
     /// `PinnedCount`: files and folders with a pin of their own, as the folder's mount
     /// has them.
     pub pinned_count: u32,
     /// `LocalScan`'s `State`, `Reason`, `Started`, `Directories`, `Files`,
     /// `Expected`, `Finished`, `Took`: nothing scans a folder any more, and these stay as
     /// they start (`none`, empty, 0) for the clients that read them.
-    pub scan: LocalScan,
+    pub(crate) scan: LocalScan,
 }
 
 /// The upload queue as the plan's task last published it (`upload_queue::publish_queue_status`).
@@ -160,19 +160,19 @@ pub struct UploadQueueStatus {
     pub note: Option<UploadQueueNote>,
     /// `PendingCount`, `PendingBytes`, `BlockedCount`.
     pub pending_count: u32,
-    pub pending_bytes: u64,
+    pub(crate) pending_bytes: u64,
     pub blocked_count: u32,
     /// `Transfers.Uploads`: (full path, bytes sent, bytes in all), as `Downloads`.
-    pub uploads: Vec<(String, u64, u64)>,
+    pub(crate) uploads: Vec<(String, u64, u64)>,
     /// `QuotaFull`: OneDrive is full and no content goes up.
-    pub quota_full: bool,
+    pub(crate) quota_full: bool,
     /// `QuotaWaitingCount`, `QuotaWaitingBytes`: while full, the changes
     /// that send content; `TooBigCount`: files too big for the space left.
-    pub space_waiting_count: u32,
-    pub space_waiting_bytes: u64,
-    pub too_big_count: u32,
+    pub(crate) space_waiting_count: u32,
+    pub(crate) space_waiting_bytes: u64,
+    pub(crate) too_big_count: u32,
     /// Their size: not on the bus, but taken off what is left to upload ([`totals`]).
-    pub too_big_bytes: u64,
+    pub(crate) too_big_bytes: u64,
 }
 
 /// Whether the account's background work stops (`account_folder/pause.rs`).
@@ -180,7 +180,7 @@ pub struct UploadQueueStatus {
 pub struct PauseStatus {
     /// `Paused` and `PausedUntil`: `Some(until)` while paused, unix seconds,
     /// 0 meaning until resumed.
-    pub paused_until: Option<i64>,
+    pub(crate) paused_until: Option<i64>,
     /// `HeldBack`: why the account holds its background work back by itself
     /// (`conditions::running::Hold`), empty when it does not.
     pub held_back: String,
@@ -193,12 +193,12 @@ pub struct TransferStatus {
     /// `LargeStreamLimit`, `RetryAfter`: the account's transfer pool, once a second while
     /// anything moves or a `Retry-After` runs. `ActiveDownloads`, `ActiveUploads` and
     /// `LargeFiles` count the files of `Transfers.Downloads` and `Uploads` instead.
-    pub throughput: konedrive_graph::pool::Throughput,
+    pub(crate) throughput: konedrive_graph::pool::Throughput,
     /// `RetryAfterRefusal`: the full path of the file a program was first refused the
     /// content of during the `Retry-After` that runs (`status::throttle_wait`); empty when
     /// none was, and when no wait runs. Written by `ThrottleWait::tell_refusal`, taken off
     /// when the pool says the wait is over ([`SyncStateHandle::set_throughput`]).
-    pub retry_after_refusal: String,
+    pub(crate) retry_after_refusal: String,
     /// The pinned files whose content is still to be downloaded, as the store had them at
     /// the last plan that asked. ONE writer: the plan's task, with every plan whose
     /// reading counted them (`SyncPlanTask::publish_round`), and to none when it stops. On
@@ -211,7 +211,7 @@ pub struct TransferStatus {
 
 impl SyncSnapshot {
     /// Whether the account's background work stops: paused by the user, or held back.
-    pub fn stopped(&self) -> bool {
+    pub(crate) fn stopped(&self) -> bool {
         self.pause.paused_until.is_some() || !self.pause.held_back.is_empty()
     }
 }
@@ -220,11 +220,11 @@ impl SyncSnapshot {
 /// signed out, another account, an unusable store — makes `RootState` read
 /// `error`; the rest (no network) is said in `LastError` and retried.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SyncTrouble {
-    pub text: String,
-    pub blocking: bool,
+pub(crate) struct SyncTrouble {
+    pub(crate) text: String,
+    pub(crate) blocking: bool,
     /// What kind of trouble it is: what `status::overall` decides by, never by `text`.
-    pub kind: TroubleKind,
+    pub(crate) kind: TroubleKind,
 }
 
 /// The kinds of [`SyncTrouble`] that the account's overall state tells apart.
@@ -250,7 +250,7 @@ pub enum UploadQueueNote {
 
 impl UploadQueueNote {
     /// The note as `LastError` says it.
-    pub fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         match self {
             // The minute the wait is over in, never one already past when it ends.
             Self::Throttled(until) => format!("OneDrive asked to slow down; uploads continue at {}", clock(until.div_euclid(60) * 60 + if until.rem_euclid(60) > 0 { 60 } else { 0 })),
@@ -352,7 +352,7 @@ impl SyncStateHandle {
 
     /// The transfer pool's throughput, told only when it changed. With a `Retry-After`
     /// that is over, the file refused during it goes: the refusal is the wait's.
-    pub fn set_throughput(&self, throughput: konedrive_graph::pool::Throughput) {
+    pub(crate) fn set_throughput(&self, throughput: konedrive_graph::pool::Throughput) {
         self.tx.send_if_modified(|s| {
             let is_refusal_over = throughput.retry_after == 0 && !s.transfers.retry_after_refusal.is_empty();
             if is_refusal_over {
@@ -368,7 +368,7 @@ impl SyncStateHandle {
     }
 
     /// `LiveChanges`, told only when it changed.
-    pub fn set_live_changes(&self, live: LiveChanges) {
+    pub(crate) fn set_live_changes(&self, live: LiveChanges) {
         self.tx.send_if_modified(|s| std::mem::replace(&mut s.cycle.live_changes, live) != live);
     }
 

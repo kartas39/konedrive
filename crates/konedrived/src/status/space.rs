@@ -12,7 +12,7 @@ use crate::folder::walk::walk_files;
 use crate::status::snapshot::SyncStateHandle;
 
 /// `LocalBytes` is measured at most this often after a download or a free-up.
-pub const SPACE_SPACING: Duration = Duration::from_secs(5);
+pub(crate) const SPACE_SPACING: Duration = Duration::from_secs(5);
 
 /// How `LocalBytes` is measured: a function of the folder's path.
 type Measure = Arc<dyn Fn(&Path) -> u64 + Send + Sync>;
@@ -27,7 +27,7 @@ type Measure = Arc<dyn Fn(&Path) -> u64 + Send + Sync>;
 /// a sync that stops, a Forget — rather than left to run for the life of
 /// the runtime: nothing waiting on the state would ever see it end. A kick
 /// after a stop starts it again.
-pub struct LocalSpace {
+pub(crate) struct LocalSpace {
     kick: Arc<Notify>,
     state: SyncStateHandle,
     measure: Measure,
@@ -36,7 +36,7 @@ pub struct LocalSpace {
     /// mount that serves it. A walk through the mount would ask the mount
     /// about every name of the drive.
     at: Arc<Mutex<Option<std::path::PathBuf>>>,
-    /// False for a report that reports nowhere ([`Report::nowhere`](crate::status::report::Report::nowhere)): no
+    /// False for a report that reports nowhere (`Report::nowhere`): no
     /// walker is ever started for it.
     enabled: bool,
 }
@@ -50,6 +50,7 @@ impl LocalSpace {
         Self { kick: Arc::new(Notify::new()), state, measure, task: Mutex::new(None), at: Arc::default(), enabled: true }
     }
 
+    #[cfg(test)]
     pub(super) fn inert(state: SyncStateHandle) -> Self {
         let mut space = Self::new(state);
         space.enabled = false;
@@ -62,7 +63,7 @@ impl LocalSpace {
     }
 
     /// Stops the walker, if one runs; the next kick starts another.
-    pub fn stop(&self) {
+    pub(crate) fn stop(&self) {
         if let Some(task) = crate::panic::lock(&self.task).take() {
             task.abort();
         }
@@ -71,11 +72,11 @@ impl LocalSpace {
     /// Asks for a walk. The walker starts with the first kick made on a
     /// runtime, so that nothing is spawned where there is none.
     /// The walk measures `at` from now on, or the folder's own path again (`None`).
-    pub fn measure_at(&self, at: Option<std::path::PathBuf>) {
+    pub(crate) fn measure_at(&self, at: Option<std::path::PathBuf>) {
         *crate::panic::lock(&self.at) = at;
     }
 
-    pub fn kick(&self) {
+    pub(crate) fn kick(&self) {
         if !self.enabled {
             return;
         }
@@ -128,7 +129,7 @@ async fn walker(kick: Arc<Notify>, state: SyncStateHandle, measure: Measure, at:
 
 /// `LocalBytes`: what the folder's regular files take on disk, `st_blocks ×
 /// 512` — a file counts as what it occupies, not its size.
-pub fn local_bytes(root: &Path) -> u64 {
+pub(crate) fn local_bytes(root: &Path) -> u64 {
     let mut total = 0u64;
     walk_files(root, &mut |_, meta| total += meta.blocks() * 512);
     total

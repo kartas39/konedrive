@@ -14,8 +14,7 @@
 //! ended with another hash reads at the next plan as "changed on both sides", and the
 //! user gets a conflict copy of his own file against this folder's failed upload — once
 //! per upload if OneDrive rewrites what it is sent. With it the plan can tell the case;
-//! what it then does is the owner's (`onedrive_steps::content_upload`,
-//! `OwnUploadFollowUp`).
+//! the content is then sent again (the owner's decision, `onedrive_steps::content_upload`).
 //!
 //! **Tested without the rest:**
 // test: the_fact_is_answered_while_onedrives_content_is_the_one_the_upload_left

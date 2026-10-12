@@ -67,7 +67,7 @@ use konedrive_tree::{FolderStepKind, ItemVersions, LocalItemId, NextTry, Reason,
 /// Which step a step is, as its tries are kept here: what the tries of one step of an item
 /// are told from those of another by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum LocalStepKind {
+pub(crate) enum LocalStepKind {
     TowardsFolder(FolderStepKind),
     OfRows(RowStepKind),
     /// Whatever is sent of the item: a request that failed says that the next one waits,
@@ -77,7 +77,7 @@ pub enum LocalStepKind {
 
 impl LocalStepKind {
     /// The steps of an item whose next try the plan holds for a try of this kind.
-    pub fn tried_step(self) -> TriedStep {
+    pub(crate) fn tried_step(self) -> TriedStep {
         match self {
             LocalStepKind::TowardsFolder(kind) => TriedStep::TowardsFolder(kind),
             LocalStepKind::OfRows(kind) => TriedStep::OfRows(kind),
@@ -90,7 +90,7 @@ impl LocalStepKind {
 /// every row it was planned from — its item's, and for two items that are merged those of
 /// both.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocalStep {
+pub(crate) struct LocalStep {
     item: LocalItemId,
     kind: LocalStepKind,
     planned_from: Vec<ItemVersions>,
@@ -102,7 +102,7 @@ impl LocalStep {
     /// (`StepMemory::remember_failed_try`). A step towards OneDrive planned from a row
     /// that is not unsent has no stamp for the store to keep a try under: its tries are
     /// the task's.
-    pub fn of(step: &SyncStep) -> Option<Self> {
+    pub(crate) fn of(step: &SyncStep) -> Option<Self> {
         match step {
             SyncStep::OneDrive(sent) if sent.item().unsent_since.is_some() => None,
             SyncStep::OneDrive(_) | SyncStep::Folder(_) | SyncStep::Row(_) => Some(Self::describe(step)),
@@ -112,7 +112,7 @@ impl LocalStep {
     /// `step` as a try of it is kept here, whichever step it is: what a try the store
     /// could not be written is kept as, for a step towards OneDrive planned from an unsent
     /// row too.
-    pub fn describe(step: &SyncStep) -> Self {
+    pub(crate) fn describe(step: &SyncStep) -> Self {
         let (kind, planned_from) = match step {
             SyncStep::OneDrive(sent) => (LocalStepKind::TowardsOneDrive, vec![sent.item().clone()]),
             SyncStep::Folder(step) => (LocalStepKind::TowardsFolder(step.kind()), vec![step.item().clone()]),
@@ -122,23 +122,23 @@ impl LocalStep {
         Self { item: step.local_item_id(), kind, planned_from }
     }
 
-    pub fn item(&self) -> LocalItemId {
+    pub(crate) fn item(&self) -> LocalItemId {
         self.item
     }
 
-    pub fn kind(&self) -> LocalStepKind {
+    pub(crate) fn kind(&self) -> LocalStepKind {
         self.kind
     }
 }
 
 /// The failed tries of one step.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocalStepTry {
+pub(crate) struct LocalStepTry {
     /// How many tries failed.
-    pub count: u32,
+    pub(crate) count: u32,
     /// Unix seconds; `None` when the next try is due at once.
-    pub next_try_at: Option<i64>,
-    pub last_failure: Reason,
+    pub(crate) next_try_at: Option<i64>,
+    pub(crate) last_failure: Reason,
     /// The versions of the rows the step that failed was planned from.
     planned_from: Vec<ItemVersions>,
 }
@@ -153,7 +153,7 @@ impl LocalStepTry {
 
 /// The failed tries the plan's task keeps, for one folder and one run of the daemon.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LocalStepTries {
+pub(crate) struct LocalStepTries {
     tries: BTreeMap<(LocalItemId, LocalStepKind), LocalStepTry>,
 }
 
@@ -162,7 +162,7 @@ pub struct LocalStepTries {
 /// version, place and content agreed on, and the content on disk or not as it was. The
 /// eTag is not asked, nor the stamp of what is unsent: neither tells one piece of such
 /// work from another. Pure.
-pub fn is_same_work(planned_from: &ItemVersions, now: &ItemVersions) -> bool {
+pub(crate) fn is_same_work(planned_from: &ItemVersions, now: &ItemVersions) -> bool {
     let ItemVersions { local_item_id, onedrive_item, local, onedrive, onedrive_etag: _, synced_place, synced_content, content_presence, unsent_since: _ } = planned_from;
     *local_item_id == now.local_item_id
         && *onedrive_item == now.onedrive_item
@@ -176,32 +176,32 @@ pub fn is_same_work(planned_from: &ItemVersions, now: &ItemVersions) -> bool {
 impl LocalStepTries {
     /// How many tries of `step` failed so far: of this kind of step, for this item, planned
     /// from the same work. What the settlement computes the next wait from.
-    pub fn count_tries(&self, step: &LocalStep) -> u32 {
+    pub(crate) fn count_tries(&self, step: &LocalStep) -> u32 {
         self.tries.get(&(step.item, step.kind)).filter(|kept| kept.is_of_same_work(&step.planned_from)).map_or(0, |kept| kept.count)
     }
 
     /// The tries kept of the step of `item` of this `kind`, when any are.
-    pub fn find_tries(&self, item: LocalItemId, kind: LocalStepKind) -> Option<&LocalStepTry> {
+    pub(crate) fn find_tries(&self, item: LocalItemId, kind: LocalStepKind) -> Option<&LocalStepTry> {
         self.tries.get(&(item, kind))
     }
 
     /// A try of `step` failed for `reason`; the next is due at `next_try_at`, or at once.
     /// How many tries of it failed, with this one: counted on from the tries kept of the
     /// same kind of step planned from the same work, and from one otherwise.
-    pub fn remember_failed_try(&mut self, step: &LocalStep, reason: Reason, next_try_at: Option<i64>) -> u32 {
+    pub(crate) fn remember_failed_try(&mut self, step: &LocalStep, reason: Reason, next_try_at: Option<i64>) -> u32 {
         let count = self.count_tries(step).saturating_add(1);
         self.tries.insert((step.item, step.kind), LocalStepTry { count, next_try_at, last_failure: reason, planned_from: step.planned_from.clone() });
         count
     }
 
     /// `step` was written: its tries are over.
-    pub fn forget_tries(&mut self, step: &LocalStep) {
+    pub(crate) fn forget_tries(&mut self, step: &LocalStep) {
         self.tries.remove(&(step.item, step.kind));
     }
 
     /// The items a row of which a kept try was planned from: what a plan's reading reads
     /// the versions of, to ask [`void_by_rows`](Self::void_by_rows).
-    pub fn list_items(&self) -> BTreeSet<LocalItemId> {
+    pub(crate) fn list_items(&self) -> BTreeSet<LocalItemId> {
         self.tries.values().flat_map(|kept| kept.planned_from.iter().map(|row| row.local_item_id)).collect()
     }
 
@@ -209,14 +209,14 @@ impl LocalStepTries {
     /// reading has them, an item with no row being left out. Every try one of whose rows
     /// went, or is another piece of work than the step was planned from
     /// ([`is_same_work`]), is forgotten.
-    pub fn void_by_rows(&mut self, rows: &BTreeMap<LocalItemId, ItemVersions>) {
+    pub(crate) fn void_by_rows(&mut self, rows: &BTreeMap<LocalItemId, ItemVersions>) {
         self.tries.retain(|_, kept| kept.planned_from.iter().all(|planned_from| rows.get(&planned_from.local_item_id).is_some_and(|now| is_same_work(planned_from, now))));
     }
 
     /// What the plan is told: for every try with a time, that time and the reason of the
     /// last failure, under the item and the kind of step it holds. Every one is given, due
     /// or not: the plan compares with its `now`.
-    pub fn list_next_tries(&self) -> BTreeMap<(LocalItemId, TriedStep), NextTry> {
+    pub(crate) fn list_next_tries(&self) -> BTreeMap<(LocalItemId, TriedStep), NextTry> {
         let next_try = |((item, kind), kept): (&(LocalItemId, LocalStepKind), &LocalStepTry)| Some(((*item, kind.tried_step()), NextTry { not_before: kept.next_try_at?, reason: kept.last_failure.clone() }));
         self.tries.iter().filter_map(next_try).collect()
     }
@@ -224,7 +224,7 @@ impl LocalStepTries {
     /// Every try is due now, with its count and its reason kept: the user asked for a
     /// refresh, or the network is back. As `StepMemory::clear_next_tries` for what is
     /// sent. How many waited.
-    pub fn clear_next_tries(&mut self) -> usize {
+    pub(crate) fn clear_next_tries(&mut self) -> usize {
         self.tries.values_mut().filter_map(|kept| kept.next_try_at.take()).count()
     }
 }

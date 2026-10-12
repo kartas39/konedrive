@@ -33,7 +33,7 @@ use crate::mount::ItemContentFiles;
 use crate::local::SharedIgnore;
 
 /// The runner of the steps of the rows, for one folder.
-pub struct RowSteps {
+pub(crate) struct RowSteps {
     store: Store,
     tree_lock: Arc<tokio::sync::Mutex<()>>,
     content_files: Arc<ItemContentFiles>,
@@ -100,7 +100,7 @@ impl RowSteps {
 
     /// Runs `step` and answers what came of it. Called by the plan's task, at once and
     /// in the plan's order: a step of the rows waits for no slot.
-    pub async fn run(&self, step: RowStep) -> StepOutcome {
+    pub(crate) async fn run(&self, step: RowStep) -> StepOutcome {
         match step {
             RowStep::GiveUpBinding { item } => self.run_give_up_binding(&item).await,
             RowStep::MergeItems { local, onedrive } => self.run_merge_items(&local, &onedrive).await,

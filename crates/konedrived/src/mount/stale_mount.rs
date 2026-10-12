@@ -78,7 +78,7 @@ fn is_stale_mount_at(folder: &Path) -> bool {
 }
 
 /// Takes off the stale mount on `folder`, when there is one.
-pub fn unmount_stale_mount(folder: &Path) {
+pub(crate) fn unmount_stale_mount(folder: &Path) {
     if is_stale_mount_at(folder) {
         tracing::warn!("{} carries the mount of a daemon that is gone; taking it off", folder.display());
         let _ = std::process::Command::new("fusermount3").arg("-u").arg("-z").arg(folder).status();

@@ -30,7 +30,7 @@ use crate::sync_parts::step_outcome::StepRefusal;
 
 /// What a quota read changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpaceChange {
+pub(crate) enum SpaceChange {
     /// The read says nothing of the space: nothing changed.
     NotKnown,
     /// OneDrive is full from now on.
@@ -57,7 +57,7 @@ const QUOTA_READ_REUSE: i64 = 10;
 /// Whether `quota` says OneDrive is full: its state is "exceeded", or less than a
 /// mebibyte is left (`space.rs:62`, `no_space`). `None` for a quota that says nothing of
 /// the space: neither what is left nor a state. Pure.
-pub fn decide_is_full(quota: &DriveQuota) -> Option<bool> {
+pub(crate) fn decide_is_full(quota: &DriveQuota) -> Option<bool> {
     if quota.remaining.is_none() && quota.state.is_empty() {
         return None;
     }
@@ -65,7 +65,7 @@ pub fn decide_is_full(quota: &DriveQuota) -> Option<bool> {
 }
 
 /// The space of one account's OneDrive, as its folder's sync sees it.
-pub struct OneDriveSpace {
+pub(crate) struct OneDriveSpace {
     /// The account's one quota, which this reads and adjusts and keeps no copy of.
     quota: Quota,
     is_full: std::sync::atomic::AtomicBool,
@@ -85,7 +85,7 @@ pub struct OneDriveSpace {
 /// next read is due (`OneDriveSpace::find_next_read`: while OneDrive is full, or a file
 /// waits as too big) — and not within `retry_wait` seconds of a read that failed or said
 /// nothing of the space (`last_failed_read_at`). Pure.
-pub fn decide_is_quota_read(is_refresh_asked: bool, next_read_at: Option<i64>, last_failed_read_at: Option<i64>, retry_wait: i64, now: i64) -> bool {
+pub(crate) fn decide_is_quota_read(is_refresh_asked: bool, next_read_at: Option<i64>, last_failed_read_at: Option<i64>, retry_wait: i64, now: i64) -> bool {
     let is_read_due = next_read_at.is_some_and(|at| at <= now);
     let is_retry_due = last_failed_read_at.is_none_or(|failed_at| now.saturating_sub(failed_at) >= retry_wait);
     is_refresh_asked || (is_read_due && is_retry_due)
@@ -122,7 +122,7 @@ impl OneDriveSpace {
 
     /// Whether OneDrive is full. Called by the plan's task for `is_onedrive_full`, and by
     /// the queue's answers for `QuotaFull`.
-    pub fn is_full(&self) -> bool {
+    pub(crate) fn is_full(&self) -> bool {
         self.is_full.load(std::sync::atomic::Ordering::SeqCst)
     }
 
@@ -144,7 +144,7 @@ impl OneDriveSpace {
     /// that read and this call comes back onto what is left until the next read. A quota
     /// that says nothing of the space is written nowhere. `HasSpace.free_space` is 0 when
     /// Graph gave a state and no `remaining`: nothing that waits is taken to fit.
-    pub fn apply_quota(&self, quota: &DriveQuota, now: i64) -> SpaceChange {
+    pub(crate) fn apply_quota(&self, quota: &DriveQuota, now: i64) -> SpaceChange {
         let Some(is_full) = decide_is_full(quota) else { return SpaceChange::NotKnown };
         self.quota.read_at(quota, now);
         self.decide_change(quota, is_full, now)
@@ -162,7 +162,7 @@ impl OneDriveSpace {
     /// journal's line. No lock is held across the request, so two refusals that come at
     /// the same instant may each ask once; the second of two that come one after the
     /// other uses the first's read.
-    pub async fn refuse_for_space(&self, drive: &DriveClient, size: u64, now: i64) -> StepRefusal {
+    pub(crate) async fn refuse_for_space(&self, drive: &DriveClient, size: u64, now: i64) -> StepRefusal {
         // The account's read of a moment ago, when it says something of the space, was
         // applied when it was made; a new one is applied here.
         let reused = self.quota.read_within(QUOTA_READ_REUSE).filter(|quota| decide_is_full(quota).is_some());
@@ -201,7 +201,7 @@ impl OneDriveSpace {
     /// An upload of `bytes` was committed: they come off what the account's quota says is
     /// left, until the next read (`Quota::uploaded`; today `space.rs:149`, `space_used`).
     /// Called by the steps that send content, after their commit was written.
-    pub fn count_uploaded(&self, bytes: u64) {
+    pub(crate) fn count_uploaded(&self, bytes: u64) {
         self.quota.uploaded(bytes);
     }
 
@@ -213,7 +213,7 @@ impl OneDriveSpace {
     /// task forgets the fitting refusals for lack of space by after
     /// `WakeCause::QuotaRead`: the one who read the quota applied it and gave the task no
     /// figures.
-    pub fn find_free_space(&self) -> Option<u64> {
+    pub(crate) fn find_free_space(&self) -> Option<u64> {
         if self.is_full() {
             return None;
         }
@@ -234,7 +234,7 @@ impl OneDriveSpace {
     /// finds space once it was set, since that space may still be too little for the file
     /// that waits. It is `None` only for a OneDrive that was never full and refused
     /// nothing since the folder's start.
-    pub fn find_next_read(&self) -> Option<i64> {
+    pub(crate) fn find_next_read(&self) -> Option<i64> {
         *crate::panic::lock(&self.next_read_at)
     }
 }

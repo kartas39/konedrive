@@ -110,13 +110,13 @@ pub enum ModeError {
 
 /// What `TokenExport.ReadWrite` refuses a drive `write_test_drive_ids` does not list with
 /// (`docs/design/writes.md` §2.3).
-pub const EXPORT_NOT_ALLOWED: &str = "a read-write access token is handed out only for the test \
+pub(crate) const EXPORT_NOT_ALLOWED: &str = "a read-write access token is handed out only for the test \
      accounts listed in write_test_drive_ids in config.toml, and this account's drive is not one of \
      them";
 
 /// `LastError` of a switch to read-write whose sign-in ended while `config.toml` could not be
 /// read: nothing is written over a file that cannot be read.
-pub const CONFIG_UNREADABLE_AT_SWITCH: &str = "config.toml cannot be read now, so the switch to \
+pub(crate) const CONFIG_UNREADABLE_AT_SWITCH: &str = "config.toml cannot be read now, so the switch to \
      read-write was not saved; the account stays read-only.";
 
 /// What a switch to read-write says of an account with no drive recorded, when Graph does not
@@ -428,11 +428,6 @@ impl AccountService {
         &self.state
     }
 
-    /// The account's one quota, which its folder's uploads read and adjust too.
-    pub fn quota(&self) -> &Quota {
-        &self.quota
-    }
-
     /// Access tokens for Graph callers.
     pub fn tokens(&self) -> &Arc<TokenManager> {
         &self.tokens
@@ -440,7 +435,7 @@ impl AccountService {
 
     /// A read-only Graph drive client for the sync side, on this account's
     /// tokens.
-    pub fn drive(&self) -> anyhow::Result<konedrive_graph::drive::DriveClient> {
+    pub(crate) fn drive(&self) -> anyhow::Result<konedrive_graph::drive::DriveClient> {
         konedrive_graph::drive::DriveClient::new(self.endpoints.graph.clone(), Arc::clone(&self.tokens) as Arc<dyn konedrive_graph::token::TokenSource>)
     }
 
@@ -558,7 +553,7 @@ impl AccountService {
     /// A folder's cycle saw the account's token reach `drive`, which is not the drive the folder
     /// was listed from: recorded, and the mode worked out again, so that a
     /// read-write account turns read-only rather than writing on as before.
-    pub fn drive_seen(&self, drive: &str) {
+    pub(crate) fn drive_seen(&self, drive: &str) {
         self.record_live_drive(drive);
         self.recompute_mode();
     }
@@ -629,7 +624,7 @@ impl AccountService {
     }
 
     /// Signs in with `id` from now on (already validated and saved).
-    pub fn use_client_id(&self, id: &str) {
+    pub(crate) fn use_client_id(&self, id: &str) {
         self.install_oauth(id);
         self.state.update(|s| s.client_id = id.to_owned());
     }
@@ -660,7 +655,7 @@ pub struct Siblings(std::sync::Mutex<Vec<Weak<AccountService>>>);
 impl Siblings {
     /// Every one of them the guard cannot tell apart from a drive, by id
     /// ([`sign_in::settle`]): for a sign-in that belongs to none of them (`Accounts.SignIn`).
-    pub(crate) async fn settle(&self) -> Vec<AccountId> {
+    pub async fn settle(&self) -> Vec<AccountId> {
         let all = crate::panic::lock(&self.0).iter().filter_map(Weak::upgrade).collect();
         sign_in::settle(all).await
     }

@@ -41,20 +41,20 @@ pub struct Persist {
 /// knows of it.
 #[derive(Clone)]
 pub struct OneDrive {
-    pub drive: DriveClient,
-    pub paths: SyncPaths,
+    pub(crate) drive: DriveClient,
+    pub(crate) paths: SyncPaths,
 }
 
 /// The limits of the account's transfer pool (`[transfers]` in `config.toml`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Transfers {
     /// The emergency ceiling (`max`).
-    pub ceiling: usize,
+    pub(crate) ceiling: usize,
     /// How many large files move at once (`large`).
-    pub large: usize,
+    pub(crate) large: usize,
     /// How much of a file that is not downloaded is read before it is downloaded
     /// whole (`download_after`).
-    pub download_after: u64,
+    pub(crate) download_after: u64,
 }
 
 impl Default for Transfers {
@@ -64,13 +64,13 @@ impl Default for Transfers {
 }
 
 /// Where a folder's files are filled from.
-pub trait Sources: Send + Sync {
+pub(crate) trait Sources: Send + Sync {
     /// The source of a folder that shows `drive`.
     fn onedrive(&self, drive: &DriveClient) -> Arc<dyn ContentSource>;
 }
 
 /// The daemon's source: Graph.
-pub struct RealSources;
+pub(crate) struct RealSources;
 
 impl Sources for RealSources {
     fn onedrive(&self, drive: &DriveClient) -> Arc<dyn ContentSource> {
@@ -83,26 +83,26 @@ impl Sources for RealSources {
 /// the service by a call.
 pub struct Wiring {
     /// The folders of the daemon's accounts.
-    pub registry: Arc<Registry>,
+    pub(crate) registry: Arc<Registry>,
     /// The folder's account: its sign-in, its quota, and what the folder tells it.
-    pub account: Arc<dyn FolderAccount>,
+    pub(crate) account: Arc<dyn FolderAccount>,
     /// The account's entry in `config.toml`.
-    pub persist: Persist,
+    pub(crate) persist: Persist,
     /// `None`: the account has no drive, and no folder can be registered for it.
-    pub onedrive: Option<OneDrive>,
+    pub(crate) onedrive: Option<OneDrive>,
     /// Keeps KDE's Baloo indexer out of a fresh OneDrive folder, and lets a forgotten one
     /// back in (`desktop::baloo`). Only `main` gives the real `balooctl6`.
-    pub baloo: Baloo,
+    pub(crate) baloo: Baloo,
     /// How often a OneDrive folder is synced.
-    pub schedule: Schedule,
-    pub transfers: Transfers,
-    pub sources: Arc<dyn Sources>,
+    pub(crate) schedule: Schedule,
+    pub(crate) transfers: Transfers,
+    pub(crate) sources: Arc<dyn Sources>,
     /// The clock the account's pause is kept by.
-    pub clock: Arc<dyn Clock>,
+    pub(crate) clock: Arc<dyn Clock>,
     /// The bus the desktop's programs are told on to read the folder's directories again
     /// (`desktop::dirnotify`): the daemon's own connection to the session bus. `None`: the
     /// service tells the desktop nothing, and reaches no bus by itself.
-    pub desktop_bus: Option<zbus::Connection>,
+    pub(crate) desktop_bus: Option<zbus::Connection>,
 }
 
 impl Wiring {

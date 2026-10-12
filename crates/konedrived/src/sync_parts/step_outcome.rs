@@ -21,7 +21,7 @@ use konedrive_tree::{ActivityKind, ItemPlace, OneDriveItemReference};
 
 /// What came of a step.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StepOutcome {
+pub(crate) enum StepOutcome {
     /// The step is done and its commit wrote the rows: what happened, for the activity
     /// log.
     Written { events: Vec<StepEvent> },
@@ -39,7 +39,7 @@ pub enum StepOutcome {
 
 /// What a runner did after its commit answered that the rows changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RowsChangedFollowUp {
+pub(crate) enum RowsChangedFollowUp {
     /// Nothing was to undo, or the change of the backing directory was undone.
     Nothing,
     /// OneDrive did change and the rows do not say so: a listing cycle is asked for, and
@@ -55,7 +55,7 @@ pub enum RowsChangedFollowUp {
 
 /// A refusal of OneDrive, by what the plan's task does about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StepRefusal {
+pub(crate) enum StepRefusal {
     /// 409: another item has the name at `place`, spelt `holder_name` there. Kept as a
     /// taken name; a listing cycle is asked for.
     NameTaken { place: ItemPlace, holder_name: OsString },
@@ -98,7 +98,7 @@ pub enum StepRefusal {
 /// nothing; the other three do not change by themselves, and count a failed try, so that
 /// the same step is not planned again at once for good.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StepObstacle {
+pub(crate) enum StepObstacle {
     /// A program opened the file for writing since the plan was made: its close wakes the
     /// plan.
     OpenForWriting,
@@ -116,7 +116,7 @@ pub enum StepObstacle {
 
 /// A failure that is neither OneDrive's refusal nor a changed row.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StepFailure {
+pub(crate) enum StepFailure {
     /// The backing directory: the errno and where.
     Disk { errno: i32, path: PathBuf },
     /// The store.
@@ -140,19 +140,19 @@ pub enum StepFailure {
 
 /// One thing a step did, as the activity log says it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StepEvent {
-    pub kind: ActivityKind,
+pub(crate) struct StepEvent {
+    pub(crate) kind: ActivityKind,
     /// Relative to the folder's root, as the rows said it when the step was committed.
-    pub path: PathBuf,
+    pub(crate) path: PathBuf,
     /// For a move: where it was.
-    pub former_path: Option<PathBuf>,
+    pub(crate) former_path: Option<PathBuf>,
 }
 
 /// Why a part of a step did not get to its end, when it is one of the two that are no
 /// refusal of OneDrive: what opening or reading a local content answers, and what a step
 /// turns into its outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StepTrouble {
+pub(crate) enum StepTrouble {
     /// Not a failure of the daemon: an obstacle the step answers with.
     Obstacle(StepObstacle),
     Failure(StepFailure),

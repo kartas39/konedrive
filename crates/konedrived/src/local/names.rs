@@ -13,12 +13,12 @@ use konedrive_tree::Reason;
 
 /// The largest file OneDrive takes (Microsoft: 250 GB). Taken as GiB: a file
 /// between 250 GB and 250 GiB, if refused, is blocked by the service's answer.
-pub const MAX_FILE_SIZE: u64 = 250 << 30;
+pub(crate) const MAX_FILE_SIZE: u64 = 250 << 30;
 
 /// Why a row is blocked before any request. Its [`Reason`] is what the row
 /// holds; the window and the CLI word it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refused {
+pub(crate) enum Refused {
     /// One of `" * : < > ? \ |`.
     Characters,
     /// A leading or trailing space.
@@ -28,19 +28,16 @@ pub enum Refused {
     Reserved,
     /// Linux allows it; JSON cannot carry it.
     NotUtf8,
-    /// Over [`MAX_FILE_SIZE`].
-    TooLarge,
 }
 
 impl Refused {
     /// The reason a row blocked for it holds.
-    pub fn reason(self) -> Reason {
+    pub(crate) fn reason(self) -> Reason {
         match self {
             Self::Characters => Reason::NameCharacters,
             Self::Spaces => Reason::NameSpaces,
             Self::Reserved => Reason::NameReserved,
             Self::NotUtf8 => Reason::NameNotUtf8,
-            Self::TooLarge => Reason::TooLarge,
         }
     }
 }
@@ -48,7 +45,7 @@ impl Refused {
 const FORBIDDEN: &[char] = &['"', '*', ':', '<', '>', '?', '\\', '|'];
 
 /// Whether OneDrive refuses `name`, and why.
-pub fn refused(name: &OsStr) -> Option<Refused> {
+pub(crate) fn refused(name: &OsStr) -> Option<Refused> {
     let Some(name) = name.to_str() else {
         return Some(Refused::NotUtf8);
     };
@@ -74,7 +71,7 @@ pub fn refused(name: &OsStr) -> Option<Refused> {
 /// The machine's name for conflict copies (`docs/design/writes.md` §7): the host name
 /// up to its first dot, with any character OneDrive refuses replaced by
 /// `-`, at most 32 characters; `linux` when there is none.
-pub fn machine_name(host: &str) -> String {
+pub(crate) fn machine_name(host: &str) -> String {
     let first = host.trim().split('.').next().unwrap_or_default();
     let cleaned: String = first
         .chars()
@@ -90,7 +87,7 @@ pub fn machine_name(host: &str) -> String {
 }
 
 /// [`machine_name`] of this host.
-pub fn default_machine_name() -> String {
+pub(crate) fn default_machine_name() -> String {
     machine_name(&std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default())
 }
 

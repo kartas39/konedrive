@@ -53,7 +53,7 @@ pub(crate) fn signed_in_sentence(email: Option<&str>) -> String {
 /// every other, under a fresh id, with the drive, the `email` as its `login_hint`, and
 /// its label ([`crate::config::signed_in_label`]). `Err` says why the sign-in is refused, and nothing was
 /// added.
-pub(crate) fn claim_new(config: &mut Config, drive: &DriveId, email: Option<&str>, unsettled: &[AccountId]) -> Result<AccountConfig, Refused> {
+pub fn claim_new(config: &mut Config, drive: &DriveId, email: Option<&str>, unsettled: &[AccountId]) -> Result<AccountConfig, Refused> {
     drive_is_free(config, None, drive, unsettled)?;
     let id = AccountId::fresh(config.accounts.iter().map(|a| &a.id));
     let label = crate::config::signed_in_label(config, &id, email);
@@ -204,7 +204,7 @@ impl AccountService {
     /// account stays, so it signs in and changes its mode again. What `retire` did stays
     /// done: a sign-in that was under way is given up, and a sign-in that was deleted is
     /// gone.
-    pub fn unretire(&self) {
+    pub(crate) fn unretire(&self) {
         self.retired.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 

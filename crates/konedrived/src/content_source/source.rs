@@ -8,14 +8,14 @@ use tokio::io::AsyncRead;
 
 mod download;
 mod guards;
-pub mod parts;
+pub(crate) mod parts;
 mod target;
 
 pub(crate) use download::download_staged;
-pub use parts::{Share, Split};
+pub(crate) use parts::{Share, Split};
 
 #[derive(Debug, thiserror::Error)]
-pub enum SourceError {
+pub(crate) enum SourceError {
     #[error("{0}")]
     NotFound(String),
     #[error("{0}")]
@@ -29,7 +29,7 @@ pub enum SourceError {
     Throttled { detail: String, retry_after: Option<std::time::Duration> },
 }
 
-pub struct Fetched {
+pub(crate) struct Fetched {
     /// The offset this stream actually starts at.
     ///
     /// `fill` asks for `from` and writes what comes back at `from`; a source
@@ -41,30 +41,30 @@ pub struct Fetched {
     /// that makes that case detectable, so every implementation must set it
     /// to the offset of the first byte of `stream`, not to the offset it was
     /// asked for.
-    pub served_from: u64,
+    pub(crate) served_from: u64,
     /// The item's size by now, when the source said one. `None` is "not said", never an
     /// empty file: OneDrive's metadata may leave the size out, and the answer to a range a
     /// program reads tells nothing of the item (`read_range`). Whoever reads it decides
     /// what an answer without a size is to them; a download refuses it
     /// (`guards::check_answer`).
-    pub size: Option<u64>,
-    pub mtime: SystemTime,
+    pub(crate) size: Option<u64>,
+    pub(crate) mtime: SystemTime,
     /// `None` from a source that cannot say (`LocalDir`): nothing is then
     /// verified or checkpointed.
-    pub version: Option<Version>,
-    pub stream: Box<dyn AsyncRead + Send + Unpin>,
+    pub(crate) version: Option<Version>,
+    pub(crate) stream: Box<dyn AsyncRead + Send + Unpin>,
 }
 
 /// Which version of a file a source's bytes belong to, when it can say: the
 /// cTag, and the quickXorHash the whole file must match.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Version {
-    pub ctag: String,
-    pub quick_xor: Option<[u8; konedrive_graph::quickxor::LEN]>,
+pub(crate) struct Version {
+    pub(crate) ctag: String,
+    pub(crate) quick_xor: Option<[u8; konedrive_graph::quickxor::LEN]>,
 }
 
 #[async_trait]
-pub trait ContentSource: Send + Sync {
+pub(crate) trait ContentSource: Send + Sync {
     /// Bytes of `item_id` starting at `from`, plus the item's current size and mtime.
     ///
     /// `end` is where the bytes wanted stop — the offset of the first byte not

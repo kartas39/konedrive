@@ -5,16 +5,16 @@
 //! ([`lease`]).
 
 // No caller until the owner of a folder's state starts a sync through `sync_tasks`.
-pub mod lease;
+pub(crate) mod lease;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
-pub mod onedrive_space;
+pub(crate) mod onedrive_space;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
-pub mod published_plan;
+pub(crate) mod published_plan;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
-pub mod running_steps;
+pub(crate) mod running_steps;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
-pub mod sending_holds;
+pub(crate) mod sending_holds;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
-pub mod step_outcome;
+pub(crate) mod step_outcome;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
-pub mod sync_plan_wake;
+pub(crate) mod sync_plan_wake;

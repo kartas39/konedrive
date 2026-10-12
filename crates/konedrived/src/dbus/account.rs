@@ -11,7 +11,7 @@ use crate::dbus::fault::Result;
 #[cfg(feature = "dev-tools")]
 use crate::dbus::token_export::TokenExport;
 
-pub struct Account {
+pub(crate) struct Account {
     service: Arc<AccountService>,
 }
 
@@ -125,7 +125,7 @@ impl Account {
 /// At startup this runs before the bus name is claimed (`crate::daemon::startup::serve`), and
 /// after the session was restored from the wallet: a D-Bus-activated client's first call is
 /// never answered from stale, pre-restore state.
-pub async fn export(connection: &Connection, path: &ObjectPath<'_>, service: Arc<AccountService>) -> zbus::Result<JoinHandle<()>> {
+pub(crate) async fn export(connection: &Connection, path: &ObjectPath<'_>, service: Arc<AccountService>) -> zbus::Result<JoinHandle<()>> {
     // Captured before the interface is on the bus (not inside the task): otherwise a state
     // change landing in between would be absorbed into this baseline instead of being
     // emitted as a PropertiesChanged signal.
@@ -148,7 +148,7 @@ pub async fn export(connection: &Connection, path: &ObjectPath<'_>, service: Arc
 }
 
 /// Takes one account's `Account` and `TokenExport` off the bus (`Accounts.Remove`).
-pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
+pub(crate) async fn unexport(connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
     use crate::dbus::export::{all_taken_off, take_off};
     all_taken_off([
         #[cfg(feature = "dev-tools")]

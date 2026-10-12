@@ -13,7 +13,7 @@ impl SyncService {
     /// connection: a Forget waits, with a bound, until every clone of the store is let go
     /// of before it removes the files, this read's among them. Empty for an account with
     /// no folder and for a folder that keeps no open store.
-    pub async fn skipped(&self) -> Result<Vec<(String, String, String, String)>, SyncError> {
+    pub(crate) async fn skipped(&self) -> Result<Vec<(String, String, String, String)>, SyncError> {
         let Some(record) = self.record() else { return Ok(Vec::new()) };
         let Some(parts) = self.view().parts else { return Ok(Vec::new()) };
         // The answers of the last plan, taken before the read; none with no plan published yet.
@@ -25,13 +25,6 @@ impl SyncService {
             .await
             .map_err(|e| SyncError::Store(e.to_string()))?;
         Ok(not_shown.into_iter().map(|row| (row.path, row.reason, row.waits, row.here)).collect())
-    }
-
-    /// `ItemsListed`, `ItemsPlaced`, `SkippedCount`, for the VM suite's listing of a real
-    /// drive and the tests.
-    pub fn items(&self) -> (u64, u64, u64) {
-        let s = self.state.get();
-        (s.cycle.items_listed, s.cycle.items_placed, s.cycle.skipped_count)
     }
 
     /// `ActivityLog.Recent(limit)`: the newest `limit` events, newest first.
@@ -56,7 +49,7 @@ impl SyncService {
     /// `Conflicts.Dismiss(kept_path)`: the conflict comes off the list, and
     /// the file stays where it is. A path that names no conflict is refused
     /// with that path in the refusal.
-    pub async fn dismiss_conflict(&self, kept_copy: &str) -> Result<(), SyncError> {
+    pub(crate) async fn dismiss_conflict(&self, kept_copy: &str) -> Result<(), SyncError> {
         let (report, path) = (self.report.clone(), kept_copy.to_owned());
         let removed = tokio::task::spawn_blocking(move || report.activity.dismiss(&path))
             .await
@@ -78,7 +71,7 @@ impl SyncService {
     /// Refused `NotInOneDrive` for an item with no id (not uploaded yet),
     /// `NotSignedIn` with no drive or no token, `Unreachable` when OneDrive
     /// does not answer.
-    pub async fn web_url(&self, path: &Path) -> Result<String, SyncError> {
+    pub(crate) async fn web_url(&self, path: &Path) -> Result<String, SyncError> {
         // Never opened: an open through the mount would download the file.
         let status = match self.require_mount()?.files_interface().find_path_status(path).await {
             Ok(status) => status,
@@ -91,7 +84,7 @@ impl SyncService {
 
     /// `Files.WebUrl` of the account's folder itself: the address of the page
     /// of the drive's root. One GET, as [`web_url`](Self::web_url).
-    pub async fn root_web_url(&self) -> Result<String, SyncError> {
+    pub(crate) async fn root_web_url(&self) -> Result<String, SyncError> {
         let reg = self.require_record()?;
         let drive = self.drive().ok_or(SyncError::NotSignedIn)?;
         page_of(drive.root_item().await, &reg.root.path.display().to_string())

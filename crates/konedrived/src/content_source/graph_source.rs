@@ -12,7 +12,7 @@ use super::source::{ContentSource, Fetched, SourceError, Version};
 use konedrive_graph::drive::{DriveClient, DriveError, DriveItem};
 use konedrive_graph::quickxor::decode_base64;
 
-pub struct GraphSource {
+pub(crate) struct GraphSource {
     drive: DriveClient,
     /// The download address of each item a program reads, and when it was given: Graph hands
     /// out an address that works for about an hour, and a read of 32 KiB should not cost a

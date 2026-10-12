@@ -24,7 +24,7 @@ use crate::sync_parts::step_outcome::RowsChangedFollowUp;
 
 /// What is done about an item a step made in OneDrive whose commit wrote nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MadeItemFate {
+pub(crate) enum MadeItemFate {
     /// The item's row is gone: what was made is removed in OneDrive.
     Remove,
     /// The row is there, changed: a listing brings the made item as one of OneDrive's,
@@ -34,7 +34,7 @@ pub enum MadeItemFate {
 
 /// The fate of what `MakeDirectory` or `SendNewFile` made, from the item's row as it is
 /// now. Pure.
-pub fn decide_made_item_fate(row: Option<&Item>) -> MadeItemFate {
+pub(crate) fn decide_made_item_fate(row: Option<&Item>) -> MadeItemFate {
     match row {
         None => MadeItemFate::Remove,
         Some(_) => MadeItemFate::LeaveForListing,
@@ -43,7 +43,7 @@ pub fn decide_made_item_fate(row: Option<&Item>) -> MadeItemFate {
 
 /// What follows up on made items.
 #[derive(Clone)]
-pub struct MadeItems {
+pub(crate) struct MadeItems {
     graph: GraphAccess,
 }
 
@@ -63,7 +63,7 @@ impl MadeItems {
     /// since; any failure), `CycleWanted` for a row that is still there — and for a row
     /// that cannot be read: nothing is removed on a guess. Today:
     /// `landed_away` (`upload/steps/shared.rs:663`) and `never_uploaded` (`:632`).
-    pub async fn follow_up_new_item(&self, item: &ItemVersions, made: &ConfirmedItem) -> RowsChangedFollowUp {
+    pub(crate) async fn follow_up_new_item(&self, item: &ItemVersions, made: &ConfirmedItem) -> RowsChangedFollowUp {
         let id = item.local_item_id;
         let row = match self.graph.store.read_items(move |items| items.find_item(id)).await {
             Ok(row) => row,

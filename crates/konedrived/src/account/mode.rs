@@ -403,7 +403,8 @@ impl AccountService {
 
     /// `TokenExport.ReadOnly` (`docs/design/desktop.md` §2.7; SECURITY.md): a token that can change nothing, whatever the
     /// account's mode.
-    pub async fn read_only_token(&self) -> Result<String, AuthError> {
+    #[cfg(any(test, feature = "dev-tools"))]
+    pub(crate) async fn read_only_token(&self) -> Result<String, AuthError> {
         self.tokens.read_only_token().await
     }
 
@@ -472,7 +473,7 @@ const REQUEST_IN_FLIGHT_ASKED_AGAIN_AFTER: Duration = Duration::from_secs(5);
 /// What a switch to read-only does, by what is unsent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-pub enum ReadOnlySwitch {
+pub(crate) enum ReadOnlySwitch {
     /// Made at once: nothing is unsent, or the user forced it. `unsent` is what stays
     /// here under the hold.
     SwitchNow { unsent: u64 },
@@ -482,7 +483,7 @@ pub enum ReadOnlySwitch {
 
 /// Whether a switch to read-only asked with `unsent` changes unsent is made now. Pure:
 /// `SwitchNow` with nothing unsent and whenever `is_forced`; else `KeepWish`.
-pub fn decide_read_only_switch(unsent: u64, is_forced: bool) -> ReadOnlySwitch {
+pub(crate) fn decide_read_only_switch(unsent: u64, is_forced: bool) -> ReadOnlySwitch {
     if is_forced || unsent == 0 {
         ReadOnlySwitch::SwitchNow { unsent }
     } else {

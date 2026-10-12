@@ -11,7 +11,9 @@
 use std::sync::Arc;
 
 use crate::status::activity::Activity;
-use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
+#[cfg(test)]
+use crate::status::snapshot::SyncSnapshot;
+use crate::status::snapshot::SyncStateHandle;
 use crate::status::space::LocalSpace;
 use crate::status::throttle_wait::ThrottleWait;
 use crate::status::transfers::Transfers;
@@ -22,8 +24,8 @@ use crate::status::transfers::Transfers;
 pub struct Report {
     pub activity: Arc<Activity>,
     pub transfers: Transfers,
-    pub space: Arc<LocalSpace>,
-    pub throttle_wait: ThrottleWait,
+    pub(crate) space: Arc<LocalSpace>,
+    pub(crate) throttle_wait: ThrottleWait,
 }
 
 impl Report {
@@ -39,7 +41,8 @@ impl Report {
     /// A report that goes nowhere: the plain `serve_hydrations`', which no
     /// service reads. It records into a log nobody reads and starts no
     /// walker.
-    pub fn nowhere() -> Self {
+    #[cfg(test)]
+    pub(crate) fn nowhere() -> Self {
         let state = SyncStateHandle::new(SyncSnapshot::default());
         Self {
             activity: Arc::new(Activity::new(state.clone())),

@@ -26,7 +26,7 @@ use crate::status::snapshot::SyncStateHandle;
 
 /// Who waits for the content that is asked of OneDrive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContentAsker {
+pub(crate) enum ContentAsker {
     /// A program: a read, an open for writing, a truncation, `Files.Hydrate`.
     Program,
     /// Nobody: the plan's download of a pinned file.
@@ -35,7 +35,7 @@ pub enum ContentAsker {
 
 /// What becomes of a request for content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContentRequest {
+pub(crate) enum ContentRequest {
     /// OneDrive is asked.
     Asked,
     /// It is refused at once: OneDrive asked the account to wait, and this many seconds
@@ -51,7 +51,7 @@ pub enum ContentRequest {
 ///   after the wait.
 /// - A wait runs and nobody waits: asked. The pool holds the request back until the wait
 ///   is over.
-pub fn decide_content_request(asker: ContentAsker, seconds_left: u32) -> ContentRequest {
+pub(crate) fn decide_content_request(asker: ContentAsker, seconds_left: u32) -> ContentRequest {
     match (asker, seconds_left) {
         (_, 0) | (ContentAsker::BackgroundWork, _) => ContentRequest::Asked,
         (ContentAsker::Program, seconds_left) => ContentRequest::Refused { seconds_left },
@@ -60,7 +60,7 @@ pub fn decide_content_request(asker: ContentAsker, seconds_left: u32) -> Content
 
 /// The throttle's wait of one account. Cheap to clone; every clone reads the same state.
 #[derive(Clone)]
-pub struct ThrottleWait {
+pub(crate) struct ThrottleWait {
     state: SyncStateHandle,
 }
 
@@ -71,7 +71,7 @@ impl ThrottleWait {
     }
 
     /// Seconds left of the wait, as the pool last published them; 0 when none runs.
-    pub fn seconds_left(&self) -> u32 {
+    pub(crate) fn seconds_left(&self) -> u32 {
         self.state.read(|s| s.transfers.throughput.retry_after)
     }
 
@@ -79,7 +79,7 @@ impl ThrottleWait {
     /// ([`decide_content_request`]) — at once while a wait runs — and says the seconds
     /// left of the wait. For ever for background work, which is never refused, and when
     /// the state is gone.
-    pub async fn wait_for_refusal(&self, asker: ContentAsker) -> u32 {
+    pub(crate) async fn wait_for_refusal(&self, asker: ContentAsker) -> u32 {
         let mut published = self.state.subscribe();
         let is_refused = |seconds_left| matches!(decide_content_request(asker, seconds_left), ContentRequest::Refused { .. });
         let refused = published.wait_for(|s| is_refused(s.transfers.throughput.retry_after)).await.map(|s| s.transfers.throughput.retry_after);
@@ -93,7 +93,7 @@ impl ThrottleWait {
     /// a program, the seconds left of a wait that runs already or starts before `asking`
     /// has answered: `asking` is dropped then, so it must be safe to drop where it
     /// waits.
-    pub async fn ask_unless_refused<T>(&self, asker: ContentAsker, asking: impl Future<Output = T>) -> Result<T, u32> {
+    pub(crate) async fn ask_unless_refused<T>(&self, asker: ContentAsker, asking: impl Future<Output = T>) -> Result<T, u32> {
         tokio::select! {
             biased;
             seconds_left = self.wait_for_refusal(asker) => Err(seconds_left),
@@ -103,14 +103,14 @@ impl ThrottleWait {
 
     /// Whether a wait runs and no file refused during it is told yet: whoever refuses a
     /// read looks the file's path up only then.
-    pub fn is_refusal_untold(&self) -> bool {
+    pub(crate) fn is_refusal_untold(&self) -> bool {
         self.state.read(|s| s.transfers.throughput.retry_after > 0 && s.transfers.retry_after_refusal.is_empty())
     }
 
     /// A program was refused the content of the file at `path` because of the wait: kept
     /// as the wait's refusal when it is the first of this wait, and said in the journal
     /// then. Whether a wait runs: with none, nothing is kept.
-    pub fn tell_refusal(&self, path: &str) -> bool {
+    pub(crate) fn tell_refusal(&self, path: &str) -> bool {
         let mut seconds_left = 0;
         let mut is_first = false;
         self.state.update_if_changed(|s| {

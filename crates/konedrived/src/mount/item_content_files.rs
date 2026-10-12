@@ -73,7 +73,7 @@ pub(super) fn to_content_time(content: &ContentVersion) -> std::time::SystemTime
 /// The backing file of an item's local content, open for reading, as it was when it was
 /// opened.
 #[derive(Debug)]
-pub struct LocalContentFile {
+pub(crate) struct LocalContentFile {
     item: LocalItemId,
     file: File,
     /// The content the step was planned from: every read asks that the file still has its
@@ -86,7 +86,7 @@ pub struct LocalContentFile {
 
 impl LocalContentFile {
     /// The size of the content, in bytes.
-    pub fn size(&self) -> u64 {
+    pub(crate) fn size(&self) -> u64 {
         self.content.size()
     }
 
@@ -108,7 +108,7 @@ impl LocalContentFile {
     /// bytes read while the file changed are not answered. A free-up of the same file
     /// cannot come in between: free-up leaves a file a step runs for. Blocking: called
     /// off the runtime.
-    pub fn read_fragment(&self, offset: u64, len: usize) -> Result<Vec<u8>, StepTrouble> {
+    pub(crate) fn read_fragment(&self, offset: u64, len: usize) -> Result<Vec<u8>, StepTrouble> {
         self.check_content()?;
         let mut bytes = vec![0; len];
         match self.file.read_exact_at(&mut bytes, offset) {
@@ -124,7 +124,7 @@ impl LocalContentFile {
     /// The QuickXorHash of the whole content, base64 (`upload/content/session.rs:171`,
     /// `Job::hash`). Blocking; no lock is held. Called by `RowStep::HashLocalContent` and
     /// by a step that asks whether what OneDrive has is what it sent.
-    pub fn hash(&self) -> Result<String, StepTrouble> {
+    pub(crate) fn hash(&self) -> Result<String, StepTrouble> {
         self.check_content()?;
         let (mut hash, mut hashed, size) = (QuickXor::new(), 0, self.size());
         let mut bytes = vec![0; HASHED_AT_ONCE];
@@ -172,7 +172,7 @@ pub(super) fn write_whole_copy_marks(file: &File, onedrive_item_id: &str, conten
 }
 
 /// The local contents of one folder.
-pub struct ItemContentFiles {
+pub(crate) struct ItemContentFiles {
     place_changes: Arc<PlaceChanges>,
     /// Where the store is: each call reads the rows on a connection of its own.
     store_path: PathBuf,
@@ -208,7 +208,7 @@ impl ItemContentFiles {
     /// write-operation thread and never on a thread of a runtime. Replaces
     /// `upload/local.rs:109` (`find`), `:216` (`open_for_upload`) and
     /// `steps/shared.rs:133` (`locate`).
-    pub fn open_to_send(&self, item: &ItemVersions) -> Result<LocalContentFile, StepTrouble> {
+    pub(crate) fn open_to_send(&self, item: &ItemVersions) -> Result<LocalContentFile, StepTrouble> {
         let id = item.local_item_id;
         let Some(content) = item.local.as_ref().and_then(|local| local.content.clone()) else { return Err(StepTrouble::Obstacle(StepObstacle::ContentChanged)) };
         let rows = self.open_read_connection().map_err(|error| decide_open_trouble(&OpenAtRowError::Store(error)))?;
@@ -250,7 +250,7 @@ impl ItemContentFiles {
     /// sent). A file that has not the sent content's size and time any more — a program
     /// changed it since — or that a program holds open for writing is left as it is: its
     /// row says its own content.
-    pub fn mark_sent_file(&self, file: &LocalContentFile, sent: &ConfirmedItem) -> std::io::Result<()> {
+    pub(crate) fn mark_sent_file(&self, file: &LocalContentFile, sent: &ConfirmedItem) -> std::io::Result<()> {
         let Some(confirmed) = &sent.content else { return Err(io::Error::new(io::ErrorKind::InvalidInput, "a file was confirmed with no content")) };
         let metadata = file.file.metadata()?;
         let is_sent_content = has_size_and_time_of(&file.content, metadata.len(), metadata.mtime(), metadata.mtime_nsec() as u32) && confirmed.size() == metadata.len();
@@ -288,7 +288,7 @@ impl ItemContentFiles {
     /// is in the backing directory (`upload/local.rs:346`, `commit_dir`): opened through
     /// `PlaceChanges::open_at_row_path`. Called by the runner of `MakeDirectory` after its
     /// commit. Blocking, with no lock, as [`mark_sent_file`](Self::mark_sent_file).
-    pub fn mark_made_directory(&self, item: &ItemVersions, made: &ConfirmedItem) -> std::io::Result<()> {
+    pub(crate) fn mark_made_directory(&self, item: &ItemVersions, made: &ConfirmedItem) -> std::io::Result<()> {
         let Some(marked) = self.open_to_mark(item.local_item_id, |row| row.kind == ItemKind::Directory)? else { return Ok(()) };
         // A row that has another binding by now is not the directory OneDrive made.
         if marked.row.onedrive_item.as_ref() != Some(&made.item) || !marked.entry.metadata()?.is_dir() {
@@ -308,7 +308,7 @@ impl ItemContentFiles {
     /// and no program writes it; any other file gets the item id alone: it is the entry of
     /// that item of OneDrive and no whole copy of what OneDrive has. Blocking, with no
     /// lock.
-    pub fn mark_agreed_content(&self, item: LocalItemId) -> std::io::Result<()> {
+    pub(crate) fn mark_agreed_content(&self, item: LocalItemId) -> std::io::Result<()> {
         let Some(MarkedEntry { entry, row }) = self.open_to_mark(item, |row| row.onedrive_item.is_some())? else { return Ok(()) };
         let Some(onedrive_item) = &row.onedrive_item else { return Ok(()) };
         let metadata = entry.metadata()?;
@@ -332,7 +332,7 @@ impl ItemContentFiles {
     /// the runner of `GiveUpBinding` after its commit. The item id first, then the
     /// whole-copy state and the cTag; what else konedrive keeps on the entry stays.
     /// Nothing for an item that has a binding by now. Blocking, with no lock.
-    pub fn remove_onedrive_marks(&self, item: LocalItemId) -> std::io::Result<()> {
+    pub(crate) fn remove_onedrive_marks(&self, item: LocalItemId) -> std::io::Result<()> {
         let Some(MarkedEntry { entry, .. }) = self.open_to_mark(item, |row| row.onedrive_item.is_none())? else { return Ok(()) };
         placeholder::with_owner_write(&entry, || [XATTR_ITEM_ID, XATTR_STATE, XATTR_CTAG].into_iter().try_for_each(|mark| remove_mark(&entry, mark)))?;
         entry.sync_all()

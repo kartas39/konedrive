@@ -21,7 +21,7 @@ use crate::listing::listing_poller::Schedule;
 
 /// How the last cycle ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LastCycle {
+pub(crate) enum LastCycle {
     /// Whole, or with a page of a listing the store gave up: no failure.
     Ended,
     /// It failed, after so many failures in a row before it.
@@ -31,7 +31,7 @@ pub enum LastCycle {
 /// Whether the notification socket is up: while it is, OneDrive says when something
 /// changed, and the poll is the safety net alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NotificationSocket {
+pub(crate) enum NotificationSocket {
     Up,
     Down,
 }
@@ -40,7 +40,7 @@ pub enum NotificationSocket {
 /// the wait the retry schedule has for it, and beyond the schedule's end the ordinary
 /// interval, whatever the socket; after a cycle that ended, the interval, or the longer
 /// one while the socket is up.
-pub fn decide_cycle_wait(schedule: &Schedule, last_cycle: LastCycle, socket: NotificationSocket) -> Duration {
+pub(crate) fn decide_cycle_wait(schedule: &Schedule, last_cycle: LastCycle, socket: NotificationSocket) -> Duration {
     match (last_cycle, socket) {
         (LastCycle::Failed { failures_before }, _) => schedule.retry.get(failures_before).copied().unwrap_or(schedule.interval),
         (LastCycle::Ended, NotificationSocket::Up) => schedule.live_interval,
@@ -50,7 +50,7 @@ pub fn decide_cycle_wait(schedule: &Schedule, last_cycle: LastCycle, socket: Not
 
 /// What a stopped poller waits for beside a refresh and the poll's interval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PauseWait {
+pub(crate) enum PauseWait {
     /// A timed pause: until the account's clock reads this (unix seconds).
     UntilClock(i64),
     /// A pause until resumed, or the automatic hold: nothing the clock says ends it.
@@ -60,7 +60,7 @@ pub enum PauseWait {
 /// What ends the stop `stop` by the clock, which reads `now`. Pure. A timed pause ends at
 /// its time, and is looked at again no sooner than in a second: a pause whose time has
 /// passed by a clock that was set does not spin the task.
-pub fn decide_pause_wait(stop: Stop, now: i64) -> PauseWait {
+pub(crate) fn decide_pause_wait(stop: Stop, now: i64) -> PauseWait {
     match stop {
         Stop::Paused(until) if until > 0 => PauseWait::UntilClock(until.max(now.saturating_add(1))),
         Stop::Paused(_) | Stop::Held(_) => PauseWait::NotByClock,

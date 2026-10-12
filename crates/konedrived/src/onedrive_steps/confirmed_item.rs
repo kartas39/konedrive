@@ -27,7 +27,7 @@ use crate::sync_parts::step_outcome::{StepFailure, StepRefusal};
 
 /// The `If-Match` value of a guarded request.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RequestGuard(String);
+pub(crate) struct RequestGuard(String);
 
 impl RequestGuard {
     pub fn as_str(&self) -> &str {
@@ -38,7 +38,7 @@ impl RequestGuard {
 /// `name` as Graph's client takes it. A name that is not UTF-8 is never planned to be
 /// sent (the upload rules refuse it: `SyncPlanInput::name_refusals`); met here it is
 /// `StepRefusal::RefusedForGood`, and nothing is sent. Pure.
-pub fn to_graph_name(name: &OsStr) -> Result<&str, StepRefusal> {
+pub(crate) fn to_graph_name(name: &OsStr) -> Result<&str, StepRefusal> {
     name.to_str().ok_or_else(|| StepRefusal::RefusedForGood { message: format!("the name {name:?} is not UTF-8") })
 }
 
@@ -48,7 +48,7 @@ pub fn to_graph_name(name: &OsStr) -> Result<&str, StepRefusal> {
 /// for an item with neither: its guarded step is answered `StepFailure::AnswerUnreadable`,
 /// which counts a try and asks for nothing: the step waits, and is planned with a guard
 /// once a listing that names the item wrote its eTag. Pure.
-pub fn decide_guard(item: &ItemVersions) -> Option<RequestGuard> {
+pub(crate) fn decide_guard(item: &ItemVersions) -> Option<RequestGuard> {
     let synced_ctag = || match &item.synced_content {
         Some(ContentVersion::Hashed { ctag, .. }) => ctag.clone(),
         Some(ContentVersion::ChangedHere { .. }) | None => None,
@@ -59,7 +59,7 @@ pub fn decide_guard(item: &ItemVersions) -> Option<RequestGuard> {
 /// What a request that follows a read of `answer` is guarded with: the eTag just read,
 /// else its cTag; an answer with neither gives an empty guard, and what OneDrive makes of
 /// it (today's `Guard::of_item`). Pure.
-pub fn to_guard_of_answer(answer: &DriveItem) -> RequestGuard {
+pub(crate) fn to_guard_of_answer(answer: &DriveItem) -> RequestGuard {
     RequestGuard(answer.e_tag.clone().or_else(|| answer.c_tag.clone()).unwrap_or_default())
 }
 

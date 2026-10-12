@@ -43,7 +43,7 @@ use konedrive_graph::quickxor::QuickXor;
 
 /// The size of a piece. A guess: large enough that a request's
 /// round trip is nothing beside it, small enough that four streams share a file's end evenly.
-pub const PIECE: u64 = 256 * 1024 * 1024;
+pub(crate) const PIECE: u64 = 256 * 1024 * 1024;
 
 /// How often a download in parts looks for a free slot to add a stream in.
 const LOOK_AGAIN: Duration = Duration::from_millis(100);
@@ -51,7 +51,7 @@ const LOOK_AGAIN: Duration = Duration::from_millis(100);
 /// The large files one account is downloading in parts, and how many streams each has: who is
 /// due the next free large slot. One per account, beside its transfer pool.
 #[derive(Default)]
-pub struct Share {
+pub(crate) struct Share {
     files: Mutex<Vec<Member>>,
     next_id: AtomicU64,
 }
@@ -76,12 +76,6 @@ impl Share {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Member>> {
         crate::panic::lock(&self.files)
-    }
-
-    /// How many streams each file in parts has now (tests).
-    #[cfg(test)]
-    pub fn streams(&self) -> Vec<usize> {
-        self.lock().iter().map(|m| m.streams).collect()
     }
 }
 
@@ -136,7 +130,7 @@ impl Drop for Joined {
 /// What a download in parts needs besides its source: the account's pool and [`Share`], and
 /// the size of a piece.
 #[derive(Clone)]
-pub struct Split {
+pub(crate) struct Split {
     pool: Arc<TransferPool>,
     share: Arc<Share>,
     piece: u64,
@@ -145,12 +139,6 @@ pub struct Split {
 impl Split {
     pub fn new(pool: Arc<TransferPool>, share: Arc<Share>) -> Self {
         Self { pool, share, piece: PIECE }
-    }
-
-    /// With pieces of `piece` bytes.
-    #[cfg(test)]
-    pub fn with_piece(pool: Arc<TransferPool>, share: Arc<Share>, piece: u64) -> Self {
-        Self { pool, share, piece: piece.max(1) }
     }
 }
 

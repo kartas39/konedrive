@@ -188,7 +188,7 @@ impl ListedFolder {
     /// cancelled while its request for the second page was under way.
     async fn start_stopped_after_first_page() -> Self {
         let folder = Self::start().await;
-        folder.fixture.write_rows(|store| store.item_store().request_full_listing(FullListingCause::UserAsked));
+        folder.fixture.write_rows(|store| store.item_store().request_full_listing(FullListingCause::BoundByMarkAtStart));
         folder.script_page(&["R", "a.txt"], Some(2));
         folder.graph.with(|cloud| cloud.delay("GET", "delta/page-2", Duration::from_secs(30), 1));
         let cancel = CancellationToken::new();
@@ -309,7 +309,7 @@ async fn a_full_listing_asked_for_is_begun_though_the_store_has_a_delta_link() {
     folder.list_ghost();
     assert_eq!(folder.run().await.expect("a listing of changes").kind, ListingKind::Delta);
     assert_eq!(folder.listed_name("ghost.txt").as_deref(), Some("ghost.txt"));
-    folder.fixture.write_rows(|store| store.item_store().request_full_listing(FullListingCause::UserAsked));
+    folder.fixture.write_rows(|store| store.item_store().request_full_listing(FullListingCause::BoundByMarkAtStart));
     folder.forget_requests().await;
 
     let report = folder.run().await.expect("the cycle");
@@ -400,7 +400,7 @@ async fn an_outdated_item_that_is_gone_in_onedrive_is_given_back_as_gone() {
 async fn no_next_page_is_asked_before_the_link_was_written() {
     let folder = ListedFolder::start_listed().await;
     let item = folder.item("a.txt").expect("a.txt");
-    folder.fixture.write_rows(|store| store.item_store().request_full_listing(FullListingCause::UserAsked));
+    folder.fixture.write_rows(|store| store.item_store().request_full_listing(FullListingCause::BoundByMarkAtStart));
     let first_page = folder.page_answer(&["R", "a.txt"], Some(2));
     folder.graph.with(|cloud| cloud.rename("a.txt", "R", "ours.txt"));
     let place = item.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone()).expect("its place");
@@ -467,7 +467,7 @@ async fn a_delta_link_onedrive_refuses_fails_the_cycle_and_is_kept() {
 #[tokio::test]
 async fn a_next_link_of_this_cycle_that_onedrive_refuses_fails_the_cycle_and_is_resumed_from() {
     let folder = ListedFolder::start().await;
-    folder.fixture.write_rows(|store| store.item_store().request_full_listing(FullListingCause::UserAsked));
+    folder.fixture.write_rows(|store| store.item_store().request_full_listing(FullListingCause::BoundByMarkAtStart));
     folder.script_page(&["R", "a.txt"], Some(2));
     folder.graph.with(|cloud| cloud.script("GET", "delta/page-2", gone(404, "itemNotFound"), 1));
 
@@ -657,7 +657,7 @@ async fn a_drive_that_is_not_the_folders_stops_the_cycle_before_anything_is_list
 async fn a_full_listing_stopped_before_its_first_link_was_written_is_begun_anew() {
     let folder = ListedFolder::start_listed().await;
     let item = folder.item("a.txt").expect("a.txt");
-    folder.fixture.write_rows(|store| store.item_store().request_full_listing(FullListingCause::UserAsked));
+    folder.fixture.write_rows(|store| store.item_store().request_full_listing(FullListingCause::BoundByMarkAtStart));
     // The first page names the root, a.txt and b.txt. While it is fetched a step's rename
     // of a.txt is confirmed: b.txt is written and marked as seen, a.txt is left to be
     // read again, and no link is written.

@@ -24,8 +24,6 @@ pub enum FullListingCause {
     /// The plan found a row whose OneDrive side cannot be judged, with no listing under
     /// way that would say it (`PlanFault::FullListingNeeded`): which item.
     PlanFault(LocalItemId),
-    /// The user asked for it (`SyncAnyway`).
-    UserAsked,
     /// The check at start bound an entry by a mark no row had: OneDrive's version of it
     /// is not known (design §10, "a store that was lost").
     BoundByMarkAtStart,
@@ -47,7 +45,6 @@ impl FullListingCause {
     fn describe(self) -> String {
         match self {
             Self::PlanFault(item) => format!("the plan cannot judge item {item}"),
-            Self::UserAsked => "the user asked".to_owned(),
             Self::BoundByMarkAtStart => "the check at start bound an entry by its mark".to_owned(),
         }
     }

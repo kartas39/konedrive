@@ -140,11 +140,11 @@ impl SyncService {
 /// the bus still carries them.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FreedUp {
-    pub files: u32,
-    pub bytes: u64,
-    pub busy: u32,
-    pub modified: u32,
-    pub pinned: u32,
+    pub(crate) files: u32,
+    pub(crate) bytes: u64,
+    pub(crate) busy: u32,
+    pub(crate) modified: u32,
+    pub(crate) pinned: u32,
 }
 
 /// A `freed` event's detail for more than one file: "2 files, 1.5 MiB".

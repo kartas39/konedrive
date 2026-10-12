@@ -41,7 +41,7 @@ pub(super) use download_landing::LandingOutcome;
 pub(super) use downloaded_copies::DiskMarks;
 pub(super) use file_handles::{DiskEntry, DiskMetadata};
 pub(crate) use file_handles::EntryKind;
-pub use write_bits::restore_write_bits;
+pub(crate) use write_bits::restore_write_bits;
 pub(super) use write_bits::{to_mode_bits, remove_write_bits, WriteBits};
 
 /// Where an earlier build built its downloads, inside the backing directory: removed when the
@@ -49,7 +49,7 @@ pub(super) use write_bits::{to_mode_bits, remove_write_bits, WriteBits};
 const LEGACY_STAGING_DIRECTORY: &str = ".konedrive-staging";
 
 /// The backing directory, by the descriptor opened on it before the mount.
-pub struct BackingDirectory {
+pub(crate) struct BackingDirectory {
     descriptor: File,
 }
 
@@ -78,7 +78,7 @@ impl BackingDirectory {
     /// which whoever opens or walks it follows; one who looks at the path without following
     /// links sees the link ([`resolve_root_directory_path`](Self::resolve_root_directory_path)
     /// names the directory).
-    pub fn resolve_root_path(&self) -> PathBuf {
+    pub(crate) fn resolve_root_path(&self) -> PathBuf {
         konedrive_fs::proc_path(&self.descriptor)
     }
 

@@ -53,7 +53,7 @@ const READ_ONLY_FOR_TAKE_DOWN: u8 = 2;
 /// one are a single step. Once the mount asked to be taken down
 /// ([`hold_read_only_for_take_down`](Self::hold_read_only_for_take_down)) the folder is
 /// read-only for as long as this mount lives, and no switch makes it read-write.
-pub struct AccessModeSwitch {
+pub(crate) struct AccessModeSwitch {
     state: AtomicU8,
 }
 
@@ -72,7 +72,7 @@ impl AccessModeSwitch {
     }
 
     /// Whether the folder takes changes now.
-    pub fn is_read_write(&self) -> bool {
+    pub(crate) fn is_read_write(&self) -> bool {
         self.access_mode() == AccessMode::ReadWrite
     }
 

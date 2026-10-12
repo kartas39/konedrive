@@ -29,7 +29,7 @@ use super::access_mode_switch::AccessModeSwitch;
 
 /// Why the mount cannot go on.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TakeDownCause {
+pub(crate) enum TakeDownCause {
     /// A change of the backing directory whose row could not be written could not be
     /// undone either: the disk has at `path` what no row says.
     UndoFailed { path: PathBuf },
@@ -45,10 +45,10 @@ pub enum TakeDownCause {
 /// (`SyncService::take_down_report` makes it). Called once, from the write-operation
 /// thread: it must not block (it spawns the owner's task,
 /// `SyncService::take_folder_down_for_fault`).
-pub type TakeDownReport = Arc<dyn Fn(TakeDownCause) + Send + Sync>;
+pub(crate) type TakeDownReport = Arc<dyn Fn(TakeDownCause) + Send + Sync>;
 
 /// The request of one mount.
-pub struct MountTakeDown {
+pub(crate) struct MountTakeDown {
     access_mode_switch: Arc<AccessModeSwitch>,
     report: TakeDownReport,
     is_asked: std::sync::atomic::AtomicBool,
@@ -74,7 +74,7 @@ impl MountTakeDown {
 
     /// Whether a take-down was asked for. Called by the steps towards the folder, which
     /// then end as `StepObstacle::SendingStopped` without touching the disk.
-    pub fn is_asked(&self) -> bool {
+    pub(crate) fn is_asked(&self) -> bool {
         self.is_asked.load(std::sync::atomic::Ordering::SeqCst)
     }
 }

@@ -2,10 +2,10 @@
 //! the poller that runs it on its schedule ([`listing_poller`]) with the notification socket
 //! beside it ([`live`]), and what a listed item is in the store ([`classify`]).
 
-pub mod classify;
+pub(crate) mod classify;
 // No caller until the owner of a folder's state starts a sync through `sync_tasks`.
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
-pub mod listing_cycle;
+pub(crate) mod listing_cycle;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
-pub mod listing_poller;
-pub mod live;
+pub(crate) mod listing_poller;
+pub(crate) mod live;

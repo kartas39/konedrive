@@ -56,30 +56,30 @@ const SESSION_WITH_NO_END_KEPT: i64 = 24 * 60 * 60;
 
 /// What is known of a taken name, gathered before the decision.
 #[derive(Debug, Clone)]
-pub struct NameHolderFacts {
+pub(crate) struct NameHolderFacts {
     /// What OneDrive has under the name now; `None` when nothing is there any more.
-    pub holder: Option<DriveItem>,
+    pub(crate) holder: Option<DriveItem>,
     /// The holder as a commit takes it, when it can be read as one
     /// (`confirmed_item::to_confirmed_item`).
-    pub holder_item: Option<ConfirmedItem>,
+    pub(crate) holder_item: Option<ConfirmedItem>,
     /// Whether a row is bound to the holder: a listing told of it already.
-    pub is_holder_bound: bool,
+    pub(crate) is_holder_bound: bool,
     /// The hash of the content this step sends, when it was computed.
-    pub sent_hash: Option<String>,
+    pub(crate) sent_hash: Option<String>,
     /// The upload sessions whose empty file holds the place
     /// (`ItemReader::list_empty_file_sessions`).
-    pub empty_file_sessions: Vec<EmptyFileSession>,
+    pub(crate) empty_file_sessions: Vec<EmptyFileSession>,
     /// The times between which this folder was about to open a session there
     /// (`ItemReader::list_opening_windows`).
-    pub opening_windows: Vec<OpeningWindow>,
+    pub(crate) opening_windows: Vec<OpeningWindow>,
     /// When each session of another item that names no end was first seen holding a
     /// name, Unix seconds: what [`NameHolders`] keeps.
-    pub sessions_first_seen: Vec<(UploadSessionAddress, i64)>,
+    pub(crate) sessions_first_seen: Vec<(UploadSessionAddress, i64)>,
 }
 
 /// Who holds the name.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NameHolder {
+pub(crate) enum NameHolder {
     /// Nobody by now: the request is sent again.
     Nobody,
     /// The empty file of this item's own session (`EmptyFileSession::Continued` of this
@@ -122,7 +122,7 @@ pub enum NameHolder {
 /// Who holds the name, from `facts`. Pure; the first case that holds, in the order of
 /// [`NameHolder`]'s cases. `now` is the clock's, for the windows and for the end of
 /// another item's session. A session is "this item's own" by `item.local_item_id`.
-pub fn decide_name_holder(facts: &NameHolderFacts, item: &ItemVersions, now: i64) -> NameHolder {
+pub(crate) fn decide_name_holder(facts: &NameHolderFacts, item: &ItemVersions, now: i64) -> NameHolder {
     let Some(holder) = &facts.holder else { return NameHolder::Nobody };
     let sessions = &facts.empty_file_sessions;
     if sessions.iter().any(|session| matches!(session, EmptyFileSession::Continued { item: owner, .. } if *owner == item.local_item_id)) {
@@ -172,7 +172,7 @@ pub fn decide_name_holder(facts: &NameHolderFacts, item: &ItemVersions, now: i64
 
 /// What finds the holder of a taken name.
 #[derive(Clone)]
-pub struct NameHolders {
+pub(crate) struct NameHolders {
     graph: GraphAccess,
     session_cancellations: SessionCancellations,
     /// When each session of another item that names no end was first seen holding a name.
@@ -231,7 +231,7 @@ impl NameHolders {
     /// `upload/content.rs:306`); a read that fails, its refusal.
     /// `sent_hash` is the hash of the whole file (`LocalContentFile::hash`), which the
     /// runner reads for this call.
-    pub async fn find_name_holder(&self, item: &ItemVersions, parent: &OneDriveItemReference, name: &OsStr, sent_hash: Option<&str>) -> Result<NameHolder, StepOutcome> {
+    pub(crate) async fn find_name_holder(&self, item: &ItemVersions, parent: &OneDriveItemReference, name: &OsStr, sent_hash: Option<&str>) -> Result<NameHolder, StepOutcome> {
         let store_failure = |error: konedrive_tree::TreeError| StepOutcome::Failed(StepFailure::Store { detail: error.to_string() });
         let Some(local_place) = item.local.as_ref().and_then(|local| local.place.as_ref()) else {
             return Err(StepOutcome::Failed(StepFailure::Store { detail: format!("item {} was planned to be sent with no local place", item.local_item_id) }));
@@ -307,7 +307,7 @@ impl NameHolders {
     /// and its next try sends the move again. A read that fails is the step's outcome.
     /// Nothing is adopted here: a move that went through before is answered 412, not
     /// 409, and is `LostAnswers`'.
-    pub async fn find_holder_name(&self, parent: &OneDriveItemReference, name: &OsStr) -> Result<Option<OsString>, StepOutcome> {
+    pub(crate) async fn find_holder_name(&self, parent: &OneDriveItemReference, name: &OsStr) -> Result<Option<OsString>, StepOutcome> {
         Ok(self.read_holder(parent, name).await?.map(|holder| holder.name.map_or_else(|| name.to_owned(), OsString::from)))
     }
 }

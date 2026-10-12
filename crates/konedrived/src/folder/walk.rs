@@ -20,7 +20,7 @@ pub(crate) fn reserved(name: &std::ffi::OsStr) -> bool {
 /// link the kernel keeps for a descriptor, by which the backing directory is walked
 /// (`BackingDirectory::resolve_root_path`): the filesystem that is not left is the
 /// directory's, not the link's.
-pub fn walk_files(root: &Path, visit: &mut dyn FnMut(&Path, &Metadata)) {
+pub(crate) fn walk_files(root: &Path, visit: &mut dyn FnMut(&Path, &Metadata)) {
     let Ok(root_meta) = std::fs::metadata(root) else { return };
     let mut dirs = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = dirs.pop() {
