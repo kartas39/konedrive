@@ -182,6 +182,8 @@ What the sync reports of itself.
 - `transfers.rs` — `Transfers`: the downloads under way. `[tests]`
 - `space.rs` — `LocalSpace`: the space the folder's files take on disk. `[tests]`
 - `report.rs` — `Report`: the three of them, as everything that reports holds them.
+- `throttle_wait.rs` [tests] — whether OneDrive asked the account to wait: the decision that a
+  request for content is refused meanwhile, and the first file refused of a wait.
 - `totals.rs` — the queue totals: how much is left to download and to upload, and about how
   long it takes. `[tests]`
 - `snapshot.rs` — `SyncSnapshot`, the observable state of a folder, grouped by who writes it:
