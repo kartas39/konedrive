@@ -28,8 +28,6 @@ pub(crate) enum Refused {
     Reserved,
     /// Linux allows it; JSON cannot carry it.
     NotUtf8,
-    /// Over [`MAX_FILE_SIZE`].
-    TooLarge,
 }
 
 impl Refused {
@@ -40,7 +38,6 @@ impl Refused {
             Self::Spaces => Reason::NameSpaces,
             Self::Reserved => Reason::NameReserved,
             Self::NotUtf8 => Reason::NameNotUtf8,
-            Self::TooLarge => Reason::TooLarge,
         }
     }
 }

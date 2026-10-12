@@ -25,7 +25,7 @@ use konedrive_graph::drive::{DriveClient, RetryPolicy};
 use konedrive_graph::quickxor::QuickXor;
 use konedrive_graph::token::StaticToken;
 
-pub(crate) use sockets::{FakeSockets, PING_INTERVAL};
+pub(crate) use sockets::FakeSockets;
 
 pub(crate) const ROOT: &str = "R";
 

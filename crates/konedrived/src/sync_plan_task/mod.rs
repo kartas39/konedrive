@@ -924,13 +924,7 @@ impl SyncPlanTask {
                 parts.sending_holds.pass();
             }
         }
-        let full_listing_cause = settled.iter().find_map(|(_, settlement)| if let CycleRequest::Full(cause) = settlement.cycle { Some(cause) } else { None });
-        if let Some(cause) = full_listing_cause {
-            match parts.store.call(move |store| store.item_store().request_full_listing(cause)).await {
-                Ok(()) => parts.poll.refresh_after_full_listing_request(),
-                Err(error) => tracing::warn!("cannot ask for a full listing: {error}"),
-            }
-        } else if settled.iter().any(|(_, settlement)| settlement.cycle == CycleRequest::Changes) {
+        if settled.iter().any(|(_, settlement)| settlement.cycle == CycleRequest::Changes) {
             parts.poll.refresh();
         }
         for (step, _) in &settled {

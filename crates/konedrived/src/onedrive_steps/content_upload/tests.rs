@@ -44,12 +44,6 @@ fn an_upload_stops_between_fragments_for_a_hold_and_for_a_full_onedrive() {
     }
 }
 
-#[test]
-fn an_upload_that_ended_with_another_content_is_sent_again() {
-    let content = |size: u64| ContentVersion::Hashed { size, mtime: 1, mtime_nsec: 0, hash: Some(format!("h{size}")), ctag: None };
-    assert_eq!(decide_own_upload_follow_up(&OwnUploadContent { onedrive_content: content(1), local_content: content(2) }), OwnUploadFollowUp::SendAgain);
-}
-
 /// A folder with a new file `a.txt` of `content`, and the step that sends it.
 async fn folder_with_a_new_file(content: &[u8]) -> (StepsFolder, OneDriveStep) {
     let fixture = ItemFixture::new();

@@ -164,26 +164,6 @@ pub(crate) fn decide_stop_between_fragments(is_content_held: bool, is_onedrive_f
     }
 }
 
-/// What is done about an upload into an existing item that ended with other content in
-/// OneDrive than was sent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OwnUploadFollowUp {
-    /// The local content is sent again into the item, guarded by what the upload left:
-    /// what today's worker does (`upload/content.rs:503-511`).
-    SendAgain,
-    /// OneDrive's content is taken as OneDrive's own change: the plan then reads "changed
-    /// on both sides" and keeps both.
-    TakeAsOneDrivesChange,
-}
-
-/// What is done about `upload`: it is sent again, as today's worker does (the owner's
-/// decision), for a new file and for an existing item alike. The fact is kept
-/// (`ItemStore::remember_own_upload_content`) and a listing cycle asked for, so that the
-/// row has OneDrive's version and eTag, and the content is sent again guarded by them.
-pub(crate) fn decide_own_upload_follow_up(_upload: &OwnUploadContent) -> OwnUploadFollowUp {
-    OwnUploadFollowUp::SendAgain
-}
-
 /// Why a content was not sent to its end.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SendContentError {
@@ -771,8 +751,7 @@ impl ContentUpload {
     /// remembered, and the plan is told of it (`SyncPlanInput::items_left_by_uploads`).
     /// For an existing item the fact is kept
     /// (`ItemStore::remember_own_upload_content`: OneDrive's content of the answer, the
-    /// local content sent). What follows is
-    /// [`decide_own_upload_follow_up`]'s: the content is sent again. The session that
+    /// local content sent). The content is then sent again (the owner's decision). The session that
     /// ended is forgotten here (`forget_ended_upload_session`): no commit will.
     async fn check_sent_content(&self, item: &ItemVersions, target: &ContentTarget, sent: &SentContent) -> Result<(), StepOutcome> {
         let id = item.local_item_id;
@@ -813,12 +792,8 @@ impl ContentUpload {
                 let contents = (sent.item.content.clone(), item.local.as_ref().and_then(|local| local.content.clone()));
                 if let (Some(onedrive_content), Some(local_content)) = contents {
                     let upload = OwnUploadContent { onedrive_content, local_content };
-                    match decide_own_upload_follow_up(&upload) {
-                        // The fact is the plan's to read (`SyncPlanInput::own_upload_contents`, filled from `ItemReader::find_own_upload_content`): with it the listing that brings what this upload left is no change of OneDrive's, and the content is sent again with no conflict copy.
-                        OwnUploadFollowUp::SendAgain | OwnUploadFollowUp::TakeAsOneDrivesChange => {
-                            self.graph.store.call(move |store| store.item_store().remember_own_upload_content(id, &upload)).await.map_err(fail_store)?;
-                        }
-                    }
+                    // The content is sent again (the owner's decision). The fact is the plan's to read (`SyncPlanInput::own_upload_contents`, filled from `ItemReader::find_own_upload_content`): with it the listing that brings what this upload left is no change of OneDrive's, and the content is sent again with no conflict copy.
+                    self.graph.store.call(move |store| store.item_store().remember_own_upload_content(id, &upload)).await.map_err(fail_store)?;
                 }
             }
         }

@@ -104,11 +104,10 @@ mod start_check;
 #[cfg(test)]
 pub(crate) mod item_fixture;
 
-pub(crate) use access_mode_switch::AccessModeSwitch;
-pub(crate) use backing_directory::{restore_write_bits, BackingDirectory};
+pub(crate) use backing_directory::restore_write_bits;
 pub(crate) use item_announcements::ItemAnnouncement;
 pub(crate) use item_content_files::{ItemContentFiles, LocalContentFile};
-pub(crate) use item_files_interface::{DownloadedSpace, FilesRefusal, FreedSpace, ItemFilesInterface, ItemPathStatus, PinHolder};
+pub(crate) use item_files_interface::{FilesRefusal, ItemPathStatus, PinHolder};
 pub(crate) use item_free_up::FreeUpDecision;
 pub(crate) use item_handles::ItemHandles;
 pub(crate) use item_mount::{ItemMount, ItemMountError, ItemMountSetup};

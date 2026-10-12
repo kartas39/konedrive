@@ -122,8 +122,6 @@ pub(crate) enum CycleRequest {
     None,
     /// The changes since the delta link (`ListingPollHandle::refresh`).
     Changes,
-    /// A full listing (`ItemStore::request_full_listing`, then the poller).
-    Full(FullListingCause),
 }
 
 /// What follows a step.

@@ -13,7 +13,7 @@ fn a_full_listing_that_was_asked_for_is_still_asked_for_after_the_store_is_opene
     let mut store = store_in_file_with_listed_root(&path);
     assert!(!is_requested(&mut store), "nothing was asked for");
     store.item_store().request_full_listing(FullListingCause::PlanFault(LocalItemId::new(7))).unwrap();
-    store.item_store().request_full_listing(FullListingCause::UserAsked).unwrap();
+    store.item_store().request_full_listing(FullListingCause::BoundByMarkAtStart).unwrap();
     assert!(is_requested(&mut store));
     drop(store);
 
@@ -30,7 +30,7 @@ fn beginning_a_full_listing_takes_the_request_away() {
     store.item_store().request_full_listing(FullListingCause::BoundByMarkAtStart).unwrap();
     store.item_store().begin_full_listing().unwrap();
     assert!(!is_requested(&mut store));
-    store.item_store().request_full_listing(FullListingCause::UserAsked).unwrap();
+    store.item_store().request_full_listing(FullListingCause::BoundByMarkAtStart).unwrap();
     assert!(is_requested(&mut store), "asked for again while one is under way: the next one");
 }
 
@@ -38,7 +38,7 @@ fn beginning_a_full_listing_takes_the_request_away() {
 fn beginning_a_listing_of_changes_leaves_the_request() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = store_in_file_with_listed_root(&dir.path().join("tree.sqlite"));
-    store.item_store().request_full_listing(FullListingCause::UserAsked).unwrap();
+    store.item_store().request_full_listing(FullListingCause::BoundByMarkAtStart).unwrap();
     store.item_store().begin_delta_listing().unwrap();
     assert!(is_requested(&mut store));
 }

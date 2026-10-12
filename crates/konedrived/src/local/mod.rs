@@ -4,4 +4,4 @@
 mod ignore;
 pub(crate) mod names;
 
-pub(crate) use ignore::{IgnoreList, SharedIgnore, DEFAULT_PATTERNS};
+pub(crate) use ignore::{IgnoreList, SharedIgnore};
