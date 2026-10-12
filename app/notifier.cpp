@@ -97,9 +97,11 @@ Notifier::Notifier(AccountController *account, SyncController *sync, Notificatio
     connect(m_sync, &SyncController::syncChanged, this, &Notifier::onSyncChanged);
     connect(m_sync, &SyncController::serviceAvailableChanged, this, [this] {
         m_full = m_sync->serviceAvailable() ? int(m_sync->quotaFull()) : -1;
+        m_waitRefusal = m_sync->serviceAvailable() ? m_sync->retryAfterRefusal() : QString();
     });
     if (m_sync->serviceAvailable()) {
         m_full = int(m_sync->quotaFull());
+        m_waitRefusal = m_sync->retryAfterRefusal();
     }
     connect(m_account, &AccountController::accountChanged, this, &Notifier::onAccountChanged);
     connect(m_account, &AccountController::signOutRequested, this, [this] {
@@ -181,6 +183,24 @@ void Notifier::onSyncChanged()
               {}});
     }
     m_full = full;
+
+    // OneDrive asked the account to wait, and a program was refused a file meanwhile: said
+    // once for the wait, with the first file refused, never per read.
+    const QString refused = m_sync->retryAfterRefusal();
+    if (m_waitRefusal.isEmpty() && !refused.isEmpty()) {
+        const QString name = fileName(refused);
+        const int minutes = int((m_sync->retryAfter() + 59) / 60);
+        // TODO: wording
+        post({QStringLiteral("throttled"),
+              i18nc("@title notification", "OneDrive asked to wait"),
+              minutes > 0 ? i18np("OneDrive asked this computer to wait about 1 minute. %2 opens after that.",
+                                  "OneDrive asked this computer to wait about %1 minutes. %2 opens after that.",
+                                  minutes,
+                                  name)
+                          : i18n("OneDrive asked this computer to wait. %1 opens after that.", name),
+              {}});
+    }
+    m_waitRefusal = refused;
 }
 
 void Notifier::onAccountChanged()
@@ -263,6 +283,9 @@ Notice Notifier::summary(const Window &window) const
         notice.text = i18np("1 more file changed here and in OneDrive; both versions are kept.", "%1 more files changed here and in OneDrive; both versions are kept.", n);
     } else if (notice.event == QLatin1String("notRemovedHere")) {
         notice.text = i18np("1 more folder cannot be removed here.", "%1 more folders cannot be removed here.", n);
+    } else if (notice.event == QLatin1String("throttled")) {
+        // TODO: wording
+        notice.text = i18np("1 more file could not be opened: OneDrive asked to wait.", "%1 more files could not be opened: OneDrive asked to wait.", n);
     } else if (notice.event == QLatin1String("uploadFailed")) {
         notice.text = i18np("1 more change could not be uploaded.", "%1 more changes could not be uploaded.", n);
     }

@@ -6,6 +6,11 @@ use super::*;
 use crate::mount::range_readers::tests::range_readers;
 use crate::content_source::source::{Fetched, SourceError};
 
+/// The wait of an account OneDrive asked nothing of.
+fn no_throttle_wait() -> ThrottleWait {
+    ThrottleWait::new(crate::status::snapshot::SyncStateHandle::new(Default::default()))
+}
+
 /// A source that keeps what it was told to forget.
 #[derive(Default)]
 struct RememberingSource {
@@ -34,7 +39,7 @@ fn range_source(item_id: &str) -> RangeSource {
 async fn what_the_source_remembers_of_an_item_is_dropped_when_its_content_changes() {
     let (_pool, range_readers) = range_readers();
     let source = Arc::new(RememberingSource::default());
-    let range_fetcher = ItemRangeFetcher::new(range_readers, Arc::clone(&source) as Arc<dyn ContentSource>);
+    let range_fetcher = ItemRangeFetcher::new(range_readers, Arc::clone(&source) as Arc<dyn ContentSource>, no_throttle_wait());
     range_fetcher.forget_ranges(&range_source("A1"));
     range_fetcher.forget_ranges(&range_source("B2"));
     assert_eq!(*source.forgotten.lock().unwrap(), ["A1", "B2"], "asked by the binding's item id, as the ranges are");
@@ -54,7 +59,7 @@ const ITEM: LocalItemId = LocalItemId::ROOT;
 
 fn fetcher(source: Arc<dyn ContentSource>) -> ItemRangeFetcher {
     let (_pool, range_readers) = range_readers();
-    ItemRangeFetcher::new(range_readers, source)
+    ItemRangeFetcher::new(range_readers, source, no_throttle_wait())
 }
 
 /// The content a reader opened: ten bytes, with the cTag `c1`.
@@ -176,4 +181,62 @@ fn an_answer_tells_another_content_by_its_ctag_else_by_its_size_and_time_and_one
     // content is told by it.
     assert!(!decide_is_another_content(&answer(None, 0, None), &opened));
     assert!(!decide_is_another_content(&answer(None, 0, None), &without_ctag));
+}
+
+/// A fetcher over `source` with a wait of its own, and the state the wait is published in.
+fn fetcher_with_wait(source: Arc<dyn ContentSource>) -> (ItemRangeFetcher, crate::status::snapshot::SyncStateHandle) {
+    let (_pool, range_readers) = range_readers();
+    let state = crate::status::snapshot::SyncStateHandle::new(Default::default());
+    (ItemRangeFetcher::new(range_readers, source, ThrottleWait::new(state.clone())), state)
+}
+
+fn publish_wait(state: &crate::status::snapshot::SyncStateHandle, seconds_left: u32) {
+    state.set_throughput(konedrive_graph::pool::Throughput { retry_after: seconds_left, ..Default::default() });
+}
+
+#[tokio::test]
+async fn a_range_is_refused_at_once_while_onedrive_asks_to_wait_and_fetched_after() {
+    let source = Arc::new(FixtureContentSource::default());
+    source.serve("A1", b"0123456789", MTIME, version("c1"));
+    let (range_fetcher, state) = fetcher_with_wait(Arc::clone(&source) as Arc<dyn ContentSource>);
+    publish_wait(&state, 300);
+    assert_eq!(range_fetcher.fetch_range(ITEM, &opened(), 2, 6).await, Err(RangeRefusal::ThrottleWait));
+    assert_eq!(source.list_fetches(), [], "OneDrive is not asked");
+    publish_wait(&state, 0);
+    assert_eq!(range_fetcher.fetch_range(ITEM, &opened(), 2, 6).await, Ok(b"2345".to_vec()), "the same read, asked again after the wait");
+}
+
+/// A source that never answers, as a request that waits out a throttle does; and one
+/// that says the throttle itself.
+struct SilentSource;
+
+#[async_trait::async_trait]
+impl ContentSource for SilentSource {
+    async fn fetch(&self, _item_id: &str, _from: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
+        std::future::pending().await
+    }
+}
+
+struct ThrottledSource;
+
+#[async_trait::async_trait]
+impl ContentSource for ThrottledSource {
+    async fn fetch(&self, _item_id: &str, _from: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
+        Err(SourceError::Throttled { detail: "429".into(), retry_after: None })
+    }
+}
+
+#[tokio::test]
+async fn a_range_asked_when_the_wait_starts_is_refused_and_not_waited_for() {
+    let (range_fetcher, state) = fetcher_with_wait(Arc::new(SilentSource));
+    let read = tokio::spawn(async move { range_fetcher.fetch_range(ITEM, &opened(), 2, 6).await });
+    tokio::task::yield_now().await;
+    assert!(!read.is_finished(), "OneDrive has not answered");
+    publish_wait(&state, 300);
+    let refused = tokio::time::timeout(Duration::from_secs(5), read).await.expect("given up when the wait starts").unwrap();
+    assert_eq!(refused, Err(RangeRefusal::ThrottleWait));
+
+    // A source that says the throttle itself: the same refusal.
+    let (range_fetcher, _state) = fetcher_with_wait(Arc::new(ThrottledSource));
+    assert_eq!(range_fetcher.fetch_range(ITEM, &opened(), 2, 6).await, Err(RangeRefusal::ThrottleWait));
 }

@@ -49,6 +49,12 @@ The sync folder is served by the KOneDrive service while it runs. What that mean
   OneDrive. Once more of it is read, the file is downloaded whole and stays on this computer; the
   next read asks OneDrive nothing.
 - **A downloaded file stays** until you free up its space (see "Freeing up space").
+- **When OneDrive asks to wait.** OneDrive sometimes tells a computer that asked much of it to
+  wait, for some seconds or a few minutes. Until then a file that is not downloaded cannot be
+  opened: the program is told at once ("Resource temporarily unavailable") and is not kept
+  waiting, a notification says how long the wait is and names the file, and the window, the tray
+  and `konedrivectl sync status` say "OneDrive asked to wait" with the time left. Downloaded
+  files open as always. Open the file again after the wait.
 - **While the service is not running** — it was stopped, or it is being upgraded — the folder
   shows only what is on this computer: the downloaded files and files of your
   own that were not sent yet. It cannot be changed then. Everything is back when the service

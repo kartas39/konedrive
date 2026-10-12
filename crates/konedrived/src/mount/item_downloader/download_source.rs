@@ -38,6 +38,12 @@
 //! answers, a checkpoint it cannot go on from (`ContentSource::reject_written`, told by
 //! `guards::StartOver`) — and not at the answer to its next fetch.
 //!
+//! **While OneDrive asks the account to wait** a fetch of a download a program waits for
+//! is not asked, and one OneDrive has not answered is given up the moment the wait
+//! starts ([`wait_for_throttle_refusal`]): refused as a throttle, with the seconds left,
+//! which ends the download at once (`guards::open`). A stream that was handed on is read
+//! to its end.
+//!
 //! **What is not proven here:** a content the row tells by neither hash nor cTag, and a
 //! source that says no version, are told by the size alone; and the bytes below the mark
 //! are not yet held against the hash — the download does that at its end.
@@ -52,6 +58,16 @@ use konedrive_tree::ContentVersion;
 use super::{decide_is_asked_content, DownloadRefusal};
 use crate::mount::item_download_states::{DownloadRun, ItemDownloadStates};
 use crate::content_source::source::{ContentSource, Fetched, SourceError, Version};
+use crate::status::throttle_wait::{ContentAsker, ThrottleWait};
+
+/// Waits until the download `run` is refused because OneDrive asked the account to wait:
+/// a program waits for it (`ItemDownloadStates::wait_for_asker_beyond_plan`) and a wait
+/// runs (`ThrottleWait::wait_for_refusal`), in whichever order the two come: the time
+/// left of the wait. For ever for a download the plan's pin alone asked for.
+pub(super) async fn wait_for_throttle_refusal(download_states: &ItemDownloadStates, run: &DownloadRun, throttle_wait: &ThrottleWait) -> std::time::Duration {
+    download_states.wait_for_asker_beyond_plan(run).await;
+    std::time::Duration::from_secs(u64::from(throttle_wait.wait_for_refusal(ContentAsker::Program).await))
+}
 
 /// What `error` of the content source is, by what the plan's task does about it. Pure.
 /// "No such item" states no content: it is not `DownloadRefusal::AnotherContent`.
@@ -115,6 +131,9 @@ pub(super) struct DownloadSource<'a> {
     /// answered it with the asked content.
     download_states: &'a ItemDownloadStates,
     run: &'a DownloadRun,
+    /// The wait OneDrive asked the account for: no fetch a program waits for is asked
+    /// or awaited while it runs.
+    throttle_wait: ThrottleWait,
     /// What the source last refused, by the end of the range that was asked for: a
     /// download in parts fetches several at once, and an answer for one part says nothing
     /// of the refusal of another.
@@ -124,8 +143,8 @@ pub(super) struct DownloadSource<'a> {
 impl<'a> DownloadSource<'a> {
     /// The source of the download `run` of `asked`, which fetches through `inner` and
     /// tells `written_up_to` and `download_states`.
-    pub(super) fn new(inner: &'a dyn ContentSource, asked: ContentVersion, written_up_to: Arc<AtomicU64>, download_states: &'a ItemDownloadStates, run: &'a DownloadRun) -> Self {
-        DownloadSource { inner, asked, written_up_to, download_states, run, refusals: std::sync::Mutex::default() }
+    pub(super) fn new(inner: &'a dyn ContentSource, asked: ContentVersion, written_up_to: Arc<AtomicU64>, download_states: &'a ItemDownloadStates, run: &'a DownloadRun, throttle_wait: ThrottleWait) -> Self {
+        DownloadSource { inner, asked, written_up_to, download_states, run, throttle_wait, refusals: std::sync::Mutex::default() }
     }
 
     /// What the source refused and no later answer for the same range took back, the
@@ -157,7 +176,15 @@ impl tokio::io::AsyncRead for CountedStream {
 #[async_trait::async_trait]
 impl ContentSource for DownloadSource<'_> {
     async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
-        let mut fetched = match self.inner.fetch(item_id, from, end).await {
+        let answered = tokio::select! {
+            biased;
+            left = wait_for_throttle_refusal(self.download_states, self.run, &self.throttle_wait) => {
+                crate::panic::lock(&self.refusals).insert(end, DownloadRefusal::Throttled { retry_after: Some(left) });
+                return Err(SourceError::Throttled { detail: format!("OneDrive asked to wait: {} s are left", left.as_secs()), retry_after: Some(left) });
+            }
+            answered = self.inner.fetch(item_id, from, end) => answered,
+        };
+        let mut fetched = match answered {
             Ok(fetched) => fetched,
             Err(error) => {
                 crate::panic::lock(&self.refusals).insert(end, decide_refusal(&error));

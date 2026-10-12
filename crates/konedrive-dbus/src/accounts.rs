@@ -311,6 +311,10 @@ pub trait Transfers {
     /// Seconds left of OneDrive's `Retry-After` wait; 0 when there is none.
     #[zbus(property)]
     fn retry_after(&self) -> zbus::Result<u32>;
+    /// The full path of the file a program was first refused the content of during the
+    /// `Retry-After` that runs; empty when none was, and when no wait runs.
+    #[zbus(property)]
+    fn retry_after_refusal(&self) -> zbus::Result<String>;
     /// The queue totals: files left to download (the pinned files whose content is not on
     /// this computer yet, and each file being opened while its download runs) and changes
     /// left to upload, their bytes, the bytes done in this run, and the seconds left (0: unknown).

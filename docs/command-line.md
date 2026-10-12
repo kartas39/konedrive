@@ -62,6 +62,14 @@ has nothing to say. What waits to be downloaded is every pinned file that is not
 yet, counted from the moment it is pinned, and each file a program opens while it downloads; `sync
 transfers` says the same number as "files left", beside how many download now.
 
+While OneDrive asks the account to wait (it answered a request with `429` or `503` and a time),
+the `Overall:` line of `status` and of `sync status` reads `paused — OneDrive asked to wait: 4 min
+left`, and `sync status` has an `Asked to wait:` line with the time left and the first file a
+program could not read meanwhile. Nothing is listed, downloaded or uploaded until the wait is over.
+A file that is not downloaded cannot be read then: the read fails at once with "Resource
+temporarily unavailable", and `sync hydrate` is refused with the seconds left. A downloaded file
+is read as always. The same read goes through after the wait.
+
 `sync forget` takes the mount off and leaves the folder a plain directory. Changes that were not
 sent to OneDrive stay as plain local files: with any, it says how many and asks whether to go on,
 as `account remove` does; `--yes` skips the question.

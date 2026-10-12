@@ -14,6 +14,11 @@ use crate::mount::item_fixture::ItemFixture;
 use crate::content_source::source::{Fetched, SourceError};
 use crate::status::transfers::Transfer;
 
+/// The wait of an account OneDrive asked nothing of.
+fn no_throttle_wait() -> crate::status::throttle_wait::ThrottleWait {
+    crate::status::throttle_wait::ThrottleWait::new(crate::status::snapshot::SyncStateHandle::new(Default::default()))
+}
+
 /// A content source the test holds: it answers through the fixture's, when the test lets
 /// it, or what the test says it refuses.
 struct HeldSource {
@@ -253,7 +258,9 @@ fn a_refusal_of_the_source_is_typed_by_what_the_plans_task_does_about_it() {
     assert_eq!(decide_waiters_answer(&Err(DownloadRefusal::AnotherContent)), Err(libc::ESTALE));
     assert_eq!(decide_waiters_answer(&Ok(ItemLandingOutcome::PlaceHeld { path: "a".into() })), Err(libc::EEXIST));
     assert_eq!(decide_waiters_answer(&Ok(ItemLandingOutcome::Failed { errno: libc::ENOSPC })), Err(libc::ENOSPC));
-    for end in [Ok(ItemLandingOutcome::StepStopped), Err(DownloadRefusal::SignedOut), Err(DownloadRefusal::Throttled { retry_after: None }), Err(DownloadRefusal::Transient { detail: String::new() })] {
+    assert_eq!(decide_waiters_answer(&Err(DownloadRefusal::Throttled { retry_after: None })), Err(THROTTLE_WAIT_ERRNO));
+    assert_eq!(THROTTLE_WAIT_ERRNO, libc::EAGAIN);
+    for end in [Ok(ItemLandingOutcome::StepStopped), Err(DownloadRefusal::SignedOut), Err(DownloadRefusal::Transient { detail: String::new() })] {
         assert_eq!(decide_waiters_answer(&end), Err(libc::EIO), "{end:?}");
     }
 
@@ -622,7 +629,7 @@ fn an_answer_of_another_content_ends_the_download_before_the_mark_is_raised_or_a
     // The first answer is of another content of the same size.
     let (inner, written_up_to) = (QueuedSource::default(), Arc::new(AtomicU64::new(0)));
     inner.queue_content(b"THE CONTENT", 0);
-    let source = DownloadSource::new(&inner, asked.clone(), Arc::clone(&written_up_to), &alone.0, &alone.1);
+    let source = DownloadSource::new(&inner, asked.clone(), Arc::clone(&written_up_to), &alone.0, &alone.1, no_throttle_wait());
     let fetched = run(source.fetch("id", 0, None));
     assert!(matches!(fetched, Err(SourceError::NotFound(_))), "answered as a file OneDrive does not have: the download ends at once");
     assert_eq!(written_up_to.load(Ordering::SeqCst), 0, "nothing is said to be written");
@@ -634,7 +641,7 @@ fn an_answer_of_another_content_ends_the_download_before_the_mark_is_raised_or_a
     let (inner, written_up_to) = (QueuedSource::default(), Arc::new(AtomicU64::new(0)));
     inner.queue(Ok(QueuedAnswer { size: Some(11), version: Some(version_of(b"the content")), served_from: 0, bytes: b"the c".to_vec() }));
     inner.queue_content(b"THE CONTENT", 5);
-    let source = DownloadSource::new(&inner, asked.clone(), Arc::clone(&written_up_to), &alone.0, &alone.1);
+    let source = DownloadSource::new(&inner, asked.clone(), Arc::clone(&written_up_to), &alone.0, &alone.1, no_throttle_wait());
     let read = run(async { read_whole(source.fetch("id", 0, None).await.ok().expect("the asked content")).await });
     assert_eq!((read.as_slice(), written_up_to.load(Ordering::SeqCst)), (&b"the c"[..], 5), "counted as it is read");
     assert!(matches!(run(source.fetch("id", 5, None)), Err(SourceError::NotFound(_))));
@@ -646,7 +653,7 @@ fn an_answer_of_another_content_ends_the_download_before_the_mark_is_raised_or_a
     let (inner, written_up_to) = (QueuedSource::default(), Arc::new(AtomicU64::new(0)));
     inner.queue(Ok(QueuedAnswer { size: Some(11), version: Some(version_of(b"the content")), served_from: 4, bytes: b"cont".to_vec() }));
     inner.queue(Ok(QueuedAnswer { size: Some(11), version: Some(version_of(b"THE CONTENT")), served_from: 0, bytes: b"THE ".to_vec() }));
-    let source = DownloadSource::new(&inner, asked, Arc::clone(&written_up_to), &alone.0, &alone.1);
+    let source = DownloadSource::new(&inner, asked, Arc::clone(&written_up_to), &alone.0, &alone.1, no_throttle_wait());
     assert_eq!(run(async { read_whole(source.fetch("id", 4, Some(8)).await.ok().expect("a part of the asked content")).await }), b"cont");
     assert!(matches!(run(source.fetch("id", 0, Some(4))), Err(SourceError::NotFound(_))));
     assert_eq!(written_up_to.load(Ordering::SeqCst), 0);
@@ -666,7 +673,7 @@ fn a_refusal_is_kept_until_the_same_range_is_answered_and_the_gravest_is_told() 
     let part = |served_from: u64, bytes: &[u8]| Ok(QueuedAnswer { size: Some(11), version: Some(version_of(b"the content")), served_from, bytes: bytes.to_vec() });
     let inner = QueuedSource::default();
     let alone = start_download_alone(&asked);
-    let source = DownloadSource::new(&inner, asked, Arc::default(), &alone.0, &alone.1);
+    let source = DownloadSource::new(&inner, asked, Arc::default(), &alone.0, &alone.1, no_throttle_wait());
     assert_eq!(source.find_refusal(), None, "nothing was fetched");
     // One part is throttled; another part, answered after it, takes nothing back.
     inner.queue(Err(SourceError::Throttled { detail: "429".into(), retry_after: None }));
@@ -794,7 +801,7 @@ fn a_size_the_source_does_not_tell_is_no_other_content() {
     inner.queue(Ok(QueuedAnswer { size: None, version: None, served_from: 0, bytes: b"the content".to_vec() }));
     inner.queue(Ok(QueuedAnswer { size: None, version: Some(version_of(b"")), served_from: 0, bytes: Vec::new() }));
     let alone = start_download_alone(&asked);
-    let source = DownloadSource::new(&inner, asked.clone(), Arc::default(), &alone.0, &alone.1);
+    let source = DownloadSource::new(&inner, asked.clone(), Arc::default(), &alone.0, &alone.1, no_throttle_wait());
     assert!(run(source.fetch("id", 0, None)).is_ok());
     assert!(run(source.fetch("id", 0, None)).is_ok(), "neither told: nothing disagrees");
     assert_eq!(source.find_refusal(), None);
@@ -806,7 +813,7 @@ fn a_size_the_source_does_not_tell_is_no_other_content() {
     inner.queue(Ok(QueuedAnswer { size: None, version: Some(version_of(b"")), served_from: 0, bytes: Vec::new() }));
     inner.queue_content(b"bytes", 0);
     let alone = start_download_alone(&empty);
-    let source = DownloadSource::new(&inner, empty, Arc::default(), &alone.0, &alone.1);
+    let source = DownloadSource::new(&inner, empty, Arc::default(), &alone.0, &alone.1, no_throttle_wait());
     assert!(run(source.fetch("id", 0, None)).is_ok());
     assert!(run(source.fetch("id", 0, None)).is_ok());
     assert!(matches!(run(source.fetch("id", 0, None)), Err(SourceError::NotFound(_))));
@@ -831,7 +838,7 @@ fn a_file_emptied_in_onedrive_is_another_content_also_when_no_version_is_said() 
     inner.queue(Ok(QueuedAnswer { size: Some(0), version: None, served_from: 0, bytes: Vec::new() }));
     inner.queue(Ok(QueuedAnswer { size: Some(0), version: Some(version_of(b"the content")), served_from: 0, bytes: Vec::new() }));
     let alone = start_download_alone(&asked);
-    let source = DownloadSource::new(&inner, asked, Arc::default(), &alone.0, &alone.1);
+    let source = DownloadSource::new(&inner, asked, Arc::default(), &alone.0, &alone.1, no_throttle_wait());
     assert!(matches!(run(source.fetch("id", 0, None)), Err(SourceError::NotFound(_))), "0 bytes said, and no version");
     assert_eq!(source.find_refusal(), Some(DownloadRefusal::AnotherContent));
     assert!(matches!(run(source.fetch("id", 0, None)), Err(SourceError::NotFound(_))), "0 bytes said, with the asked version");
@@ -855,7 +862,7 @@ fn the_mark_is_taken_back_the_moment_the_download_does_not_trust_what_is_on_disk
     let (inner, written_up_to) = (QueuedSource::default(), Arc::new(AtomicU64::new(0)));
     inner.queue_content(b"the content", 0);
     inner.queue_content(b"the content", 0);
-    let source = DownloadSource::new(&inner, asked, Arc::clone(&written_up_to), &alone.0, &alone.1);
+    let source = DownloadSource::new(&inner, asked, Arc::clone(&written_up_to), &alone.0, &alone.1, no_throttle_wait());
     run(async { read_whole(source.fetch("id", 0, None).await.ok().expect("the asked content")).await });
     assert_eq!(written_up_to.load(Ordering::SeqCst), 11);
 
@@ -881,7 +888,7 @@ fn what_was_remembered_of_a_key_is_void_at_the_first_answer_its_next_download_ac
 
     // The one stream: neither a refusal nor an answer of another content voids it.
     let (run_again, inner) = (start(), QueuedSource::default());
-    let source = DownloadSource::new(&inner, asked.clone(), Arc::default(), &download_states, &run_again);
+    let source = DownloadSource::new(&inner, asked.clone(), Arc::default(), &download_states, &run_again, no_throttle_wait());
     assert!(download_states.is_another_content(&key), "asked for, and OneDrive has not answered");
     inner.queue(Err(SourceError::Transient("no network".into())));
     assert!(run(source.fetch("id", 0, None)).is_err());
@@ -897,7 +904,7 @@ fn what_was_remembered_of_a_key_is_void_at_the_first_answer_its_next_download_ac
 
     // A part of a download in parts is an answer as well.
     let (run_again, inner) = (start(), QueuedSource::default());
-    let source = DownloadSource::new(&inner, asked, Arc::default(), &download_states, &run_again);
+    let source = DownloadSource::new(&inner, asked, Arc::default(), &download_states, &run_again, no_throttle_wait());
     inner.queue(Ok(QueuedAnswer { size: Some(11), version: Some(version_of(b"the content")), served_from: 4, bytes: b"cont".to_vec() }));
     assert!(download_states.is_another_content(&key));
     assert!(run(source.fetch("id", 4, Some(8))).is_ok());
@@ -929,7 +936,7 @@ fn the_end_of_a_download_is_news_per_case() {
 
     let failures = [
         (Err(DownloadRefusal::SignedOut), libc::EIO),
-        (Err(DownloadRefusal::Throttled { retry_after: None }), libc::EIO),
+        (Err(DownloadRefusal::Throttled { retry_after: None }), THROTTLE_WAIT_ERRNO),
         (Err(DownloadRefusal::Transient { detail: "no network".into() }), libc::EIO),
         (Err(DownloadRefusal::ItemGone), libc::ESTALE),
         (Ok(ItemLandingOutcome::Failed { errno: libc::EIO }), libc::EIO),
@@ -1112,4 +1119,140 @@ fn a_download_that_waits_for_its_slot_is_not_shown() {
     assert_eq!(hear(heard), Ok(()));
     assert!(transfers.has_changed().unwrap(), "it was shown once it had its slot");
     assert_eq!(report.transfers.list(), []);
+}
+
+/// A report whose wait is the fixture's (`ItemFixture::start_throttle_wait`) and whose
+/// activity keeps the events of the fixture's folder.
+fn make_report_with_wait(fixture: &ItemFixture) -> Report {
+    fixture.sync_state.update(|s| s.folder.root_path = fixture.folder().display().to_string());
+    Report { activity: Arc::new(activity::Activity::new(fixture.sync_state.clone())), ..fixture.report() }
+}
+
+fn refused_file(fixture: &ItemFixture) -> String {
+    fixture.sync_state.get().transfers.retry_after_refusal
+}
+
+#[test]
+fn a_program_is_the_asker_of_every_download_but_the_plans_pin() {
+    let shown = ItemFixture::new().show_onedrive_file("a.txt", b"a");
+    for asker in [DownloadAsker::Read, DownloadAsker::OpenForWriting, DownloadAsker::FilesInterface] {
+        assert_eq!(decide_content_asker(&asker), ContentAsker::Program, "{asker:?}");
+    }
+    assert_eq!(decide_content_asker(&plan_pin(&shown)), ContentAsker::BackgroundWork);
+}
+
+#[test]
+fn a_download_a_program_asks_for_during_the_wait_is_refused_at_once_and_fetches_nothing() {
+    let fixture = ItemFixture::new();
+    let shown = fixture.show_onedrive_file("a.txt", b"the content");
+    let source = HeldSource::open(&fixture);
+    let (downloader, _) = make_downloader_reporting_to(&fixture, Arc::clone(&source) as Arc<dyn ContentSource>, fixture.report());
+    fixture.start_throttle_wait(300);
+
+    for asker in [DownloadAsker::Read, DownloadAsker::OpenForWriting, DownloadAsker::FilesInterface] {
+        assert_eq!(hear_soon(&fixture, ask(&downloader, &shown, asker.clone())), Some(Err(THROTTLE_WAIT_ERRNO)), "{asker:?}");
+    }
+    assert_eq!(fixture.fixture_content_source().list_fetches().len(), 0, "OneDrive is not asked");
+    assert!(fixture.download_states.find_running_download(&key_of(&shown)).is_none(), "and no download was started");
+    assert_eq!(fixture.read_disk_file("a.txt"), None);
+
+    // The wait is over: the same asking downloads the file.
+    fixture.start_throttle_wait(0);
+    assert_eq!(hear(ask(&downloader, &shown, DownloadAsker::OpenForWriting)), Ok(()));
+    assert_eq!(fixture.read_disk_file("a.txt").as_deref(), Some(&b"the content"[..]));
+}
+
+#[test]
+fn a_download_that_waits_for_its_slot_is_given_up_when_the_wait_starts() {
+    let fixture = ItemFixture::new();
+    let shown = fixture.show_onedrive_file("a.txt", b"the content");
+    let source = HeldSource::open(&fixture);
+    let (downloader, _) = make_downloader_reporting_to(&fixture, Arc::clone(&source) as Arc<dyn ContentSource>, fixture.report());
+    // Every slot a file being opened may take is held: the pool's size and its reserve.
+    let held: Vec<Slot> = std::iter::from_fn(|| fixture.pool.try_acquire_sized(Class::Open, Size::Small)).collect();
+    assert!(!held.is_empty());
+
+    let heard = ask(&downloader, &shown, DownloadAsker::OpenForWriting);
+    wait_until("the download waits for its slot", || fixture.pool.waiting());
+    fixture.start_throttle_wait(300);
+
+    assert_eq!(hear_soon(&fixture, heard), Some(Err(THROTTLE_WAIT_ERRNO)), "not kept for the wait");
+    wait_until("its place in the pool's line is given up", || !fixture.pool.waiting());
+    assert_eq!(fixture.fixture_content_source().list_fetches().len(), 0);
+}
+
+#[test]
+fn a_download_onedrive_has_not_answered_is_given_up_when_the_wait_starts() {
+    let fixture = ItemFixture::new();
+    let shown = fixture.show_onedrive_file("a.txt", b"the content");
+    let source = HeldSource::held(&fixture);
+    let (downloader, _) = make_downloader_reporting_to(&fixture, Arc::clone(&source) as Arc<dyn ContentSource>, fixture.report());
+
+    let heard = ask(&downloader, &shown, DownloadAsker::OpenForWriting);
+    wait_until_it_writes(&fixture, &shown);
+    fixture.start_throttle_wait(300);
+
+    assert_eq!(hear_soon(&fixture, heard), Some(Err(THROTTLE_WAIT_ERRNO)), "OneDrive has not answered: not waited for");
+    assert_eq!(fixture.read_disk_file("a.txt"), None);
+    wait_until("the pool has its slot back", || fixture.pool.held(Class::Open) == 0);
+
+    // After the wait the file is downloaded as always.
+    fixture.start_throttle_wait(0);
+    source.let_go();
+    assert_eq!(hear(ask(&downloader, &shown, DownloadAsker::OpenForWriting)), Ok(()));
+    assert_eq!(fixture.read_disk_file("a.txt").as_deref(), Some(&b"the content"[..]));
+}
+
+#[test]
+fn the_plans_download_waits_the_wait_out() {
+    let fixture = ItemFixture::new();
+    let shown = fixture.show_onedrive_file("pinned.txt", b"pinned");
+    let source = HeldSource::held(&fixture);
+    let (downloader, _) = make_downloader_reporting_to(&fixture, Arc::clone(&source) as Arc<dyn ContentSource>, fixture.report());
+    fixture.start_throttle_wait(300);
+    begin_download_step(&fixture, &shown);
+    let (plans, file) = (Arc::clone(&downloader), to_download(&shown));
+    let planned_from = ItemVersions::of(&shown);
+    let step = fixture.runtime().spawn(async move { plans.download_and_land(file, planned_from).await });
+    // Started in the wait, and it waits for OneDrive's answer: nobody waits for it.
+    wait_until_it_writes(&fixture, &shown);
+
+    // A program that asks for the same file meanwhile is refused, and joins nothing.
+    assert_eq!(hear_soon(&fixture, ask(&downloader, &shown, DownloadAsker::OpenForWriting)), Some(Err(THROTTLE_WAIT_ERRNO)));
+    assert!(!step.is_finished(), "the plan's download goes on");
+
+    source.let_go();
+    assert!(matches!(fixture.runtime().block_on(step).expect("the step's task"), Ok(ItemLandingOutcome::Landed { .. })));
+    assert_eq!(fixture.read_disk_file("pinned.txt").as_deref(), Some(&b"pinned"[..]));
+}
+
+#[test]
+fn the_first_file_refused_during_a_wait_is_told_and_no_failure_is_recorded() {
+    let fixture = ItemFixture::new();
+    let (first, second) = (fixture.show_onedrive_file("first.xlsx", b"first"), fixture.show_onedrive_file("second.docx", b"second"));
+    let (source, report) = (HeldSource::held(&fixture), make_report_with_wait(&fixture));
+    let (downloader, _) = make_downloader_reporting_to(&fixture, Arc::clone(&source) as Arc<dyn ContentSource>, report.clone());
+    let count_failures = || report.activity.recent(100).expect("the activity kept in memory").iter().filter(|event| event.kind == EventKind::Failed).count();
+    let path_of = |name: &str| fixture.folder().join(name).display().to_string();
+
+    // A download under way when the wait starts: its file is the wait's refusal.
+    let heard = ask(&downloader, &first, DownloadAsker::Read);
+    wait_until_it_writes(&fixture, &first);
+    fixture.start_throttle_wait(300);
+    assert_eq!(hear_soon(&fixture, heard), Some(Err(THROTTLE_WAIT_ERRNO)));
+    assert_eq!(refused_file(&fixture), path_of("first.xlsx"));
+
+    // Every other refusal of the same wait tells nothing more.
+    assert_eq!(hear_soon(&fixture, ask(&downloader, &second, DownloadAsker::OpenForWriting)), Some(Err(THROTTLE_WAIT_ERRNO)));
+    fixture.runtime().block_on(downloader.tell_throttle_refusal(second.local_item_id));
+    assert_eq!(refused_file(&fixture), path_of("first.xlsx"));
+    assert_eq!(count_failures(), 0, "a refusal for the wait is no failed download");
+
+    // The next wait has its own: here a download that was not started.
+    fixture.start_throttle_wait(0);
+    assert_eq!(refused_file(&fixture), "");
+    fixture.start_throttle_wait(30);
+    assert_eq!(hear_soon(&fixture, ask(&downloader, &second, DownloadAsker::OpenForWriting)), Some(Err(THROTTLE_WAIT_ERRNO)));
+    wait_until("the refused file is told", || refused_file(&fixture) == path_of("second.docx"));
+    assert_eq!(count_failures(), 0);
 }

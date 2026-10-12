@@ -14,7 +14,7 @@ class QTimer;
 /// One desktop notification, as the Notifier decides it.
 struct Notice {
     /// The event in konedrive.notifyrc: signedOut, diskFull, downloadFailed,
-    /// updateFailed, uploadFailed, conflict, notRemovedHere.
+    /// updateFailed, uploadFailed, conflict, notRemovedHere, throttled.
     QString event;
     QString title;
     QString text;
@@ -55,7 +55,8 @@ private:
 /// Turns what one account's daemon objects report into notifications:
 /// signing out after being signed in, a full disk, a failed download, a
 /// failed update, a change that cannot be uploaded, a conflict (a copy kept
-/// beside the file) and a directory that cannot be removed here. Nothing else notifies. Each event kind sends at
+/// beside the file), a directory that cannot be removed here, and a file that could not be
+/// opened because OneDrive asked the account to wait — once for each wait. Nothing else notifies. Each event kind sends at
 /// most one notification per 10 s window; what arrives inside a window is
 /// counted and sent as one summary when the window ends. Each account has its
 /// own Notifier, so windows and summaries are per account and kind.
@@ -99,7 +100,9 @@ private:
 
     void onActivity(qint64 time, const QString &kind, const QString &path, const QString &detail);
     void onAccountChanged();
-    /// OneDrive turning full (QuotaFull from false): uploadFailed, once each time.
+    /// OneDrive turning full (QuotaFull from false): uploadFailed, once each time. A file
+    /// refused during the wait OneDrive asked for (RetryAfterRefusal from empty):
+    /// throttled, once for the wait.
     void onSyncChanged();
     /// The sign-out, once SignOutDelayMs has passed with the account still signed out.
     void announceSignOut();
@@ -125,4 +128,7 @@ private:
     /// answer only sets it (a restart replays nothing): one notice when OneDrive
     /// turns full.
     int m_full = -1;
+    /// RetryAfterRefusal as last seen: the daemon names one file for a wait, and takes
+    /// the name off when the wait is over. The daemon's first answer only sets it.
+    QString m_waitRefusal;
 };

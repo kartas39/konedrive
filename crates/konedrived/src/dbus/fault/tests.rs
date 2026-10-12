@@ -26,6 +26,7 @@ fn every_refusal_of_the_folder_goes_out_under_its_name() {
         SyncError::Store("the database is locked".into()),
         SyncError::not_up("its mount could not be served"),
         SyncError::HeldBack("this account is held back: its label repeats".into()),
+        SyncError::Throttled("OneDrive asked to wait: 300 s are left".into()),
         SyncError::Removing,
         SyncError::Stopping,
         SyncError::Io("the disk is full".into()),
@@ -51,6 +52,7 @@ fn every_refusal_of_the_folder_goes_out_under_its_name() {
             SyncError::Config(_)
             | SyncError::Store(_)
             | SyncError::HeldBack(_)
+            | SyncError::Throttled(_)
             | SyncError::Removing
             | SyncError::Stopping
             | SyncError::Io(_) => ("org.konedrive.Error.Failed", said.clone()),

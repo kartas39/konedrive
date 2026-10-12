@@ -235,13 +235,14 @@ fn trouble_that_does_not_stop_the_folder_is_a_warning_that_says_it() {
 #[test]
 fn the_first_rule_that_holds_decides() {
     type Change = fn(&mut SyncSnapshot);
-    let rules: [(Reason, Change); 9] = [
+    let rules: [(Reason, Change); 10] = [
         (Reason::Conflicts, |s| s.local.conflict_count = 1),
         (Reason::QuotaFull, |s| s.upload_queue.quota_full = true),
         (Reason::TooBig, |s| s.upload_queue.too_big_count = 1),
         (Reason::Blocked, |s| s.upload_queue.blocked_count = 1),
         (Reason::Paused, |s| s.pause.paused_until = Some(0)),
         (Reason::HeldBack, |s| s.pause.held_back = "metered".into()),
+        (Reason::Throttled, |s| s.transfers.throughput.retry_after = 300),
         (Reason::Trouble, |s| s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()))),
         (Reason::Transferring, |s| s.upload_queue.pending_count = 1),
         (Reason::UpToDate, |_| {}),
@@ -325,4 +326,34 @@ fn no_trouble_is_published_while_listing_or_starting() {
         s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()));
     });
     assert_eq!(starting, plain(Reason::Starting));
+}
+
+#[test]
+fn an_account_onedrive_asked_to_wait_is_paused_until_the_wait_is_over() {
+    assert_eq!(with(|s| s.transfers.throughput.retry_after = 300), plain(Reason::Throttled));
+    assert_eq!(with(|s| s.transfers.throughput.retry_after = 1), plain(Reason::Throttled), "to its last second");
+    assert_eq!(Reason::Throttled.state(), State::Paused);
+    // In place of the first listing, and of what moves.
+    let listing = with(|s| {
+        s.cycle.listing = true;
+        s.transfers.throughput.retry_after = 300;
+    });
+    assert_eq!(listing.reason, Reason::Throttled);
+    let mut moving = healthy();
+    moving.transfers.throughput.retry_after = 300;
+    assert_eq!(overall(SignInState::SignedIn, &moving, 3).reason, Reason::Throttled);
+    // In place of the trouble its uploads' hold says, which is this wait; the sentence stays.
+    let held = with(|s| {
+        s.upload_queue.note = Some(UploadQueueNote::Throttled(1_700_000_300));
+        s.transfers.throughput.retry_after = 300;
+    });
+    assert_eq!(held.reason, Reason::Throttled);
+    assert!(!held.trouble.is_empty());
+    // What needs the user, and a pause, come first; the wait over, the account is what it was.
+    let conflicts = with(|s| {
+        s.local.conflict_count = 1;
+        s.transfers.throughput.retry_after = 300;
+    });
+    assert_eq!(conflicts.reason, Reason::Conflicts);
+    assert_eq!(with(|s| s.cycle.listing = true).reason, Reason::Listing);
 }

@@ -8,10 +8,11 @@ use crate::account_folder::{SyncError, SyncService};
 
 impl From<FilesRefusal> for SyncError {
     fn from(refused: FilesRefusal) -> Self {
-        match refused {
+        match &refused {
             FilesRefusal::OutsideFolder => SyncError::OutsideRoot,
             FilesRefusal::NotInOneDrive => SyncError::NotManaged,
-            FilesRefusal::Io(why) => SyncError::Io(why),
+            FilesRefusal::Io(why) => SyncError::Io(why.clone()),
+            FilesRefusal::ThrottleWait { .. } => SyncError::Throttled(refused.to_string()),
         }
     }
 }

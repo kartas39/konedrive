@@ -336,6 +336,12 @@ impl ItemDownloadStates {
         ItemDownloadStart::Started { run: DownloadRun { key: key.clone(), number }, unfinished_file }
     }
 
+    /// Whether anything but the plan's pin has asked for the download `run`, which runs:
+    /// a program waits for it.
+    pub(super) fn is_asked_beyond_plan(&self, run: &DownloadRun) -> bool {
+        matches!(crate::panic::lock(&self.states).by_key.get(&run.key), Some(State::Running { number, is_asked_beyond_plan, .. }) if *number == run.number && *is_asked_beyond_plan.borrow())
+    }
+
     /// Waits until anything but the plan's pin asked for the download `run`: at once for
     /// one a read, an open for writing or `Files.Hydrate` started or has joined. For ever
     /// for a download that runs no more: its task is aborted, or ends by itself. Awaited

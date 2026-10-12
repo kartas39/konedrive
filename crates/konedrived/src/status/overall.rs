@@ -91,6 +91,11 @@ pub fn reason(sign_in: SignInState, s: &SyncSnapshot, downloads: usize) -> Reaso
     if !s.pause.held_back.is_empty() {
         return Reason::HeldBack;
     }
+    // OneDrive asked the account to wait: nothing is listed or moved until then, whatever
+    // the account was doing, and what its uploads' hold says is this very wait.
+    if s.transfers.throughput.retry_after > 0 {
+        return Reason::Throttled;
+    }
     // While the first listing runs, the trouble of a folder that keeps running is not
     // counted: the listing is what the account is doing.
     let trouble = if state == "listing" { None } else { running_trouble(s) };

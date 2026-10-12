@@ -56,6 +56,8 @@ pub struct AccountStatus {
     pub trouble: String,
     /// `Folder.NotUpdated`: the failed-update note, or empty.
     pub not_updated: String,
+    /// `Transfers.RetryAfter`: seconds left of the wait OneDrive asked for; 0 with none.
+    pub retry_after: u32,
 }
 
 /// The `Overall:` line's text, in `status` and `sync status`: the state the daemon decided
@@ -64,8 +66,9 @@ pub struct AccountStatus {
 /// stop it and OneDrive out of reach, `not_updated` (`Folder.NotUpdated`) for files not
 /// updated here. Under any other reason the trouble is not on this line: `sync status` has
 /// it in `Last error:`. Nothing here decides a state: a reason this build does not know is printed as the
-/// daemon spelled it.
-pub fn overall_text(overall: &Overall, trouble: &str, not_updated: &str) -> String {
+/// daemon spelled it. `retry_after` is `Transfers.RetryAfter`, the seconds left of the wait
+/// OneDrive asked for, said under the reason `throttled`.
+pub fn overall_text(overall: &Overall, trouble: &str, not_updated: &str, retry_after: u32) -> String {
     let state = overall.state.as_str();
     // The sentence, or what stands for it when the daemon sent none.
     let or = |sentence: &str, otherwise: &str| if sentence.is_empty() { otherwise.to_owned() } else { sentence.to_owned() };
@@ -88,6 +91,9 @@ pub fn overall_text(overall: &Overall, trouble: &str, not_updated: &str) -> Stri
         Some(Reason::Trouble) => said("something is wrong"),
         Some(Reason::Paused) => "you paused syncing".to_owned(),
         Some(Reason::HeldBack) => "the account holds back by itself".to_owned(),
+        // TODO: wording
+        Some(Reason::Throttled) if retry_after == 0 => "OneDrive asked to wait".to_owned(),
+        Some(Reason::Throttled) => format!("OneDrive asked to wait: {} left", seconds_text(u64::from(retry_after))),
         Some(Reason::UpToDate) => "up to date".to_owned(),
         None => overall.reason.clone(),
     };
@@ -107,7 +113,7 @@ pub fn status_text(status: &AccountStatus, client_id: Option<&str>) -> String {
         line("State:", state);
     }
     if let Some(overall) = &status.overall {
-        line("Overall:", &overall_text(overall, &status.trouble, &status.not_updated));
+        line("Overall:", &overall_text(overall, &status.trouble, &status.not_updated, status.retry_after));
     }
     if let Some(client_id) = client_id {
         line("Client ID:", if client_id.is_empty() { "(not set)" } else { client_id });
@@ -231,6 +237,8 @@ pub struct FolderStatus {
     pub trouble: String,
     /// `Folder.NotUpdated`: the failed-update note, or empty.
     pub not_updated: String,
+    /// `Transfers.RetryAfter`: seconds left of the wait OneDrive asked for; 0 with none.
+    pub retry_after: u32,
     /// `Folder.Source`: `onedrive`, `local`, or empty.
     pub source: String,
     /// Items in OneDrive, and items in the folder.
@@ -262,6 +270,9 @@ pub struct FolderStatus {
     pub paused_until: i64,
     /// `Folder.HeldBack`: why the account holds back by itself, or empty.
     pub held_back: String,
+    /// `Transfers.RetryAfterRefusal`: the file a program was first refused the content of
+    /// during the wait OneDrive asked for, or empty.
+    pub retry_after_refusal: String,
     /// What the folder's files take on this disk.
     pub local_bytes: Option<u64>,
     /// Files and folders with a pin of their own.
@@ -292,7 +303,7 @@ pub fn sync_status_text(status: &FolderStatus, prefix: &str, now: i64) -> String
     let state = status.state.as_deref().unwrap_or_default();
     line("Folder:", if status.path.is_empty() { "(none)" } else { &status.path });
     if let Some(overall) = &status.overall {
-        line("Overall:", &overall_text(overall, &status.trouble, &status.not_updated));
+        line("Overall:", &overall_text(overall, &status.trouble, &status.not_updated, status.retry_after));
     }
     if status.state.is_some() {
         line("State:", state);
@@ -344,6 +355,9 @@ pub fn sync_status_text(status: &FolderStatus, prefix: &str, now: i64) -> String
         }
         if !status.held_back.is_empty() {
             line("Paused by itself:", &format!("{} (`{prefix} sync anyway` syncs now)", held_text(&status.held_back)));
+        }
+        if status.retry_after > 0 {
+            line("Asked to wait:", &asked_to_wait_text(status.retry_after, &status.retry_after_refusal));
         }
     }
     // A folder not brought up yet has its path and the state `waiting`: nothing has measured it.
@@ -417,6 +431,18 @@ pub fn paused_text(until: i64, prefix: &str) -> String {
     } else {
         format!("{} (`{prefix} sync resume` ends it now)", local_time(until))
     }
+}
+
+/// `sync status`'s `Asked to wait:` line, while OneDrive's `Retry-After` runs: the time left
+/// (`Transfers.RetryAfter`), what it means for a file that is not downloaded, and the first
+/// file a program was refused meanwhile (`Transfers.RetryAfterRefusal`), when one was.
+// TODO: wording
+pub fn asked_to_wait_text(retry_after: u32, refusal: &str) -> String {
+    let mut said = format!("{} left: OneDrive asked for it; a file that is not downloaded cannot be read until then", seconds_text(u64::from(retry_after)));
+    if !refusal.is_empty() {
+        said.push_str(&format!(" (not read meanwhile: {refusal})"));
+    }
+    said
 }
 
 /// How changes made in OneDrive arrive (`Folder.LiveChanges`), as `sync status` says it;

@@ -72,13 +72,17 @@ pub enum Reason {
     Paused,
     /// The account holds back by itself (metered, battery, power-saver).
     HeldBack,
+    /// OneDrive asked the account to wait (`429` or `503` with a `Retry-After`): nothing
+    /// is asked of it until the wait is over. `Transfers.RetryAfter` says the seconds
+    /// left.
+    Throttled,
     /// None of the others.
     UpToDate,
 }
 
 impl Reason {
     /// Every reason.
-    pub const ALL: [Reason; 17] = [
+    pub const ALL: [Reason; 18] = [
         Self::SigningIn,
         Self::SignedOut,
         Self::NoFolder,
@@ -95,6 +99,7 @@ impl Reason {
         Self::Trouble,
         Self::Paused,
         Self::HeldBack,
+        Self::Throttled,
         Self::UpToDate,
     ];
 
@@ -117,6 +122,7 @@ impl Reason {
             Self::Trouble => "trouble",
             Self::Paused => "paused",
             Self::HeldBack => "held-back",
+            Self::Throttled => "throttled",
             Self::UpToDate => "up-to-date",
         }
     }
@@ -138,7 +144,7 @@ impl Reason {
             | Self::Blocked
             | Self::NotUpdated
             | Self::Trouble => State::Warning,
-            Self::Paused | Self::HeldBack => State::Paused,
+            Self::Paused | Self::HeldBack | Self::Throttled => State::Paused,
             Self::UpToDate => State::Ok,
         }
     }

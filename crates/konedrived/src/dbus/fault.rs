@@ -110,6 +110,7 @@ impl From<SyncError> for Fault {
             SyncError::Config(_)
             | SyncError::Store(_)
             | SyncError::HeldBack(_)
+            | SyncError::Throttled(_)
             | SyncError::Removing
             | SyncError::Stopping
             | SyncError::Io(_) => Refusal::Failed,

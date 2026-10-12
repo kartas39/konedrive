@@ -110,6 +110,7 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
             m_downloadSpeed = m_uploadSpeed = 0;
             m_activeDownloads = m_activeUploads = 0;
             m_poolInUse = m_largeFiles = m_largeTransfers = m_retryAfter = 0;
+            m_retryAfterRefusal.clear();
             m_downloadLeftCount = m_uploadLeftCount = 0;
             m_downloadLeftBytes = m_downloadDoneBytes = m_uploadLeftBytes = m_uploadDoneBytes = 0;
             m_downloadTimeLeft = m_uploadTimeLeft = 0;
@@ -245,6 +246,7 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         count("LargeStreams", m_largeTransfers);
         count("LargeStreamLimit", m_largeLimit);
         count("RetryAfter", m_retryAfter);
+        text("RetryAfterRefusal", m_retryAfterRefusal);
         count("DownloadLeftCount", m_downloadLeftCount);
         number("DownloadLeftBytes", m_downloadLeftBytes);
         number("DownloadDoneBytes", m_downloadDoneBytes);

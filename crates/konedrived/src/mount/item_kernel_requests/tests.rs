@@ -16,7 +16,6 @@ use crate::mount::item_attributes::to_node_id;
 use crate::mount::item_download_landing::ItemDownloadLanding;
 use crate::mount::item_fixture::{onedrive_id_of, ContentRefusal, ItemFixture, DOWNLOAD_AFTER, START_TIME};
 use crate::mount::mount_take_down::TakeDownCause;
-use crate::status::report::Report;
 
 const ROOT: LocalItemId = LocalItemId::ROOT;
 /// No thread of the kernel: a request that is nobody's own.
@@ -88,7 +87,7 @@ impl Requests {
             source,
             Arc::clone(&fixture.pool),
             Arc::clone(&fixture.split_download_share),
-            Report::nowhere(),
+            fixture.report(),
             fixture.folder(),
             fixture.runtime(),
         ));
@@ -1396,4 +1395,36 @@ fn read_a_remembered_content_while_its_download_has_no_answer(agrees: bool) {
 fn reads_of_a_remembered_content_join_its_download_until_onedrive_has_answered() {
     read_a_remembered_content_while_its_download_has_no_answer(true);
     read_a_remembered_content_while_its_download_has_no_answer(false);
+}
+
+#[test]
+fn while_onedrive_asks_to_wait_what_needs_its_content_fails_at_once_and_the_rest_is_answered() {
+    let mount = Requests::new();
+    let on_disk = mount.fixture.show_onedrive_file("here.txt", b"0123456789").local_item_id;
+    let fh_on_disk = mount.open_to_read(on_disk).unwrap().fh;
+    assert_eq!(mount.read(fh_on_disk, 0, 100).unwrap(), b"0123456789");
+    mount.wait_until_on_disk(on_disk);
+    let file = mount.fixture.show_onedrive_file("away.xlsx", b"abcdefghij").local_item_id;
+    let fetched = mount.list_fetched_ranges().len();
+
+    mount.fixture.start_throttle_wait(300);
+    let again = Errno::from_i32(THROTTLE_WAIT_ERRNO);
+    // The open for reading asks OneDrive nothing; the read does, and is refused.
+    let fh = mount.open_to_read(file).unwrap().fh;
+    assert_eq!(mount.read(fh, 0, 4).err(), Some(again));
+    assert_eq!(mount.open_to_write(file).err(), Some(again));
+    assert_eq!(mount.truncate(file, None, 3).err(), Some(again));
+    assert_eq!(mount.list_fetched_ranges().len(), fetched, "OneDrive was asked nothing");
+    assert_eq!(mount.fixture.sync_state.get().transfers.retry_after_refusal, mount.fixture.folder().join("away.xlsx").display().to_string(), "the first file refused is the wait's");
+    // What the store and the disk answer is answered as always.
+    assert_eq!(mount.getattr(file, None).unwrap().size, 10);
+    assert!(mount.lookup(ROOT, "away.xlsx").is_ok());
+    assert_eq!(mount.read(fh_on_disk, 2, 4).unwrap(), b"2345", "a file whose content is on this computer");
+    assert_eq!(mount.truncate(file, None, 0).unwrap().size, 0, "cut to nothing, it needs no content");
+
+    // After the wait the same read is answered.
+    mount.fixture.start_throttle_wait(0);
+    let other = mount.fixture.show_onedrive_file("later.txt", b"klmnopqrst").local_item_id;
+    let fh = mount.open_to_read(other).unwrap().fh;
+    assert_eq!(mount.read(fh, 0, 4).unwrap(), b"klmn");
 }

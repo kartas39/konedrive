@@ -25,7 +25,7 @@ class AccountStatus : public QObject
     Q_PROPERTY(QString iconName READ iconName NOTIFY changed)
     /// The status line: "Up to date · checked 20 s ago" ("Up to date · live" while changes
     /// arrive through the notification socket), "Paused: metered connection" while the account
-    /// holds back by itself, "Listing your OneDrive: N items so far", the error…
+    /// holds back by itself, "Listing your OneDrive: N items so far", "OneDrive asked to wait: 4 min left", the error…
     Q_PROPERTY(QString text READ text NOTIFY changed)
     /// Why the state is "warning" when the status line does not say it (a conflict, a failed
     /// update), by the daemon's reason; else empty.

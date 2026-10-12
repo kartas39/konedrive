@@ -112,6 +112,9 @@ class SyncController : public QObject
     Q_PROPERTY(uint largeTransfers READ largeTransfers NOTIFY syncChanged)
     Q_PROPERTY(uint largeLimit READ largeLimit NOTIFY syncChanged)
     Q_PROPERTY(uint retryAfter READ retryAfter NOTIFY syncChanged)
+    /// The file a program was first refused the content of during the wait OneDrive asked
+    /// for (Transfers.RetryAfterRefusal): its full path, or empty.
+    Q_PROPERTY(QString retryAfterRefusal READ retryAfterRefusal NOTIFY syncChanged)
     /// The queue totals, each way (Transfers' DownloadLeftCount, DownloadLeftBytes,
     /// DownloadDoneBytes, DownloadTimeLeft and the same four for uploads): files left to
     /// download and changes left to upload, their bytes, the bytes done in this run, and
@@ -215,6 +218,7 @@ public:
     uint largeTransfers() const { return m_largeTransfers; }
     uint largeLimit() const { return m_largeLimit; }
     uint retryAfter() const { return m_retryAfter; }
+    QString retryAfterRefusal() const { return m_retryAfterRefusal; }
     uint downloadLeftCount() const { return m_downloadLeftCount; }
     qulonglong downloadLeftBytes() const { return m_downloadLeftBytes; }
     qulonglong downloadDoneBytes() const { return m_downloadDoneBytes; }
@@ -388,6 +392,7 @@ private:
     uint m_largeTransfers = 0;
     uint m_largeLimit = 0;
     uint m_retryAfter = 0;
+    QString m_retryAfterRefusal;
     uint m_downloadLeftCount = 0;
     qulonglong m_downloadLeftBytes = 0;
     qulonglong m_downloadDoneBytes = 0;

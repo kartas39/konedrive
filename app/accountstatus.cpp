@@ -177,10 +177,16 @@ void AccountStatus::update()
         // the reason is (a pause).
         // The first listing of the drive runs: the daemon says so as the reason (Folder.State has no such word).
         const bool listing = reason == QLatin1String("listing");
+        // OneDrive asked the account to wait (a Retry-After): nothing is listed or moved
+        // until then, and Transfers.RetryAfter says the seconds left.
+        const bool throttled = reason == QLatin1String("throttled");
         const int uploads = m_sync->uploads()->count();
         const uint pending = m_sync->pendingCount();
         const QString heldBack = m_sync->heldBack();
-        if (listing) {
+        if (throttled) {
+            // TODO: wording
+            text = m_sync->retryAfter() > 0 ? i18n("OneDrive asked to wait: %1 left", durationText(m_sync->retryAfter())) : i18n("OneDrive asked to wait");
+        } else if (listing) {
             text = i18n("Listing your OneDrive: %1 items so far", m_sync->itemsListed());
         } else if (!m_sync->trouble().isEmpty()) {
             text = m_sync->trouble();
@@ -203,7 +209,7 @@ void AccountStatus::update()
         } else {
             text = i18n("Up to date");
         }
-        if (!listing && !checkedText.isEmpty()) {
+        if (!listing && !throttled && !checkedText.isEmpty()) {
             text = i18nc("@info status: what, then when it last checked", "%1 · %2", text, checkedText);
             ages = !live;
         }

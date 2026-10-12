@@ -17,6 +17,7 @@
 // test: a_directory_is_downloaded_file_by_file_and_a_failure_is_said_after_the_rest
 // test: what_is_downloaded_below_a_path_is_counted_from_the_rows
 // test: a_free_up_after_the_thread_stopped_is_refused
+// test: a_download_asked_by_path_while_onedrive_asks_to_wait_is_refused_with_the_time_left
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -29,6 +30,7 @@ use super::item_free_up::FreeUpDecision;
 use super::item_download_states::{DownloadAsker, ItemDownloadStates};
 use super::item_downloader::{ItemDownloader, ItemToDownload};
 use super::item_free_up::{FreedCopy, ItemFreeUp};
+use super::errno::THROTTLE_WAIT_ERRNO;
 use super::item_announcements::ItemAnnouncement;
 use super::item_handles::ItemHandles;
 use super::item_inotify_bridge::ItemInotifyBridge;
@@ -180,7 +182,9 @@ impl ItemFilesInterface {
     }
 
     /// Asks for the download of each of `files` and waits for them all: the first
-    /// failure, when there is one, after the rest was waited for.
+    /// failure, when there is one, after the rest was waited for. While OneDrive asks the
+    /// account to wait no download is started, and one that runs is given up
+    /// (`ItemDownloader::download`): [`FilesRefusal::ThrottleWait`].
     async fn download_files(&self, files: Vec<ItemToDownload>) -> Result<(), FilesRefusal> {
         let asked: Vec<oneshot::Receiver<Result<(), i32>>> = files
             .into_iter()
@@ -194,6 +198,8 @@ impl ItemFilesInterface {
         for heard in asked {
             let downloaded = match heard.await {
                 Ok(Ok(())) => Ok(()),
+                // Not started, or given up: OneDrive asked the account to wait.
+                Ok(Err(THROTTLE_WAIT_ERRNO)) => Err(FilesRefusal::ThrottleWait { seconds_left: self.downloader.throttle_wait().seconds_left() }),
                 Ok(Err(errno)) => Err(FilesRefusal::Io(format!("the download failed: {}", std::io::Error::from_raw_os_error(errno)))),
                 Err(_) => Err(FilesRefusal::Io("the download was given up".into())),
             };
@@ -406,6 +412,11 @@ pub enum FilesRefusal {
     NotInOneDrive,
     #[error("{0}")]
     Io(String),
+    /// A download was asked for while OneDrive asks the account to wait: nothing is
+    /// downloaded until the wait, of which this many seconds are left, is over.
+    // TODO: wording
+    #[error("OneDrive asked to wait: {seconds_left} s are left, and nothing is downloaded until then")]
+    ThrottleWait { seconds_left: u32 },
 }
 
 #[cfg(test)]

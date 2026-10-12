@@ -149,6 +149,11 @@
                                         updated here yet
            paused   paused              the user paused the account
            paused   held-back           the account holds back by itself
+           paused   throttled           OneDrive asked the account to wait (429
+                                        or 503 with a Retry-After): nothing is
+                                        asked of it until then;
+                                        Transfers.RetryAfter says the seconds
+                                        left
            offline  unreachable         OneDrive cannot be reached, and nothing
                                         else is wrong
            warning  trouble             any other trouble that does not stop

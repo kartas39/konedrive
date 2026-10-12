@@ -48,6 +48,15 @@
     <property name="LargeStreams" type="u" access="read"/>
     <property name="LargeStreamLimit" type="u" access="read"/>
     <property name="RetryAfter" type="u" access="read"/>
+    <!-- While OneDrive's Retry-After runs, a program that reads a file whose
+         content is not on this computer, opens it for writing, or asks for
+         it with Files.Hydrate, is refused at once (the read fails with
+         EAGAIN, "Resource temporarily unavailable") and not kept waiting;
+         the same read succeeds after the wait. The full path of the first
+         file refused so during the wait that runs; empty when none was, and
+         when no wait runs. A client says it once per wait. Coalesced with
+         the counters. -->
+    <property name="RetryAfterRefusal" type="s" access="read"/>
     <!-- The queue totals, each way, updated with the speeds above. Left:
          files to download — the pinned files whose content is not on this
          computer yet, counted from the moment they are pinned and fewer only

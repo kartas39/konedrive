@@ -114,6 +114,11 @@ pub enum SyncError {
     /// The account is held back (`config.toml` gives it what an earlier account has): why.
     #[error("{0}")]
     HeldBack(String),
+    /// OneDrive asked the account to wait (`429` or `503` with a `Retry-After`), and a
+    /// download was asked for meanwhile (`Files.Hydrate`): the sentence, with the seconds
+    /// left.
+    #[error("{0}")]
+    Throttled(String),
     /// `Accounts.Remove` is taking the account away.
     #[error("this account is being removed")]
     Removing,

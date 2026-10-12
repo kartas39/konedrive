@@ -345,6 +345,7 @@ class FakeTransfers : public FakeFolderInterface
     Q_PROPERTY(uint LargeStreams READ largeStreams)
     Q_PROPERTY(uint LargeStreamLimit READ largeStreamLimit)
     Q_PROPERTY(uint RetryAfter READ retryAfter)
+    Q_PROPERTY(QString RetryAfterRefusal READ retryAfterRefusal)
     Q_PROPERTY(uint DownloadLeftCount READ downloadLeftCount)
     Q_PROPERTY(qulonglong DownloadLeftBytes READ downloadLeftBytes)
     Q_PROPERTY(qulonglong DownloadDoneBytes READ downloadDoneBytes)
@@ -371,6 +372,7 @@ public:
                                   {QStringLiteral("LargeStreams"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("LargeStreamLimit"), QVariant::fromValue<uint>(4)},
                                   {QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(0)},
+                                  {QStringLiteral("RetryAfterRefusal"), QString()},
                                   {QStringLiteral("DownloadLeftCount"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("DownloadLeftBytes"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("DownloadDoneBytes"), QVariant::fromValue<qulonglong>(0)},
@@ -396,6 +398,7 @@ public:
     uint largeStreams() const { return value("LargeStreams").toUInt(); }
     uint largeStreamLimit() const { return value("LargeStreamLimit").toUInt(); }
     uint retryAfter() const { return value("RetryAfter").toUInt(); }
+    QString retryAfterRefusal() const { return value("RetryAfterRefusal").toString(); }
     uint downloadLeftCount() const { return value("DownloadLeftCount").toUInt(); }
     qulonglong downloadLeftBytes() const { return value("DownloadLeftBytes").toULongLong(); }
     qulonglong downloadDoneBytes() const { return value("DownloadDoneBytes").toULongLong(); }

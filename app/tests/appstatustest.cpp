@@ -238,6 +238,25 @@ private Q_SLOTS:
         QVERIFY(timer->isActive());
     }
 
+    /// While OneDrive asks the account to wait, its line and the tray say so with the time
+    /// left, in place of the listing; the wait over, the line is the listing's again.
+    void anAccountOneDriveAskedToWaitSaysHowLongIsLeft()
+    {
+        startSynced();
+        TrayIcon tray(m_app.get());
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(240)}});
+        decide("paused", "throttled", {{QStringLiteral("ItemsListed"), QVariant::fromValue<qulonglong>(12)}});
+        QTRY_COMPARE(m_status->text(), QStringLiteral("OneDrive asked to wait: 4 min left"));
+        QCOMPARE(m_status->state(), QStringLiteral("paused"));
+        QTRY_COMPARE(tray.one()->item()->toolTipSubTitle(), QStringLiteral("OneDrive asked to wait: 4 min left"));
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(45)}});
+        QTRY_COMPARE(m_status->text(), QStringLiteral("OneDrive asked to wait: 45 s left"));
+
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(0)}});
+        decide("syncing", "listing");
+        QTRY_COMPARE(m_status->text(), QStringLiteral("Listing your OneDrive: 12 items so far"));
+    }
+
     /// An account that holds back by itself (HeldBack) is paused, for its line and the tray,
     /// and its line says why; the user's pause, when there is one too, is what the line says.
     void aHeldAccountIsPaused()

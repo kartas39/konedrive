@@ -61,6 +61,18 @@
 //! its slot: it gives that wait up and asks for an open's slot, which a pause does not
 //! hold back. A program is never kept in `open()` for as long as syncing is paused.
 //!
+//! **While OneDrive asks the account to wait** (`status::throttle_wait`) a download a
+//! program waits for — a read's, an open for writing's, `Files.Hydrate`'s — is not
+//! started and not joined: its waiter hears `errno::THROTTLE_WAIT_ERRNO` at once
+//! ([`decide_content_asker`], `throttle_wait::decide_content_request`). One that runs when
+//! the wait starts is given up where it asks: while it waits for its slot of the pool, and
+//! while OneDrive has not answered a fetch of it (`download_source`); its waiters hear the
+//! same errno, and its unfinished file is kept to be gone on from. An answer whose bytes
+//! come is read to its end, and the file lands. The plan's download of a pinned file that
+//! nobody else asked for waits the time out in the pool, as before. The file first
+//! refused during a wait is told once ([`ItemDownloader::tell_throttle_refusal`]), and
+//! such a refusal is no `failed` event of the activity.
+//!
 //! **After the stop** (`stop`) nothing is started: an asking answers its waiter `EIO` and
 //! fetches nothing (`ItemDownloadStates::stop`).
 //!
@@ -115,6 +127,12 @@
 // test: a_download_is_shown_from_its_slot_to_its_landing
 // test: a_download_that_fails_is_shown_while_it_is_tried_and_leaves_no_entry
 // test: a_download_that_waits_for_its_slot_is_not_shown
+// test: a_program_is_the_asker_of_every_download_but_the_plans_pin
+// test: a_download_a_program_asks_for_during_the_wait_is_refused_at_once_and_fetches_nothing
+// test: a_download_that_waits_for_its_slot_is_given_up_when_the_wait_starts
+// test: a_download_onedrive_has_not_answered_is_given_up_when_the_wait_starts
+// test: the_plans_download_waits_the_wait_out
+// test: the_first_file_refused_during_a_wait_is_told_and_no_failure_is_recorded
 #![allow(dead_code)]
 
 use std::fs::File;
@@ -127,6 +145,7 @@ use konedrive_tree::{ContentVersion, ItemVersions, LocalItemId, OneDriveItemRefe
 use tokio::sync::oneshot;
 
 use super::backing_directory::BackingDirectory;
+use super::errno::THROTTLE_WAIT_ERRNO;
 use super::item_download_states::Waiter;
 use super::item_announcements::ItemAnnouncement;
 use super::item_content_files::{to_content_time, write_whole_copy_marks};
@@ -138,10 +157,11 @@ use crate::content_source::source::{download_staged, ContentSource, Share, Split
 use crate::content_source::tracked::Tracked;
 use crate::status::activity::{self, Kind as EventKind};
 use crate::status::report::Report;
+use crate::status::throttle_wait::{decide_content_request, ContentAsker, ContentRequest};
 
 mod download_source;
 
-use download_source::DownloadSource;
+use download_source::{wait_for_throttle_refusal, DownloadSource};
 
 /// A file of OneDrive that is to be downloaded whole. Who asks, and for the plan the
 /// versions its step was planned from, is not said here: `DownloadAsker` says it, once.
@@ -181,6 +201,15 @@ pub(super) fn decide_pool_class(asker: &DownloadAsker) -> Class {
     match asker {
         DownloadAsker::Read | DownloadAsker::OpenForWriting | DownloadAsker::FilesInterface => Class::Open,
         DownloadAsker::PlanPin { .. } => Class::Download,
+    }
+}
+
+/// Who waits for the content a download of `asker` fetches: a program for a read, an open
+/// for writing and `Files.Hydrate`; nobody for the plan's pin. Pure.
+pub(super) fn decide_content_asker(asker: &DownloadAsker) -> ContentAsker {
+    match asker {
+        DownloadAsker::Read | DownloadAsker::OpenForWriting | DownloadAsker::FilesInterface => ContentAsker::Program,
+        DownloadAsker::PlanPin { .. } => ContentAsker::BackgroundWork,
     }
 }
 
@@ -270,14 +299,16 @@ pub(super) fn decide_end_news(end: &DownloadEnd, fact: Option<AnotherContentFact
 
 /// What whoever waits for a download is answered when it ended as `end`: nothing for a
 /// landed file, else an errno. `ESTALE` when the row, or OneDrive's content, is not what
-/// was asked for any more, and when OneDrive does not have the item. Pure.
+/// was asked for any more, and when OneDrive does not have the item;
+/// `errno::THROTTLE_WAIT_ERRNO` when OneDrive asked the account to wait. Pure.
 pub(super) fn decide_waiters_answer(end: &DownloadEnd) -> Result<(), i32> {
     match end {
         Ok(ItemLandingOutcome::Landed { .. }) => Ok(()),
         Ok(ItemLandingOutcome::RowsChanged) | Err(DownloadRefusal::ItemGone | DownloadRefusal::AnotherContent) => Err(libc::ESTALE),
         Ok(ItemLandingOutcome::PlaceHeld { .. }) => Err(libc::EEXIST),
         Ok(ItemLandingOutcome::Failed { errno }) => Err(*errno),
-        Ok(ItemLandingOutcome::StepStopped) | Err(DownloadRefusal::SignedOut | DownloadRefusal::Throttled { .. } | DownloadRefusal::Transient { .. }) => Err(libc::EIO),
+        Err(DownloadRefusal::Throttled { .. }) => Err(THROTTLE_WAIT_ERRNO),
+        Ok(ItemLandingOutcome::StepStopped) | Err(DownloadRefusal::SignedOut | DownloadRefusal::Transient { .. }) => Err(libc::EIO),
     }
 }
 
@@ -364,6 +395,10 @@ impl ItemDownloader {
     /// versions the step was planned from). The landing's condition follows from the
     /// asker that STARTED the download ([`decide_landing_condition`]); one that joins
     /// takes the landing it finds.
+    ///
+    /// While OneDrive asks the account to wait, an asking a program waits for starts and
+    /// joins nothing: `waiter` hears `errno::THROTTLE_WAIT_ERRNO` at once, and the file is
+    /// told as refused during the wait.
     pub(super) fn download(self: &Arc<Self>, file: ItemToDownload, asker: DownloadAsker, waiter: Option<Waiter>) {
         self.start_or_join(file, asker, waiter, None);
     }
@@ -372,6 +407,14 @@ impl ItemDownloader {
     /// this asking starts it; an asking that joins hears its waiter alone, and `answer`
     /// is dropped.
     fn start_or_join(self: &Arc<Self>, file: ItemToDownload, asker: DownloadAsker, waiter: Option<Waiter>, answer: Option<oneshot::Sender<DownloadEnd>>) {
+        if let ContentRequest::Refused { .. } = decide_content_request(decide_content_asker(&asker), self.report.throttle_wait.seconds_left()) {
+            if let Some(waiter) = waiter {
+                let _ = waiter.send(Err(THROTTLE_WAIT_ERRNO));
+                let downloader = Arc::clone(self);
+                self.runtime.spawn(async move { downloader.tell_throttle_refusal(file.item).await });
+            }
+            return;
+        }
         let key = DownloadKey { item: file.item, content: file.content.clone() };
         let (run, unfinished_file) = match self.download_states.start_or_join(&key, &asker, waiter) {
             ItemDownloadStart::Started { run, unfinished_file } => (Arc::new(run), unfinished_file),
@@ -422,7 +465,10 @@ impl ItemDownloader {
             DownloadEndNews::AnotherContentAgain | DownloadEndNews::SameFailureAgain => return end,
             DownloadEndNews::Changed => {}
         }
-        if !matches!(asker, DownloadAsker::PlanPin { .. }) {
+        // A program was refused the file because of OneDrive's wait: told as the wait's
+        // refusal, once for the wait, and no failure of this file.
+        let is_told_as_throttle_refusal = matches!(end, Err(DownloadRefusal::Throttled { .. })) && self.download_states.is_asked_beyond_plan(run) && self.report.throttle_wait.tell_refusal(&shown_path);
+        if !matches!(asker, DownloadAsker::PlanPin { .. }) && !is_told_as_throttle_refusal {
             let event = match (&end, decide_waiters_answer(&end)) {
                 (Ok(ItemLandingOutcome::Landed { path, .. }), _) => activity::event(EventKind::Downloaded, self.folder.join(path).display().to_string(), activity::human_size(file.content.size())),
                 (_, Err(errno)) => activity::event(EventKind::Failed, shown_path, activity::failure_reason(errno)),
@@ -445,6 +491,10 @@ impl ItemDownloader {
     /// (`ItemDownloadStates::wait_for_asker_beyond_plan`) gives that wait up and asks for
     /// an open's slot: a pause holds back everything but opens, and a program waits for
     /// this one. A slot that is held already is kept as it is.
+    ///
+    /// The pool hands out no slot while OneDrive asks the account to wait: the caller
+    /// gives this wait up for a download a program waits for
+    /// ([`fetch_and_land`](Self::fetch_and_land)).
     async fn acquire_slot(&self, asker: &DownloadAsker, run: &DownloadRun, size: Size) -> Slot {
         match decide_pool_class(asker) {
             Class::Open => self.pool.acquire_sized(Class::Open, size).await,
@@ -466,7 +516,13 @@ impl ItemDownloader {
     async fn fetch_and_land(self: &Arc<Self>, file: &ItemToDownload, asker: &DownloadAsker, run: &DownloadRun, unfinished_file: Option<Arc<File>>, shown_path: &str) -> DownloadEnd {
         let fail = |error: std::io::Error| ItemLandingOutcome::Failed { errno: error.raw_os_error().unwrap_or(libc::EIO) };
         let size = file.content.size();
-        let mut slot = self.acquire_slot(asker, run, Size::of(size)).await;
+        // Given up the moment OneDrive asks the account to wait while a program waits for
+        // this download: the pool hands out no slot until the wait is over.
+        let mut slot = tokio::select! {
+            biased;
+            left = wait_for_throttle_refusal(&self.download_states, run, &self.report.throttle_wait) => return Err(DownloadRefusal::Throttled { retry_after: Some(left) }),
+            slot = self.acquire_slot(asker, run, Size::of(size)) => slot,
+        };
         let class = slot.class();
         // Shown as a transfer for as long as the slot is held: this is dropped where the
         // slot is, whatever ends the download. The size is the row's until the source
@@ -486,7 +542,7 @@ impl ItemDownloader {
         // raised by the source alone, and only for answers of the asked content. The
         // source also tells the states of the first such answer.
         let written_up_to = self.download_states.begin_writing(run, Arc::clone(&staged));
-        let source = DownloadSource::new(self.source.as_ref(), file.content.clone(), written_up_to, &self.download_states, run);
+        let source = DownloadSource::new(self.source.as_ref(), file.content.clone(), written_up_to, &self.download_states, run, self.report.throttle_wait.clone());
         let tracked = Tracked::new(&source, shown.handle());
         // A large file that nothing waits to open (a pinned one) goes in parallel parts,
         // the slot held here being its first stream's.
@@ -556,6 +612,26 @@ impl ItemDownloader {
             (Ok(end), _) => end,
             (Err(_), Ok(heard)) => decide_joined_end(heard),
             (Err(_), Err(_)) => Err(DownloadRefusal::Transient { detail: "the download was given up".into() }),
+        }
+    }
+
+    /// The wait OneDrive asked the account for, as the downloads go by it: for whoever
+    /// says a refused download in words (`ItemFilesInterface`).
+    pub(super) fn throttle_wait(&self) -> &crate::status::throttle_wait::ThrottleWait {
+        &self.report.throttle_wait
+    }
+
+    /// A program was refused the content of `item` because OneDrive asked the account to
+    /// wait: told as the file refused during the wait, by the path the folder shows it
+    /// at, when it is the first of this wait (`ThrottleWait::tell_refusal`); the path is
+    /// read only then. Called for a range that was refused
+    /// (`ItemKernelRequests::fetch_range`) and for a download that was not started.
+    pub(super) async fn tell_throttle_refusal(&self, item: LocalItemId) {
+        if !self.report.throttle_wait.is_refusal_untold() {
+            return;
+        }
+        if let Some((_, path)) = self.download_landing.find_shown_place(item).await {
+            self.report.throttle_wait.tell_refusal(&self.folder.join(path).display().to_string());
         }
     }
 

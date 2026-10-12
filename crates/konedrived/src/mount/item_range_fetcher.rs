@@ -18,6 +18,8 @@
 // test: what_the_source_remembers_of_an_item_is_dropped_when_its_content_changes
 // test: an_answer_tells_another_content_by_its_ctag_else_by_its_size_and_time_and_one_that_says_nothing_tells_none
 // test: a_source_that_fails_is_an_error_of_the_read
+// test: a_range_is_refused_at_once_while_onedrive_asks_to_wait_and_fetched_after
+// test: a_range_asked_when_the_wait_starts_is_refused_and_not_waited_for
 #![allow(dead_code, unused_variables)]
 
 use std::sync::Arc;
@@ -31,6 +33,7 @@ use crate::content_source::source::{Fetched, SourceError};
 use super::item_read_origin::RangeSource;
 use super::range_readers::RangeReaders;
 use crate::content_source::source::ContentSource;
+use crate::status::throttle_wait::{ContentAsker, ThrottleWait};
 
 /// Why a range did not come.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +42,9 @@ pub(super) enum RangeRefusal {
     AnotherContent,
     /// The source failed: the errno.
     Failed { errno: i32 },
+    /// OneDrive asked the account to wait, and OneDrive is not asked for the range until
+    /// the wait is over: `errno::THROTTLE_WAIT_ERRNO`.
+    ThrottleWait,
 }
 
 /// What the answer to a range says of the item it is a range of.
@@ -78,14 +84,15 @@ pub(super) fn decide_is_another_content(answer: &RangeAnswerFacts, content: &Con
 pub(crate) struct ItemRangeFetcher {
     range_readers: Arc<RangeReaders>,
     source: Arc<dyn ContentSource>,
+    throttle_wait: ThrottleWait,
 }
 
 impl ItemRangeFetcher {
     /// Made by the mount's build. `new` and `forget_ranges` are filled first, with the
     /// daemon's leaves (the steps towards the folder call `forget_ranges`); `fetch_range`
     /// with the reading requests.
-    pub(super) fn new(range_readers: Arc<RangeReaders>, source: Arc<dyn ContentSource>) -> Self {
-        ItemRangeFetcher { range_readers, source }
+    pub(super) fn new(range_readers: Arc<RangeReaders>, source: Arc<dyn ContentSource>, throttle_wait: ThrottleWait) -> Self {
+        ItemRangeFetcher { range_readers, source, throttle_wait }
     }
 
     /// The bytes of `source` from `from` up to `end`, all of them: an answer that ends
@@ -99,6 +106,14 @@ impl ItemRangeFetcher {
     /// (`RangeReaders`), which holds the background downloads back. `item` is named in
     /// the journal.
     ///
+    /// **While OneDrive asks the account to wait** (`status::throttle_wait`) the range is
+    /// refused at once ([`RangeRefusal::ThrottleWait`]), and one whose asking is under way
+    /// when the wait starts — it waits for the reader's slot of the pool, or OneDrive has
+    /// not answered it — is given up then: a program is never kept for the wait. An
+    /// answer whose bytes come is read to its end, wait or no wait. A source that says the
+    /// throttle itself (`SourceError::Throttled`: the drive waited out as much as it
+    /// does) is the same refusal.
+    ///
     /// **The limit:** the source over Graph answers a range with no size, no time and no
     /// cTag, so that through it another content is told only by OneDrive not having the
     /// file; a content OneDrive replaced is read as the one opened until the listing's
@@ -111,16 +126,30 @@ impl ItemRangeFetcher {
     pub(super) async fn fetch_range(&self, item: LocalItemId, source: &RangeSource, from: u64, end: u64) -> Result<Vec<u8>, RangeRefusal> {
         use tokio::io::AsyncReadExt;
         let onedrive_item_id = source.onedrive_item.item_id.as_str();
-        let _active_read = self.range_readers.begin_read(onedrive_item_id).await;
         let asked = std::time::Instant::now();
-        let fetched = match self.source.read_range(onedrive_item_id, from, end).await {
+        let asking = async {
+            let active_read = self.range_readers.begin_read(onedrive_item_id).await;
+            (self.source.read_range(onedrive_item_id, from, end).await, active_read)
+        };
+        let (fetched, _active_read) = match self.throttle_wait.ask_unless_refused(ContentAsker::Program, asking).await {
+            Ok(answered) => answered,
+            Err(seconds_left) => {
+                tracing::info!("a range of item {item} was not fetched: OneDrive asked to wait, {seconds_left} s are left");
+                return Err(RangeRefusal::ThrottleWait);
+            }
+        };
+        let fetched = match fetched {
             Ok(fetched) => fetched,
             Err(SourceError::NotFound(detail)) => {
                 tracing::info!("a range of item {item} was not fetched: OneDrive does not have the content that was opened: {detail}");
                 return Err(RangeRefusal::AnotherContent);
             }
             // A sign-out and a throttle are no other content: the read fails, and is asked again.
-            Err(SourceError::Transient(detail) | SourceError::SignedOut(detail) | SourceError::Throttled { detail, .. }) => {
+            Err(SourceError::Throttled { detail, .. }) => {
+                tracing::warn!("a range of item {item} was not fetched: {detail}");
+                return Err(RangeRefusal::ThrottleWait);
+            }
+            Err(SourceError::Transient(detail) | SourceError::SignedOut(detail)) => {
                 tracing::warn!("a range of item {item} was not fetched: {detail}");
                 return Err(RangeRefusal::Failed { errno: libc::EIO });
             }

@@ -200,6 +200,34 @@ private Q_SLOTS:
         QCOMPARE(m_sink.sent.size(), 1);
     }
 
+    /// A file refused while OneDrive asks to wait notifies once for the wait, with the
+    /// file and the minutes; the seconds counting down and the wait ending say nothing,
+    /// and the next wait has its own notice.
+    void aFileRefusedWhileOneDriveAsksToWaitNotifiesOncePerWait()
+    {
+        start();
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(290)}});
+        QTRY_COMPARE(m_sync->retryAfter(), 290u);
+        QCOMPARE(m_sink.sent.size(), 0);
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfterRefusal"), QString(Root + QStringLiteral("/budget.xlsx"))}});
+        QTRY_COMPARE(m_sink.sent.size(), 1);
+        QCOMPARE(m_sink.sent.at(0).event, QStringLiteral("throttled"));
+        QCOMPARE(m_sink.sent.at(0).title, QStringLiteral("OneDrive asked to wait"));
+        QCOMPARE(m_sink.sent.at(0).text, QStringLiteral("OneDrive asked this computer to wait about 5 minutes. budget.xlsx opens after that."));
+
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(289)}});
+        QTRY_COMPARE(m_sync->retryAfter(), 289u);
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(0)}, {QStringLiteral("RetryAfterRefusal"), QString()}});
+        QTRY_COMPARE(m_sync->retryAfter(), 0u);
+        QCOMPARE(m_sink.sent.size(), 1);
+
+        m_nowMs += Notifier::WindowMs + 1;
+        m_notifier->flushDue();
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(30)}, {QStringLiteral("RetryAfterRefusal"), QString(Root + QStringLiteral("/notes.docx"))}});
+        QTRY_COMPARE(m_sink.sent.size(), 2);
+        QCOMPARE(m_sink.sent.at(1).text, QStringLiteral("OneDrive asked this computer to wait about 1 minute. notes.docx opens after that."));
+    }
+
     /// M3: past the cap, the daemon's own "and N more" conflict event (path
     /// = the root) is a count, not a copy's path.
     void aCappedConflictSummaryCountsRatherThanNamingAPath()

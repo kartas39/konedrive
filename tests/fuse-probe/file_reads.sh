@@ -182,6 +182,38 @@ download_onto_a_full_disk_fails_and_works_once_there_is_room() {
     check_state big.bin hydrated
 }
 
+# OneDrive asks the account to wait (a throttle with a Retry-After): a file that is not on
+# this computer is refused at once, with "Resource temporarily unavailable", and not kept for
+# the wait; what is on this computer and what the store answers goes on; after the wait the
+# same read gives the file. The wait is started by a refused write (a new directory): the
+# service of this suite waits out a refused read for 20 ms at most (`fuse-service.rs`,
+# `RetryPolicy`), and a refused write tells the pool the whole Retry-After.
+read_while_onedrive_asks_to_wait_fails_at_once_and_works_after() {
+    begin_folder
+    seed_random X R away.bin 1048576
+    seed_random Y R here.bin 1048576
+    register_folder
+    check_holds "a file is downloaded before the wait" "$(daemon hydrate "$F/here.bin")" downloaded
+    onedrive throttle POST children 0 8 1 > /dev/null
+    user "mkdir made"
+    asked_to_wait() { [ "$(onedrive count POST children)" -ge 1 ]; }
+    check_within 30 "OneDrive asked to wait" asked_to_wait
+    sleep 0.5
+    local began ended
+    began=$(date +%s%N)
+    check_holds "a read of a file that is not on this computer says so" "$(user "cat away.bin 2>&1 > /dev/null")" "Resource temporarily unavailable"
+    ended=$(date +%s%N)
+    check "within two seconds, not after the wait" "$([ $(((ended - began) / 1000000)) -lt 2000 ] && echo yes || echo "no: $(((ended - began) / 1000000)) ms")" yes
+    check "the errno is EAGAIN" "$(errno_of "open('away.bin', 'rb').read(1)")" EAGAIN
+    check_holds "a download asked for by name is refused" "$(daemon hydrate "$F/away.bin")" "refused"
+    check "the file is still not on this computer" "$(state_of away.bin)" online-only
+    check "a file that is on this computer is read whole" "$(is_seed here.bin Y && echo equal)" equal
+    check "its attributes are answered" "$(user "stat -c %s away.bin")" 1048576
+    check_holds "the folder is listed" "$(user "ls")" away.bin
+    sleep 9
+    check "after the wait the file is read whole" "$(is_seed away.bin X && echo equal)" equal
+}
+
 # The group: every scenario of reading beside a fault.
 file_reads() {
     echo "==== reading beside a fault ===="
@@ -194,6 +226,7 @@ file_reads() {
         free_up_while_a_reader_holds_the_file_gives_it_no_wrong_bytes \
         slow_download_does_not_stall_another_file \
         many_files_read_at_once_all_get_their_content \
+        read_while_onedrive_asks_to_wait_fails_at_once_and_works_after \
         download_onto_a_full_disk_fails_and_works_once_there_is_room; do
         folder_scenario $name
     done

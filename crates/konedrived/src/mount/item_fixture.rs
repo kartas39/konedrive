@@ -79,6 +79,8 @@ use crate::content_source::source::{ContentSource, Share, Version};
 use crate::local::{IgnoreList, SharedIgnore};
 use crate::listing::listing_poller::ListingPollHandle;
 use crate::status::report::Report;
+use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
+use crate::status::throttle_wait::ThrottleWait;
 use crate::sync_plan_task::step_runners::StepRunners;
 use crate::sync_parts::onedrive_space::OneDriveSpace;
 use crate::onedrive_steps::GraphAccess;
@@ -230,6 +232,9 @@ pub(crate) struct ItemFixture {
     /// Over a quota of its own, never read: OneDrive is not full.
     pub(crate) onedrive_space: Arc<OneDriveSpace>,
     pub(crate) pool: Arc<TransferPool>,
+    /// The folder's published state, as far as the fixture's leaves read it: whether
+    /// OneDrive asks the account to wait (`start_throttle_wait`). Nothing publishes it.
+    pub(crate) sync_state: SyncStateHandle,
     pub(crate) split_download_share: Arc<Share>,
     /// Unix seconds: what `clock()` answers; the test sets it.
     pub(crate) now: Arc<AtomicI64>,
@@ -273,7 +278,8 @@ impl ItemFixture {
         let content_source = Arc::new(FixtureContentSource::default());
         let pool = TransferPool::new(4);
         let range_readers = Arc::new(RangeReaders::new(Arc::clone(&pool), runtime.handle().clone()));
-        let range_fetcher = Arc::new(ItemRangeFetcher::new(range_readers, Arc::clone(&content_source) as Arc<dyn ContentSource>));
+        let sync_state = SyncStateHandle::new(SyncSnapshot::default());
+        let range_fetcher = Arc::new(ItemRangeFetcher::new(range_readers, Arc::clone(&content_source) as Arc<dyn ContentSource>, ThrottleWait::new(sync_state.clone())));
         let sync_plan_wake = Arc::new(SyncPlanWake::new());
         ItemFixture {
             store,
@@ -296,6 +302,7 @@ impl ItemFixture {
             published_plan: Arc::new(PublishedPlan::new()),
             onedrive_space: Arc::new(OneDriveSpace::new(Quota::detached())),
             pool,
+            sync_state,
             split_download_share: Share::new(),
             now: Arc::new(AtomicI64::new(START_TIME)),
             take_downs,
@@ -457,6 +464,19 @@ impl ItemFixture {
         step_stand_in::StepStandIn::new(self.store.clone(), Arc::clone(&self.tree_lock), Arc::clone(&self.upload_rules)).into_step_runners()
     }
 
+    /// A report that goes nowhere but for the wait OneDrive asked for, which is the
+    /// fixture's (`sync_state`): what a downloader over the fixture's leaves is made
+    /// with when a test starts a wait.
+    pub(crate) fn report(&self) -> Report {
+        Report { throttle_wait: ThrottleWait::new(self.sync_state.clone()), ..Report::nowhere() }
+    }
+
+    /// OneDrive asks the account to wait, and `seconds_left` of the wait are left, as the
+    /// pool would publish it; 0 ends the wait.
+    pub(crate) fn start_throttle_wait(&self, seconds_left: u32) {
+        self.sync_state.set_throughput(konedrive_graph::pool::Throughput { retry_after: seconds_left, ..Default::default() });
+    }
+
     /// What a mount over the fixture's folder is made with: the fixture's store, tree
     /// lock, ignore list, content source, pool, clock, and the leaf state the folder's
     /// start hands a mount (`sync_plan_wake`, `running_steps`, `published_plan`, the
@@ -468,7 +488,7 @@ impl ItemFixture {
             store: self.store.clone(),
             drive_id: self.drive_id(),
             source: self.content_source(),
-            report: Report::nowhere(),
+            report: self.report(),
             pool: Arc::clone(&self.pool),
             split_download_share: Arc::clone(&self.split_download_share),
             download_after: DOWNLOAD_AFTER,

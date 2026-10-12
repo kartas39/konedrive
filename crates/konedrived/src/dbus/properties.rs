@@ -223,6 +223,9 @@ properties! {
     /// Seconds left of OneDrive's `Retry-After` wait, during which no transfer starts; 0
     /// when there is none.
     RETRY_AFTER: u32 = MOVING, "RetryAfter", |s| s.snapshot.transfers.throughput.retry_after;
+    /// The full path of the file a program was first refused the content of during the
+    /// `Retry-After` that runs; empty when none was, and when no wait runs.
+    RETRY_AFTER_REFUSAL: String = MOVING, "RetryAfterRefusal", |s| s.snapshot.transfers.retry_after_refusal.clone();
     /// Files left to download: the pinned files whose content is not on this computer yet,
     /// and each file being opened while its download runs (`status::totals`).
     DOWNLOAD_LEFT_COUNT: u32 = MOVING, "DownloadLeftCount", |s| s.snapshot.transfers.queue.down.left_count;

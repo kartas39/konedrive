@@ -5,7 +5,6 @@ use konedrive_tree::Item;
 use super::*;
 use crate::mount::item_download_landing::ItemDownloadLanding;
 use crate::mount::item_fixture::{ContentRefusal, ItemFixture};
-use crate::status::report::Report;
 
 fn make_files_interface(fixture: &ItemFixture) -> ItemFilesInterface {
     let landing = Arc::new(ItemDownloadLanding::new(Arc::clone(&fixture.place_changes), fixture.store.clone(), Arc::clone(&fixture.running_steps), Arc::clone(&fixture.mount_take_down)));
@@ -18,7 +17,7 @@ fn make_files_interface(fixture: &ItemFixture) -> ItemFilesInterface {
         fixture.content_source(),
         Arc::clone(&fixture.pool),
         Arc::clone(&fixture.split_download_share),
-        Report::nowhere(),
+        fixture.report(),
         fixture.folder(),
         fixture.runtime(),
     ));
@@ -429,4 +428,21 @@ fn the_unfinished_downloads_are_listed_by_path_with_their_size_and_checkpoint() 
     let mut unfinished = run.block_on(files.list_unfinished_downloads()).unwrap();
     unfinished.sort();
     assert_eq!(unfinished, [(fixture.disk_path("docs/failed.bin"), 7, None), (fixture.disk_path("docs/running.bin"), 40, Some(32))]);
+}
+
+#[test]
+fn a_download_asked_by_path_while_onedrive_asks_to_wait_is_refused_with_the_time_left() {
+    let fixture = ItemFixture::new();
+    fixture.show_onedrive_file("report.txt", b"the report");
+    let files = make_files_interface(&fixture);
+    fixture.start_throttle_wait(300);
+
+    let refused = fixture.runtime().block_on(files.download(&fixture.disk_path("report.txt")));
+    assert!(matches!(refused, Err(FilesRefusal::ThrottleWait { seconds_left: 300 })), "{refused:?}");
+    assert_eq!(fixture.fixture_content_source().list_fetches().len(), 0, "OneDrive is not asked");
+
+    // After the wait the same call downloads the file.
+    fixture.start_throttle_wait(0);
+    fixture.runtime().block_on(files.download(&fixture.disk_path("report.txt"))).expect("the file is downloaded");
+    assert_eq!(fixture.read_disk_file("report.txt").as_deref(), Some(&b"the report"[..]));
 }

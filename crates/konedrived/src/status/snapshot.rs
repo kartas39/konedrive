@@ -194,6 +194,11 @@ pub struct TransferStatus {
     /// anything moves or a `Retry-After` runs. `ActiveDownloads`, `ActiveUploads` and
     /// `LargeFiles` count the files of `Transfers.Downloads` and `Uploads` instead.
     pub throughput: konedrive_graph::pool::Throughput,
+    /// `RetryAfterRefusal`: the full path of the file a program was first refused the
+    /// content of during the `Retry-After` that runs (`status::throttle_wait`); empty when
+    /// none was, and when no wait runs. Written by `ThrottleWait::tell_refusal`, taken off
+    /// when the pool says the wait is over ([`SyncStateHandle::set_throughput`]).
+    pub retry_after_refusal: String,
     /// The pinned files whose content is still to be downloaded, as the store had them at
     /// the last plan that asked. ONE writer: the plan's task, with every plan whose
     /// reading counted them (`SyncPlanTask::publish_round`), and to none when it stops. On
@@ -340,9 +345,21 @@ impl SyncStateHandle {
         });
     }
 
-    /// The transfer pool's throughput, told only when it changed.
+    /// What `read` makes of the state as it is now, without a copy of it.
+    pub fn read<T>(&self, read: impl FnOnce(&SyncSnapshot) -> T) -> T {
+        read(&self.tx.borrow())
+    }
+
+    /// The transfer pool's throughput, told only when it changed. With a `Retry-After`
+    /// that is over, the file refused during it goes: the refusal is the wait's.
     pub fn set_throughput(&self, throughput: konedrive_graph::pool::Throughput) {
-        self.tx.send_if_modified(|s| std::mem::replace(&mut s.transfers.throughput, throughput) != throughput);
+        self.tx.send_if_modified(|s| {
+            let is_refusal_over = throughput.retry_after == 0 && !s.transfers.retry_after_refusal.is_empty();
+            if is_refusal_over {
+                s.transfers.retry_after_refusal.clear();
+            }
+            std::mem::replace(&mut s.transfers.throughput, throughput) != throughput || is_refusal_over
+        });
     }
 
     /// The queue totals, told only when they changed.

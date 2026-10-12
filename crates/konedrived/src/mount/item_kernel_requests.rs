@@ -127,6 +127,7 @@
 // test: a_read_is_not_answered_from_a_downloads_file_once_its_bytes_failed_the_hash
 // test: what_a_read_does_once_its_whole_download_ended_per_case
 // test: reads_of_a_remembered_content_join_its_download_until_onedrive_has_answered
+// test: while_onedrive_asks_to_wait_what_needs_its_content_fails_at_once_and_the_rest_is_answered
 #![allow(dead_code)]
 
 use std::ffi::OsStr;
@@ -141,7 +142,7 @@ use konedrive_tree::{Item, ItemKind, LocalItemId, Store, TreeError};
 use tokio::sync::oneshot;
 
 use super::access_mode_switch::AccessModeSwitch;
-use super::errno::to_errno;
+use super::errno::{to_errno, THROTTLE_WAIT_ERRNO};
 use super::item_announcements::{find_announced_name, AnnouncedName, ItemAnnouncement};
 use super::item_download_states::{DownloadAsker, DownloadKey, ItemDownloadStates};
 use super::item_downloader::{ItemDownloader, ItemToDownload};
@@ -655,12 +656,20 @@ impl ItemKernelRequests {
     }
 
     /// The bytes of `range`, from OneDrive (`ItemRangeFetcher::fetch_range`); another
-    /// content than the one opened is `ESTALE`.
+    /// content than the one opened is `ESTALE`. While OneDrive asks the account to wait
+    /// the read fails at once with `errno::THROTTLE_WAIT_ERRNO`, and the file is told as
+    /// the one refused during the wait, when it is the first
+    /// (`ItemDownloader::tell_throttle_refusal`).
     async fn fetch_range(&self, range: &RangeToFetch) -> Result<Vec<u8>, Errno> {
-        self.range_fetcher.fetch_range(range.item, &range.source, range.from, range.end).await.map_err(|refusal| match refusal {
-            RangeRefusal::AnotherContent => Errno::ESTALE,
-            RangeRefusal::Failed { errno } => Errno::from_i32(errno),
-        })
+        match self.range_fetcher.fetch_range(range.item, &range.source, range.from, range.end).await {
+            Ok(bytes) => Ok(bytes),
+            Err(RangeRefusal::AnotherContent) => Err(Errno::ESTALE),
+            Err(RangeRefusal::Failed { errno }) => Err(Errno::from_i32(errno)),
+            Err(RangeRefusal::ThrottleWait) => {
+                self.downloader.tell_throttle_refusal(range.item).await;
+                Err(Errno::from_i32(THROTTLE_WAIT_ERRNO))
+            }
+        }
     }
 
     /// Downloads `file` for a program that writes it, and waits for the landing: what

@@ -56,7 +56,7 @@ pub(crate) async fn read_only_wish(account: &AccountProxy<'_>) -> zbus::Result<O
 /// The account at `path`, as `status` shows it.
 pub(crate) async fn account_status(daemon: &Daemon, path: &OwnedObjectPath) -> zbus::Result<AccountStatus> {
     let account = daemon.account(path).await?;
-    let FolderProxies { folder, .. } = daemon.sync(path).await?;
+    let FolderProxies { folder, transfers, .. } = daemon.sync(path).await?;
     Ok(AccountStatus {
         label: served(account.label()).await?,
         state: served(account.state()).await?,
@@ -69,6 +69,7 @@ pub(crate) async fn account_status(daemon: &Daemon, path: &OwnedObjectPath) -> z
         overall: decided(folder.overall()).await?,
         trouble: decided(folder.trouble()).await?.unwrap_or_default(),
         not_updated: decided(folder.not_updated()).await?.unwrap_or_default(),
+        retry_after: decided(transfers.retry_after()).await?.unwrap_or_default(),
     })
 }
 
@@ -107,6 +108,7 @@ pub(crate) async fn folder_status(daemon: &Daemon, path: &OwnedObjectPath) -> zb
         overall: served(folder.overall()).await?,
         trouble: said(folder.trouble()).await?,
         not_updated: said(folder.not_updated()).await?,
+        retry_after: said(transfers.retry_after()).await?,
         source: said(folder.source()).await?,
         items: both(folder.items_listed(), folder.items_placed()).await?,
         skipped: said(folder.skipped_count()).await?,
@@ -125,6 +127,7 @@ pub(crate) async fn folder_status(daemon: &Daemon, path: &OwnedObjectPath) -> zb
         paused: said(folder.paused()).await?,
         paused_until: said(folder.paused_until()).await?,
         held_back: said(folder.held_back()).await?,
+        retry_after_refusal: said(transfers.retry_after_refusal()).await?,
         local_bytes: served(folder.local_bytes()).await?,
         pinned: served(folder.pinned_count()).await?,
         conflicts: said(conflicts.count()).await?,

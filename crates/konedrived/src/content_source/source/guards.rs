@@ -122,7 +122,8 @@ impl Breaks {
     }
 }
 
-/// A fetch of `[from, end)`, tried again while the source says the failure is passing.
+/// A fetch of `[from, end)`, tried again while the source says the failure is passing. A
+/// throttle is not: it ends the download at once.
 pub(super) async fn open(
     source: &dyn ContentSource,
     item_id: &str,
@@ -134,7 +135,14 @@ pub(super) async fn open(
         match source.fetch(item_id, from, end).await {
             Ok(fetched) => return Ok(fetched),
             Err(SourceError::NotFound(_) | SourceError::SignedOut(_)) => return Err(End::Fail(libc::EIO)),
-            Err(SourceError::Transient(why) | SourceError::Throttled { detail: why, .. }) => breaks.again(item_id, &why).await?,
+            // OneDrive asked the account to wait: asking again before the wait is over
+            // is refused again. Whoever asked for the download hears the throttle, and
+            // asks again after it.
+            Err(SourceError::Throttled { detail, .. }) => {
+                tracing::warn!("{item_id}: {detail}; not tried again until OneDrive's wait is over");
+                return Err(End::Fail(libc::EIO));
+            }
+            Err(SourceError::Transient(why)) => breaks.again(item_id, &why).await?,
         }
     }
 }
