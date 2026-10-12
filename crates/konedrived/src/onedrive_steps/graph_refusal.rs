@@ -50,9 +50,9 @@ pub(crate) enum RefusedRequest {
 }
 
 /// What `error` leaves a step to do. Pure. Settled at once: 429 and 503 `Throttled`, 423
-/// `Locked`, 403 `Forbidden`, 400 `RefusedForGood` with OneDrive's message, a signed-out
+/// `Locked`, 403 `Forbidden`, 413 `TooLarge`, 400 `RefusedForGood` with OneDrive's message, a signed-out
 /// account `SignedOut`, and a `Transient` or `Failed` whose status is any other 4xx but
-/// 408 (a token Graph rejects, a 405, a 413…) `Transient { detail }` — each a certain
+/// 408 (a token Graph rejects, a 405…) `Transient { detail }` — each a certain
 /// answer that the request changed nothing. The
 /// text of a lost answer is kept without any address in it (`engine/outcome.rs:158`,
 /// `without_urls`).
@@ -66,6 +66,7 @@ pub(crate) fn decide_refusal(error: &WriteError) -> RefusedRequest {
         WriteError::Throttled { retry_after } => RefusedRequest::Settled(StepRefusal::Throttled { retry_after: *retry_after }),
         WriteError::Locked => RefusedRequest::Settled(StepRefusal::Locked),
         WriteError::Forbidden => RefusedRequest::Settled(StepRefusal::Forbidden),
+        WriteError::TooLarge => RefusedRequest::Settled(StepRefusal::TooLarge),
         WriteError::Refused(detail) => RefusedRequest::Settled(StepRefusal::RefusedForGood { message: detail.message.clone() }),
         WriteError::SignedOut => RefusedRequest::Settled(StepRefusal::SignedOut),
         WriteError::Transient(detail) | WriteError::Failed(detail) => {

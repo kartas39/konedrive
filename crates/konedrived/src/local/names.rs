@@ -11,10 +11,6 @@ use std::ffi::OsStr;
 
 use konedrive_tree::Reason;
 
-/// The largest file OneDrive takes (Microsoft: 250 GB). Taken as GiB: a file
-/// between 250 GB and 250 GiB, if refused, is blocked by the service's answer.
-pub(crate) const MAX_FILE_SIZE: u64 = 250 << 30;
-
 /// Why a row is blocked before any request. Its [`Reason`] is what the row
 /// holds; the window and the CLI word it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

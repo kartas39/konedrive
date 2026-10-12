@@ -15,7 +15,7 @@ fn facts() -> DaemonFacts {
         left_by_start_up_check: BTreeSet::new(),
         local_step_tries: LocalStepTries::default(),
         is_pinned_files_reader_asked: true,
-        settings: PlanSettings { computer_name: "here".into(), largest_file_size: 1 << 30, quiet_time: 0, items_read_at_once: 100 },
+        settings: PlanSettings { computer_name: "here".into(), quiet_time: 0, items_read_at_once: 100 },
     }
 }
 

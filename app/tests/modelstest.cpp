@@ -75,7 +75,7 @@ private Q_SLOTS:
         QCOMPARE(at(activity, 1, ActivityModel::TextRole).toString(), QStringLiteral("Changed on both sides: both versions kept"));
         QCOMPARE(at(activity, 1, ActivityModel::IconRole).toString(), QStringLiteral("document-duplicate"));
         QCOMPARE(at(activity, 2, ActivityModel::IconRole).toString(), QStringLiteral("edit-delete"));
-        QCOMPARE(uploadReasonText(QStringLiteral("too-large")), QStringLiteral("Larger than OneDrive takes (250 GB)."));
+        QCOMPARE(uploadReasonText(QStringLiteral("too-large")), QStringLiteral("Larger than OneDrive takes."));
         QCOMPARE(uploadReasonText(QStringLiteral("paused")), QStringLiteral("Paused with the account: it goes on when the pause ends."));
         QCOMPARE(uploadReasonText(QStringLiteral("blocked")), QStringLiteral("KOneDrive's record of this change is incomplete (blocked): it stays here until the file is changed again."));
         QCOMPARE(uploadReasonText(QStringLiteral("not allowed now: the folder is read-only")), QStringLiteral("Uploads are not allowed now: it goes on when they are (the folder is read-only)."));

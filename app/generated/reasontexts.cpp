@@ -134,7 +134,7 @@ QString reasonSentence(const ReasonParts &parts, const QString &needs, const QSt
     }
     if (parts.key == QLatin1String("too-large")) {
         if (!parts.hasDetail) {
-            return i18n("Larger than OneDrive takes (250 GB).");
+            return i18n("Larger than OneDrive takes.");
         }
         return QString();
     }

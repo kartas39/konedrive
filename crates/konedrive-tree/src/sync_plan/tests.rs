@@ -199,7 +199,6 @@ pub(crate) fn input(items: Vec<Item>) -> SyncPlanInput {
         destinations_of_running_steps: BTreeSet::new(),
         is_listing_under_way: false,
         is_onedrive_full: false,
-        largest_file_size: 250 << 30,
         computer_name: "pc".to_owned(),
         places_taken_in_onedrive: BTreeMap::new(),
         items_left_by_uploads: BTreeMap::new(),
@@ -332,12 +331,10 @@ fn an_ignored_item_is_left_out_and_waits_for_nothing() {
 /// Today: `a_name_onedrive_refuses_or_a_file_too_large_waits_for_the_user`
 /// (`fuse/detections/entry_created/tests.rs`).
 #[test]
-fn a_name_onedrive_cannot_hold_or_a_file_too_large_waits_for_the_user() {
-    let mut given = input(vec![made_file(2, ROOT, "a:b"), made_file(3, ROOT, "large"), made_directory(4, ROOT, "CON"), moved_here(synced_file(5, ROOT, "a.txt"), ROOT, " a.txt")]);
+fn a_name_onedrive_cannot_hold_waits_for_the_user() {
+    let mut given = input(vec![made_file(2, ROOT, "a:b"), made_directory(4, ROOT, "CON"), moved_here(synced_file(5, ROOT, "a.txt"), ROOT, " a.txt")]);
     given.name_refusals = [(id(2), Reason::NameCharacters), (id(4), Reason::NameReserved), (id(5), Reason::NameSpaces)].into();
-    given.largest_file_size = 2;
     assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::User(Reason::NameCharacters)));
-    assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::User(Reason::TooLarge)));
     assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::User(Reason::NameReserved)));
     assert_eq!(answer(&given, 5), Answer::Wait(WaitReason::User(Reason::NameSpaces)), "a move sends the name too");
 }

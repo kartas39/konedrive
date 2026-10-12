@@ -500,7 +500,7 @@ impl ContentUpload {
             Err(error) => {
                 let refusal = decide_plain_refusal(&error);
                 // Refused for good: nothing goes on with this session. Any other refusal keeps it.
-                if matches!(refusal, StepRefusal::RefusedForGood { .. }) {
+                if matches!(refusal, StepRefusal::RefusedForGood { .. } | StepRefusal::TooLarge) {
                     self.abandon_session(item).await?;
                 }
                 Err(StepOutcome::Refused(refusal).into())
@@ -697,7 +697,7 @@ impl ContentUpload {
                             Err(Self::decide_not_found(target).into())
                         }
                         // Refused for good: the session is given up with the fragment, so that its empty file holds no name.
-                        RefusedRequest::Settled(refusal @ StepRefusal::RefusedForGood { .. }) => {
+                        RefusedRequest::Settled(refusal @ (StepRefusal::RefusedForGood { .. } | StepRefusal::TooLarge)) => {
                             self.abandon_session(item).await?;
                             Err(StepOutcome::Refused(refusal).into())
                         }

@@ -197,8 +197,6 @@ pub struct SyncPlanInput {
     /// ([`ItemStore::find_listing_under_way`](crate::ItemStore::find_listing_under_way)).
     pub is_listing_under_way: bool,
     pub is_onedrive_full: bool,
-    /// The largest size of a file OneDrive takes, in bytes.
-    pub largest_file_size: u64,
     /// This computer's name, as a conflict copy's name holds it
     /// ([`make_conflict_copy_name`]).
     pub computer_name: String,
@@ -569,7 +567,6 @@ fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Ite
             is_ignored: input.ignored_items.contains(&id),
             name_refusal: input.name_refusals.get(&id).cloned(),
             size: item.local.as_ref().and_then(|local| local.content.as_ref()).map(|content| content.size()),
-            largest_file_size: input.largest_file_size,
             quiet_until: input.quiet_until.get(&id).copied(),
             is_onedrive_full: input.is_onedrive_full,
             refusal: input.sending_refusals.get(&id).cloned(),

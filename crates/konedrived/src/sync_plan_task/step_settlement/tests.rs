@@ -103,6 +103,7 @@ fn what_onedrive_refuses_of_a_row_that_is_not_unsent_is_a_failed_try_of_the_task
     let refusals = [
         (StepRefusal::Forbidden, Reason::Forbidden, CycleRequest::None),
         (StepRefusal::RefusedForGood { message: "bad".to_owned() }, Reason::Refused(Some("bad".to_owned())), CycleRequest::None),
+        (StepRefusal::TooLarge, Reason::TooLarge, CycleRequest::None),
         (StepRefusal::NameTaken { place: place("report"), holder_name: OsString::from("Report") }, Reason::NameHeld, CycleRequest::Changes),
         (StepRefusal::NoSpace { free_space: Some(1) }, Reason::Quota, CycleRequest::None),
     ];

@@ -229,11 +229,13 @@ async fn a_file_changed_between_two_fragments_abandons_the_session() {
 
 #[tokio::test]
 async fn a_fragment_refused_for_good_abandons_the_session_and_one_refused_for_now_keeps_it() {
-    for (status, kept_session, queued_cancels) in [(400, false, 1), (423, true, 0), (500, true, 0)] {
+    // 413: the file is larger than OneDrive takes, as the first fragment is answered (issue #265).
+    for (status, kept_session, queued_cancels) in [(400, false, 1), (413, false, 1), (423, true, 0), (500, true, 0)] {
         let (folder, step) = folder_with_a_new_file(&two_fragments()).await;
         folder.refuse("PUT", "upload/", status, 1);
         let outcome = folder.run(step.clone()).await;
         assert!(matches!(outcome, StepOutcome::Refused(_)), "{status}: {outcome:?}");
+        assert_eq!(outcome == StepOutcome::Refused(StepRefusal::TooLarge), status == 413, "{status}: {outcome:?}");
         assert_eq!((folder.memory(step.item().local_item_id).upload_session.is_some(), cancellation_count(&folder)), (kept_session, queued_cancels), "a fragment answered {status}");
     }
 }

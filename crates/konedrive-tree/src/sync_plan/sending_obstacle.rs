@@ -42,8 +42,6 @@ pub(crate) struct SendingConditions {
     pub(crate) name_refusal: Option<Reason>,
     /// The size of the file's content here; `None` for a directory.
     pub(crate) size: Option<u64>,
-    /// The largest size OneDrive takes.
-    pub(crate) largest_file_size: u64,
     /// The time the quiet time of the file's content ends; `None` when it has ended.
     pub(crate) quiet_until: Option<i64>,
     pub(crate) is_onedrive_full: bool,
@@ -63,8 +61,6 @@ pub(crate) enum SendingObstacle {
     Ignored,
     /// OneDrive cannot hold the name; it is not sent and not altered.
     NameRefused(Reason),
-    /// The file is larger than OneDrive takes.
-    TooLarge,
     /// OneDrive is full: no content is sent. Moves and removals go on.
     OneDriveFull,
     /// The content was changed within the quiet time, which ends at `until`.
@@ -98,9 +94,6 @@ pub(crate) fn find_sending_obstacle(sent_part: SentPart, conditions: &SendingCon
         return Some(SendingObstacle::Refused(reason.clone()));
     }
     if sent_part.has_content() {
-        if conditions.size.is_some_and(|size| size > conditions.largest_file_size) {
-            return Some(SendingObstacle::TooLarge);
-        }
         if conditions.is_onedrive_full {
             return Some(SendingObstacle::OneDriveFull);
         }

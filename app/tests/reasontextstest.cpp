@@ -30,7 +30,7 @@ private Q_SLOTS:
         row("name-spaces", QStringLiteral("A name that starts or ends with a space, which OneDrive refuses: rename it to upload it."));
         row("name-reserved", QStringLiteral("A name OneDrive reserves: rename it to upload it."));
         row("name-not-utf8", QStringLiteral("A name that is not valid UTF-8: rename it to upload it."));
-        row("too-large", QStringLiteral("Larger than OneDrive takes (250 GB)."));
+        row("too-large", QStringLiteral("Larger than OneDrive takes."));
         row("quota-exceeded", QStringLiteral("OneDrive is full: free some space in OneDrive."));
         row("forbidden", QStringLiteral("This sign-in does not allow uploads: sign in again."));
         row("open-for-writing", QStringLiteral("Open for writing in another program: it goes up once closed."));
