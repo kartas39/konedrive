@@ -355,6 +355,14 @@ impl ItemMount {
         &self.start_check_findings
     }
 
+    /// Measures what the filesystem the backing directory is on has free for the daemon,
+    /// in bytes; `None` when it cannot be measured. What the plan's task asks before it
+    /// starts the download of a pinned file (`sync_plan_task::disk_space`).
+    pub(crate) fn free_space_reader(&self) -> Arc<dyn Fn() -> Option<u64> + Send + Sync> {
+        let backing_directory = Arc::clone(&self.backing_directory);
+        Arc::new(move || backing_directory.measure_free_space().ok())
+    }
+
     /// The directory on disk the mount lies over: for the measure of the folder's space.
     pub(crate) fn backing_directory(&self) -> &BackingDirectory {
         &self.backing_directory

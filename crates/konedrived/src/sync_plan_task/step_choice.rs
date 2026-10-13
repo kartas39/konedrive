@@ -75,7 +75,8 @@ pub(crate) fn find_step_name(step: &SyncStep) -> String {
 
 /// The class of `step`, and with it every row the step carries beside its own (the rows
 /// below a removed directory, the second row of a merge) and the directory it sends into
-/// (`MakeDirectory`, `SendNewFile`, `SendMove`), as `RunningSteps` is told it.
+/// (`MakeDirectory`, `SendNewFile`, `SendMove`), as `RunningSteps` is told it. A download
+/// is told with the size of its content as its `total`, and nothing of how far it got.
 /// Pure.
 pub(crate) fn describe_running_step(step: &SyncStep) -> RunningStep {
     let (other_items, destination) = match step {
@@ -84,7 +85,17 @@ pub(crate) fn describe_running_step(step: &SyncStep) -> RunningStep {
         SyncStep::Row(RowStep::MergeItems { onedrive, .. }) => (vec![onedrive.local_item_id], None),
         SyncStep::OneDrive(_) | SyncStep::Folder(_) | SyncStep::Row(_) => (Vec::new(), None),
     };
-    RunningStep { class: decide_step_class(step), item: step.local_item_id(), other_items, destination, sent: 0, total: 0 }
+    RunningStep { class: decide_step_class(step), item: step.local_item_id(), other_items, destination, sent: 0, total: find_download_size(step).unwrap_or(0) }
+}
+
+/// The size of the content `step` downloads, when it is the download of a pinned file:
+/// what the step takes of the disk (`disk_space`), and the `total` its running step is
+/// told with. Pure.
+pub(crate) fn find_download_size(step: &SyncStep) -> Option<u64> {
+    match step {
+        SyncStep::Folder(FolderStep::DownloadContent { item }) => Some(item.local.as_ref().and_then(|local| local.content.as_ref()).map_or(0, konedrive_tree::ContentVersion::size)),
+        SyncStep::Folder(_) | SyncStep::OneDrive(_) | SyncStep::Row(_) => None,
+    }
 }
 
 /// The steps of `planned` to start now, in the plan's order: none one of whose rows has a

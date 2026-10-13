@@ -113,6 +113,13 @@ impl BackingDirectory {
         }
     }
 
+    /// What the filesystem the backing directory is on has free for the daemon, in bytes:
+    /// the blocks a process that is not root may take.
+    pub(super) fn measure_free_space(&self) -> io::Result<u64> {
+        let space = self.measure_space()?;
+        Ok((space.f_bavail as u64).saturating_mul(space.f_frsize as u64))
+    }
+
     /// The extended attribute `name` of the folder itself: what its registration and its
     /// first cycle wrote on the backing directory.
     pub(super) fn read_folder_attribute(&self, name: &str) -> Option<String> {

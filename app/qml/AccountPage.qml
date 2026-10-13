@@ -264,6 +264,42 @@ FormCard.FormCardPage {
         }
     }
 
+    // The account's own sync setting (issue #217): how much of the disk's free space
+    // the downloads of files kept on this device leave. The daemon's, written to
+    // config.toml; the box shows what it says, and a change goes through it.
+    FormCard.FormHeader {
+        visible: page.oneDrive
+        title: i18nc("@title:group", "Disk Space")
+    }
+    FormCard.FormCard {
+        objectName: "freeSpaceSettings"
+        visible: page.oneDrive
+
+        FormCard.FormSpinBoxDelegate {
+            id: freeSpaceReserveBox
+            objectName: "freeSpaceReserveBox"
+
+            readonly property int kept: page.sync !== null ? page.sync.freeSpaceReserve : 0
+
+            label: i18n("Free space to keep on this computer's disk, in GiB")
+            from: 0
+            to: 100000
+            value: kept
+            // The inner box writes `value` back, ending the binding: kept in step here.
+            onKeptChanged: value = kept
+            onValueChanged: {
+                if (page.sync !== null && value !== kept) {
+                    page.sync.setFreeSpaceReserve(value);
+                }
+            }
+        }
+        FormCard.FormTextDelegate {
+            objectName: "freeSpaceReserveLine"
+            text: i18n("A file kept on this device is not downloaded while its download would leave less free space than this.")
+            textItem.wrapMode: Text.Wrap
+        }
+    }
+
     // Signed out
     FormCard.FormHeader {
         visible: page.signedOut

@@ -206,6 +206,10 @@ pub trait Folder {
     fn set_ignore_patterns(&self, patterns: &[&str]) -> zbus::Result<()>;
     /// Written to `config.toml`; refused `Unsupported` for a folder not connected to OneDrive.
     fn set_thumbnails(&self, on: bool) -> zbus::Result<()>;
+    /// How many gigabytes of the free space of this computer's disk the downloads of
+    /// files kept on this device leave. Written to `config.toml`; refused `Unsupported`
+    /// for a folder not connected to OneDrive.
+    fn set_free_space_reserve(&self, gigabytes: u64) -> zbus::Result<()>;
     /// Lifts this account's automatic hold until a source or the hold's settings
     /// ([`AccountsProxy::pause_on_metered`], [`AccountsProxy::on_battery`]) change.
     fn sync_anyway(&self) -> zbus::Result<()>;
@@ -256,6 +260,10 @@ pub trait Folder {
     /// Whether Graph's thumbnails of images and videos are fetched.
     #[zbus(property)]
     fn thumbnails(&self) -> zbus::Result<bool>;
+    /// How many gigabytes of the free space of this computer's disk the downloads of
+    /// files kept on this device leave.
+    #[zbus(property)]
+    fn free_space_reserve(&self) -> zbus::Result<u64>;
     /// Why the account holds back by itself: `metered`, `on-battery`, `power-saver`, or empty.
     #[zbus(property)]
     fn held_back(&self) -> zbus::Result<String>;

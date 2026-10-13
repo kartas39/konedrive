@@ -57,6 +57,13 @@ impl Folder {
         self.thumbnails_changed(&emitter).await.map_err(Fault::ZBus)
     }
 
+    /// How many gigabytes of the free space of this computer's disk the downloads of
+    /// pinned files leave; written to `config.toml`.
+    async fn set_free_space_reserve(&self, gigabytes: u64, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<()> {
+        self.service.set_free_space_reserve(gigabytes).await?;
+        self.free_space_reserve_changed(&emitter).await.map_err(Fault::ZBus)
+    }
+
     /// Lifts the automatic hold now, until a source or the global `Accounts.PauseOnMetered` /
     /// `OnBattery` changes.
     async fn sync_anyway(&self) -> Result<()> {
@@ -156,6 +163,11 @@ impl Folder {
     #[zbus(property)]
     async fn thumbnails(&self) -> bool {
         self.service.run_settings().thumbnails
+    }
+
+    #[zbus(property)]
+    async fn free_space_reserve(&self) -> u64 {
+        self.service.run_settings().free_space_reserve_gb
     }
 
     #[zbus(property)]

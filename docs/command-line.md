@@ -152,6 +152,7 @@ hold for every account.
 
 ```
 konedrivectl sync thumbnails [on | off]         # whether OneDrive's thumbnails are downloaded
+konedrivectl sync free-space [GiB]               # how much of the disk stays free: files kept on this device are not downloaded past it (10 by default)
 konedrivectl --version                          # this program's build and the service's
 ```
 

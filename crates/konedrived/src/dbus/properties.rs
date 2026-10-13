@@ -8,7 +8,7 @@
 //! decided by `status::overall`, from the published state, the downloads and the account's
 //! sign-in.
 //!
-//! Not here: the properties a call sets and announces itself (`IgnorePatterns`,
+//! Not here: the properties a call sets and announces itself (`IgnorePatterns`, `FreeSpaceReserve`,
 //! `Thumbnails`), `Source`, which is the folder's record and is announced with `Path`, and
 //! `MachineName`, which nothing changes while the daemon runs.
 

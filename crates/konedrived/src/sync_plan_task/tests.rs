@@ -9,7 +9,7 @@ use konedrive_tree::{ActivityKind, ActivityRow, ConflictRow, PinnedDownloadTotal
 use super::*;
 use crate::mount::item_fixture::ItemFixture;
 use crate::onedrive_steps::lost_answers::LostAnswers;
-use crate::status::snapshot::{UploadQueueStatus, SyncSnapshot};
+use crate::status::snapshot::{DiskSpaceShortage, UploadQueueStatus, SyncSnapshot};
 
 /// A call of the task's announcer of marks: the items, and whether a step ran for any of
 /// them when it was called.
@@ -27,6 +27,9 @@ struct TaskFixture {
     after_folder_steps: Arc<tokio::sync::Notify>,
     /// How often the task asked its reader of the quota.
     quota_read_count: Arc<AtomicUsize>,
+    /// What the task's reader of the free space answers, in bytes: plenty, until a test
+    /// says otherwise.
+    free_space: Arc<Mutex<Option<u64>>>,
     /// Kept for as long as the task: the fake OneDrive the cancellations of sessions ask.
     _fake_onedrive: crate::fake_onedrive::FakeGraph,
 }
@@ -57,6 +60,7 @@ impl TaskFixture {
                 last_unsent_count.send_replace(Some(unsent));
             })
         };
+        let free_space = Arc::new(Mutex::new(Some(u64::MAX)));
         let task = SyncPlanTask::new(SyncPlanTaskParts {
             store: fixture.store.clone(),
             sync_plan_wake: Arc::clone(&fixture.sync_plan_wake),
@@ -84,8 +88,13 @@ impl TaskFixture {
             marks_announcer,
             after_folder_steps: Some(Arc::clone(&after_folder_steps)),
             unsent_count_report,
+            free_space_reader: {
+                let free_space = Arc::clone(&free_space);
+                Arc::new(move || *free_space.lock().unwrap())
+            },
+            free_space_reserve_reader: Arc::new(|| disk_space::count_reserve_bytes(10)),
         });
-        TaskFixture { fixture, task, state, marks_calls, unsent_counts, last_unsent_count, after_folder_steps, quota_read_count, _fake_onedrive: fake_onedrive }
+        TaskFixture { fixture, task, state, marks_calls, unsent_counts, last_unsent_count, after_folder_steps, quota_read_count, free_space, _fake_onedrive: fake_onedrive }
     }
 
     fn upload_queue(&self) -> UploadQueueStatus {
@@ -279,6 +288,65 @@ fn a_refresh_reads_the_quota_once_and_a_quota_read_by_another_is_not_read_again(
         task.apply_wake_causes(&[WakeCause::RefreshAsked].into(), &stop).await;
         assert_eq!(task_fixture.quota_read_count.load(Ordering::SeqCst), 1);
     });
+}
+
+/// The download of a pinned file of `size` bytes, of the item `number`.
+fn download_step(number: i64, size: u64) -> SyncStep {
+    use konedrive_tree::{ContentPresence, ContentVersion, DriveId, ItemPlace, ItemVersion, ItemVersions, OneDriveItemId, OneDriveItemReference};
+    let place = ItemPlace { parent_local_item_id: LocalItemId::new(1), name: format!("file{number}").into() };
+    let content = ContentVersion::Hashed { size, mtime: 0, mtime_nsec: 0, hash: Some("h".into()), ctag: None };
+    let version = ItemVersion { place: Some(place.clone()), content: Some(content.clone()) };
+    SyncStep::Folder(FolderStep::DownloadContent {
+        item: ItemVersions {
+            local_item_id: LocalItemId::new(number),
+            onedrive_item: Some(OneDriveItemReference { drive_id: DriveId::new("d1").unwrap(), item_id: OneDriveItemId::new(format!("I{number}")) }),
+            local: Some(version.clone()),
+            onedrive: Some(version),
+            onedrive_etag: Some("e1".to_owned()),
+            synced_place: Some(place),
+            synced_content: Some(content),
+            content_presence: ContentPresence::NotOnDisk,
+            unsent_since: None,
+        },
+    })
+}
+
+/// 12 GiB free and 10 kept: of the downloads of a plan the ones that fit in the two
+/// beyond are left to start, the others are held and said as a trouble of the folder;
+/// a download that runs takes its size of the two; with space again nothing is held
+/// and nothing said.
+#[test]
+fn a_download_that_would_not_leave_the_free_space_kept_is_held_and_said() {
+    const GB: u64 = 1 << 30;
+    let task_fixture = TaskFixture::new();
+    let task = &task_fixture.task;
+    let planned = || vec![download_step(5, GB), download_step(6, 5 * GB), download_step(7, GB)];
+    let ids = |steps: &[SyncStep]| steps.iter().map(SyncStep::local_item_id).collect::<Vec<_>>();
+    let id = LocalItemId::new;
+
+    let (to_start, held) = task.hold_downloads_for_space(planned(), &[]);
+    assert_eq!((ids(&to_start), ids(&held)), (vec![id(5), id(6), id(7)], vec![]), "plenty is free");
+    assert_eq!(task_fixture.state.get().transfers.disk_space_shortage, None);
+
+    *task_fixture.free_space.lock().unwrap() = Some(12 * GB);
+    let (to_start, held) = task.hold_downloads_for_space(planned(), &[]);
+    assert_eq!((ids(&to_start), ids(&held)), (vec![id(5), id(7)], vec![id(6)]));
+    let snapshot = task_fixture.state.get();
+    assert_eq!(snapshot.transfers.disk_space_shortage, Some(DiskSpaceShortage { count: 1, bytes: 5 * GB, free_space: 12 * GB, reserve: 10 * GB }));
+    let (trouble, _) = crate::status::snapshot::running_trouble(&snapshot).expect("a trouble of the folder");
+    assert_eq!(trouble, "1 file(s) kept on this device wait for disk space: 5.0 GiB to download, 12.0 GiB free, 10 GiB stay free");
+
+    let running = [TaskFixture::running_step(LocalItemId::new(5), StepClass::Download, 0, GB)];
+    let (to_start, held) = task.hold_downloads_for_space(planned(), &running);
+    assert_eq!((ids(&to_start), ids(&held)), (vec![id(5), id(7)], vec![id(6)]), "the one that runs is not asked, and the last still fits beside it");
+    let running = [TaskFixture::running_step(LocalItemId::new(9), StepClass::Download, 0, 2 * GB)];
+    let (_, held) = task.hold_downloads_for_space(planned(), &running);
+    assert_eq!(ids(&held), vec![id(5), id(6), id(7)], "a download that runs takes the two");
+
+    *task_fixture.free_space.lock().unwrap() = Some(40 * GB);
+    let (_, held) = task.hold_downloads_for_space(planned(), &[]);
+    assert_eq!(ids(&held), Vec::new());
+    assert_eq!(task_fixture.state.get().transfers.disk_space_shortage, None);
 }
 
 #[test]

@@ -25,6 +25,9 @@
 
 namespace
 {
+// The most gigabytes of free space to keep the account page's box takes.
+constexpr qulonglong FreeSpaceReserveLimit = 100000;
+
 /// Same sentences as konedrivectl's skip-reason text, each through i18n().
 QString whyText(const QString &reason)
 {
@@ -223,6 +226,9 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         text("LiveChanges", m_liveChanges);
         if (const auto it = p.constFind(QLatin1String("Thumbnails")); it != p.constEnd()) {
             m_thumbnails = it->toBool();
+        }
+        if (const auto it = p.constFind(QLatin1String("FreeSpaceReserve")); it != p.constEnd()) {
+            m_freeSpaceReserve = int(qMin<qulonglong>(it->toULongLong(), FreeSpaceReserveLimit));
         }
     } else if (interfaceName == TransfersInterface) {
         // A structured value inside a{sv} arrives as a QDBusArgument.
@@ -568,6 +574,11 @@ void SyncController::syncAnyway()
 void SyncController::setThumbnails(bool on)
 {
     call(m_folder->SetThumbnails(on));
+}
+
+void SyncController::setFreeSpaceReserve(int gigabytes)
+{
+    call(m_folder->SetFreeSpaceReserve(qulonglong(qMax(gigabytes, 0))));
 }
 
 void SyncController::setIgnorePatterns(const QStringList &patterns)

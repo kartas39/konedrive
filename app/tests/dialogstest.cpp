@@ -392,6 +392,17 @@ private Q_SLOTS:
         fake.sync->folder->set({{QStringLiteral("Thumbnails"), true}});
         QTRY_VERIFY(thumbnails->property("checked").toBool());
         QTRY_VERIFY(!offLine->isVisible());
+
+        // Issue #217: the free space to keep, in gigabytes, shows what the daemon says
+        // and is set through it.
+        auto *freeSpace = window->findChild<QQuickItem *>(QStringLiteral("freeSpaceReserveBox"));
+        QVERIFY(freeSpace);
+        QTRY_COMPARE(freeSpace->property("value").toInt(), 10);
+        freeSpace->setProperty("value", 25);
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("SetFreeSpaceReserve:25")));
+        fake.sync->folder->set({{QStringLiteral("FreeSpaceReserve"), qulonglong(3)}});
+        QTRY_COMPARE(freeSpace->property("value").toInt(), 3);
+        QCOMPARE(fake.sync->calls.count(QStringLiteral("SetFreeSpaceReserve:3")), 0);
         fake.stop();
     }
 

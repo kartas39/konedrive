@@ -110,6 +110,16 @@ pub(super) async fn folder_command(
             };
             println!("{tag}{}", said::thumbnails_text(on));
         }
+        FolderCmd::FreeSpace { gigabytes } => {
+            let kept_free = match gigabytes {
+                None => proxy.folder.free_space_reserve().await?,
+                Some(gigabytes) => {
+                    explained(chosen, proxy, SyncAction::Settings, proxy.folder.set_free_space_reserve(gigabytes).await).await?;
+                    gigabytes
+                }
+            };
+            println!("{tag}{}", said::free_space_text(kept_free));
+        }
         FolderCmd::Ignore { action } => ignore(chosen, proxy, action.unwrap_or(IgnoreCmd::List)).await?,
         FolderCmd::NotUploaded { all } => {
             let action = SyncAction::NotUploaded;

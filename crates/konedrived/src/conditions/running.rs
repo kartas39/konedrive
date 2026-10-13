@@ -57,7 +57,7 @@ impl Clock for SystemClock {
 }
 
 /// An account's own settings that decide what runs, as its section of `config.toml` gives
-/// them (`Folder.Thumbnails`, `Folder.Paused` and `PausedUntil`).
+/// them (`Folder.Thumbnails`, `Folder.Paused` and `PausedUntil`, `Folder.FreeSpaceReserve`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Settings {
     pub(crate) thumbnails: bool,
@@ -65,17 +65,21 @@ pub(crate) struct Settings {
     /// for until resumed; `None` while not paused. A time that has passed is no pause
     /// ([`Running::user_pause`]).
     pub(crate) paused_until: Option<i64>,
+    /// How many gigabytes of the free space of this computer's disk the downloads of
+    /// pinned files leave (`Folder.FreeSpaceReserve`): one that would leave less is not
+    /// started (`sync_plan_task::disk_space`).
+    pub(crate) free_space_reserve_gb: u64,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { thumbnails: true, paused_until: None }
+        Self { thumbnails: true, paused_until: None, free_space_reserve_gb: crate::config::DEFAULT_FREE_SPACE_RESERVE_GB }
     }
 }
 
 impl Settings {
     pub fn of(account: &AccountConfig) -> Self {
-        Self { thumbnails: account.thumbnails_on(), paused_until: account.paused_until.map(|until| until.max(0)) }
+        Self { thumbnails: account.thumbnails_on(), paused_until: account.paused_until.map(|until| until.max(0)), free_space_reserve_gb: account.free_space_reserve_gb() }
     }
 }
 
