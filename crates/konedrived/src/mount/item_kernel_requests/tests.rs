@@ -149,7 +149,7 @@ impl Requests {
     fn make_as(&self, path: &str, kind: MadeKind, thread_id: u32) -> Result<MadeEntry, Errno> {
         let (directory, name) = split(path);
         let (directory, name) = (self.id(directory), OsString::from(name));
-        self.queue(move |requests, reply| requests.queue_make(directory, &name, kind, thread_id, reply))
+        self.queue(move |requests, reply| requests.queue_make(directory, &name, kind, false, thread_id, reply))
     }
 
     fn make(&self, path: &str, kind: MadeKind) -> Result<MadeEntry, Errno> {
@@ -208,6 +208,10 @@ impl Requests {
 
     fn set_time_as(&self, node: LocalItemId, fh: Option<Fh>, mtime: i64, thread_id: u32) -> Result<FileAttr, Errno> {
         self.queue(move |requests, reply| requests.queue_set_modified_time(node, fh, mtime, 7, thread_id, reply))
+    }
+
+    fn set_executable_bit(&self, node: LocalItemId, is_executable: bool) -> Result<FileAttr, Errno> {
+        self.queue(move |requests, reply| requests.queue_set_executable_bit(node, None, is_executable, A_PROGRAM, reply))
     }
 
     fn write(&self, fh: Fh, offset: u64, bytes: &'static [u8]) -> Result<u32, Errno> {
@@ -751,7 +755,7 @@ fn each_refusal_of_a_write_operation_reaches_the_reply_with_its_errno() {
     assert_eq!(errno_of(mount.make("d", MadeKind::Directory)), Some(Errno::EEXIST));
     assert_eq!(errno_of(mount.make("d/f.txt", MadeKind::FileOpenedForWriting)), Some(Errno::EEXIST));
     assert_eq!(errno_of(mount.make(HOLDING, MadeKind::Directory)), Some(Errno::EPERM), "a name the mount hides");
-    assert_eq!(mount.queue(|requests, reply| requests.queue_make(LocalItemId::new(NO_ITEM_ID), OsStr::new("x"), MadeKind::File, A_PROGRAM, reply)).err(), Some(Errno::ENOENT));
+    assert_eq!(mount.queue(|requests, reply| requests.queue_make(LocalItemId::new(NO_ITEM_ID), OsStr::new("x"), MadeKind::File, false, A_PROGRAM, reply)).err(), Some(Errno::ENOENT));
 
     assert_eq!(mount.remove("none.txt", ItemKind::File).err(), Some(Errno::ENOENT));
     assert_eq!(mount.remove("d", ItemKind::File).err(), Some(Errno::EISDIR));
@@ -830,6 +834,36 @@ fn the_time_set_on_a_file_is_what_its_reply_and_the_next_getattr_say() {
     assert_eq!((touched.ino, touched.size, seconds_of(touched.mtime)), (to_node_id(file), 3, 1_650_000_000));
     assert_eq!(seconds_of(mount.getattr(file, None).unwrap().mtime), 1_650_000_000);
     assert_eq!(local_content(&mount.row(file)).mtime(), (1_650_000_000, 7));
+}
+
+#[test]
+fn the_executable_bit_set_on_a_file_is_what_its_reply_and_the_next_getattr_say_through_a_rename() {
+    let mount = Requests::new();
+    let file = mount.fixture.make_own_file("run.sh", b"abc").local_item_id;
+    assert_eq!(mount.getattr(file, None).unwrap().perm, 0o644);
+
+    assert_eq!(mount.set_executable_bit(file, true).unwrap().perm, 0o755);
+    assert_eq!(mount.getattr(file, None).unwrap().perm, 0o755);
+    assert!(mount.row(file).is_executable);
+    mount.rename("run.sh", "moved.sh").unwrap();
+    assert_eq!(mount.getattr(file, None).unwrap().perm, 0o755, "the bit is the item's, not the name's");
+
+    assert_eq!(mount.set_executable_bit(file, false).unwrap().perm, 0o644);
+    assert!(!mount.row(file).is_executable);
+}
+
+#[test]
+fn a_file_made_with_an_executable_mode_is_executable_and_a_directory_never() {
+    let mount = Requests::new();
+    let make = |name: &'static str, kind, is_executable| mount.queue(move |requests, reply| requests.queue_make(ROOT, OsStr::new(name), kind, is_executable, A_PROGRAM, reply)).unwrap().entry;
+    let (script, plain) = (make("run.sh", MadeKind::File, true), make("notes.txt", MadeKind::FileOpenedForWriting, false));
+    assert_eq!((script.attributes.perm, plain.attributes.perm), (0o755, 0o644));
+    assert!(mount.row(script.item.local_item_id).is_executable);
+    let directory = make("d", MadeKind::Directory, true);
+    assert_eq!(directory.attributes.perm, 0o755);
+    assert!(!mount.row(directory.item.local_item_id).is_executable);
+    assert_eq!(mount.set_executable_bit(directory.item.local_item_id, true).unwrap().perm, 0o755, "a chmod of a directory is answered and keeps nothing");
+    assert!(!mount.row(directory.item.local_item_id).is_executable);
 }
 
 #[test]

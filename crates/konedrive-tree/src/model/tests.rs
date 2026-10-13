@@ -55,6 +55,7 @@ fn file_item(onedrive_item: bool, presence: ContentPresence, local: &str, synced
         is_name_ignored: false,
         confirmed_at_count: 0,
         unsent_since: None,
+        is_executable: false,
     }
 }
 

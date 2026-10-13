@@ -29,6 +29,7 @@ pub(in crate::mount) fn shown_item(number: i64, kind: ItemKind, content: Option<
         is_name_ignored: false,
         confirmed_at_count: 0,
         unsent_since: None,
+        is_executable: false,
     }
 }
 
@@ -96,6 +97,21 @@ fn a_read_only_folder_shows_no_write_bit() {
     let perm = |kind, access_mode| to_item_attributes(&shown_item(7, kind, None), access_mode, &no_facts, MOUNT_STARTED_AT).unwrap().perm;
     assert_eq!((perm(ItemKind::File, AccessMode::ReadOnly), perm(ItemKind::Directory, AccessMode::ReadOnly)), (0o444, 0o555));
     assert_eq!((perm(ItemKind::File, AccessMode::ReadWrite), perm(ItemKind::Directory, AccessMode::ReadWrite)), (0o644, 0o755));
+}
+
+#[test]
+fn a_file_with_its_executable_bit_is_shown_executable_and_a_directory_as_ever() {
+    let no_facts = facts(SizeAndTimes::OfLocalContent, 0, None);
+    let perm = |kind, access_mode| to_item_attributes(&Item { is_executable: true, ..shown_item(7, kind, None) }, access_mode, &no_facts, MOUNT_STARTED_AT).unwrap().perm;
+    assert_eq!((perm(ItemKind::File, AccessMode::ReadWrite), perm(ItemKind::File, AccessMode::ReadOnly)), (0o755, 0o555));
+    assert_eq!((perm(ItemKind::Directory, AccessMode::ReadWrite), perm(ItemKind::Directory, AccessMode::ReadOnly)), (0o755, 0o555));
+}
+
+#[test]
+fn the_owners_executable_bit_is_all_of_a_mode_that_is_kept() {
+    for (mode, is_executable) in [(0o755, true), (0o700, true), (0o100, true), (0o100755, true), (0o644, false), (0o600, false), (0o011, false), (0, false)] {
+        assert_eq!(has_executable_bit(mode), is_executable, "{mode:o}");
+    }
 }
 
 #[test]

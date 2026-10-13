@@ -1,16 +1,21 @@
 //! What becomes of a store that an older version of the daemon left: the one place where
-//! it is decided, and it is never migrated.
+//! it is decided.
 //!
 //! **State owned:** none. [`decide_old_store`] is a pure function of what the file says of
 //! itself; [`TreeStore::open_with_origin`] performs its answer, and `TreeStore::open` is
 //! that call with the origin left out.
 //!
-//! **Answers for:** the map's P7 and RISK-1.a, and design §13 (6), the owner's decision of
-//! 2026-10-11: a store of an older version is rebuilt, as one of an unknown version is.
+//! **Answers for:** the map's P7 and RISK-1.a, and design §13 (6). The owner's decisions:
+//! of 2026-10-11, for the switch to the mount, a store of an older version is rebuilt, as
+//! one of an unknown version is; of 2026-10-13, a store of the version before today's is
+//! brought to today's in place where the change between the two only adds — a rebuild
+//! loses the pins and the activity log, which an added column is no reason for.
 //! The cases, by what the file says of itself:
 //!
 //! - *today's version*: used as it is.
 //! - *no file, or a database with no table*: the schema is made.
+//! - *the version before today's* (`MIGRATED_VERSION`): migrated in place, in one
+//!   transaction with the new version's number; what it held is all there.
 //! - *any other version* — an older one (the trial folders of the branch `fuse-probe`, 14
 //!   to 19; 8 of the branch `dev`, whose folder is refused before that as one of legacy
 //!   placeholders, which is not this decision), a newer daemon's — *no version, not a
@@ -29,12 +34,14 @@
 //! `items_image_or_video`, and two keys of `meta`; no column for a directory's time.
 //! Version 21 changes what one index holds: `items_changed_in_onedrive` does not ask the
 //! time of a content any more. The last is the switch's: the tables that go, which
-//! today's code reads until then. None has a migration step: a store of the version
-//! before is rebuilt.
+//! today's code reads until then. None of these has a migration step: a store of the
+//! version before was rebuilt. Version 29 is the first that has one: it adds the column
+//! `is_executable` of `items` to a store of version 28.
 //!
 //! **Tested without the rest:**
 // test: a_store_of_todays_version_is_used
 // test: a_store_of_an_older_version_is_rebuilt_and_never_migrated
+// test: a_store_of_the_version_before_is_migrated_in_place_and_keeps_what_it_held
 // test: a_store_of_an_unknown_version_is_rebuilt
 // test: a_file_that_is_no_database_is_rebuilt
 // test: a_store_that_cannot_be_read_for_another_reason_is_left_alone
@@ -45,8 +52,11 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension};
 
-use super::SCHEMA_VERSION;
+use super::{at_version, IS_EXECUTABLE_COLUMN, SCHEMA_VERSION};
 use crate::{meta, TreeError};
+
+/// The version before today's: the one a store is brought from in place ([`migrate`]).
+const MIGRATED_VERSION: &str = "28";
 
 /// What the file at the store's path says of itself, before anything is changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +93,10 @@ pub enum OldStoreDecision {
     Use,
     /// No store: the schema is made.
     Make,
+    /// The version before today's, which today's differs from only by what it adds: the
+    /// store is brought to today's in place ([`migrate`]) and then used, with everything
+    /// it held.
+    Migrate,
     /// The file is removed and the store made empty; the folder's start then goes the way
     /// of a store that was lost (design §10). What that loses is [`RebuildLoss`], counted
     /// by `TreeStore::open_with_origin` before the file goes.
@@ -108,8 +122,16 @@ pub fn decide_old_store(stored: &StoredVersion) -> OldStoreDecision {
     match stored {
         StoredVersion::NoStore => OldStoreDecision::Make,
         StoredVersion::Version(version) if version == SCHEMA_VERSION => OldStoreDecision::Use,
+        StoredVersion::Version(version) if version == MIGRATED_VERSION => OldStoreDecision::Migrate,
         StoredVersion::Version(_) | StoredVersion::NoVersion | StoredVersion::NotADatabase => OldStoreDecision::Rebuild,
     }
+}
+
+/// Brings the store behind `conn`, which is of [`MIGRATED_VERSION`], to today's version:
+/// the column `is_executable` of `items`, no file executable. One transaction with the
+/// version's number: a crash or an error leaves the store at the version it had.
+fn migrate(conn: &Connection) -> Result<(), TreeError> {
+    at_version(conn, SCHEMA_VERSION, |tx| Ok(tx.execute_batch(&format!("ALTER TABLE items ADD COLUMN {IS_EXECUTABLE_COLUMN};"))?))
 }
 
 /// Whether SQLite says of the file that it is no database, or is corrupt.
@@ -244,8 +266,9 @@ pub fn list_old_store_upload_sessions(path: &Path) -> Result<Vec<String>, TreeEr
 }
 
 impl crate::TreeStore {
-    /// Opens the store at `path` and says how it came to be: used as it is, made where
-    /// there was none, or rebuilt empty where the one there cannot be used
+    /// Opens the store at `path` and says how it came to be: used as it is (also one of
+    /// the version before, migrated in place first), made where there was none, or
+    /// rebuilt empty where the one there cannot be used
     /// ([`decide_old_store`]), with what the rebuild lost counted before its file went.
     /// Every other error — permission denied, disk I/O, a lock that outlasts the busy
     /// timeout — is returned unchanged and nothing on disk is touched: a failure that
@@ -273,6 +296,12 @@ impl crate::TreeStore {
             OldStoreDecision::Make => {
                 drop(conn);
                 Ok((Self::open_file(path)?, StoreOrigin::MadeEmpty { loss: None }))
+            }
+            OldStoreDecision::Migrate => {
+                migrate(&conn)?;
+                drop(conn);
+                tracing::info!("{} was of version {MIGRATED_VERSION} and is of version {SCHEMA_VERSION} now; what it held is kept", path.display());
+                Ok((Self::open_file(path)?, StoreOrigin::Kept))
             }
             OldStoreDecision::Rebuild => {
                 let loss = count_rebuild_loss(&conn);

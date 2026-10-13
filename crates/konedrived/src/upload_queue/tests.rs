@@ -40,6 +40,7 @@ fn agreed_file() -> Item {
         is_name_ignored: false,
         confirmed_at_count: 0,
         unsent_since: Some(3),
+        is_executable: false,
     }
 }
 

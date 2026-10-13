@@ -386,6 +386,23 @@ impl ItemWriteOperations {
         backing_file.set_len(size).and_then(|()| placeholder::set_mtime(&backing_file, to_system_time(mtime, mtime_nsec))).map_err(|error| self.take_down_for_file(&file.path, &error))
     }
 
+    /// Setattr with a mode and neither a size nor a time (chmod): the owner's executable
+    /// bit of a file goes to its row (`ItemStore::set_executable_bit`) where the row does
+    /// not say so already; nothing else of a mode is kept, and nothing is unsent by it.
+    /// Nothing is written for a directory, nor for a node whose row is gone: the answer is
+    /// `Ok` all the same, as it was while no mode was kept. The attributes after it are
+    /// the caller's to read.
+    pub(in crate::mount) fn set_executable_bit(&self, node: LocalItemId, is_executable: bool) -> Result<(), Errno> {
+        self.access_mode_switch.check_read_write()?;
+        self.run_store_job("the executable bit of a file could not be written", move |store| {
+            let mut items = store.item_store();
+            match items.find_item(node)? {
+                Some(row) if row.kind == ItemKind::File && row.is_executable != is_executable => items.set_executable_bit(node, is_executable),
+                Some(_) | None => Ok(()),
+            }
+        })
+    }
+
     /// Setattr with a time and no size: the time goes to the backing file where the file
     /// has one, then to the row (`ItemStore::set_local_modified_time`); with a writer open
     /// the backing file alone, and the handle marked written, so that the last close

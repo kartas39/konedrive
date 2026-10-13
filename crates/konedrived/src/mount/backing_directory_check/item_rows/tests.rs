@@ -25,6 +25,7 @@ fn own(number: i64, parent: i64, name: &str, kind: ItemKind) -> Item {
         is_name_ignored: false,
         confirmed_at_count: 0,
         unsent_since: None,
+        is_executable: false,
     }
 }
 

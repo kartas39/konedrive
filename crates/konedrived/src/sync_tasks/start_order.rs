@@ -265,6 +265,9 @@ pub(crate) enum StartRefusal {
     DriveNotKnown,
     /// The backing directory, the mount or a thread of it.
     Mount(String),
+    /// The folder holds the placeholders of a konedrive from before the mount, which is
+    /// not supported: its account is removed and added again. Nothing was written.
+    LegacyPlaceholders,
 }
 
 /// A start that was refused: why, and what is left of it.
@@ -377,6 +380,7 @@ pub(crate) async fn start_folder_sync(input: FolderStartInput) -> Result<Started
             return Err(refuse(match error {
                 ItemMountError::Store(error) => StartRefusal::Store(format!("the check of {} at start could not write the tree store: {error}", input.root.path.display())),
                 ItemMountError::Io(error) => StartRefusal::Mount(format!("{} cannot be mounted: {error}", input.root.path.display())),
+                ItemMountError::LegacyPlaceholders => StartRefusal::LegacyPlaceholders,
             }));
         }
     };

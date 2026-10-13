@@ -3,7 +3,6 @@
 //! downloaded copies or for files of the user's own.
 
 use std::fs;
-use std::io;
 use std::path::Path;
 
 use super::downloaded_copies::DiskMarks;
@@ -27,11 +26,6 @@ pub(in crate::mount) fn holds_legacy_placeholders(folder: &Path) -> bool {
         }
     }
     false
-}
-
-/// Why no mount is put over such a folder.
-pub(in crate::mount) fn describe_refusal(folder: &Path) -> io::Error {
-    io::Error::other(format!("{} holds the files of an older konedrive; forget the folder and add it again", folder.display()))
 }
 
 #[cfg(test)]

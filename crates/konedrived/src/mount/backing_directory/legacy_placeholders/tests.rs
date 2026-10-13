@@ -36,12 +36,11 @@ fn the_holding_directory_of_an_older_konedrive_makes_it_an_older_konedrives() {
 }
 
 /// No mount is put over such a folder: its backing directory is not opened, and the refusal
-/// names the folder.
+/// says why.
 #[test]
 fn a_folder_of_an_older_konedrive_is_refused_as_a_backing_directory() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join(crate::folder::disk::HOLDING)).unwrap();
     let refused = crate::mount::backing_directory::BackingDirectory::open(dir.path()).err().expect("the folder is refused");
-    assert_eq!(refused.to_string(), super::describe_refusal(dir.path()).to_string());
-    assert!(refused.to_string().contains(&dir.path().display().to_string()));
+    assert!(matches!(refused, crate::mount::backing_directory::OpenRefusal::LegacyPlaceholders), "{refused:?}");
 }

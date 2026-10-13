@@ -25,6 +25,7 @@ fn stamped(confirmed_at_count: u64, onedrive_etag: Option<&str>) -> Item {
         is_name_ignored: false,
         confirmed_at_count,
         unsent_since: None,
+        is_executable: false,
     }
 }
 

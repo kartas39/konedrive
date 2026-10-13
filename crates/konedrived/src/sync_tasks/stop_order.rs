@@ -280,8 +280,10 @@ pub(crate) async fn forget_folder_without_mount(root: &SyncRoot) {
 /// It refuses nothing: a Forget is never refused for what is unsent.
 pub(crate) fn count_unsent_of_closed_store(tree_db: &std::path::Path) -> Result<UnsentTotal, konedrive_tree::TreeError> {
     match konedrive_tree::decide_old_store(&konedrive_tree::find_stored_version(tree_db)?) {
-        // A store of this version: what it cannot be asked is an error, not nothing.
-        konedrive_tree::OldStoreDecision::Use => konedrive_tree::TreeStore::open_read_only(tree_db)?.read_items(|items| items.count_unsent()),
+        // A store of this version, or of the one before, which a start migrates in place and
+        // whose rows this count reads as they are: what it cannot be asked is an error, not
+        // nothing.
+        konedrive_tree::OldStoreDecision::Use | konedrive_tree::OldStoreDecision::Migrate => konedrive_tree::TreeStore::open_read_only(tree_db)?.read_items(|items| items.count_unsent()),
         // No store, or one a sync would rebuild empty.
         konedrive_tree::OldStoreDecision::Make | konedrive_tree::OldStoreDecision::Rebuild => Ok(UnsentTotal::default()),
     }

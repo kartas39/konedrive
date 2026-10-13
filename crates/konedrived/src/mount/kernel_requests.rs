@@ -35,7 +35,7 @@ use tokio::task::AbortHandle;
 use super::access_mode_switch::AccessModeSwitch;
 use super::backing_directory::BackingDirectory;
 use super::errno::{to_errno, THROTTLE_WAIT_ERRNO};
-use super::item_attributes::{to_local_item_id, to_node_id};
+use super::item_attributes::{has_executable_bit, to_local_item_id, to_node_id};
 use super::item_handles::Fh;
 use super::item_kernel_requests::{ItemKernelRequests, ATTRIBUTE_LIFETIME, LookupAnswer, MadeEntry, OpenedFile, RangeToFetch, ReadAnswer, ReplyTo};
 use super::item_write_operations::{FileToFill, MadeKind, RenameMode};
@@ -427,10 +427,10 @@ impl Filesystem for KernelRequests {
         }
     }
 
-    fn setattr(&self, req: &Request, ino: INodeNo, _mode: Option<u32>, _uid: Option<u32>, _gid: Option<u32>, size: Option<u64>, _atime: Option<TimeOrNow>, mtime: Option<TimeOrNow>, _ctime: Option<SystemTime>, fh: Option<FileHandle>, _crtime: Option<SystemTime>, _chgtime: Option<SystemTime>, _bkuptime: Option<SystemTime>, _flags: Option<BsdFileFlags>, reply: ReplyAttr) {
+    fn setattr(&self, req: &Request, ino: INodeNo, mode: Option<u32>, _uid: Option<u32>, _gid: Option<u32>, size: Option<u64>, _atime: Option<TimeOrNow>, mtime: Option<TimeOrNow>, _ctime: Option<SystemTime>, fh: Option<FileHandle>, _crtime: Option<SystemTime>, _chgtime: Option<SystemTime>, _bkuptime: Option<SystemTime>, _flags: Option<BsdFileFlags>, reply: ReplyAttr) {
         let (node, fh) = (to_local_item_id(ino), fh.map(to_fh));
-        match (size, mtime) {
-            (Some(size), _) => match self.requests.decide_truncate(node, size) {
+        match (size, mtime, mode) {
+            (Some(size), _, _) => match self.requests.decide_truncate(node, size) {
                 Ok(FileToFill::Nothing) => self.requests.queue_truncate(node, fh, size, reply_to_attributes(reply)),
                 Ok(fill @ FileToFill::Download(_)) => {
                     let (requests, reply) = (Arc::clone(&self.requests), reply_to_attributes(reply));
@@ -438,12 +438,14 @@ impl Filesystem for KernelRequests {
                 }
                 Err(errno) => reply.error(errno),
             },
-            (None, Some(mtime)) => {
+            (None, Some(mtime), _) => {
                 let (mtime, mtime_nsec) = to_unix_time(mtime);
                 self.requests.queue_set_modified_time(node, fh, mtime, mtime_nsec, req.pid(), reply_to_attributes(reply))
             }
-            // Mode, owner and the other times are not kept: answered as getattr.
-            (None, None) => match self.requests.answer_getattr(node, fh) {
+            // Of a mode the owner's executable bit of a file is kept, and nothing else.
+            (None, None, Some(mode)) => self.requests.queue_set_executable_bit(node, fh, has_executable_bit(mode), req.pid(), reply_to_attributes(reply)),
+            // Owner and the other times are not kept: answered as getattr.
+            (None, None, None) => match self.requests.answer_getattr(node, fh) {
                 Ok(attributes) => reply.attr(&ATTRIBUTE_LIFETIME, &attributes),
                 Err(errno) => reply.error(errno),
             },
@@ -451,7 +453,7 @@ impl Filesystem for KernelRequests {
     }
 
     fn mkdir(&self, req: &Request, parent: INodeNo, name: &OsStr, _mode: u32, _umask: u32, reply: ReplyEntry) {
-        self.requests.queue_make(to_local_item_id(parent), name, MadeKind::Directory, req.pid(), reply_to_made_entry(reply))
+        self.requests.queue_make(to_local_item_id(parent), name, MadeKind::Directory, false, req.pid(), reply_to_made_entry(reply))
     }
 
     /// Only a regular file is made: nothing else has a place in OneDrive.
@@ -459,11 +461,11 @@ impl Filesystem for KernelRequests {
         if mode & libc::S_IFMT != libc::S_IFREG {
             return reply.error(self.refuse_unsupported(Errno::EPERM));
         }
-        self.requests.queue_make(to_local_item_id(parent), name, MadeKind::File, req.pid(), reply_to_made_entry(reply))
+        self.requests.queue_make(to_local_item_id(parent), name, MadeKind::File, has_executable_bit(mode), req.pid(), reply_to_made_entry(reply))
     }
 
-    fn create(&self, req: &Request, parent: INodeNo, name: &OsStr, _mode: u32, _umask: u32, _flags: i32, reply: ReplyCreate) {
-        self.requests.queue_make(to_local_item_id(parent), name, MadeKind::FileOpenedForWriting, req.pid(), reply_to_created(reply))
+    fn create(&self, req: &Request, parent: INodeNo, name: &OsStr, mode: u32, _umask: u32, _flags: i32, reply: ReplyCreate) {
+        self.requests.queue_make(to_local_item_id(parent), name, MadeKind::FileOpenedForWriting, has_executable_bit(mode), req.pid(), reply_to_created(reply))
     }
 
     /// A symbolic link has nothing OneDrive could hold: none is made.

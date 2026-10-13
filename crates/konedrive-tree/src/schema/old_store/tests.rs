@@ -62,6 +62,33 @@ fn a_store_of_an_older_version_is_rebuilt_and_never_migrated() {
 }
 
 #[test]
+fn a_store_of_the_version_before_is_migrated_in_place_and_keeps_what_it_held() {
+    assert_eq!(decide_old_store(&StoredVersion::Version("28".to_owned())), OldStoreDecision::Migrate);
+
+    // A store as version 28 had it: today's, without the column version 29 added.
+    let dir = tempfile::tempdir().unwrap();
+    let path = store_path(&dir);
+    let mut store = store_in_file_with_listed_root(&path);
+    let file = show_listed_file(&mut store, "F", "R", "f", "h1");
+    let row = store.item_store().find_item(file).unwrap();
+    store.set_pin("F", true).unwrap();
+    drop(store);
+    Connection::open(&path).unwrap().execute_batch("ALTER TABLE items DROP COLUMN is_executable;").unwrap();
+    set_stored_version(&path, "28");
+
+    let (mut store, origin) = TreeStore::open_with_origin(&path).unwrap();
+    assert_eq!(origin, StoreOrigin::Kept, "nothing is rebuilt: no full listing follows");
+    assert_eq!(store.meta("schema_version").unwrap().as_deref(), Some(SCHEMA_VERSION));
+    assert_eq!(store.item_store().find_item(file).unwrap(), row, "the row is as it was, and no file is executable");
+    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link"), "the listing goes on from where it was");
+    assert_eq!(store.pins().unwrap(), ["F".to_owned()], "the pins are kept");
+    store.item_store().set_executable_bit(file, true).unwrap();
+    assert!(store.item_store().find_item(file).unwrap().unwrap().is_executable);
+    drop(store);
+    assert_eq!(TreeStore::open_with_origin(&path).unwrap().1, StoreOrigin::Kept, "migrated once, then used");
+}
+
+#[test]
 fn a_store_of_an_unknown_version_is_rebuilt() {
     assert_eq!(decide_old_store(&StoredVersion::Version("99".to_owned())), OldStoreDecision::Rebuild, "a newer daemon's");
     assert_eq!(decide_old_store(&StoredVersion::Version(String::new())), OldStoreDecision::Rebuild);

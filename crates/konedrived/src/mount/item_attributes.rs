@@ -14,6 +14,8 @@
 // test: a_files_blocks_are_its_backing_files_and_none_when_it_is_not_on_disk
 // test: a_directory_has_the_times_the_decision_gives_it
 // test: a_read_only_folder_shows_no_write_bit
+// test: a_file_with_its_executable_bit_is_shown_executable_and_a_directory_as_ever
+// test: the_owners_executable_bit_is_all_of_a_mode_that_is_kept
 // test: an_item_the_folder_does_not_show_has_no_attributes
 // test: the_node_id_of_an_item_is_its_local_item_id_and_back
 // test: a_file_whose_handle_outlived_its_row_has_the_attributes_of_the_handles_file
@@ -80,11 +82,28 @@ fn to_time(seconds: i64, nanoseconds: u32) -> SystemTime {
     }
 }
 
+/// Whether `mode`, as a chmod or the making of a file gave it, has the owner's executable
+/// bit: all of a mode that is kept (`Item::is_executable`). Pure.
+pub(super) fn has_executable_bit(mode: u32) -> bool {
+    mode & 0o100 != 0
+}
+
+/// The mode the folder shows for a directory or a file: the layer's own
+/// (`backing_directory::to_mode_bits`), and for a file that has its owner's executable
+/// bit an executable bit wherever the mode has a read bit. A directory's is as ever. Pure.
+fn to_shown_mode(kind: EntryKind, write_bits: WriteBits, is_executable: bool) -> u16 {
+    let mode = to_mode_bits(kind, write_bits);
+    match (kind, is_executable) {
+        (EntryKind::File, true) => (mode | (mode & 0o444) >> 2) as u16,
+        (EntryKind::File, false) | (EntryKind::Directory, _) => mode as u16,
+    }
+}
+
 /// The attributes of the node `item` of `kind`, with this size, these blocks and this
 /// time. A read-only folder shows no write bit anywhere: a file manager reads that from
-/// the modes before anything is tried. The link count is a constant: an item has one
-/// place (design §3).
-fn make_attributes(item: LocalItemId, kind: ItemKind, access_mode: AccessMode, size: u64, blocks: u64, modified: SystemTime) -> FileAttr {
+/// the modes before anything is tried. `is_executable` is the row's executable bit, of a
+/// file alone. The link count is a constant: an item has one place (design §3).
+fn make_attributes(item: LocalItemId, kind: ItemKind, access_mode: AccessMode, is_executable: bool, size: u64, blocks: u64, modified: SystemTime) -> FileAttr {
     let write_bits = match access_mode {
         AccessMode::ReadWrite => WriteBits::Present,
         AccessMode::ReadOnly => WriteBits::Removed,
@@ -104,7 +123,7 @@ fn make_attributes(item: LocalItemId, kind: ItemKind, access_mode: AccessMode, s
         ctime: modified,
         crtime: UNIX_EPOCH,
         kind: file_type,
-        perm: to_mode_bits(entry_kind, write_bits) as u16,
+        perm: to_shown_mode(entry_kind, write_bits, is_executable),
         nlink,
         uid,
         gid,
@@ -116,9 +135,10 @@ fn make_attributes(item: LocalItemId, kind: ItemKind, access_mode: AccessMode, s
 
 /// The attributes of the file a handle holds, under the node id `node` the request asked
 /// by: what a getattr with an `fh` is answered once the row of `node` is gone or shows
-/// nothing (design §3) — the file was removed or saved over while a program held it. Pure.
+/// nothing (design §3) — the file was removed or saved over while a program held it. Its
+/// executable bit went with its row: it is shown with none. Pure.
 pub(super) fn to_open_file_attributes(node: LocalItemId, access_mode: AccessMode, facts: &OpenFileFacts) -> FileAttr {
-    make_attributes(node, ItemKind::File, access_mode, facts.size, facts.blocks, to_time(facts.mtime, facts.mtime_nsec))
+    make_attributes(node, ItemKind::File, access_mode, false, facts.size, facts.blocks, to_time(facts.mtime, facts.mtime_nsec))
 }
 
 /// The attributes the bridge's own lookup is answered for a name that is vanishing
@@ -126,7 +146,7 @@ pub(super) fn to_open_file_attributes(node: LocalItemId, access_mode: AccessMode
 /// kind, with no size: the rows do not show it there any more, and the kernel needs the
 /// node and the kind alone to tell its watchers. Pure.
 pub(super) fn to_vanishing_attributes(item: LocalItemId, kind: ItemKind, access_mode: AccessMode, mount_started_at: i64) -> FileAttr {
-    make_attributes(item, kind, access_mode, 0, 0, to_time(mount_started_at, 0))
+    make_attributes(item, kind, access_mode, false, 0, 0, to_time(mount_started_at, 0))
 }
 
 /// The modification time shown for a directory.
@@ -150,7 +170,7 @@ pub(super) fn to_item_attributes(item: &Item, access_mode: AccessMode, facts: &B
         // A file with no content is a row against the rules: shown empty, never refused.
         (ItemKind::File, SizeAndTimes::OfLocalContent, None) => (0, facts.blocks, (mount_started_at, 0)),
     };
-    Some(make_attributes(item.local_item_id, item.kind, access_mode, size, blocks, to_time(mtime, mtime_nsec)))
+    Some(make_attributes(item.local_item_id, item.kind, access_mode, item.is_executable, size, blocks, to_time(mtime, mtime_nsec)))
 }
 
 #[cfg(test)]
