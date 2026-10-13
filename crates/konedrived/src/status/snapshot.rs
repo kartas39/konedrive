@@ -282,11 +282,11 @@ impl DiskSpaceShortage {
         let size = crate::status::activity::human_size;
         // TODO: wording
         format!(
-            "{} file(s) kept on this device wait for disk space: {} to download, {} free, {} is kept free",
+            "{} file(s) kept on this device wait for disk space: {} to download, {} free, {} GiB stay free",
             self.count,
             size(self.bytes),
             size(self.free_space),
-            size(self.reserve)
+            self.reserve >> 30
         )
     }
 }

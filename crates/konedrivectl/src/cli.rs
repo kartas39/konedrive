@@ -238,7 +238,7 @@ pub(crate) enum FolderCmd {
         #[arg(value_parser = ["on", "off"])]
         state: Option<String>,
     },
-    /// Show or change how many gigabytes of this computer's disk stay free: a file kept
+    /// Show or change how many GiB of this computer's disk stay free: a file kept
     /// on this device is not downloaded while its download would leave less
     FreeSpace {
         gigabytes: Option<u64>,

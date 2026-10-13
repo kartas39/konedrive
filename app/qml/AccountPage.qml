@@ -281,7 +281,7 @@ FormCard.FormCardPage {
 
             readonly property int kept: page.sync !== null ? page.sync.freeSpaceReserve : 0
 
-            label: i18n("Free space to keep on this computer's disk, in GB")
+            label: i18n("Free space to keep on this computer's disk, in GiB")
             from: 0
             to: 100000
             value: kept
