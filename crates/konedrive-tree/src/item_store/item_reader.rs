@@ -261,8 +261,8 @@ impl ItemReader<'_> {
         find_folder_visibility(self.conn(), item)
     }
 
-    /// Whether a pin holds for `item`: its own, or that of a directory above it in the
-    /// folder (`pinned_items`). Called for `user.konedrive.pin`, free-up and the plan.
+    /// Whether a pin holds for `item`: the nearest mark at it or above it in the folder is
+    /// a pin (`pinned_items`). Called for `user.konedrive.pin`, free-up and the plan.
     pub fn is_pinned(&self, item: LocalItemId) -> Result<bool, TreeError> {
         item_row::find_is_pinned(self.conn(), item)
     }
@@ -309,26 +309,6 @@ impl ItemReader<'_> {
             ItemKind::File.as_str()
         );
         Ok(self.conn().prepare_cached(&sql)?.query_row(params![directory.as_i64(), name_value(name)], item_from).optional()?)
-    }
-
-    /// The item whose own pin holds for `item`: the nearest directory above it in the
-    /// folder that has a pin of its own, else `item` itself when it has one, else none.
-    /// A directory above comes first, also when the item has a pin of its own: that is
-    /// the pin an unpin or a free-up of the item cannot take off. By the local places, as
-    /// [`is_pinned`](Self::is_pinned), which answers whether this is some. Called by the
-    /// mount's `Files` interface for the status of a path (`PinHolder`).
-    pub fn find_pin_holder(&self, item: LocalItemId) -> Result<Option<LocalItemId>, TreeError> {
-        // The way up is the one of `item_row::find_is_pinned`; of the rows on it that have a pin, a directory above comes before the item, the nearest first.
-        let sql = format!(
-            "WITH RECURSIVE above(id, depth) AS (
-                 SELECT local_item_id, 0 FROM items WHERE local_item_id = ?1 AND local_parent_id IS NOT NULL
-                 UNION ALL
-                 SELECT items.local_parent_id, above.depth + 1 FROM above JOIN items ON items.local_item_id = above.id WHERE items.local_parent_id IS NOT NULL AND above.depth <= {MAX_CHAIN})
-             SELECT above.id FROM above JOIN items ON items.local_item_id = above.id JOIN pins ON pins.id = items.onedrive_item_id
-             ORDER BY above.depth = 0, above.depth LIMIT 1"
-        );
-        let holder = self.conn().prepare_cached(&sql)?.query_row([item.as_i64()], |row| row.get::<_, i64>(0)).optional()?;
-        Ok(holder.map(LocalItemId::new))
     }
 
     /// What OneDrive has in `directory`, at any depth, that the folder NEVER showed: a row

@@ -636,35 +636,52 @@ pub(super) fn count_shown_items(conn: &Connection) -> Result<u64, TreeError> {
     Ok(count.max(0) as u64)
 }
 
-/// Whether a pin holds for `item`: a row from `item` up, by the directories the folder
-/// shows it in, has an item id of OneDrive that is pinned. The way up is as long as every
-/// walk of the rows.
+/// Whether a pin holds for `item`: of the rows from `item` up, by the directories the
+/// folder shows it in, the nearest whose item id of OneDrive has a mark in `pins` has a
+/// pin, and no exception. The way up is as long as every walk of the rows.
 pub(super) fn find_is_pinned(conn: &Connection, item: LocalItemId) -> Result<bool, TreeError> {
     Ok(conn.prepare_cached(&is_pinned_sql())?.query_row([item.as_i64()], |row| row.get(0))?)
 }
 
-/// SQL for "is the item `?1`, or a directory above it, pinned". The joins are CROSS JOINs
-/// to keep their order: the few rows from the item up to the root, each row's binding, its
-/// pin. Left to choose, SQLite reads every bound row of `items` and asks of each whether it
-/// is above (measured on a folder of 30 000 items: 1.8 ms an answer against 0.006 ms), and
-/// a file manager asks this of every file of a directory it shows.
+/// Whether a pin would hold for `item` with no mark of its own: [`find_is_pinned`] by
+/// the directories above it alone. What a mark of the item is decided against
+/// (`item_pins::decide_own_pin_mark`).
+pub(super) fn find_is_pinned_above(conn: &Connection, item: LocalItemId) -> Result<bool, TreeError> {
+    Ok(conn.prepare_cached(&nearest_pin_mark_sql(1))?.query_row([item.as_i64()], |row| row.get(0))?)
+}
+
+/// SQL for "does a pin hold for the item `?1`": [`nearest_pin_mark_sql`] from the item
+/// itself.
 pub(super) fn is_pinned_sql() -> String {
+    nearest_pin_mark_sql(0)
+}
+
+/// SQL for "is the nearest mark at the item `?1` or above it a pin", where the item
+/// itself is at depth 0 and only the rows from `least_depth` up are asked. The joins are
+/// CROSS JOINs to keep their order: the few rows from the item up to the root, each row's
+/// binding, its mark. Left to choose, SQLite reads every bound row of `items` and asks of
+/// each whether it is above (measured on a folder of 30 000 items: 1.8 ms an answer
+/// against 0.006 ms), and a file manager asks this of every file of a directory it shows.
+fn nearest_pin_mark_sql(least_depth: u32) -> String {
     format!(
         "WITH RECURSIVE above(id, depth) AS (
              SELECT local_item_id, 0 FROM items WHERE local_item_id = ?1 AND local_parent_id IS NOT NULL
              UNION ALL
              SELECT items.local_parent_id, above.depth + 1 FROM above JOIN items ON items.local_item_id = above.id WHERE items.local_parent_id IS NOT NULL AND above.depth <= {})
-         SELECT EXISTS (SELECT 1 FROM above CROSS JOIN items ON items.local_item_id = above.id CROSS JOIN pins ON pins.id = items.onedrive_item_id)",
+         SELECT COALESCE((SELECT pins.is_kept FROM above CROSS JOIN items ON items.local_item_id = above.id CROSS JOIN pins ON pins.id = items.onedrive_item_id
+                          WHERE above.depth >= {least_depth} ORDER BY above.depth LIMIT 1), 0)",
         crate::MAX_CHAIN
     )
 }
 
-/// SQL for the rows a pin holds for, as `held(id)`: from each pinned row the folder shows,
-/// down by what the folder shows in it.
+/// SQL for the rows a pin holds for, as `held(id)`: from each row the folder shows that
+/// has a pin, down by what the folder shows in it, and not into a row that has an
+/// exception.
 const HELD_BY_PIN: &str = "WITH RECURSIVE held(id) AS (
-             SELECT items.local_item_id FROM pins JOIN items ON items.onedrive_item_id = pins.id WHERE items.local_parent_id IS NOT NULL OR items.local_item_id = 1
+             SELECT items.local_item_id FROM pins JOIN items ON items.onedrive_item_id = pins.id WHERE pins.is_kept = 1 AND (items.local_parent_id IS NOT NULL OR items.local_item_id = 1)
              UNION
-             SELECT child.local_item_id FROM held JOIN items child INDEXED BY items_local_place ON child.local_parent_id = held.id)";
+             SELECT child.local_item_id FROM held JOIN items child INDEXED BY items_local_place ON child.local_parent_id = held.id
+                 WHERE NOT EXISTS (SELECT 1 FROM pins WHERE pins.id = child.onedrive_item_id AND pins.is_kept = 0))";
 
 /// SQL for "a file a pin holds for (`held`, [`HELD_BY_PIN`]) that agrees on everything and
 /// whose content is not on disk": what is listed and what is counted are the same rows.

@@ -3,10 +3,9 @@
 //! `Files.Menu` as it is).
 //!
 //! "Free up space" is disabled with a code (`free-up-why`, the daemon's
-//! `account_folder/menu.rs`), most of which say beforehand what a refusal of the call
+//! `account_folder/menu.rs`), which says beforehand what a refusal of the call
 //! would say: [`WhyText::refusal`] names it, and its long sentence is in
-//! [`crate::files`]. The place of a tooltip: `{by}`, the folder above that
-//! keeps the item on this device (`blocked-by`).
+//! [`crate::files`]. A tooltip has no place to fill.
 
 use konedrive_dbus::Refusal;
 
@@ -21,14 +20,9 @@ pub struct WhyText {
 }
 
 /// Every code of `free-up-why`, in the daemon's order.
-pub static FREE_UP_WHY: [WhyText; 2] = [
-    WhyText { why: "pinned-above", refusal: Some(Refusal::NotAllowed), tooltip: "Kept on this device because “{by}” is; unpin it first." },
+pub static FREE_UP_WHY: [WhyText; 1] = [
     WhyText { why: "not-uploaded", refusal: Some(Refusal::NotUploaded), tooltip: "Not uploaded yet: freeing it up would lose the changes made here." },
 ];
-
-/// "Always keep on this device" is checked and cannot be unchecked
-/// (`always-keep` is `on-locked`).
-pub const KEPT_BY_A_FOLDER: &str = "Kept on this device because “{by}” is.";
 
 /// "Open in OneDrive" is disabled: the item has no page there yet.
 pub const NOT_IN_ONEDRIVE: &str = "Not in OneDrive yet.";

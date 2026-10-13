@@ -35,8 +35,9 @@
 //! Version 21 changes what one index holds: `items_changed_in_onedrive` does not ask the
 //! time of a content any more. The last is the switch's: the tables that go, which
 //! today's code reads until then. None of these has a migration step: a store of the
-//! version before was rebuilt. Version 29 is the first that has one: it adds the column
-//! `is_executable` of `items` to a store of version 28.
+//! version before was rebuilt. Version 29 is the first that had one: it added the column
+//! `is_executable` of `items` to a store of version 28. Version 30 adds the column
+//! `is_kept` of `pins` to a store of version 29; a store of version 28 is rebuilt.
 //!
 //! **Tested without the rest:**
 // test: a_store_of_todays_version_is_used
@@ -52,11 +53,11 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension};
 
-use super::{at_version, IS_EXECUTABLE_COLUMN, SCHEMA_VERSION};
+use super::{at_version, IS_KEPT_COLUMN, SCHEMA_VERSION};
 use crate::{meta, TreeError};
 
 /// The version before today's: the one a store is brought from in place ([`migrate`]).
-const MIGRATED_VERSION: &str = "28";
+const MIGRATED_VERSION: &str = "29";
 
 /// What the file at the store's path says of itself, before anything is changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,10 +129,10 @@ pub fn decide_old_store(stored: &StoredVersion) -> OldStoreDecision {
 }
 
 /// Brings the store behind `conn`, which is of [`MIGRATED_VERSION`], to today's version:
-/// the column `is_executable` of `items`, no file executable. One transaction with the
+/// the column `is_kept` of `pins`, every row a pin as it was. One transaction with the
 /// version's number: a crash or an error leaves the store at the version it had.
 fn migrate(conn: &Connection) -> Result<(), TreeError> {
-    at_version(conn, SCHEMA_VERSION, |tx| Ok(tx.execute_batch(&format!("ALTER TABLE items ADD COLUMN {IS_EXECUTABLE_COLUMN};"))?))
+    at_version(conn, SCHEMA_VERSION, |tx| Ok(tx.execute_batch(&format!("ALTER TABLE pins ADD COLUMN {IS_KEPT_COLUMN};"))?))
 }
 
 /// Whether SQLite says of the file that it is no database, or is corrupt.

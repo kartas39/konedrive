@@ -3,48 +3,34 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::mount::{ItemMount, PinHolder};
+use crate::mount::ItemMount;
 use crate::account_folder::{SyncError, SyncService};
 
-/// Why a free-up or unpin of `path`, which `by` pins, is refused: the path refused and what
-/// pins it — `by` is `path` itself for `Dehydrate` of a file with a pin of its own.
-/// `konedrivectl` reads both back out of exactly this shape; the Dolphin plugin shows it as
-/// it is.
-pub fn refusal(path: &Path, by: &Path) -> String {
-    format!("{} is pinned by {}: unpin it first", path.display(), by.display())
+/// Why `Dehydrate` of `path`, which a pin holds for, is refused. `konedrivectl` reads the
+/// path back out of exactly this shape.
+pub fn refusal(path: &Path) -> String {
+    format!("{} is pinned: unpin it first", path.display())
 }
 
 impl SyncService {
-    /// `Pin(paths)`, "Always keep on this device": each path — a file, a folder, or the
-    /// folder itself — gets a pin, and every file under it that is not downloaded is
-    /// downloaded; how many pins were put on by this call.
+    /// `Pin(paths)`, "Always keep on this device": a pin holds for each path — a file, a
+    /// folder, or the folder itself — from now on, and every file under it that is not
+    /// downloaded is downloaded; how many paths this call changed a mark for.
     ///
-    /// The pin is written first and the downloads follow, so a crash in between loses
-    /// nothing: the next sweep finds them. A path a folder above it pins already is left as
-    /// it is. Every path is checked before any is pinned: one outside the folder, or one
-    /// OneDrive has no item for, refuses the call.
+    /// A folder is pinned whole: an exception or a pin below it comes off. A path a folder
+    /// above it pins gets no mark of its own, and loses the exception it had. The mark is
+    /// written first and the downloads follow, so a crash in between loses nothing: the
+    /// next sweep finds them. Every path is checked before any is pinned: one outside the
+    /// folder, or one OneDrive has no item for, refuses the call.
     pub async fn pin(&self, paths: &[PathBuf]) -> Result<u32, SyncError> {
         self.check_pinnable(paths).await?;
         self.set_pins(paths, true).await
     }
 
-    /// What `Unpin` and `FreeUp` check of every path before they change anything, on its
-    /// own: each path is an item of the folder, and no folder above it pins it
-    /// (`NotAllowed`). `Files` asks every account whose folder a call's paths are in first,
-    /// so that a call that spans accounts is refused as a whole or not at all.
-    pub async fn check_unpinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
-        let mount = self.require_mount()?;
-        for path in paths {
-            if let PinHolder::DirectoryAbove { path: by } = mount.files_interface().find_path_status(path).await?.pin_holder {
-                return Err(SyncError::NotAllowed(refusal(path, &by)));
-            }
-        }
-        Ok(())
-    }
-
-    /// What `Pin` checks of every path before it pins any, on its own: each path is an item
-    /// of the folder. `Files` asks every account first, as for
-    /// [`check_unpinnable`](Self::check_unpinnable).
+    /// What `Pin`, `Unpin` and `FreeUp` check of every path before they change anything,
+    /// on its own: each path is an item of the folder. `Files` asks every account whose
+    /// folder a call's paths are in first, so that a call that spans accounts is refused
+    /// as a whole or not at all.
     pub async fn check_pinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
         let mount = self.require_mount()?;
         for path in paths {
@@ -53,29 +39,24 @@ impl SyncService {
         Ok(())
     }
 
-    /// `Unpin(paths)`, unchecking "Always keep on this device": each path's own pin comes
-    /// off, and nothing else changes — its files stay downloaded. How many pins came off. A
-    /// path a folder above it pins is refused `NotAllowed`, naming the folder, as `FreeUp`
-    /// refuses it; every path is checked before any pin comes off.
+    /// `Unpin(paths)`, unchecking "Always keep on this device": no pin holds for each path
+    /// from now on, and nothing else changes — its files stay downloaded. How many paths
+    /// this call changed a mark for. A path a folder above it pins gets an exception: the
+    /// folder stays pinned, and the path and what is under it are not kept. A folder is
+    /// let go whole: a pin or an exception below it comes off. Every path is checked
+    /// before any mark changes.
     pub async fn unpin(&self, paths: &[PathBuf]) -> Result<u32, SyncError> {
-        self.check_unpinnable(paths).await?;
+        self.check_pinnable(paths).await?;
         self.set_pins(paths, false).await
     }
 
-    /// Puts each path's own pin on, or takes it off; how many changed. A path a folder
-    /// above it pins is left as it is.
-    async fn set_pins(&self, paths: &[PathBuf], pinned: bool) -> Result<u32, SyncError> {
+    /// Makes a pin hold for each path, or not; how many paths a mark changed for.
+    pub(super) async fn set_pins(&self, paths: &[PathBuf], pinned: bool) -> Result<u32, SyncError> {
         let mount = self.require_mount()?;
         let mut changed = 0;
         let mut refused = None;
         for path in paths {
-            // A path a folder above it pins is left as it is.
-            let set = match mount.files_interface().find_path_status(path).await {
-                Ok(status) if matches!(status.pin_holder, PinHolder::DirectoryAbove { .. }) => continue,
-                Ok(_) => mount.files_interface().set_pin(path, pinned).await,
-                Err(refusal) => Err(refusal),
-            };
-            match set {
+            match mount.files_interface().set_pin(path, pinned).await {
                 Ok(true) => changed += 1,
                 Ok(false) => {}
                 Err(refusal) => {
@@ -84,7 +65,7 @@ impl SyncService {
                 }
             }
         }
-        // Also when a path was refused: the pins changed before it stay changed, and `PinnedCount` says so.
+        // Also when a path was refused: the marks changed before it stay changed, and `PinnedCount` says so.
         self.show_pins(&mount).await;
         match refused {
             Some(refusal) => Err(refusal.into()),

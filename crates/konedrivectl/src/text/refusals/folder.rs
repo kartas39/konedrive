@@ -17,7 +17,7 @@ use konedrive_text::files::{self, Operation};
 use konedrive_text::Client;
 
 use super::SyncAction;
-use crate::text::files::pinned_parts;
+use crate::text::files::pinned_path;
 
 /// What was refused, and what the sentences are made of.
 #[derive(Clone, Copy)]
@@ -212,20 +212,12 @@ fn shared(told: &Told<'_>, refusal: &Refusal) -> String {
             "{path} is not a regular file inside the sync folder{folder}. Only files inside it \
              can be downloaded or freed up — not folders, symbolic links, or anything outside it"
         ),
-        // A free-up of something "Always keep on this device" keeps here.
-        // The daemon names what pins it: "pinned by <path>: unpin it first".
-        Refusal::NotAllowed => match pinned_parts(detail).map(|(_, by)| by) {
-            Some(by) if by == path => format!(
-                "{path} is kept on this device, so its space is not freed up. `konedrivectl sync \
-                 free {by}` stops keeping it and frees it up"
-            ),
-            Some(by) => format!(
-                "{path} is kept on this device because the folder {by} is, so its space is not \
-                 freed up. To free it, free up the folder first: `konedrivectl sync free {by}` \
-                 stops keeping it and frees up what is in it"
-            ),
-            None => format!("{} was refused: {detail}", told.action.doing()),
-        },
+        // `sync dehydrate` of a file "Always keep on this device" keeps here.
+        Refusal::NotAllowed if pinned_path(detail).is_some() => format!(
+            "{path} is kept on this device, so its space is not freed up. `konedrivectl sync \
+             free {path}` stops keeping it and frees it up"
+        ),
+        Refusal::NotAllowed => format!("{} was refused: {detail}", told.action.doing()),
         Refusal::NotManaged => format!(
             "{path} is not a OneDrive file: it is a file of your own in the sync folder, so \
              there is nothing to download"
@@ -477,15 +469,6 @@ fn free_up_space(told: &Told<'_>, refusal: &Refusal) -> String {
 /// `sync pin`, `unpin`, `free` and `open`: the catalogue's sentence, and where it has none
 /// for the command line, [`shared`]'s.
 fn file_operation(told: &Told<'_>, operation: Operation, refusal: &Refusal) -> String {
-    // The daemon's message names the path and the folder that keeps it: read here, to
-    // name the command that unpins the folder.
-    if let (Refusal::NotAllowed, Operation::Unpin, Some((_, by))) = (refusal, operation, pinned_parts(told.detail)) {
-        let path = told.path();
-        return format!(
-            "{path} is kept on this device because the folder {by} is, so it cannot stop being \
-             kept on its own. `konedrivectl sync unpin {by}` stops keeping the folder"
-        );
-    }
     told.catalogue(operation, refusal).unwrap_or_else(|| shared(told, refusal))
 }
 

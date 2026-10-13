@@ -4,9 +4,9 @@
 use crate::{TreeError, TreeStore};
 
 impl TreeStore {
-    /// The items that carry a pin of their own.
+    /// The items that carry a pin of their own; an exception is none.
     pub fn pins(&self) -> Result<Vec<String>, TreeError> {
-        let mut statement = self.conn.prepare_cached("SELECT id FROM pins")?;
+        let mut statement = self.conn.prepare_cached("SELECT id FROM pins WHERE is_kept = 1")?;
         let ids = statement.query_map([], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
         Ok(ids)
     }

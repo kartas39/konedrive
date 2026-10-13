@@ -13,7 +13,7 @@ fn a_conflict_is_listed_with_the_copy_kept_beside_the_file() {
     assert!(removed_text("Home", "/home/u/OneDrive").contains("Kept: the folder /home/u/OneDrive"));
 }
 
-/// The path refused and what pins it travel inside the daemon's sentences (issue #232):
+/// The path refused travels inside the daemon's sentences (issue #232):
 /// what the daemon writes today is read back here, so a sentence reworded on
 /// one side fails this test.
 #[test]
@@ -22,9 +22,9 @@ fn the_daemons_sentences_are_read_back() {
 
     use konedrived::account_folder::SyncError;
 
-    let pinned = konedrived::account_folder::pins::refusal(Path::new("/f/Docs/a b.txt"), Path::new("/f/Docs"));
-    assert_eq!(pinned, "/f/Docs/a b.txt is pinned by /f/Docs: unpin it first");
-    assert_eq!(super::pinned_parts(&pinned), Some(("/f/Docs/a b.txt", "/f/Docs")));
+    let pinned = konedrived::account_folder::pins::refusal(Path::new("/f/Docs/a b.txt"));
+    assert_eq!(pinned, "/f/Docs/a b.txt is pinned: unpin it first");
+    assert_eq!(super::pinned_path(&pinned), Some("/f/Docs/a b.txt"));
     assert_eq!(super::refused_path_of("org.konedrive.Error.NotAllowed", &pinned), Some("/f/Docs/a b.txt"));
 
     let waiting = SyncError::NotUploaded("/f/B/y".into()).to_string();

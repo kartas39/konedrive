@@ -286,14 +286,15 @@ pub(crate) enum PathCmd {
         paths: Vec<String>,
     },
     /// Stop always keeping files or folders on this device; what is
-    /// downloaded stays downloaded. The paths decide the accounts
+    /// downloaded stays downloaded. A file or folder inside a folder that is always kept
+    /// stops being kept on its own, and the folder stays kept. The paths decide the accounts
     Unpin {
         #[arg(required = true)]
         paths: Vec<String>,
     },
-    /// Free up space for files or folders: a file or folder you pinned stops
-    /// being kept on this device, and everything in it is freed up. The paths decide the
-    /// accounts
+    /// Free up space for files or folders: a file or folder stops being kept on this
+    /// device, also one inside a folder that is always kept, and everything in it is freed
+    /// up. The paths decide the accounts
     Free {
         #[arg(required = true)]
         paths: Vec<String>,

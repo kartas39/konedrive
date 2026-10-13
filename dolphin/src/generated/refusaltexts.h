@@ -34,12 +34,9 @@ QString alreadyWaitingSentence(const QString &file);
 /// The file was not sent: `count` calls wait already.
 QString tooManyWaitingSentence(Operation operation, const QString &file, int count);
 
-/// Why "Free up space" is disabled, in a tooltip's length; `blockedBy` is the
-/// folder above that keeps the item. Empty when no reason is said.
-QString freeUpWhyToolTip(MenuAnswer::FreeUpWhy why, const QString &blockedBy);
-
-/// "Always keep on this device" is checked and cannot be unchecked.
-QString keptByAFolderToolTip(const QString &blockedBy);
+/// Why "Free up space" is disabled, in a tooltip's length. Empty when no
+/// reason is said.
+QString freeUpWhyToolTip(MenuAnswer::FreeUpWhy why);
 
 /// "Open in OneDrive" is disabled.
 QString notInOneDriveToolTip();

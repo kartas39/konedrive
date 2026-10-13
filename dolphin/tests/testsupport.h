@@ -254,7 +254,6 @@ public:
     static QVariantMap menuOf(const QStringList &paths,
                               const QString &alwaysKeep,
                               const QString &freeUp,
-                              const QString &blockedBy = QString(),
                               const QString &openOnline = QStringLiteral("hidden"),
                               const QString &openOnlinePath = QString(),
                               const QString &freeUpWhy = QString())
@@ -263,7 +262,6 @@ public:
                 {QStringLiteral("always-keep"), alwaysKeep},
                 {QStringLiteral("free-up"), freeUp},
                 {QStringLiteral("free-up-why"), freeUpWhy},
-                {QStringLiteral("blocked-by"), blockedBy},
                 {QStringLiteral("open-online"), openOnline},
                 {QStringLiteral("open-online-path"), openOnlinePath}};
     }
@@ -343,7 +341,7 @@ public Q_SLOTS:
         const bool one = paths.size() == 1;
         const QVariantMap said = menuAnswer
             ? *menuAnswer
-            : menuOf(paths, QStringLiteral("off"), QStringLiteral("enabled"), QString(), one ? QStringLiteral("enabled") : QStringLiteral("hidden"), one ? paths.first() : QString());
+            : menuOf(paths, QStringLiteral("off"), QStringLiteral("enabled"), one ? QStringLiteral("enabled") : QStringLiteral("hidden"), one ? paths.first() : QString());
         const QDBusMessage reply = menuErrorName.isEmpty() ? message.createReply(QVariant(said)) : message.createErrorReply(menuErrorName, QStringLiteral("refused"));
         if (menuDelayMs == 0) {
             QDBusConnection(connectionName()).send(reply);

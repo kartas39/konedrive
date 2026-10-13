@@ -5,8 +5,8 @@ use crate::account_folder::folder::{Sync, View, Why};
 use crate::account_folder::staged_folder::{make_kept_parts, make_service, stage_folder};
 use crate::mount::item_fixture::ItemFixture;
 
-fn taken(is_dir: bool, own: bool, pinned: bool, hydrated: bool) -> Taken {
-    Taken { is_dir, own, pinned, hydrated, in_onedrive: true }
+fn taken(is_dir: bool, pinned: bool, hydrated: bool) -> Taken {
+    Taken { is_dir, pinned, hydrated, in_onedrive: true }
 }
 
 fn menu_of(paths: &[&str], parts: Vec<(Vec<usize>, Part)>, account_folder: bool) -> Menu {
@@ -17,42 +17,38 @@ fn part(taken: Vec<Option<Taken>>) -> Part {
     Part { taken, ..Part::default() }
 }
 
-/// "Always keep on this device": hidden with nothing taken, off unless everything is
-/// pinned, on when everything is, and locked when a folder above keeps one of them.
+/// "Always keep on this device": hidden with nothing taken, off unless a pin holds for
+/// everything, on when one does — its own or a folder's above, which locks nothing.
 #[test]
-fn always_keep_is_checked_when_everything_is_pinned_and_locked_by_a_folder_above() {
-    let file = |pinned| taken(false, pinned, pinned, true);
+fn always_keep_is_checked_when_everything_is_pinned() {
+    let file = |pinned| taken(false, pinned, true);
     let cases = [
-        (vec![None], None, AlwaysKeep::Hidden),
-        (vec![Some(file(false))], None, AlwaysKeep::Off),
-        (vec![Some(file(true)), Some(file(false))], None, AlwaysKeep::Off),
-        (vec![Some(file(true)), Some(file(true))], None, AlwaysKeep::On),
-        (vec![Some(taken(false, false, true, true))], Some("/f/Docs"), AlwaysKeep::OnLocked),
+        (vec![None], AlwaysKeep::Hidden),
+        (vec![Some(file(false))], AlwaysKeep::Off),
+        (vec![Some(file(true)), Some(file(false))], AlwaysKeep::Off),
+        (vec![Some(file(true)), Some(file(true))], AlwaysKeep::On),
     ];
-    for (taken, kept_by, always_keep) in cases {
+    for (taken, always_keep) in cases {
         let paths: Vec<String> = (0..taken.len()).map(|index| format!("/f/{index}")).collect();
         let indices: Vec<usize> = (0..taken.len()).collect();
-        let menu = decide(&paths, &[(indices, Part { taken, kept_by: kept_by.map(Into::into), free_up_refused: kept_by.map(|_| FreeUpWhy::PinnedAbove) })], false);
-        assert_eq!(menu.always_keep, always_keep);
-        assert_eq!(menu.blocked_by, if kept_by.is_some() { "Docs" } else { "" }, "the folder above is named by its name alone");
+        assert_eq!(decide(&paths, &[(indices, part(taken))], false).always_keep, always_keep);
     }
 }
 
-/// "Free up space": offered for a folder, for a file that is downloaded and for a path with
-/// a pin of its own to take off; disabled, with why, when `FreeUp` would refuse.
+/// "Free up space": offered for a folder, for a file that is downloaded and for a file a
+/// pin holds for, which it lets go; disabled, with why, when `FreeUp` would refuse.
 #[test]
 fn free_up_is_offered_for_what_has_something_to_free_and_disabled_with_its_reason() {
     let cases = [
-        (taken(false, false, false, false), None, Offer::Hidden, None),
-        (taken(false, false, false, true), None, Offer::Enabled, None),
-        (taken(true, false, false, false), None, Offer::Enabled, None),
-        (taken(false, true, true, false), None, Offer::Enabled, None),
-        (taken(false, false, false, true), Some(FreeUpWhy::NotUploaded), Offer::Disabled, Some(FreeUpWhy::NotUploaded)),
-        (taken(false, false, true, true), Some(FreeUpWhy::PinnedAbove), Offer::Disabled, Some(FreeUpWhy::PinnedAbove)),
+        (taken(false, false, false), None, Offer::Hidden, None),
+        (taken(false, false, true), None, Offer::Enabled, None),
+        (taken(true, false, false), None, Offer::Enabled, None),
+        (taken(false, true, false), None, Offer::Enabled, None),
+        (taken(false, true, true), None, Offer::Enabled, None),
+        (taken(false, false, true), Some(FreeUpWhy::NotUploaded), Offer::Disabled, Some(FreeUpWhy::NotUploaded)),
     ];
     for (item, refused, offer, why) in cases {
-        let kept_by = (refused == Some(FreeUpWhy::PinnedAbove)).then(|| "/f/Docs".into());
-        let menu = menu_of(&["/f/a"], vec![(vec![0], Part { taken: vec![Some(item)], kept_by, free_up_refused: refused })], false);
+        let menu = menu_of(&["/f/a"], vec![(vec![0], Part { taken: vec![Some(item)], free_up_refused: refused })], false);
         assert_eq!((menu.free_up, menu.free_up_why), (offer, why), "{item:?} {refused:?}");
     }
 }
@@ -61,7 +57,7 @@ fn free_up_is_offered_for_what_has_something_to_free_and_disabled_with_its_reaso
 /// folder itself; never for a selection of several, and hidden for what no folder shows.
 #[test]
 fn open_online_is_for_one_path_that_onedrive_has_or_an_accounts_folder() {
-    let item = taken(false, false, false, false);
+    let item = taken(false, false, false);
     let one = menu_of(&["/f/a"], vec![(vec![0], part(vec![Some(item)]))], false);
     assert_eq!((one.open_online, one.open_online_path.as_str()), (Offer::Enabled, "/f/a"));
     let not_yet = menu_of(&["/f/a"], vec![(vec![0], part(vec![Some(Taken { in_onedrive: false, ..item })]))], false);
@@ -78,14 +74,14 @@ fn open_online_is_for_one_path_that_onedrive_has_or_an_accounts_folder() {
 /// account's part says them.
 #[test]
 fn the_paths_taken_keep_the_order_of_the_selection_across_accounts() {
-    let item = taken(false, false, false, true);
+    let item = taken(false, false, true);
     let parts = vec![(vec![2, 0], part(vec![Some(item), Some(item)])), (vec![1, 3], part(vec![None, Some(item)]))];
     let menu = menu_of(&["/a/0", "/b/1", "/a/2", "/b/3"], parts, false);
     assert_eq!(menu.paths, ["/a/0", "/a/2", "/b/3"]);
 }
 
-/// An account's share of a selection, asked of its mount: what each path is, whose pin holds
-/// for it, whether it is downloaded, and what `FreeUp` would refuse the selection for.
+/// An account's share of a selection, asked of its mount: what each path is, whether a pin
+/// holds for it, whether it is downloaded, and what `FreeUp` would refuse the selection for.
 #[test]
 fn an_accounts_part_says_each_path_as_the_mount_has_it() {
     let fixture = ItemFixture::new();
@@ -106,14 +102,18 @@ fn an_accounts_part_says_each_path_as_the_mount_has_it() {
         service.pin(&[path("docs")]).await.unwrap();
 
         let part = service.menu_part(&[path("docs"), path("docs/a.txt"), path("online.txt"), path("no such name")]).await;
-        assert_eq!(part.taken, [Some(taken(true, true, true, false)), Some(taken(false, false, true, true)), Some(taken(false, false, false, false)), None]);
-        assert_eq!(part.kept_by, Some(path("docs")), "the folder above that pins one of them");
-        assert_eq!(part.free_up_refused, Some(FreeUpWhy::PinnedAbove));
+        assert_eq!(part.taken, [Some(taken(true, true, false)), Some(taken(false, true, true)), Some(taken(false, false, false)), None]);
+        assert_eq!(part.free_up_refused, None, "a pin above refuses nothing");
+
+        // Let go under the pinned folder: the file is not pinned any more, and the folder is.
+        service.unpin(&[path("docs/a.txt")]).await.unwrap();
+        let part = service.menu_part(&[path("docs"), path("docs/a.txt")]).await;
+        assert_eq!(part.taken, [Some(taken(true, true, false)), Some(taken(false, false, true))]);
 
         let part = service.menu_part(&[path("online.txt"), path("changed.txt")]).await;
-        assert_eq!((part.kept_by, part.free_up_refused), (None, Some(FreeUpWhy::NotUploaded)));
+        assert_eq!(part.free_up_refused, Some(FreeUpWhy::NotUploaded));
         let part = service.menu_part(&[path("online.txt")]).await;
-        assert_eq!((part.kept_by, part.free_up_refused), (None, None));
+        assert_eq!(part.free_up_refused, None);
 
         let kept = service.folder.write().await.record_mut().and_then(|record| record.kept.parts.take());
         service.view.send_replace(View::default());

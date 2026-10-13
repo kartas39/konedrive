@@ -59,8 +59,6 @@ struct MenuAnswer {
         Hidden,
         Off,
         On,
-        /// Checked, and it cannot be unchecked.
-        OnLocked,
     };
     enum class Offer {
         Hidden,
@@ -72,8 +70,6 @@ struct MenuAnswer {
     enum class FreeUpWhy {
         /// Not disabled, or for a reason this plugin does not know.
         NotSaid,
-        /// A folder above keeps an item pinned: `blockedBy`.
-        PinnedAbove,
         NotUploaded,
     };
 
@@ -82,9 +78,6 @@ struct MenuAnswer {
     AlwaysKeep alwaysKeep = AlwaysKeep::Hidden;
     Offer freeUp = Offer::Hidden;
     FreeUpWhy freeUpWhy = FreeUpWhy::NotSaid;
-    /// The folder above that keeps an item pinned, when that is why
-    /// `alwaysKeep` is OnLocked or `freeUp` is Disabled; empty otherwise.
-    QString blockedBy;
     Offer openOnline = Offer::Hidden;
     /// What WebUrl() is called with.
     QString openOnlinePath;
