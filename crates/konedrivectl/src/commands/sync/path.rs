@@ -73,7 +73,9 @@ async fn change<T>(
 ) -> anyhow::Result<()> {
     let paths = given.iter().map(|path| absolute_str(path)).collect::<anyhow::Result<Vec<String>>>()?;
     let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
-    let files = FilesProxy::new(&daemon.connection).await?;
+    // Without the answer limit: a download is answered when the file is here, and a folder
+    // kept or freed up when every file in it was gone through.
+    let files = daemon.unlimited_files().await?;
     let result = call(&files, &refs).await;
     let done = explained_paths(daemon, action, &paths, result).await?;
     // The call went through: what was done is said whatever happens next. The folders are

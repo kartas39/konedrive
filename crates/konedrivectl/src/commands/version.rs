@@ -10,7 +10,7 @@ pub(crate) async fn print_version() {
 
 async fn daemon_build() -> konedrivectl::text::version::DaemonBuild {
     use konedrivectl::text::version::DaemonBuild;
-    let connection = match zbus::Connection::session().await {
+    let connection = match crate::daemon::connect_with_answer_limit().await {
         Ok(connection) => connection,
         Err(error) => return DaemonBuild::NotRunning(format!("no session bus: {error}")),
     };

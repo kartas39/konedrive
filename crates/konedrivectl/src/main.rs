@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use anyhow::anyhow;
 use clap::Parser;
 use konedrivectl::choice::NoChoice;
-use konedrivectl::text::refusals::{explain_account_error, AccountAction};
+use konedrivectl::text::refusals::{explain_account_error, is_unanswered, unanswered_text, AccountAction};
 
 use cli::{AccountCmd, Cli, Cmd, FolderCmd, SyncCmd};
 use commands::account::account;
@@ -56,6 +56,11 @@ async fn main() -> ExitCode {
         Err(error) => {
             if let Some(declined) = error.downcast_ref::<Declined>() {
                 eprintln!("{declined}");
+                return ExitCode::FAILURE;
+            }
+            // A call the daemon did not answer, not explained by its command: said the same way everywhere.
+            if error.chain().any(|cause| cause.downcast_ref::<zbus::Error>().is_some_and(is_unanswered)) {
+                eprintln!("Error: {}", unanswered_text());
                 return ExitCode::FAILURE;
             }
             eprintln!("Error: {error:?}");

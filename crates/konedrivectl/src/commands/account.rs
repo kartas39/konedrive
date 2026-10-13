@@ -52,7 +52,8 @@ pub(crate) async fn account(daemon: &Daemon, option: Option<&str>, command: Acco
             let folder = sync.folder.path().await.unwrap_or_default();
             // Never refused for what is unsent: the user is told what stays only here, and may leave it.
             super::sync::folder::warn_of_unsent_changes(&sync, yes).await?;
-            let result = daemon.manager.remove(&target.path.as_ref()).await;
+            // Without the answer limit: answered once the account's folder is forgotten.
+            let result = daemon.unlimited_manager().await?.remove(&target.path.as_ref()).await;
             if let Err(error) = result {
                 let source = sync.folder.source().await.unwrap_or_default();
                 let context = Context { root: &folder, source: &source, ..Default::default() };
