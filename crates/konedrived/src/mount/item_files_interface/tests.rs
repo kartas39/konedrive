@@ -196,7 +196,7 @@ fn the_status_of_a_path_is_the_rows_sync_state_its_pin_and_what_runs_for_it() {
     let run = fixture.runtime();
     let status = |path: &str| run.block_on(files.find_path_status(&fixture.disk_path(path))).expect("the status");
 
-    assert_eq!(status("docs"), ItemPathStatus { item: directory.local_item_id, kind: ItemKind::Directory, onedrive_item: ItemFixture::onedrive_reference_of("docs"), sync_state: None, is_pinned: false, pin_holder: super::PinHolder::Nobody, is_downloading: false, is_open_for_writing: false });
+    assert_eq!(status("docs"), ItemPathStatus { item: directory.local_item_id, kind: ItemKind::Directory, onedrive_item: ItemFixture::onedrive_reference_of("docs"), sync_state: None, is_pinned: false, is_downloading: false, is_open_for_writing: false });
     assert_eq!(status("docs/remote.txt").sync_state, Some(FileSyncState::RemoteOnly));
     assert_eq!(status("docs/clean.txt").sync_state, Some(FileSyncState::Synced));
     assert_eq!(status("docs/changed.txt").sync_state, Some(FileSyncState::ModifiedHere));
@@ -233,7 +233,7 @@ fn what_is_downloaded_below_a_path_is_counted_from_the_rows() {
 
 /// The status of a file with `sync_state`, as far as the state for the menu reads it.
 fn status_with(sync_state: Option<FileSyncState>, is_downloading: bool) -> ItemPathStatus {
-    ItemPathStatus { item: LocalItemId::new(5), kind: if sync_state.is_some() { ItemKind::File } else { ItemKind::Directory }, onedrive_item: ItemFixture::onedrive_reference_of("x"), sync_state, is_pinned: false, pin_holder: PinHolder::Nobody, is_downloading, is_open_for_writing: false }
+    ItemPathStatus { item: LocalItemId::new(5), kind: if sync_state.is_some() { ItemKind::File } else { ItemKind::Directory }, onedrive_item: ItemFixture::onedrive_reference_of("x"), sync_state, is_pinned: false, is_downloading, is_open_for_writing: false }
 }
 
 #[test]
@@ -274,39 +274,38 @@ fn running_step(item: LocalItemId, class: crate::sync_parts::running_steps::Step
 }
 
 #[test]
-fn whose_pin_holds_for_a_path_is_the_nearest_directorys_above_before_its_own() {
+fn the_nearest_mark_at_a_path_or_above_it_says_whether_a_pin_holds_for_it() {
     let fixture = ItemFixture::new();
     fixture.show_onedrive_directory("docs");
     fixture.show_onedrive_directory("docs/deep");
     let file = fixture.show_onedrive_file("docs/deep/report.txt", b"the report");
     let files = make_files_interface(&fixture);
     let run = fixture.runtime();
-    let holder = |path: &str| {
-        let status = run.block_on(files.find_path_status(&fixture.disk_path(path))).expect("the status");
-        assert_eq!(status.is_pinned, status.pin_holder != PinHolder::Nobody, "{path}");
-        status.pin_holder
-    };
-    let above = |path: &str| PinHolder::DirectoryAbove { path: fixture.disk_path(path) };
-    assert_eq!(holder("docs/deep/report.txt"), PinHolder::Nobody);
+    let is_pinned = |path: &str| run.block_on(files.find_path_status(&fixture.disk_path(path))).expect("the status").is_pinned;
+    let pins = || [is_pinned("docs/deep/report.txt"), is_pinned("docs/deep"), is_pinned("docs")];
+    assert_eq!(pins(), [false, false, false]);
 
     // The file's own pin; set again, nothing changed. Its change is announced: the emblem is read from the pin.
     assert!(run.block_on(files.set_pin(&fixture.disk_path("docs/deep/report.txt"), true)).unwrap());
     assert!(!run.block_on(files.set_pin(&fixture.disk_path("docs/deep/report.txt"), true)).unwrap(), "the pin was there already");
     let place = file.local.clone().unwrap().place.unwrap();
     assert_eq!(fixture.inotify_bridge.list_queued(), [vec![ItemAnnouncement::MarksChanged { item: file.local_item_id, place }]], "once: what did not change is not announced");
-    assert_eq!([holder("docs/deep/report.txt"), holder("docs/deep"), holder("docs")], [PinHolder::Itself, PinHolder::Nobody, PinHolder::Nobody]);
+    assert_eq!(pins(), [true, false, false]);
 
-    // A directory above comes before the item's own pin: the nearest one, by its full path.
+    // A directory above is pinned whole, and one in it is let go: an exception, which a pin below it wins over.
     assert!(run.block_on(files.set_pin(&fixture.disk_path("docs"), true)).unwrap());
-    assert_eq!([holder("docs/deep/report.txt"), holder("docs/deep"), holder("docs")], [above("docs"), above("docs"), PinHolder::Itself]);
-    assert!(run.block_on(files.set_pin(&fixture.disk_path("docs/deep"), true)).unwrap());
-    assert_eq!([holder("docs/deep/report.txt"), holder("docs/deep")], [above("docs/deep"), above("docs")]);
+    assert_eq!(pins(), [true, true, true]);
+    assert!(run.block_on(files.set_pin(&fixture.disk_path("docs/deep"), false)).unwrap());
+    assert_eq!(pins(), [false, false, true]);
+    assert!(run.block_on(files.set_pin(&fixture.disk_path("docs/deep/report.txt"), true)).unwrap());
+    assert_eq!(pins(), [true, false, true]);
+    assert_eq!(run.block_on(files.count_pins()), 2, "the exception is not counted");
 
-    // Taken off above: the file's own pin holds again; taken off twice, nothing changed.
+    // Taken off above: every mark below goes with it; taken off twice, nothing changed.
     assert!(run.block_on(files.set_pin(&fixture.disk_path("docs"), false)).unwrap());
     assert!(!run.block_on(files.set_pin(&fixture.disk_path("docs"), false)).unwrap());
-    assert!(run.block_on(files.set_pin(&fixture.disk_path("docs/deep"), false)).unwrap());
-    assert_eq!([holder("docs/deep/report.txt"), holder("docs/deep"), holder("docs")], [PinHolder::Itself, PinHolder::Nobody, PinHolder::Nobody]);
+    assert_eq!(pins(), [false, false, false]);
+    assert_eq!(run.block_on(files.count_pins()), 0);
 }
 
 /// What a free-up would decide is asked for every file, then the free-up runs for each:
@@ -344,12 +343,12 @@ fn what_a_free_up_would_decide_is_what_the_free_up_then_does() {
     let (writer, _) = fixture.item_handles.add_writer(written, Arc::new(fs::File::open(fixture.disk_path("docs/written.txt")).unwrap()));
     let files = make_files_interface(&fixture);
     let run = fixture.runtime();
-    let decide = |path: &str, is_own_pin_taken_off| run.block_on(files.decide_free_up(&fixture.disk_path(path), is_own_pin_taken_off)).unwrap_or_else(|refusal| panic!("{path}: {refusal}"));
+    let decide = |path: &str, is_pin_taken_off| run.block_on(files.decide_free_up(&fixture.disk_path(path), is_pin_taken_off)).unwrap_or_else(|refusal| panic!("{path}: {refusal}"));
 
     // A directory: by the pin that holds for its own row, and nothing else — not a step that runs for it.
     assert_eq!([decide("docs", false), decide("renamed", false), decide("kept", false), decide("kept", true)], [FreeUpDecision::NothingToFree, FreeUpDecision::NothingToFree, FreeUpDecision::LeavePinned, FreeUpDecision::NothingToFree]);
-    // With the item's own pin taken off first, as `Files.FreeUp` takes it off: a pin above still holds.
-    assert_eq!([decide("docs/own-pin.txt", true), decide("kept/both-pins.txt", true), decide("kept/below-a-pin.txt", true)], [FreeUpDecision::Free, FreeUpDecision::LeavePinned, FreeUpDecision::LeavePinned]);
+    // Once no pin holds for the item, as `Files.FreeUp` makes it first: its own, and one above.
+    assert_eq!([decide("docs/own-pin.txt", true), decide("kept/both-pins.txt", true), decide("kept/below-a-pin.txt", true)], [FreeUpDecision::Free, FreeUpDecision::Free, FreeUpDecision::Free]);
 
     let cases = [
         ("docs/clean.txt", FreeUpDecision::Free),

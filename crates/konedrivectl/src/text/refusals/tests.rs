@@ -220,13 +220,13 @@ fn a_file_operation_is_told_in_the_catalogues_words() {
 }
 
 /// Where the catalogue has no sentence for the command line, a file operation is told as
-/// this table tells its other commands: a folder above that keeps the file, no folder.
+/// this table tells its other commands: no folder. And a file a pin keeps is not freed up
+/// by `sync dehydrate`, which names the command that lets it go.
 #[test]
 fn a_file_operation_the_catalogue_leaves_to_the_command_line_keeps_its_own_words() {
     let told = |action, refusal: &str, detail: &str| refusal_text(action, Some(&named(refusal)), detail, "/r");
-    let pinned = "/r/Docs/a.bin is pinned by /r/Docs: unpin it first";
-    assert!(told(SyncAction::Unpin("/r/Docs/a.bin"), "NotAllowed", pinned).ends_with("`konedrivectl sync unpin /r/Docs` stops keeping the folder"));
-    assert!(told(SyncAction::Free("/r/Docs/a.bin"), "NotAllowed", pinned).contains("free up the folder first: `konedrivectl sync free /r/Docs`"));
+    let pinned = "/r/Docs/a.bin is pinned: unpin it first";
+    assert!(told(SyncAction::Dehydrate("/r/Docs/a.bin"), "NotAllowed", pinned).ends_with("`konedrivectl sync free /r/Docs/a.bin` stops keeping it and frees it up"));
     assert!(told(SyncAction::Pin("/r/a.bin"), "NoRoot", "x").starts_with("no sync folder is registered. Register one first"));
 }
 

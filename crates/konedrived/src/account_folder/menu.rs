@@ -12,13 +12,13 @@
 //! answers from its own reading connection to the tree store, which never waits for the
 //! store's writer.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use konedrive_fs::placeholder::State;
 use konedrive_tree::ItemKind;
 
 use crate::account_folder::SyncService;
-use crate::mount::{FreeUpDecision, PinHolder};
+use crate::mount::FreeUpDecision;
 
 /// "Always keep on this device" in the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,8 +28,6 @@ pub(crate) enum AlwaysKeep {
     Off,
     /// Checked: unchecking it is `Unpin`.
     On,
-    /// Checked, and it cannot be unchecked: `Unpin` would refuse the paths.
-    OnLocked,
 }
 
 impl AlwaysKeep {
@@ -38,7 +36,6 @@ impl AlwaysKeep {
             AlwaysKeep::Hidden => "hidden",
             AlwaysKeep::Off => "off",
             AlwaysKeep::On => "on",
-            AlwaysKeep::OnLocked => "on-locked",
         }
     }
 }
@@ -65,8 +62,6 @@ impl Offer {
 /// Why "Free up space" is disabled: what `FreeUp` would refuse the paths for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FreeUpWhy {
-    /// A folder above keeps one of them pinned: `blocked_by`.
-    PinnedAbove,
     /// A file among them has a change waiting to be uploaded.
     NotUploaded,
 }
@@ -74,7 +69,6 @@ pub enum FreeUpWhy {
 impl FreeUpWhy {
     pub fn as_str(self) -> &'static str {
         match self {
-            FreeUpWhy::PinnedAbove => "pinned-above",
             FreeUpWhy::NotUploaded => "not-uploaded",
         }
     }
@@ -90,9 +84,6 @@ pub struct Menu {
     pub(crate) free_up: Offer,
     /// Why `free_up` is `Disabled`; `None` when it is not.
     pub(crate) free_up_why: Option<FreeUpWhy>,
-    /// The name of the folder above that keeps an item pinned, when that is why
-    /// `always_keep` is `OnLocked` or `free_up` is `Disabled`; empty otherwise.
-    pub(crate) blocked_by: String,
     pub(crate) open_online: Offer,
     /// The path `WebUrl` is then called with; empty when `open_online` is `Hidden`.
     pub(crate) open_online_path: String,
@@ -102,9 +93,7 @@ pub struct Menu {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Taken {
     pub(crate) is_dir: bool,
-    /// It carries a pin of its own.
-    pub(crate) own: bool,
-    /// It is pinned: by itself, or by a folder above it.
+    /// A pin holds for it: its own, or that of a folder above it.
     pub(crate) pinned: bool,
     /// A file that is downloaded.
     pub(crate) hydrated: bool,
@@ -117,11 +106,8 @@ pub struct Taken {
 pub struct Part {
     /// Each path given, in order: what `Pin` takes, and `None` for what it refuses.
     pub taken: Vec<Option<Taken>>,
-    /// The folder `Unpin` and `FreeUp` would refuse the taken paths for: one above them
-    /// that pins them.
-    pub kept_by: Option<PathBuf>,
-    /// What `FreeUp` would refuse the taken paths for, if it would: a folder above, then
-    /// a change waiting to be uploaded, as `FreeUp` asks them.
+    /// What `FreeUp` would refuse the taken paths for, if it would: a change waiting to
+    /// be uploaded.
     pub free_up_refused: Option<FreeUpWhy>,
 }
 
@@ -140,27 +126,16 @@ impl SyncService {
                 part.taken.push(None);
                 continue;
             };
-            if let (None, PinHolder::DirectoryAbove { path: by }) = (&part.kept_by, &status.pin_holder) {
-                part.kept_by = Some(by.clone());
-            }
-            // What `FreeUp` would refuse it for once its own pin is off: a change of it that is not uploaded.
+            // What `FreeUp` would refuse it for once no pin holds for it: a change of it that is not uploaded.
             changed |= matches!(files.decide_free_up(path, true).await, Ok(FreeUpDecision::LeaveModifiedHere | FreeUpDecision::LeaveOpenForWriting));
             part.taken.push(Some(Taken {
                 is_dir: status.kind == ItemKind::Directory,
-                own: status.pin_holder == PinHolder::Itself,
                 pinned: status.is_pinned,
                 hydrated: status.find_state_attribute() == Some(State::Hydrated),
                 in_onedrive: true,
             }));
         }
-        // `FreeUp`'s checks, in its order.
-        part.free_up_refused = if part.kept_by.is_some() {
-            Some(FreeUpWhy::PinnedAbove)
-        } else if changed {
-            Some(FreeUpWhy::NotUploaded)
-        } else {
-            None
-        };
+        part.free_up_refused = changed.then_some(FreeUpWhy::NotUploaded);
         part
     }
 }
@@ -184,7 +159,6 @@ pub fn decide(paths: &[String], parts: &[(Vec<usize>, Part)], account_folder: bo
         always_keep: AlwaysKeep::Hidden,
         free_up: Offer::Hidden,
         free_up_why: None,
-        blocked_by: String::new(),
         open_online: Offer::Hidden,
         open_online_path: String::new(),
     };
@@ -206,24 +180,13 @@ pub fn decide(paths: &[String], parts: &[(Vec<usize>, Part)], account_folder: bo
         return menu;
     }
 
-    let kept_by: Option<&Path> = parts.iter().find_map(|(_, part)| part.kept_by.as_deref());
-    // Checked when everything is pinned. Unchecked, checking it is `Pin`, which leaves a
-    // path a folder above pins as it is; checked, unchecking it is `Unpin`.
-    menu.always_keep = match (taken.iter().all(|(_, item)| item.pinned), kept_by) {
-        (false, _) => AlwaysKeep::Off,
-        (true, None) => AlwaysKeep::On,
-        (true, Some(_)) => AlwaysKeep::OnLocked,
-    };
+    // Checked when a pin holds for everything: unchecking it is `Unpin`, checking it `Pin`.
+    menu.always_keep = if taken.iter().all(|(_, item)| item.pinned) { AlwaysKeep::On } else { AlwaysKeep::Off };
     // Offered for any folder, as on Windows, and for a file with something to free or a
-    // pin to take off.
-    if taken.iter().any(|(_, item)| item.is_dir || item.hydrated || item.own) {
+    // pin to be let go by.
+    if taken.iter().any(|(_, item)| item.is_dir || item.hydrated || item.pinned) {
         menu.free_up_why = parts.iter().find_map(|(_, part)| part.free_up_refused);
         menu.free_up = if menu.free_up_why.is_some() { Offer::Disabled } else { Offer::Enabled };
-    }
-    if let Some(folder) = kept_by {
-        if menu.always_keep == AlwaysKeep::OnLocked || menu.free_up_why == Some(FreeUpWhy::PinnedAbove) {
-            menu.blocked_by = folder.file_name().unwrap_or(folder.as_os_str()).to_string_lossy().into_owned();
-        }
     }
     menu
 }

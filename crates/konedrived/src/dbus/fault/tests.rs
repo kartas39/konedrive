@@ -17,7 +17,7 @@ fn every_refusal_of_the_folder_goes_out_under_its_name() {
         SyncError::AlreadyRegistered,
         SyncError::NotSignedIn,
         SyncError::NoConflict("/f/a".into()),
-        SyncError::NotAllowed("/f/a is pinned by /f: unpin it first".into()),
+        SyncError::NotAllowed("/f/a is pinned: unpin it first".into()),
         SyncError::NotUploaded("/f/a".into()),
         SyncError::NotInOneDrive("/f/a".into()),
         SyncError::Unreachable("no network".into()),

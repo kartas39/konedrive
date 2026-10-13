@@ -133,11 +133,8 @@ const OUTSIDE: Sentence = Each {
     command_line: "{file}: only files and folders inside the sync folder{folder} can be kept on this device or freed up — not symbolic links, or anything outside it.",
 };
 
-// The daemon refuses the whole call if any path it was given is pinned by a
-// folder above, and its message names that path and the folder. The plugin
-// shows the message as it is, with no file name in front: the failure may be
-// any path of the call. The command line reads the message for the two paths
-// and names the command to run, in its own table.
+// The plugin shows the daemon's message as it is, with no file name in front:
+// the failure may be any path of the call.
 const NOT_ALLOWED_KEPT: Sentence = Desktop("Could not change what is kept on this device: {detail}");
 
 /// Every name of [`Refusal`], in its order.

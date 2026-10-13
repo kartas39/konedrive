@@ -63,20 +63,15 @@ MenuAnswer menuAnswerFrom(const QVariantMap &answer)
             result.alwaysKeep = MenuAnswer::AlwaysKeep::Off;
         } else if (keep == QLatin1String("on")) {
             result.alwaysKeep = MenuAnswer::AlwaysKeep::On;
-        } else if (keep == QLatin1String("on-locked")) {
-            result.alwaysKeep = MenuAnswer::AlwaysKeep::OnLocked;
         }
         result.freeUp = offerFrom(answer.value(QStringLiteral("free-up")).toString());
     }
     if (result.freeUp == MenuAnswer::Offer::Disabled) {
         const QString why = answer.value(QStringLiteral("free-up-why")).toString();
-        if (why == QLatin1String("pinned-above")) {
-            result.freeUpWhy = MenuAnswer::FreeUpWhy::PinnedAbove;
-        } else if (why == QLatin1String("not-uploaded")) {
+        if (why == QLatin1String("not-uploaded")) {
             result.freeUpWhy = MenuAnswer::FreeUpWhy::NotUploaded;
         }
     }
-    result.blockedBy = answer.value(QStringLiteral("blocked-by")).toString();
     result.openOnlinePath = answer.value(QStringLiteral("open-online-path")).toString();
     if (!result.openOnlinePath.isEmpty()) {
         result.openOnline = offerFrom(answer.value(QStringLiteral("open-online")).toString());

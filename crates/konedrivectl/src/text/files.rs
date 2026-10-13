@@ -87,16 +87,10 @@ pub fn pin_text(queued: u32, prefix: &str) -> String {
     }
 }
 
-/// The path a `NotAllowed` refusal is about, and what pins it: the daemon
-/// says exactly `<path> is pinned by <folder>: unpin it first`, and the
-/// folder is the path or one above it — which tells the two apart even when
-/// a name holds " is pinned by " itself.
-pub(crate) fn pinned_parts(detail: &str) -> Option<(&str, &str)> {
-    const BY: &str = " is pinned by ";
-    let both = detail.strip_suffix(": unpin it first")?;
-    both.match_indices(BY)
-        .map(|(at, _)| (&both[..at], &both[at + BY.len()..]))
-        .find(|(path, by)| std::path::Path::new(path).starts_with(by))
+/// The path a `NotAllowed` refusal is about: the daemon says exactly
+/// `<path> is pinned: unpin it first`.
+pub(crate) fn pinned_path(detail: &str) -> Option<&str> {
+    detail.strip_suffix(" is pinned: unpin it first")
 }
 
 /// The one path a `NotAllowed` or `NotUploaded` refusal of a call on several
@@ -109,7 +103,7 @@ pub fn refused_path(error: &zbus::Error) -> Option<&str> {
 /// [`refused_path`], on the error's name and message.
 fn refused_path_of<'a>(name: &str, detail: &'a str) -> Option<&'a str> {
     match Refusal::parse(name) {
-        Refusal::NotAllowed => pinned_parts(detail).map(|(path, _)| path),
+        Refusal::NotAllowed => pinned_path(detail),
         // "<path> is not uploaded yet, so freeing it up would lose …"
         Refusal::NotUploaded => detail.split_once(" is not uploaded yet").map(|(path, _)| path),
         _ => None,
@@ -119,7 +113,7 @@ fn refused_path_of<'a>(name: &str, detail: &'a str) -> Option<&'a str> {
 /// `sync unpin`: how many pins came off; the files stay.
 pub fn unpin_text(unpinned: u32) -> String {
     match unpinned {
-        0 => "Nothing here had a pin of its own, so nothing changed.".to_owned(),
+        0 => "Nothing here was kept on this device, so nothing changed.".to_owned(),
         1 => "No longer kept on this device. What is downloaded stays; `konedrivectl sync free` frees it.".to_owned(),
         n => format!(
             "{n} items are no longer kept on this device. What is downloaded stays; `konedrivectl sync free` frees it."
@@ -128,7 +122,7 @@ pub fn unpin_text(unpinned: u32) -> String {
 }
 
 /// The keys of `Files.Menu`'s answer, in the order `sync menu` prints them.
-const MENU_KEYS: [&str; 7] = ["paths", "always-keep", "free-up", "free-up-why", "blocked-by", "open-online", "open-online-path"];
+const MENU_KEYS: [&str; 6] = ["paths", "always-keep", "free-up", "free-up-why", "open-online", "open-online-path"];
 
 /// `sync menu`: the answer of `Files.Menu`, one line per key, `key: value`. A list is
 /// its entries, each quoted, with a space between; an empty value leaves the line at

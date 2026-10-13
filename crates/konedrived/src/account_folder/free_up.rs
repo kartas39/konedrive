@@ -3,29 +3,19 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::mount::{FreeUpDecision, ItemPathStatus, PinHolder};
+use crate::mount::FreeUpDecision;
 use crate::status::activity::{self, Kind};
 use crate::account_folder::pins::refusal;
 use crate::account_folder::{SyncError, SyncService};
 
-/// The refusal of a path a pin keeps: it names the folder above that pins it, or the path
-/// itself for a pin of its own.
-fn pinned(path: &Path, status: &ItemPathStatus) -> SyncError {
-    match &status.pin_holder {
-        PinHolder::DirectoryAbove { path: by } => SyncError::NotAllowed(refusal(path, by)),
-        PinHolder::Itself | PinHolder::Nobody => SyncError::NotAllowed(refusal(path, path)),
-    }
-}
-
-/// What `FreeUp` refuses the path `path` for, by what a free-up decides for it once its own
-/// pin is off (`decision`: `ItemFilesInterface::decide_free_up(path, true)`): a folder above that pins it (`NotAllowed`), and a change of it that waits to
-/// be uploaded, which freeing it up would lose (`NotUploaded`). Anything else is left to the
-/// free-up itself, which counts what it leaves.
-fn refuse_free_up(path: &Path, status: &ItemPathStatus, decision: FreeUpDecision) -> Result<(), SyncError> {
+/// What `FreeUp` refuses the path `path` for, by what a free-up decides for it once no pin
+/// holds for it (`decision`: `ItemFilesInterface::decide_free_up(path, true)`): a change of
+/// it that waits to be uploaded, which freeing it up would lose (`NotUploaded`). Anything
+/// else is left to the free-up itself, which counts what it leaves.
+fn refuse_free_up(path: &Path, decision: FreeUpDecision) -> Result<(), SyncError> {
     match decision {
-        FreeUpDecision::LeavePinned => Err(pinned(path, status)),
         FreeUpDecision::LeaveModifiedHere | FreeUpDecision::LeaveOpenForWriting => Err(SyncError::NotUploaded(path.display().to_string())),
-        FreeUpDecision::Free | FreeUpDecision::LeaveDownloading | FreeUpDecision::NothingToFree => Ok(()),
+        FreeUpDecision::Free | FreeUpDecision::LeavePinned | FreeUpDecision::LeaveDownloading | FreeUpDecision::NothingToFree => Ok(()),
     }
 }
 
@@ -33,8 +23,8 @@ impl SyncService {
     /// Frees the space of one downloaded file. Recorded as a `freed` event with what it
     /// freed.
     ///
-    /// Refused `NotAllowed` for a file a pin keeps on this device — its own, or a folder's
-    /// above it: `FreeUp` takes a pin off. Refused `NotUploaded` for a file with a change
+    /// Refused `NotAllowed` for a file a pin keeps on this device: `FreeUp` is what lets
+    /// such a file go. Refused `NotUploaded` for a file with a change
     /// waiting to be uploaded, `NotHydrated` for one that is not downloaded or is being
     /// downloaded, and `InUse` for one that could not be freed after all. The mount decides
     /// ([`FreeUpDecision`]); this says its decision as a refusal.
@@ -43,7 +33,7 @@ impl SyncService {
         let files = mount.files_interface();
         match files.decide_free_up(path, false).await? {
             FreeUpDecision::Free => {}
-            FreeUpDecision::LeavePinned => return Err(pinned(path, &files.find_path_status(path).await?)),
+            FreeUpDecision::LeavePinned => return Err(SyncError::NotAllowed(refusal(path))),
             FreeUpDecision::LeaveModifiedHere | FreeUpDecision::LeaveOpenForWriting => return Err(SyncError::NotUploaded(path.display().to_string())),
             FreeUpDecision::LeaveDownloading | FreeUpDecision::NothingToFree => return Err(SyncError::NotHydrated),
         }
@@ -71,52 +61,35 @@ impl SyncService {
     }
 
     /// What `FreeUp` checks before it frees anything, on its own:
-    /// [`check_unpinnable`](Self::check_unpinnable)'s rules, and no file named itself has a
+    /// [`check_pinnable`](Self::check_pinnable)'s rule, and no file named itself has a
     /// change waiting to be uploaded (`NotUploaded`). `Files` asks every account whose
     /// folder a call's paths are in first, so that a call that spans accounts is refused as
     /// a whole or not at all.
     pub async fn check_free_up(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
-        self.check_unpinnable(paths).await?;
         let mount = self.require_mount()?;
         let files = mount.files_interface();
         for path in paths {
-            let status = files.find_path_status(path).await?;
-            refuse_free_up(path, &status, files.decide_free_up(path, true).await?)?;
+            refuse_free_up(path, files.decide_free_up(path, true).await?)?;
         }
         Ok(())
     }
 
-    /// `FreeUp(paths)`, the menu's "Free up space":
+    /// `FreeUp(paths)`, the menu's "Free up space": no pin holds for each path from now
+    /// on, as after [`unpin`](Self::unpin) — a path a folder above it pins gets an
+    /// exception, and a folder is let go whole — and then everything under it is freed up.
     ///
-    /// - a path with a pin of its own loses it, and then everything under it is freed up;
-    /// - a path a folder above it pins is refused `NotAllowed`, naming that folder; checked
-    ///   for every path before anything changes;
-    /// - any other path is freed up.
+    /// Every path is checked before anything changes. The marks are written first; one
+    /// that cannot be stops the call with that failure, before anything is freed; the
+    /// marks already written stay, and `PinnedCount` says so.
     ///
-    /// The pins come off first. One that cannot stops the call with that failure, before
-    /// anything is freed; the pins already off stay off, and `PinnedCount` says so.
-    ///
-    /// A file below a path that a pin still keeps, a download is filling, or that holds a
-    /// change not uploaded yet is left and counted in [`FreedUp::pinned`]. One `freed`
-    /// event per path that freed anything.
+    /// A file below a path that a download is filling, or that holds a change not uploaded
+    /// yet, is left and counted in [`FreedUp::pinned`]. One `freed` event per path that
+    /// freed anything.
     pub async fn free_up(&self, paths: &[PathBuf]) -> Result<FreedUp, SyncError> {
+        self.check_free_up(paths).await?;
+        self.set_pins(paths, false).await?;
         let mount = self.require_mount()?;
         let files = mount.files_interface();
-        // Every path is checked before anything changes.
-        let mut own = Vec::new();
-        for path in paths {
-            let status = files.find_path_status(path).await?;
-            refuse_free_up(path, &status, files.decide_free_up(path, true).await?)?;
-            if status.pin_holder == PinHolder::Itself {
-                own.push(path);
-            }
-        }
-        // The pins come off first; one that cannot stops the call, and the pins already off stay off.
-        for path in own {
-            let unpinned = files.set_pin(path, false).await;
-            self.show_pins(&mount).await;
-            unpinned?;
-        }
         let (mut total, mut events) = (FreedUp::default(), Vec::new());
         for path in paths {
             let freed = files.free_up(path).await?;

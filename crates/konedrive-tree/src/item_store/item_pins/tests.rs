@@ -69,8 +69,9 @@ fn a_confirmed_removal_takes_the_pin_of_the_item() {
     let directory = show_listed_directory(&mut store, "D", "R", "d");
     let inside = show_listed_file(&mut store, "F", "D", "f", "h1");
     let other = show_listed_file(&mut store, "G", "R", "g", "h2");
-    for item in [directory, inside, other] {
-        pin(&mut store, item);
+    // Each with a mark of its own, also the file a pin above holds for already.
+    for item_id in ["D", "F", "G"] {
+        store.set_pin(item_id, true).unwrap();
     }
     store.item_store().apply(&LocalVersionChange::Removed { item: other }).unwrap();
     assert_eq!(pins(&store), ["D", "F", "G"], "removed here, and OneDrive still has it");
@@ -90,15 +91,16 @@ fn a_confirmed_removal_takes_the_pin_of_the_item() {
 #[test]
 fn a_listed_removal_and_a_full_listings_sweep_take_the_pin() {
     let mut store = store_with_listed_root();
-    let directory = show_listed_directory(&mut store, "D", "R", "d");
-    let inside = show_listed_file(&mut store, "F", "D", "f", "h1");
-    let gone = show_listed_file(&mut store, "G", "R", "g", "h2");
+    show_listed_directory(&mut store, "D", "R", "d");
+    show_listed_file(&mut store, "F", "D", "f", "h1");
+    show_listed_file(&mut store, "G", "R", "g", "h2");
     let unseen = show_listed_file(&mut store, "U", "R", "u", "h3");
-    let kept = show_listed_file(&mut store, "K", "R", "k", "h4");
+    show_listed_file(&mut store, "K", "R", "k", "h4");
     write_listing_of_changes(&mut store, &[listed_file("N", "R", "never-shown", (3, "h5"), "e-N")]);
     let never_shown = store.item_store().find_bound_item(&reference("N")).unwrap().unwrap().local_item_id;
-    for item in [directory, inside, gone, unseen, kept, never_shown] {
-        pin(&mut store, item);
+    // Each with a mark of its own, also the file a pin above holds for already.
+    for item_id in ["D", "F", "G", "U", "K", "N"] {
+        store.set_pin(item_id, true).unwrap();
     }
 
     // A listing says the file is gone, and a directory with what the rows say is in it.
@@ -135,4 +137,102 @@ fn the_count_of_pins_is_of_bindings_that_rows_still_have() {
     assert_eq!(store.item_store().find_item(file).unwrap(), None);
     assert_eq!(pins(&store), ["no-row-has-this"]);
     assert_eq!(count_pins(&mut store), 0);
+}
+
+#[test]
+fn the_own_mark_says_what_the_marks_above_do_not() {
+    assert_eq!(decide_own_pin_mark(true, false), Some(PinMark::Pin));
+    assert_eq!(decide_own_pin_mark(false, true), Some(PinMark::Exception));
+    assert_eq!(decide_own_pin_mark(true, true), None, "the marks above say so already");
+    assert_eq!(decide_own_pin_mark(false, false), None);
+}
+
+/// `d` {`f`, `sub` {`g`}} and `beside`, all shown.
+fn store_with_shown_directory() -> (TreeStore, [LocalItemId; 5]) {
+    let mut store = store_with_listed_root();
+    let directory = show_listed_directory(&mut store, "D", "R", "d");
+    let file = show_listed_file(&mut store, "F", "D", "f", "h1");
+    let sub = show_listed_directory(&mut store, "S", "D", "sub");
+    let in_sub = show_listed_file(&mut store, "G", "S", "g", "h2");
+    let beside = show_listed_file(&mut store, "B", "R", "beside", "h3");
+    (store, [directory, file, sub, in_sub, beside])
+}
+
+fn pinned(store: &mut TreeStore, items: &[LocalItemId]) -> Vec<bool> {
+    items.iter().map(|item| store.item_store().is_pinned(*item).unwrap()).collect()
+}
+
+fn to_download(store: &mut TreeStore) -> Vec<LocalItemId> {
+    store.item_store().list_pinned_files_to_download(None, 10).unwrap().iter().map(|item| item.local_item_id).collect()
+}
+
+#[test]
+fn an_item_below_a_pin_is_excepted_and_a_pin_below_the_exception_holds() {
+    let (mut store, [directory, file, sub, in_sub, beside]) = store_with_shown_directory();
+    let all = [directory, file, sub, in_sub, beside];
+    pin(&mut store, directory);
+    assert_eq!(pinned(&mut store, &all), [true, true, true, true, false]);
+
+    // A directory in the pinned one is let go: nothing in it is held, and the rest is.
+    assert_eq!(store.item_store().set_item_pin(sub, false).unwrap(), PinChange::Written);
+    assert_eq!(pinned(&mut store, &all), [true, true, false, false, false]);
+    assert_eq!(to_download(&mut store), [file], "the pin does not download what is excepted");
+    assert_eq!((pins(&store), count_pins(&mut store)), (vec!["D".to_owned()], 1), "an exception is no pin");
+    assert_eq!(store.item_store().set_item_pin(sub, false).unwrap(), PinChange::AlreadySo);
+
+    // A file the user makes in the excepted directory is not held either.
+    let made = make_file(&mut store, sub, "made");
+    assert!(!store.item_store().is_pinned(made).unwrap());
+
+    // A pin below the exception wins over it.
+    pin(&mut store, in_sub);
+    assert_eq!(pinned(&mut store, &all), [true, true, false, true, false]);
+    assert_eq!(to_download(&mut store), [file, in_sub]);
+    assert_eq!(count_pins(&mut store), 2);
+}
+
+#[test]
+fn pinning_an_excepted_item_takes_the_exception_off() {
+    let (mut store, [directory, file, ..]) = store_with_shown_directory();
+    pin(&mut store, directory);
+    assert_eq!(store.item_store().set_item_pin(file, false).unwrap(), PinChange::Written);
+    assert!(!store.item_store().is_pinned(file).unwrap());
+
+    pin(&mut store, file);
+    assert!(store.item_store().is_pinned(file).unwrap());
+    assert_eq!(pins(&store), ["D"], "held by the directory's pin again, with no mark of its own");
+    assert_eq!(store.item_store().set_item_pin(file, true).unwrap(), PinChange::AlreadySo);
+
+    // With no pin above, an item that is not held gets no mark.
+    assert_eq!(store.item_store().set_item_pin(directory, false).unwrap(), PinChange::Written);
+    assert_eq!(store.item_store().set_item_pin(file, false).unwrap(), PinChange::AlreadySo);
+    let marks: i64 = store.conn.query_row("SELECT COUNT(*) FROM pins", [], |row| row.get(0)).unwrap();
+    assert_eq!(marks, 0);
+}
+
+#[test]
+fn what_is_asked_of_a_directory_takes_the_marks_below_it_off() {
+    let (mut store, [directory, file, sub, in_sub, beside]) = store_with_shown_directory();
+    let all = [directory, file, sub, in_sub, beside];
+    let marks = |store: &TreeStore| -> i64 { store.conn.query_row("SELECT COUNT(*) FROM pins", [], |row| row.get(0)).unwrap() };
+
+    // Pinned: the exception and the pin below it go, and the whole directory is held.
+    pin(&mut store, directory);
+    store.item_store().set_item_pin(sub, false).unwrap();
+    pin(&mut store, in_sub);
+    pin(&mut store, beside);
+    assert_eq!(store.item_store().set_item_pin(directory, true).unwrap(), PinChange::Written, "a pin held for it already, and marks below it went");
+    assert_eq!(pinned(&mut store, &all), [true, true, true, true, true]);
+    assert_eq!(marks(&store), 2, "the directory's and the one beside it, which is not below");
+
+    // Let go: a file pinned by itself in it is let go with it.
+    assert_eq!(store.item_store().set_item_pin(directory, false).unwrap(), PinChange::Written);
+    pin(&mut store, in_sub);
+    assert_eq!(store.item_store().set_item_pin(directory, false).unwrap(), PinChange::Written, "no pin held for it, and a pin below it went");
+    assert_eq!(pinned(&mut store, &all), [false, false, false, false, true]);
+    assert_eq!(marks(&store), 1);
+
+    // The folder itself: every mark in it goes.
+    assert_eq!(store.item_store().set_item_pin(ROOT, false).unwrap(), PinChange::Written);
+    assert_eq!(marks(&store), 0);
 }

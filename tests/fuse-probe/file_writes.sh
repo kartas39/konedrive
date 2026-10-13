@@ -586,8 +586,17 @@ pinned_directory_keeps_what_is_in_it_downloaded() {
     daemon refresh > /dev/null
     check_state docs/later.txt hydrated
     check_holds "a file under the pin is not freed" "$(daemon dehydrate "$F/docs/a.txt")" "refused"
+    check_holds "one file under the pin is freed up on its own" "$(daemon free-up "$F/docs/sub/b.txt")" "files: 1"
+    check_state docs/sub/b.txt online-only
+    seed_file M D after.txt 'arrived after the free-up'
+    daemon refresh > /dev/null
+    check_state docs/after.txt hydrated
+    check "the pin leaves the file that was freed up alone" "$(state_of docs/sub/b.txt)" online-only
+    check_state docs/a.txt hydrated
+    check "kept again" "$(daemon pin "$F/docs/sub/b.txt")" "1 pinned"
+    check_state docs/sub/b.txt hydrated
     check "unpinned" "$(daemon unpin "$F/docs")" "1 unpinned"
-    check_holds "freed once the directory is unpinned" "$(daemon free-up "$F/docs")" "files: 5"
+    check_holds "freed once the directory is unpinned" "$(daemon free-up "$F/docs")" "files: 6"
     check_state docs/a.txt online-only
     check_state docs/made.txt online-only
     check_folder_holds docs/made.txt 'made in the pinned directory'

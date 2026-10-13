@@ -135,7 +135,7 @@ async fn main() {
             ["state", p] => service.item_state(&path(p)).await,
             ["menu", p] => {
                 let part = service.menu_part(&[path(p)]).await;
-                format!("taken {:?}, kept by {:?}, free-up refused {:?}", part.taken, part.kept_by, part.free_up_refused)
+                format!("taken {:?}, free-up refused {:?}", part.taken, part.free_up_refused)
             }
             ["status"] => {
                 let s = service.state().get();

@@ -1,7 +1,5 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
-
-use konedrive_tree::{ItemKind, LocalItemId};
 
 use super::*;
 use crate::account_folder::folder::{Sync, View, Why};
@@ -15,39 +13,18 @@ async fn end_scene(service: &SyncService, mount: Arc<ItemMount>) {
     tokio::task::spawn_blocking(move || drop((kept, mount))).await.unwrap();
 }
 
-fn status(pin_holder: PinHolder) -> ItemPathStatus {
-    ItemPathStatus {
-        item: LocalItemId::new(7),
-        kind: ItemKind::File,
-        onedrive_item: ItemFixture::onedrive_reference_of("a.txt"),
-        sync_state: None,
-        is_pinned: pin_holder != PinHolder::Nobody,
-        pin_holder,
-        is_downloading: false,
-        is_open_for_writing: false,
-    }
-}
-
-/// What `FreeUp` refuses a path for, by what a free-up decides once the path's own pin is
-/// off: a pin that still holds is a directory's above, which the refusal names; a change
-/// not uploaded would be lost; everything else is the free-up's own to leave or free.
+/// What `FreeUp` refuses a path for, by what a free-up decides once no pin holds for the
+/// path: a change not uploaded would be lost; everything else is the free-up's own to
+/// leave or free.
 #[test]
-fn a_free_up_is_refused_for_a_pin_from_above_and_for_a_change_that_is_not_uploaded() {
+fn a_free_up_is_refused_for_a_change_that_is_not_uploaded() {
     let path = Path::new("/f/Docs/a.txt");
-    let above = PinHolder::DirectoryAbove { path: PathBuf::from("/f/Docs") };
-    let pinned_above = refuse_free_up(path, &status(above.clone()), FreeUpDecision::LeavePinned).unwrap_err();
-    assert!(matches!(&pinned_above, SyncError::NotAllowed(why) if *why == refusal(path, Path::new("/f/Docs"))), "{pinned_above:?}");
-    // A pin of the path's own names the path itself (`Dehydrate`, which takes no pin off).
-    for own in [PinHolder::Itself, PinHolder::Nobody] {
-        let pinned = refuse_free_up(path, &status(own), FreeUpDecision::LeavePinned).unwrap_err();
-        assert!(matches!(&pinned, SyncError::NotAllowed(why) if *why == refusal(path, path)), "{pinned:?}");
-    }
     for decision in [FreeUpDecision::LeaveModifiedHere, FreeUpDecision::LeaveOpenForWriting] {
-        let refused = refuse_free_up(path, &status(above.clone()), decision).unwrap_err();
+        let refused = refuse_free_up(path, decision).unwrap_err();
         assert!(matches!(&refused, SyncError::NotUploaded(named) if named == "/f/Docs/a.txt"), "{decision:?}: {refused:?}");
     }
-    for decision in [FreeUpDecision::Free, FreeUpDecision::LeaveDownloading, FreeUpDecision::NothingToFree] {
-        assert!(refuse_free_up(path, &status(PinHolder::Nobody), decision).is_ok(), "{decision:?}");
+    for decision in [FreeUpDecision::Free, FreeUpDecision::LeavePinned, FreeUpDecision::LeaveDownloading, FreeUpDecision::NothingToFree] {
+        assert!(refuse_free_up(path, decision).is_ok(), "{decision:?}");
     }
 }
 
@@ -59,8 +36,8 @@ fn the_detail_of_a_freed_event_counts_files_and_says_the_size() {
 
 /// Freeing up through the folder's mount: a clean copy is freed and counted; a file with a
 /// change that is not uploaded is refused, by `Dehydrate` and by `FreeUp`'s check, before
-/// anything is freed; a file with nothing on disk has nothing to free; a path with a pin of
-/// its own loses the pin and is freed.
+/// anything is freed; a file with nothing on disk has nothing to free; a pinned path loses
+/// the pin and is freed.
 #[test]
 fn a_clean_copy_is_freed_and_a_change_that_is_not_uploaded_refuses_the_free_up() {
     let fixture = ItemFixture::new();
@@ -88,15 +65,60 @@ fn a_clean_copy_is_freed_and_a_change_that_is_not_uploaded_refuses_the_free_up()
 
         service.pin(&[path("pinned.txt")]).await.unwrap();
         let refused = service.dehydrate(&path("pinned.txt")).await.unwrap_err();
-        assert!(matches!(&refused, SyncError::NotAllowed(why) if *why == refusal(&path("pinned.txt"), &path("pinned.txt"))), "{refused:?}");
+        assert!(matches!(&refused, SyncError::NotAllowed(why) if *why == refusal(&path("pinned.txt"))), "{refused:?}");
 
-        // `FreeUp` takes the path's own pin off first, and then frees.
+        // `FreeUp` takes the pin off first, and then frees.
         let freed = service.free_up(&[path("pinned.txt"), path("clean.txt"), path("online.txt")]).await.unwrap();
         assert_eq!((freed.files, freed.bytes > 0, freed.pinned), (2, true, 0));
         assert_eq!(service.state().get().local.pinned_count, 0, "the pin came off");
         for freed in ["pinned.txt", "clean.txt"] {
             assert_eq!(fixture.find_item_at(freed).unwrap().content_presence, konedrive_tree::ContentPresence::NotOnDisk, "{freed}");
         }
+        end_scene(&service, mount).await;
+    });
+}
+
+/// A file in a pinned folder is freed up on its own: it gets an exception, its copy goes,
+/// and the folder stays pinned with the rest of it kept. Pinned again, the exception is
+/// off. A free-up of the folder lets all of it go, a file pinned by itself in it too.
+#[test]
+fn a_file_in_a_pinned_folder_is_freed_up_and_the_folder_stays_pinned() {
+    let fixture = ItemFixture::new();
+    fixture.show_onedrive_directory("docs");
+    for name in ["docs/big.iso", "docs/kept.txt"] {
+        let file = fixture.show_onedrive_file(name, b"content");
+        fixture.land_copy(file.local_item_id, b"content");
+    }
+    let path = |name: &str| fixture.disk_path(name);
+    let is_on_disk = |name: &str| fixture.find_item_at(name).unwrap().content_presence == konedrive_tree::ContentPresence::OnDisk;
+    fixture.runtime().block_on(async {
+        let (service, _clock) = make_service();
+        let kept = make_kept_parts(&fixture);
+        let mount = Arc::clone(&kept.mount);
+        stage_folder(&service, &fixture.folder(), Sync::Stopped(Why::NotStarted), Some(kept)).await;
+        let is_pinned = |name: &'static str| {
+            let (mount, path) = (Arc::clone(&mount), path(name));
+            async move { mount.files_interface().find_path_status(&path).await.unwrap().is_pinned }
+        };
+
+        service.pin(&[path("docs")]).await.unwrap();
+        service.check_free_up(&[path("docs/big.iso")]).await.expect("a pin above refuses nothing");
+        let freed = service.free_up(&[path("docs/big.iso")]).await.unwrap();
+        assert_eq!((freed.files, freed.pinned), (1, 0));
+        assert!(!is_on_disk("docs/big.iso") && is_on_disk("docs/kept.txt"));
+        assert_eq!([is_pinned("docs").await, is_pinned("docs/big.iso").await, is_pinned("docs/kept.txt").await], [true, false, true]);
+        assert_eq!(service.state().get().local.pinned_count, 1, "the folder's pin; an exception is none");
+
+        // "Always keep on this device" on the file takes the exception off.
+        assert_eq!(service.pin(&[path("docs/big.iso")]).await.unwrap(), 1);
+        assert!(is_pinned("docs/big.iso").await);
+        assert_eq!(service.state().get().local.pinned_count, 1);
+
+        // The folder is let go whole.
+        let freed = service.free_up(&[path("docs")]).await.unwrap();
+        assert_eq!((freed.files, freed.pinned), (1, 0));
+        assert_eq!([is_pinned("docs").await, is_pinned("docs/kept.txt").await, is_on_disk("docs/kept.txt")], [false, false, false]);
+        assert_eq!(service.state().get().local.pinned_count, 0);
         end_scene(&service, mount).await;
     });
 }

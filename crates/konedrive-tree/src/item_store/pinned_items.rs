@@ -1,8 +1,9 @@
 //! The files a pin holds for ("always keep on this device"), by local item id. A pin is kept
 //! by the item id of OneDrive of the file or directory it was put on
 //! ([`TreeStore::pins`](crate::TreeStore::pins)): it follows the binding, and one on a
-//! directory holds for every file the folder shows in it and below it. What is here reads
-//! the pins against the rows; nothing here writes one.
+//! directory holds for every file the folder shows in it and below it, down to an item
+//! that has an exception (`item_pins`). What is here reads the pins against the rows;
+//! nothing here writes one.
 
 use super::item_row::{find_is_pinned, list_pinned_files_to_download};
 use super::ItemStore;
@@ -10,8 +11,8 @@ use crate::model::{Item, LocalItemId};
 use crate::TreeError;
 
 impl ItemStore<'_> {
-    /// Whether a pin holds for `item`: its own, or that of a directory above it in the
-    /// folder. `false` for an item the folder does not show and for an id with no row.
+    /// Whether a pin holds for `item`: the nearest mark at it or above it in the folder
+    /// is a pin. `false` for an item the folder does not show and for an id with no row.
     pub fn is_pinned(&self, item: LocalItemId) -> Result<bool, TreeError> {
         find_is_pinned(&self.store.conn, item)
     }

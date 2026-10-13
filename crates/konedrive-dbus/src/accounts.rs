@@ -102,15 +102,15 @@ pub trait Files {
     fn hydrate(&self, path: &str) -> zbus::Result<()>;
     fn dehydrate(&self, path: &str) -> zbus::Result<()>;
     fn item_state(&self, path: &str) -> zbus::Result<String>;
-    /// "Always keep on this device" for each path; how many files were
-    /// queued for download.
+    /// "Always keep on this device" for each path; how many paths a mark
+    /// changed for.
     fn pin(&self, paths: &[&str]) -> zbus::Result<u32>;
-    /// Unchecking "Always keep on this device": each path's own pin is
-    /// removed, files stay downloaded; how many pins were removed. Refused
-    /// `NotAllowed` for a path a folder above it pins.
+    /// Unchecking "Always keep on this device": no pin holds for each path any
+    /// more, files stay downloaded; how many paths a mark changed for. A path a
+    /// folder above it pins is excepted from that pin, and the folder stays pinned.
     fn unpin(&self, paths: &[&str]) -> zbus::Result<u32>;
-    /// "Free up space" for each path, its own pin taken off first. Refused `NotAllowed` for
-    /// a path a folder above it pins.
+    /// "Free up space" for each path, which no pin holds for afterwards: also one
+    /// a folder above it pins.
     fn free_up(&self, paths: &[&str]) -> zbus::Result<Freed>;
     /// The address of the page OneDrive's web interface has for the file or
     /// folder at `path`, or for the drive's root when `path` is an account's
@@ -119,7 +119,7 @@ pub trait Files {
     /// and `Unreachable` when OneDrive does not answer.
     fn web_url(&self, path: &str) -> zbus::Result<String>;
     /// What a context menu may offer for the selection `paths`, under the keys of
-    /// `dbus/org.konedrive.Files.xml`: `paths`, `always-keep`, `free-up`, `free-up-why`, `blocked-by`,
+    /// `dbus/org.konedrive.Files.xml`: `paths`, `always-keep`, `free-up`, `free-up-why`,
     /// `open-online` and `open-online-path`. Changes nothing, opens no file, and is
     /// never refused for a path it does not take.
     fn menu(&self, paths: &[&str]) -> zbus::Result<std::collections::HashMap<String, zbus::zvariant::OwnedValue>>;

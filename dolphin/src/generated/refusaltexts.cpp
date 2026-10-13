@@ -158,22 +158,15 @@ QString tooManyWaitingSentence(Operation operation, const QString &file, int cou
     return i18nc("@info", "%1 requests to KOneDrive are already waiting for an answer, so “%2” was not %3. Try again once some of them have finished.", count, file, wasNotWords(operation));
 }
 
-QString freeUpWhyToolTip(MenuAnswer::FreeUpWhy why, const QString &blockedBy)
+QString freeUpWhyToolTip(MenuAnswer::FreeUpWhy why)
 {
     switch (why) {
-    case MenuAnswer::FreeUpWhy::PinnedAbove:
-        return i18nc("@info:tooltip", "Kept on this device because “%1” is; unpin it first.", blockedBy);
     case MenuAnswer::FreeUpWhy::NotUploaded:
         return i18nc("@info:tooltip", "Not uploaded yet: freeing it up would lose the changes made here.");
     case MenuAnswer::FreeUpWhy::NotSaid:
         break;
     }
     return QString();
-}
-
-QString keptByAFolderToolTip(const QString &blockedBy)
-{
-    return i18nc("@info:tooltip", "Kept on this device because “%1” is.", blockedBy);
 }
 
 QString notInOneDriveToolTip()

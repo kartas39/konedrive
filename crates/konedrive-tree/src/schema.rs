@@ -25,12 +25,12 @@ pub use old_store::{decide_old_store, find_stored_version, list_old_store_upload
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "29";
+pub const SCHEMA_VERSION: &str = "30";
 
-/// The column of `items` that version 29 added, as the schema of a new store has it and as
-/// the step from version 28 adds it ([`old_store`]): one text, so that a store brought
-/// from 28 and a store made at 29 have the same column.
-pub(crate) const IS_EXECUTABLE_COLUMN: &str = "is_executable INTEGER NOT NULL DEFAULT 0";
+/// The column of `pins` that version 30 added, as the schema of a new store has it and as
+/// the step from version 29 adds it ([`old_store`]): one text, so that a store brought
+/// from 29 and a store made at 30 have the same column. Every row of version 29 is a pin.
+pub(crate) const IS_KEPT_COLUMN: &str = "is_kept INTEGER NOT NULL DEFAULT 1";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with.
@@ -117,8 +117,9 @@ pub(crate) const IS_EXECUTABLE_COLUMN: &str = "is_executable INTEGER NOT NULL DE
 /// - `thumbnail_marks`: which content of a file, at which path, a thumbnail was last made
 ///   for, by local item id, and the trigger `thumbnail_marks_item_gone` that takes it with
 ///   the item's row ([`crate::item_store`]'s `thumbnail_marks`, which has its schema).
-/// - `pins`: the items that carry a pin of their own, by OneDrive item id
-///   ([`crate::item_store`]'s `item_pins`).
+/// - `pins`: the items that carry a mark of their own, by OneDrive item id
+///   ([`crate::item_store`]'s `item_pins`): a pin (`is_kept` 1), or an exception from the
+///   pin of a directory above (`is_kept` 0).
 /// - `meta` keeps, beside what is named above, `full_listing_requested` while a full
 ///   listing was asked for and has not begun.
 fn schema() -> String {
@@ -153,7 +154,7 @@ fn schema() -> String {
              confirmed_at_count INTEGER NOT NULL DEFAULT 0,
              seen_in_full_listing INTEGER NOT NULL DEFAULT 0,
              unsent_since INTEGER,
-             {is_executable_column},
+             is_executable INTEGER NOT NULL DEFAULT 0,
              CHECK (kind IN ('{file}', '{directory}')),
              CHECK ((onedrive_drive_id IS NULL) = (onedrive_item_id IS NULL)),
              CHECK (onedrive_drive_id != '' AND onedrive_item_id != ''),
@@ -202,7 +203,7 @@ fn schema() -> String {
          {place_change_records}
          {own_upload_contents}
          {thumbnail_marks}
-         CREATE TABLE pins (id TEXT PRIMARY KEY);
+         CREATE TABLE pins (id TEXT PRIMARY KEY, {is_kept_column});
          CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
          INSERT INTO meta (key, value) VALUES ('{last_unsent_since}', '0');
          CREATE TRIGGER items_unsent_since_insert AFTER INSERT ON items
@@ -217,7 +218,7 @@ fn schema() -> String {
          CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
                                 path TEXT NOT NULL, detail TEXT NOT NULL);
          CREATE TABLE conflicts (kept_copy TEXT PRIMARY KEY, at INTEGER NOT NULL, original TEXT NOT NULL);",
-        is_executable_column = IS_EXECUTABLE_COLUMN,
+        is_kept_column = IS_KEPT_COLUMN,
         step_memory = step_memory_schema(),
         place_change_records = place_change_records_schema(),
         own_upload_contents = own_upload_contents_schema(),

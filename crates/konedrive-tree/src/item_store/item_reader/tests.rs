@@ -432,47 +432,6 @@ fn the_path_of_an_item_the_folder_does_not_show_is_that_of_its_synced_place() {
     assert_eq!(synced_path(&mut store, b), Some(PathBuf::from("renamed/b")));
 }
 
-#[test]
-fn the_pin_that_holds_for_an_item_is_that_of_the_nearest_directory_above_before_its_own() {
-    let mut store = store_with_listed_root();
-    let a = show_listed_directory(&mut store, "A", "R", "a");
-    let b = show_listed_directory(&mut store, "B", "A", "b");
-    let f = show_listed_file(&mut store, "F", "B", "f", "h1");
-    let made_here = make_file(&mut store, b, "made-here");
-    let beside = show_listed_file(&mut store, "G", "R", "beside", "h2");
-    let gone = show_listed_file(&mut store, "X", "A", "gone", "h3");
-    let holders = |store: &mut TreeStore| {
-        let items = store.item_store();
-        let reader = items.reader();
-        let holders: Vec<Option<LocalItemId>> = [a, b, f, made_here, beside, gone].into_iter().map(|item| reader.find_pin_holder(item).unwrap()).collect();
-        // Whether a pin holds is whether somebody holds it.
-        for (item, holder) in [a, b, f, made_here, beside, gone].into_iter().zip(&holders) {
-            assert_eq!(reader.is_pinned(item).unwrap(), holder.is_some(), "item {item}");
-        }
-        holders
-    };
-    assert_eq!(holders(&mut store), [None; 6], "no pin");
-
-    store.item_store().set_item_pin(f, true).unwrap();
-    assert_eq!(holders(&mut store), [None, None, Some(f), None, None, None], "the file's own pin, and nobody else's");
-
-    store.item_store().set_item_pin(a, true).unwrap();
-    assert_eq!(holders(&mut store), [Some(a), Some(a), Some(a), Some(a), None, Some(a)], "a directory above comes before the item's own pin; a file made here is held by it too");
-
-    store.item_store().set_item_pin(b, true).unwrap();
-    assert_eq!(holders(&mut store), [Some(a), Some(a), Some(b), Some(b), None, Some(a)], "the nearest directory above; a directory with a pin of its own is held by the one above it");
-
-    store.item_store().set_item_pin(a, false).unwrap();
-    assert_eq!(holders(&mut store), [None, Some(b), Some(b), Some(b), None, None]);
-
-    // An item the folder does not show is held by nobody, and neither is an id with no row.
-    store.item_store().set_item_pin(gone, true).unwrap();
-    assert_eq!(holders(&mut store)[5], Some(gone));
-    remove(&mut store, gone);
-    assert_eq!(store.item_store().reader().find_pin_holder(gone).unwrap(), None);
-    assert_eq!(store.item_store().reader().find_pin_holder(LocalItemId::new(999)).unwrap(), None);
-}
-
 fn never_shown_below(store: &mut TreeStore, directory: LocalItemId) -> ItemsNeverShown {
     store.item_store().reader().find_onedrive_items_never_shown_below(directory).unwrap()
 }

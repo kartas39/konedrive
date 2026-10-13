@@ -50,25 +50,10 @@ pub(crate) struct ItemPathStatus {
     pub(crate) onedrive_item: OneDriveItemReference,
     /// `None` for a directory.
     pub(crate) sync_state: Option<FileSyncState>,
-    /// Whether a pin holds for the item, its own or that of a directory above it.
+    /// Whether a pin holds for the item: the nearest mark at it or above it is a pin.
     pub(crate) is_pinned: bool,
-    /// Whose pin holds for it.
-    pub(crate) pin_holder: PinHolder,
     pub(crate) is_downloading: bool,
     pub(crate) is_open_for_writing: bool,
-}
-
-/// Whose pin holds for an item: what `Unpin`, `FreeUp`, `Dehydrate` and `Files.Menu`
-/// refuse and name by.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PinHolder {
-    /// No pin holds for it.
-    Nobody,
-    /// The item's own pin, and no directory above it has one.
-    Itself,
-    /// A directory above it has a pin (whether or not the item has one of its own): the
-    /// nearest such directory, by its full path — what a refusal names.
-    DirectoryAbove { path: PathBuf },
 }
 
 impl ItemPathStatus {
@@ -165,20 +150,7 @@ impl ItemFilesInterface {
         let (item, is_pinned) = self.find_onedrive_item(path).await?;
         let Some(onedrive_item) = item.onedrive_item.clone() else { return Err(FilesRefusal::NotInOneDrive) };
         let id = item.local_item_id;
-        // Whose pin holds for it: the nearest directory above with a pin of its own, else the item's own.
-        let folder = self.folder.clone();
-        let pin_holder = self
-            .store
-            .read_items(move |reader| {
-                Ok(match reader.find_pin_holder(id)? {
-                    None => PinHolder::Nobody,
-                    Some(holder) if holder == id => PinHolder::Itself,
-                    Some(holder) => PinHolder::DirectoryAbove { path: folder.join(reader.find_path(holder)?.unwrap_or_default()) },
-                })
-            })
-            .await
-            .map_err(to_refusal)?;
-        Ok(ItemPathStatus { item: id, kind: item.kind, onedrive_item, sync_state: item.file_sync_state(), is_pinned, pin_holder, is_downloading: self.download_states.is_downloading(id), is_open_for_writing: self.item_handles.is_open_for_writing(id) })
+        Ok(ItemPathStatus { item: id, kind: item.kind, onedrive_item, sync_state: item.file_sync_state(), is_pinned, is_downloading: self.download_states.is_downloading(id), is_open_for_writing: self.item_handles.is_open_for_writing(id) })
     }
 
     /// Asks for the download of each of `files` and waits for them all: the first
@@ -267,13 +239,14 @@ impl ItemFilesInterface {
         self.free_up(&folder).await
     }
 
-    /// `Files.Pin` / `Unpin`: `ItemStore::set_item_pin` as one job of the store, then the
-    /// plan woken (`WakeCause::UserAnswered`), which downloads what the pin holds, and the
-    /// change of the pin announced to whoever watches the folder
-    /// (`ItemInotifyBridge::announce` with `ItemAnnouncement::MarksChanged` of the item at
-    /// its place: the emblem is read from `user.konedrive.pin`). It is the item's OWN pin
-    /// that is set or taken off, whatever a directory above it has. Answers whether the
-    /// item's own pin changed: `false` for a pin that was there already, or was not.
+    /// `Files.Pin` / `Unpin` / `FreeUp`: `ItemStore::set_item_pin` as one job of the
+    /// store — a pin holds for the item from now on, or does not, whatever a directory
+    /// above it has, and every mark below a directory is off — then the plan woken
+    /// (`WakeCause::UserAnswered`), which downloads what the pin holds, and the change
+    /// announced to whoever watches the folder (`ItemInotifyBridge::announce` with
+    /// `ItemAnnouncement::MarksChanged` of the item at its place: the emblem is read from
+    /// `user.konedrive.pin`). Answers whether a mark changed: `false` where a pin held for
+    /// the item already, or held not, and there was no mark below it.
     pub(crate) async fn set_pin(&self, path: &Path, is_pinned: bool) -> Result<bool, FilesRefusal> {
         let (item, _) = self.find_onedrive_item(path).await?;
         let id = item.local_item_id;
@@ -294,30 +267,17 @@ impl ItemFilesInterface {
     /// What a free-up of the item at `path` would decide now
     /// (`item_free_up::decide_item_free_up`, with the row, its pin, what runs for it and
     /// whether it is open for writing, read as a free-up reads them) — and, with
-    /// `is_own_pin_taken_off`, what it would decide once the item's own pin is off, as
-    /// `Files.FreeUp` takes it off first: a pin of a directory above still holds then.
-    /// Changes nothing. What `Dehydrate`, `FreeUp`'s check and `Files.Menu` say as a
-    /// refusal or offer. For a directory: `LeavePinned` or `NothingToFree`, by the pin
-    /// that holds for its own row and nothing else; its files are decided each by itself
-    /// when the free-up runs. For a file that is not on disk: `NothingToFree`, whatever
-    /// keeps it, as the free-up answers it (`item_free_up::find_copy_on_disk`).
-    pub(crate) async fn decide_free_up(&self, path: &Path, is_own_pin_taken_off: bool) -> Result<FreeUpDecision, FilesRefusal> {
-        let relative = path.strip_prefix(&self.folder).map(Path::to_owned).map_err(|_| FilesRefusal::OutsideFolder)?;
-        // The row and whose pin holds for it, of one moment.
-        let read = self.store.read_items(move |reader| {
-            let Some(item) = reader.find_item_by_path(&relative)?.filter(|item| item.onedrive_item.is_some()) else { return Ok(None) };
-            let pin_holder = reader.find_pin_holder(item.local_item_id)?;
-            Ok(Some((item, pin_holder)))
-        });
-        let (item, pin_holder) = read.await.map_err(to_refusal)?.ok_or(FilesRefusal::NotInOneDrive)?;
+    /// `is_pin_taken_off`, what it would decide once no pin holds for the item, as
+    /// `Files.FreeUp` makes it first. Changes nothing. What `Dehydrate`, `FreeUp`'s check
+    /// and `Files.Menu` say as a refusal or offer. For a directory: `LeavePinned` or
+    /// `NothingToFree`, by the pin that holds for its own row and nothing else; its files
+    /// are decided each by itself when the free-up runs. For a file that is not on disk:
+    /// `NothingToFree`, whatever keeps it, as the free-up answers it
+    /// (`item_free_up::find_copy_on_disk`).
+    pub(crate) async fn decide_free_up(&self, path: &Path, is_pin_taken_off: bool) -> Result<FreeUpDecision, FilesRefusal> {
+        let (item, is_pinned) = self.find_onedrive_item(path).await?;
         let id = item.local_item_id;
-        let is_pinned = match pin_holder {
-            None => false,
-            // The item's own pin, and none above it: off once `Files.FreeUp` took it off.
-            Some(holder) if holder == id => !is_own_pin_taken_off,
-            // A directory above holds it, whatever the item's own pin is.
-            Some(_) => true,
-        };
+        let is_pinned = is_pinned && !is_pin_taken_off;
         Ok(match (item.kind, super::item_free_up::find_copy_on_disk(&item)) {
             // A directory has no copy of its own, and nothing that runs for its row keeps the files below it: the free-up decides each of them by itself.
             (ItemKind::Directory, _) if is_pinned => FreeUpDecision::LeavePinned,
@@ -414,8 +374,7 @@ pub(crate) enum FilesRefusal {
     Io(String),
     /// A download was asked for while OneDrive asks the account to wait: nothing is
     /// downloaded until the wait, of which this many seconds are left, is over.
-    // TODO: wording
-    #[error("OneDrive asked to wait: {seconds_left} s are left, and nothing is downloaded until then")]
+    #[error("OneDrive asked to wait: {seconds_left} s left, and nothing is downloaded until then")]
     ThrottleWait { seconds_left: u32 },
 }
 

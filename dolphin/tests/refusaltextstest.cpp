@@ -55,7 +55,7 @@ private Q_SLOTS:
             {QStringLiteral("free-up"), Operation::FreeUpSpace},
             {QStringLiteral("open-online"), Operation::OpenOnline},
         };
-        const QStringList messages = {QString(), QStringLiteral("/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first")};
+        const QStringList messages = {QString(), QStringLiteral("/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first")};
 
         QFile file(QStringLiteral(KONEDRIVE_EXPECTED_TEXTS));
         QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.fileName()));
