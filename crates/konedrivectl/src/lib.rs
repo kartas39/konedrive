@@ -23,6 +23,11 @@ pub const ACCOUNT_VARIABLE: &str = "KONEDRIVE_ACCOUNT";
 /// being opened in a browser: a sign-in over SSH, with no desktop, or in tests.
 pub const NO_BROWSER_VARIABLE: &str = "KONEDRIVE_NO_BROWSER";
 
+/// How long a call to the daemon waits for its answer. The window's calls have the same
+/// limit (Qt D-Bus's own). A call the daemon answers only once the work is done — a
+/// download, a registration, a removal — has none (`daemon::Daemon::unlimited_connection`).
+pub const ANSWER_LIMIT: std::time::Duration = std::time::Duration::from_secs(25);
+
 /// Whether a command opens the sign-in page in the browser: only when
 /// [`NO_BROWSER_VARIABLE`] is unset or empty (`no_browser`, its value) and stdout is a
 /// terminal, so that nobody's desktop gets a browser tab nobody looks at. The address is

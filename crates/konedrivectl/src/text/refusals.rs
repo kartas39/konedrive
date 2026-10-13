@@ -99,11 +99,23 @@ impl SyncAction<'_> {
     }
 }
 
+/// Whether `error` is a call the daemon did not answer within [`ANSWER_LIMIT`](crate::ANSWER_LIMIT):
+/// what zbus ends a call with when its connection's limit ran out.
+pub fn is_unanswered(error: &zbus::Error) -> bool {
+    matches!(error, zbus::Error::InputOutput(io) if io.kind() == std::io::ErrorKind::TimedOut)
+}
+
+/// What a command says of a call that [`is_unanswered`].
+pub fn unanswered_text() -> String {
+    format!("konedrived did not answer within {} seconds", crate::ANSWER_LIMIT.as_secs())
+}
+
 /// What a failed call says: the refusal its name names, if it carries a name, and the
-/// message — or, of an error with no message, its name; of an error that is no reply, what
-/// it says of itself. Every `explain_*` reads an error through this, once.
+/// message — or, of an error with no message, its name; of a call that got no answer,
+/// [`unanswered_text`]; of any other error that is no reply, what it says of itself. Every `explain_*` reads an error through this, once.
 fn read_error(error: &zbus::Error) -> (Option<Refusal>, String) {
     let detail = match error {
+        unanswered if is_unanswered(unanswered) => unanswered_text(),
         zbus::Error::MethodError(_, Some(message), _) => message.clone(),
         zbus::Error::MethodError(name, None, _) => name.to_string(),
         other => other.to_string(),
