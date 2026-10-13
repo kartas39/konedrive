@@ -26,10 +26,12 @@ pub(super) async fn folder_command(
 ) -> anyhow::Result<()> {
     let tag = chosen.tag();
     let prefix = chosen.prefix();
+    // For the calls answered only once the work is done: no answer limit.
+    let unlimited_folder = async || daemon.unlimited_folder(&chosen.account.path).await;
     match command {
         FolderCmd::Register { path } => {
             let absolute = absolute_str(&path)?;
-            let result = proxy.folder.register(&absolute).await;
+            let result = unlimited_folder().await?.register(&absolute).await;
             explained(chosen, proxy, SyncAction::Register(&absolute), result).await?;
             fail_if_not_recovered(proxy, &absolute).await?;
             println!("{tag}{}", said::registered_text(&absolute));
@@ -37,7 +39,7 @@ pub(super) async fn folder_command(
         FolderCmd::Forget { yes } => {
             // Never refused for what is unsent: the user is told what stays only here, and may leave it.
             warn_of_unsent_changes(proxy, yes).await?;
-            explained(chosen, proxy, SyncAction::Forget, proxy.folder.unregister().await).await?;
+            explained(chosen, proxy, SyncAction::Forget, unlimited_folder().await?.unregister().await).await?;
             println!("{tag}{}", said::FORGOTTEN);
             fail_if_folder_unhealthy(proxy).await?;
         }
@@ -55,7 +57,7 @@ pub(super) async fn folder_command(
             }
         }
         FolderCmd::Refresh => {
-            explained(chosen, proxy, SyncAction::Refresh, proxy.folder.refresh().await).await?;
+            explained(chosen, proxy, SyncAction::Refresh, unlimited_folder().await?.refresh().await).await?;
             println!("{tag}{}", said::REFRESHED);
             // `Refresh` read the quota again, the account's one: what it read.
             let account = daemon.account(&chosen.account.path).await?;
@@ -120,7 +122,7 @@ pub(super) async fn folder_command(
             };
             println!("{tag}{}", said::free_space_text(kept_free));
         }
-        FolderCmd::Ignore { action } => ignore(chosen, proxy, action.unwrap_or(IgnoreCmd::List)).await?,
+        FolderCmd::Ignore { action } => ignore(daemon, chosen, proxy, action.unwrap_or(IgnoreCmd::List)).await?,
         FolderCmd::NotUploaded { all } => {
             let action = SyncAction::NotUploaded;
             let summary = explained(chosen, proxy, action, proxy.queue.not_uploaded_summary().await).await?;
@@ -146,7 +148,7 @@ pub(super) async fn folder_command(
             println!("{tag}{}", said::DISMISSED);
         }
         FolderCmd::FreeUpSpace => {
-            let result = proxy.folder.free_up_space().await;
+            let result = unlimited_folder().await?.free_up_space().await;
             let freed = explained(chosen, proxy, SyncAction::FreeUpSpace, result).await?;
             println!("{tag}{}", free_up_text(&freed));
             if proxy.folder.pinned_count().await? > 0 {
@@ -167,7 +169,7 @@ async fn fail_if_not_recovered(proxy: &FolderProxies<'_>, path: &str) -> anyhow:
 }
 
 /// `sync ignore`: the list, or one pattern added to it or taken off it.
-async fn ignore(chosen: &Chosen, proxy: &FolderProxies<'_>, action: IgnoreCmd) -> anyhow::Result<()> {
+async fn ignore(daemon: &Daemon, chosen: &Chosen, proxy: &FolderProxies<'_>, action: IgnoreCmd) -> anyhow::Result<()> {
     let tag = chosen.tag();
     let mut patterns = proxy.folder.ignore_patterns().await?;
     let done = match action {
@@ -195,7 +197,9 @@ async fn ignore(chosen: &Chosen, proxy: &FolderProxies<'_>, action: IgnoreCmd) -
         }
     };
     let refs: Vec<&str> = patterns.iter().map(String::as_str).collect();
-    explained(chosen, proxy, SyncAction::Ignore, proxy.folder.set_ignore_patterns(&refs).await).await?;
+    // Without the answer limit: answered once the new list is taken.
+    let result = daemon.unlimited_folder(&chosen.account.path).await?.set_ignore_patterns(&refs).await;
+    explained(chosen, proxy, SyncAction::Ignore, result).await?;
     println!("{tag}{done}");
     Ok(())
 }

@@ -286,3 +286,14 @@ fn several_paths_are_never_put_inside_one_files_quotes() {
         format!("{two}: only files and folders inside the sync folder (/r) can be kept on this device or freed up — not symbolic links, or anything outside it.")
     );
 }
+
+/// A call the daemon did not answer within the limit is said so, whatever the command
+/// was doing; any other error that is no reply says what it says of itself.
+#[test]
+fn a_call_that_got_no_answer_is_said_so() {
+    let unanswered = zbus::Error::InputOutput(std::sync::Arc::new(std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out")));
+    assert!(super::is_unanswered(&unanswered));
+    assert_eq!(super::explain_sync_error(SyncAction::Pause, &unanswered, ""), "pausing the sync failed: konedrived did not answer within 25 seconds");
+    let closed = zbus::Error::InputOutput(std::sync::Arc::new(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed")));
+    assert!(!super::is_unanswered(&closed));
+}

@@ -1,31 +1,70 @@
 use std::path::Path;
 
 use anyhow::{bail, Context};
-use konedrive_dbus::accounts::{AccountProxy, AccountsProxy, FolderProxies};
+use konedrive_dbus::accounts::{AccountProxy, AccountsProxy, FilesProxy, FolderProxies, FolderProxy};
 use konedrive_dbus::Refusal;
 use konedrivectl::choice::{self, AccountInfo, Source};
-use konedrivectl::ACCOUNT_VARIABLE;
+use konedrivectl::{ACCOUNT_VARIABLE, ANSWER_LIMIT};
+use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedObjectPath;
 
+/// A connection to the session bus on which a call that got no answer within
+/// [`ANSWER_LIMIT`] fails (`text::refusals::is_unanswered`), so that no command waits for
+/// ever for a daemon that does not answer.
+pub(crate) async fn connect_with_answer_limit() -> zbus::Result<zbus::Connection> {
+    zbus::connection::Builder::session()?.method_timeout(ANSWER_LIMIT).build().await
+}
+
 /// The daemon: the accounts manager, and each account's objects.
+///
+/// Every property is read from the daemon when it is asked for, none through zbus's cache:
+/// the cache is filled by a call that the connection's limit does not cover, so a read
+/// through it would wait for ever for a daemon that does not answer.
 pub(crate) struct Daemon {
+    /// Every call on it has the answer limit ([`connect_with_answer_limit`]).
     pub(crate) connection: zbus::Connection,
     pub(crate) manager: AccountsProxy<'static>,
+    /// [`Daemon::unlimited_connection`], once a command asked for it.
+    unlimited: tokio::sync::OnceCell<zbus::Connection>,
 }
 
 impl Daemon {
     pub(crate) async fn connect() -> anyhow::Result<Self> {
-        let connection = zbus::Connection::session().await.context("cannot connect to the session bus")?;
-        let manager = AccountsProxy::new(&connection).await?;
-        Ok(Self { connection, manager })
+        let connection = connect_with_answer_limit().await.context("cannot connect to the session bus")?;
+        let manager = AccountsProxy::builder(&connection).cache_properties(CacheProperties::No).build().await?;
+        Ok(Self { connection, manager, unlimited: tokio::sync::OnceCell::new() })
+    }
+
+    /// A second connection, whose calls wait for their answer however long it takes: for
+    /// the calls the daemon answers only once the work is done — a file downloaded, a
+    /// folder registered or forgotten, an account removed. zbus has one limit per
+    /// connection, hence the second one; it is made when the first such call is.
+    pub(crate) async fn unlimited_connection(&self) -> anyhow::Result<&zbus::Connection> {
+        let connect = async { zbus::Connection::session().await.context("cannot connect to the session bus") };
+        self.unlimited.get_or_try_init(|| connect).await
+    }
+
+    /// `Files` on the [unlimited connection](Self::unlimited_connection).
+    pub(crate) async fn unlimited_files(&self) -> anyhow::Result<FilesProxy<'static>> {
+        Ok(FilesProxy::new(self.unlimited_connection().await?).await?)
+    }
+
+    /// The `Folder` of the account at `path` on the [unlimited connection](Self::unlimited_connection).
+    pub(crate) async fn unlimited_folder(&self, path: &OwnedObjectPath) -> anyhow::Result<FolderProxy<'static>> {
+        Ok(FolderProxy::builder(self.unlimited_connection().await?).path(path.clone())?.build().await?)
+    }
+
+    /// The accounts manager on the [unlimited connection](Self::unlimited_connection).
+    pub(crate) async fn unlimited_manager(&self) -> anyhow::Result<AccountsProxy<'static>> {
+        Ok(AccountsProxy::new(self.unlimited_connection().await?).await?)
     }
 
     pub(crate) async fn account(&self, path: &OwnedObjectPath) -> zbus::Result<AccountProxy<'static>> {
-        AccountProxy::new(&self.connection, path.clone()).await
+        AccountProxy::builder(&self.connection).path(path.clone())?.cache_properties(CacheProperties::No).build().await
     }
 
     pub(crate) async fn sync(&self, path: &OwnedObjectPath) -> zbus::Result<FolderProxies<'static>> {
-        FolderProxies::new(&self.connection, path.clone()).await
+        FolderProxies::uncached(&self.connection, path.clone()).await
     }
 
     /// Every account, in the order they were added; one removed while this runs is left out.

@@ -7,7 +7,7 @@ use konedrive_dbus::Refusal;
 use konedrivectl::text::files::refused_path;
 use konedrivectl::text::folder::needs_attention_text;
 use konedrivectl::text::formats::{no_such_path_text, NOT_UTF8_PATH};
-use konedrivectl::text::refusals::{explain_sync_error_in, Context, SyncAction};
+use konedrivectl::text::refusals::{explain_sync_error_in, is_unanswered, Context, SyncAction};
 
 use crate::daemon::{Chosen, Daemon, Folders};
 
@@ -25,9 +25,13 @@ pub(super) async fn explained<T>(
         Err(error) => error,
     };
     // Two refusals name the registered folder, and one depends on what it shows. If even
-    // reading them fails, they simply do not; the refusal is the thing to report.
-    let root = proxy.folder.path().await.unwrap_or_default();
-    let source = proxy.folder.source().await.unwrap_or_default();
+    // reading them fails, they simply do not; the refusal is the thing to report. A daemon
+    // that did not answer the call is not asked anything more.
+    let (root, source) = if is_unanswered(&error) {
+        Default::default()
+    } else {
+        (proxy.folder.path().await.unwrap_or_default(), proxy.folder.source().await.unwrap_or_default())
+    };
     let foreign = match action {
         SyncAction::Register(path) => carries_a_drive(path),
         _ => false,
@@ -51,7 +55,8 @@ pub(super) async fn explained_paths<T>(
         Ok(value) => return Ok(value),
         Err(error) => error,
     };
-    let folders = daemon.folders().await.unwrap_or_default();
+    // A daemon that did not answer the call is not asked for its folders.
+    let folders = if is_unanswered(&error) { Folders::default() } else { daemon.folders().await.unwrap_or_default() };
     let refused = refused_path(&error).map(str::to_owned).or_else(|| {
         let outside = Refusal::from_error(&error) == Some(Refusal::OutsideRoot);
         paths.iter().find(|path| outside && folders.holder(path).is_none()).cloned()
