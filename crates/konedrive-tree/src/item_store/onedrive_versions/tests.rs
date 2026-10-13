@@ -292,6 +292,7 @@ fn an_item_the_client_did_not_know_gets_a_row_with_what_the_listing_says() {
             is_name_ignored: false,
             confirmed_at_count: 0,
             unsent_since: None,
+            is_executable: false,
         }
     );
     let a = listed(&mut store, "A");

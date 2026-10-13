@@ -32,6 +32,34 @@ fn records(store: &mut TreeStore) -> Vec<PlaceChangeRecordId> {
 }
 
 #[test]
+fn an_executable_bit_stays_with_the_file_through_its_other_writes_and_leaves_nothing_unsent() {
+    let (mut store, file) = store_with_shown_file(ContentPresence::NotOnDisk);
+    let before = row(&mut store, file);
+    assert!(!before.is_executable);
+
+    store.item_store().set_executable_bit(file, true).unwrap();
+    assert_eq!(row(&mut store, file), Item { is_executable: true, ..before.clone() }, "nothing else of the row changed: nothing is unsent");
+
+    // A write of the whole row from what the caller knew of it, and a move, leave the bit.
+    store.item_store().set_local_modified_time(file, 5000, 7).unwrap();
+    store.item_store().apply(&LocalVersionChange::Moved { item: file, place: place(ROOT, "g"), is_name_ignored: false }).unwrap();
+    assert!(row(&mut store, file).is_executable);
+    assert_rules_hold(&mut store);
+
+    store.item_store().set_executable_bit(file, false).unwrap();
+    assert!(!row(&mut store, file).is_executable);
+}
+
+#[test]
+fn a_directory_has_no_executable_bit() {
+    let mut store = store_with_listed_root();
+    let directory = show_listed_directory(&mut store, "D", "R", "d");
+    assert!(is_refused(store.item_store().set_executable_bit(directory, true)));
+    assert!(is_refused(store.item_store().set_executable_bit(LocalItemId::new(999), true)), "an id with no row");
+    assert!(!row(&mut store, directory).is_executable);
+}
+
+#[test]
 fn a_time_set_on_a_clean_copy_leaves_the_file_synced() {
     for content_presence in [ContentPresence::OnDisk, ContentPresence::NotOnDisk] {
         let (mut store, file) = store_with_shown_file(content_presence);

@@ -37,7 +37,7 @@ impl SyncService {
         let (root, source, tree_lock) = (up.record.root.clone(), up.record.kept.source.clone(), Arc::clone(&up.record.kept.tree_lock));
         let wanted = stopped.folder().wanted;
         let (Some(me), Some(crate::account_folder::OneDrive { drive, paths }), Some(source)) = (self.me.upgrade(), self.wiring.onedrive.clone(), source) else {
-            let why = format!("{} shows OneDrive, but no drive is configured; it is not kept in step", root.path.display());
+            let why = format!("{} shows OneDrive, but no drive is configured; it is not synced", root.path.display());
             return self.refuse_start(stopped, StartRefusal::Mount(why), &root);
         };
         // What stands of the account now: its sign-in and whether it may write, by the function the watcher of the
@@ -173,8 +173,7 @@ impl SyncService {
         .filter(|(count, _)| *count > 0)
         .map(|(count, what)| format!("{count} {what}"))
         .collect();
-        // TODO: wording
-        (!lost.is_empty()).then(|| format!("konedrive's records of this folder were of an older version and were made anew; lost with them: {}", lost.join(", ")))
+        (!lost.is_empty()).then(|| format!("The database of this folder was of an older version and was rebuilt; lost with it: {}", lost.join(", ")))
     }
 
     /// A start of the folder at `root` was refused: why its sync does not run, written into the state
@@ -318,10 +317,13 @@ impl SyncService {
 ///   the time of the next try.
 /// - `StartRefusal::DriveNotKnown` is `Why::DriveNotKnown`, which the watcher of the account
 ///   starts again.
+/// - `StartRefusal::LegacyPlaceholders` is `Why::CannotStart` with the sentence that tells
+///   the user what to do: the account is removed and added again.
 /// - Any other refusal is `Why::CannotStart`, with the sentence.
 // test: a_refused_try_after_a_take_down_keeps_the_cause_and_counts_the_try
 // test: a_refused_refresh_of_a_taken_down_folder_leaves_its_count_and_its_next_try
 // test: a_start_refused_for_no_drive_waits_for_the_account
+// test: a_folder_of_an_older_konedrive_says_to_remove_the_account_and_add_it_again
 fn decide_refused_sync(before: &Sync, take_down_try: Option<TakeDownTry>, refusal: &StartRefusal, folder: &std::path::Path, now: i64) -> Why {
     if let Sync::Stopped(Why::TakenDown { cause, attempt, next_try_at }) = before {
         return match take_down_try {
@@ -332,14 +334,17 @@ fn decide_refused_sync(before: &Sync, take_down_try: Option<TakeDownTry>, refusa
             _ => Why::TakenDown { cause: cause.clone(), attempt: *attempt, next_try_at: *next_try_at },
         };
     }
-    // TODO: wording
     match refusal {
         StartRefusal::DriveNotKnown => Why::DriveNotKnown(format!(
-            "{} is not kept in step yet: which OneDrive drive the account has is not known until it is signed in",
+            "{} is not synced yet: sign in to this account first",
             folder.display()
         )),
-        StartRefusal::Store(why) => Why::CannotStart(format!("{} is not kept in step: {why}", folder.display())),
-        StartRefusal::Mount(why) => Why::CannotStart(format!("{} is not kept in step: {why}", folder.display())),
+        StartRefusal::Store(why) => Why::CannotStart(format!("{} is not synced: {why}", folder.display())),
+        StartRefusal::Mount(why) => Why::CannotStart(format!("{} is not synced: {why}", folder.display())),
+        StartRefusal::LegacyPlaceholders => Why::CannotStart(format!(
+            "{} was set up by an older version of konedrive, which is no longer supported. Remove this account and add it again.",
+            folder.display()
+        )),
     }
 }
 

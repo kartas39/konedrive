@@ -71,6 +71,7 @@ pub(crate) fn blank(number: i64, kind: ItemKind) -> Item {
         is_name_ignored: false,
         confirmed_at_count: 0,
         unsent_since: None,
+        is_executable: false,
     }
 }
 

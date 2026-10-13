@@ -107,6 +107,7 @@ fn the_root_is_item_1_a_directory_with_no_place() {
             is_name_ignored: false,
             confirmed_at_count: 0,
             unsent_since: None,
+            is_executable: false,
         }
     );
     assert_eq!(path(&mut store, ROOT), Some(PathBuf::new()));

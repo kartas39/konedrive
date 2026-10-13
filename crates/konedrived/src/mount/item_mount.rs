@@ -45,7 +45,7 @@ use konedrive_graph::pool::TransferPool;
 use konedrive_tree::{DriveId, Store, TreeError};
 
 use super::access_mode_switch::AccessModeSwitch;
-use super::backing_directory::{remove_write_bits, BackingDirectory};
+use super::backing_directory::{remove_write_bits, BackingDirectory, OpenRefusal};
 use super::fuse_connection::FuseConnection;
 use super::kernel_requests::{InterruptibleReads, KernelRequests};
 use super::item_content_files::ItemContentFiles;
@@ -381,6 +381,8 @@ impl Drop for ItemMount {
 pub(crate) enum ItemMountError {
     /// The backing directory, the mount or a thread.
     Io(std::io::Error),
+    /// The folder holds an older konedrive's placeholders: no mount is put over it.
+    LegacyPlaceholders,
     /// The store, under the check at start: nothing was written.
     Store(TreeError),
 }
@@ -388,6 +390,15 @@ pub(crate) enum ItemMountError {
 impl From<std::io::Error> for ItemMountError {
     fn from(error: std::io::Error) -> Self {
         ItemMountError::Io(error)
+    }
+}
+
+impl From<OpenRefusal> for ItemMountError {
+    fn from(refusal: OpenRefusal) -> Self {
+        match refusal {
+            OpenRefusal::LegacyPlaceholders => ItemMountError::LegacyPlaceholders,
+            OpenRefusal::Io(error) => ItemMountError::Io(error),
+        }
     }
 }
 

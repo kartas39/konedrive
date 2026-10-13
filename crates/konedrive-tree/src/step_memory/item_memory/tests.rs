@@ -36,6 +36,7 @@ fn row(local: Option<ItemVersion>, is_bound: bool, is_synced: bool) -> Item {
         is_name_ignored: false,
         confirmed_at_count: 0,
         unsent_since: None,
+        is_executable: false,
     }
 }
 

@@ -23,6 +23,7 @@
 //! | rename | mount, write | `rename` | `Moved` or `SavedOver` |
 //! | setattr (size) | mount, runtime, write | `decide_truncate`, `queue_truncate` or `fill_and_truncate` | `Truncated` (+ on disk), or none with a writer |
 //! | setattr (time) | mount, write | `set_modified_time` | the time (`set_local_modified_time`) |
+//! | setattr (mode) | mount, write | `set_executable_bit` | the executable bit of a file (`set_executable_bit`) |
 //! | write, fsync, flush | mount | `ItemHandles::find_file_to_write` | none per write |
 //! | release | mount, write | `close_writer` | `ClosedChanged` or `ClosedUnchanged` |
 //!
@@ -117,6 +118,8 @@
 // test: a_request_by_a_handle_that_is_not_open_is_ebadf
 // test: a_file_opened_to_be_overwritten_is_cut_and_nothing_is_downloaded
 // test: the_time_set_on_a_file_is_what_its_reply_and_the_next_getattr_say
+// test: the_executable_bit_set_on_a_file_is_what_its_reply_and_the_next_getattr_say_through_a_rename
+// test: a_file_made_with_an_executable_mode_is_executable_and_a_directory_never
 // test: a_read_through_a_handle_is_never_answered_from_a_download_of_another_content
 // test: a_read_past_the_threshold_starts_no_download_again_while_downloads_end_without_landing
 // test: a_reader_whose_content_landed_reads_the_backing_file_beside_a_writer_that_opened_since
@@ -749,13 +752,20 @@ impl ItemKernelRequests {
     /// backing file).
     /// For the bridge's own thread (mkdir, mknod): answered from the rows, on the mount's
     /// thread, nothing made.
-    pub(super) fn queue_make(&self, directory: LocalItemId, name: &OsStr, kind: MadeKind, thread_id: u32, reply: ReplyTo<MadeEntry>) {
+    /// `is_executable` is whether the mode the file is made with has the owner's
+    /// executable bit: it is written to the made file's row in the same job, after the
+    /// making (`ItemWriteOperations::set_executable_bit`); a file whose bit could not be
+    /// written is made all the same, without it. Never for a directory.
+    pub(super) fn queue_make(&self, directory: LocalItemId, name: &OsStr, kind: MadeKind, is_executable: bool, thread_id: u32, reply: ReplyTo<MadeEntry>) {
         if self.inotify_bridge.is_own_thread(thread_id) {
             return reply(self.lookup.find_entry(directory, name).map(|entry| MadeEntry { entry, fh: Fh::NOT_OPENED }));
         }
         let (write_operations, reply_attributes, name) = (Arc::clone(&self.write_operations), Arc::clone(&self.reply_attributes), name.to_owned());
         self.queue_change(reply, move || {
-            let made = write_operations.make(directory, &name, kind)?;
+            let mut made = write_operations.make(directory, &name, kind)?;
+            if is_executable && made.item.kind == ItemKind::File && write_operations.set_executable_bit(made.item.local_item_id, true).is_ok() {
+                made.item.is_executable = true;
+            }
             Ok(MadeEntry { entry: reply_attributes.describe(made.item)?, fh: made.fh })
         });
     }
@@ -819,8 +829,8 @@ impl ItemKernelRequests {
 
     /// setattr with a time and no size. `ItemWriteOperations::set_modified_time`, with the
     /// `fh` the request carries; the operation answers no attributes, and `reply` is
-    /// answered as getattr answers, with the `fh` ([`WriteReplyAttributes`]). Mode, owner
-    /// and the other times are ignored, as today.
+    /// answered as getattr answers, with the `fh` ([`WriteReplyAttributes`]). Owner and
+    /// the other times are ignored, as today.
     /// For the bridge's own thread: answered as getattr, on the mount's thread.
     pub(super) fn queue_set_modified_time(&self, node: LocalItemId, fh: Option<Fh>, mtime: i64, mtime_nsec: u32, thread_id: u32, reply: ReplyTo<FileAttr>) {
         if self.inotify_bridge.is_own_thread(thread_id) {
@@ -829,6 +839,22 @@ impl ItemKernelRequests {
         let (write_operations, reply_attributes) = (Arc::clone(&self.write_operations), Arc::clone(&self.reply_attributes));
         self.queue_change(reply, move || {
             write_operations.set_modified_time(node, fh, mtime, mtime_nsec)?;
+            reply_attributes.find_attributes(node, fh)
+        });
+    }
+
+    /// setattr with a mode and neither a size nor a time (chmod).
+    /// `ItemWriteOperations::set_executable_bit` with whether the mode has the owner's
+    /// executable bit; `reply` is answered as getattr answers, with the `fh`
+    /// ([`WriteReplyAttributes`]). Owner and the other times are ignored.
+    /// For the bridge's own thread: answered as getattr, on the mount's thread.
+    pub(super) fn queue_set_executable_bit(&self, node: LocalItemId, fh: Option<Fh>, is_executable: bool, thread_id: u32, reply: ReplyTo<FileAttr>) {
+        if self.inotify_bridge.is_own_thread(thread_id) {
+            return reply(self.answer_getattr(node, fh));
+        }
+        let (write_operations, reply_attributes) = (Arc::clone(&self.write_operations), Arc::clone(&self.reply_attributes));
+        self.queue_change(reply, move || {
+            write_operations.set_executable_bit(node, is_executable)?;
             reply_attributes.find_attributes(node, fh)
         });
     }

@@ -48,6 +48,16 @@ pub(super) use write_bits::{to_mode_bits, remove_write_bits, WriteBits};
 /// directory is opened. A download is built in a file without a name now.
 const LEGACY_STAGING_DIRECTORY: &str = ".konedrive-staging";
 
+/// Why a folder was not opened as a backing directory.
+#[derive(Debug)]
+pub(in crate::mount) enum OpenRefusal {
+    /// It holds an older konedrive's placeholders ([`legacy_placeholders`]): that
+    /// konedrive's folders are not supported, and its account is removed and added again.
+    LegacyPlaceholders,
+    /// The directory could not be opened.
+    Io(io::Error),
+}
+
 /// The backing directory, by the descriptor opened on it before the mount.
 pub(crate) struct BackingDirectory {
     descriptor: File,
@@ -58,9 +68,9 @@ impl BackingDirectory {
     /// is the one way to what it holds. A mount a daemon that died left on it is the
     /// caller's to take off first ([`crate::mount::stale_mount`]). A directory an older
     /// konedrive kept is refused.
-    pub(super) fn open(folder: &Path) -> io::Result<Self> {
+    pub(super) fn open(folder: &Path) -> Result<Self, OpenRefusal> {
         if legacy_placeholders::holds_legacy_placeholders(folder) {
-            return Err(legacy_placeholders::describe_refusal(folder));
+            return Err(OpenRefusal::LegacyPlaceholders);
         }
         // `fusermount3` mounts only where its user may write; its write bits were removed
         // when the daemon last ended.
@@ -68,7 +78,7 @@ impl BackingDirectory {
             use std::os::unix::fs::PermissionsExt;
             let _ = fs::set_permissions(folder, fs::Permissions::from_mode(to_mode_bits(EntryKind::Directory, WriteBits::Present)));
         }
-        let backing_directory = BackingDirectory { descriptor: File::open(folder)? };
+        let backing_directory = BackingDirectory { descriptor: File::open(folder).map_err(OpenRefusal::Io)? };
         let _ = fs::remove_dir_all(backing_directory.resolve_path(Path::new(LEGACY_STAGING_DIRECTORY)));
         Ok(backing_directory)
     }

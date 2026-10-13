@@ -30,12 +30,17 @@ pub(super) const ITEM_COLUMNS: &str = "local_item_id, onedrive_drive_id, onedriv
      synced_parent_id, synced_name, synced_size, synced_mtime, synced_mtime_nsec, synced_hash, synced_ctag, synced_change_count, \
      content_presence, \
      before_write_size, before_write_mtime, before_write_mtime_nsec, before_write_hash, before_write_ctag, before_write_change_count, \
-     placement, is_name_ignored, confirmed_at_count, unsent_since";
+     placement, is_name_ignored, confirmed_at_count, is_executable, unsent_since";
 
 /// The column of [`ITEM_COLUMNS`] that is read and never written here: the schema keeps it
 /// with every write of a local version or of a synced place or content (the triggers
 /// `items_unsent_since_*`).
 const UNSENT_SINCE: &str = "unsent_since";
+
+/// The column of [`ITEM_COLUMNS`] that a write of the whole row leaves as it is: the
+/// executable bit is written by [`set_executable_bit`] alone, so that a row written back
+/// from what a step or a listing knows of the item never takes the bit off.
+const IS_EXECUTABLE: &str = "is_executable";
 
 /// SQL for "the local place or content of `row` is not the synced one", `row` being the
 /// empty text for the row a statement is about, or `NEW.` in a trigger: the two differ in
@@ -135,6 +140,7 @@ mod column_index {
     pub(super) const PLACEMENT: usize = column(ITEM_COLUMNS, "placement");
     pub(super) const IS_NAME_IGNORED: usize = column(ITEM_COLUMNS, "is_name_ignored");
     pub(super) const CONFIRMED_AT_COUNT: usize = column(ITEM_COLUMNS, "confirmed_at_count");
+    pub(super) const IS_EXECUTABLE: usize = column(ITEM_COLUMNS, "is_executable");
     pub(super) const UNSENT_SINCE: usize = column(ITEM_COLUMNS, "unsent_since");
 }
 
@@ -219,6 +225,7 @@ pub(super) fn item_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
         placement: Placement::decode(&row.get::<_, String>(column_index::PLACEMENT)?),
         is_name_ignored: row.get::<_, i64>(column_index::IS_NAME_IGNORED)? != 0,
         confirmed_at_count: row.get::<_, i64>(column_index::CONFIRMED_AT_COUNT)?.max(0) as u64,
+        is_executable: row.get::<_, i64>(column_index::IS_EXECUTABLE)? != 0,
         unsent_since: row.get::<_, Option<i64>>(column_index::UNSENT_SINCE)?.map(|stamp| stamp.max(0) as u64),
     })
 }
@@ -278,10 +285,10 @@ fn values_of(item: &Item) -> Vec<Value> {
     values
 }
 
-/// The names of [`ITEM_COLUMNS`] but the first, the key, and [`UNSENT_SINCE`], which the
-/// schema keeps.
+/// The names of [`ITEM_COLUMNS`] but the first, the key, [`UNSENT_SINCE`], which the
+/// schema keeps, and [`IS_EXECUTABLE`], which has a writer of its own.
 fn written_columns() -> impl Iterator<Item = &'static str> {
-    ITEM_COLUMNS.split(',').map(str::trim).skip(1).filter(|column| *column != UNSENT_SINCE)
+    ITEM_COLUMNS.split(',').map(str::trim).skip(1).filter(|column| *column != UNSENT_SINCE && *column != IS_EXECUTABLE)
 }
 
 /// A new row: an item of `kind` with this binding and this local version, and nothing
@@ -322,6 +329,14 @@ pub(crate) fn write_item(conn: &Connection, item: &Item) -> Result<(), TreeError
         return Err(refuse(format!("item {} has no row to write", item.local_item_id)));
     }
     write_is_below_ignored_directory(conn, item.local_item_id)
+}
+
+/// The file `item` has its owner's executable bit from now on, or has it no more. Whether
+/// a row was written: none is for an id with no row and for a directory, which has no
+/// such bit.
+pub(super) fn set_executable_bit(conn: &Connection, item: LocalItemId, is_executable: bool) -> Result<bool, TreeError> {
+    let written = conn.prepare_cached("UPDATE items SET is_executable = ?2 WHERE local_item_id = ?1 AND kind = ?3")?.execute(params![item.as_i64(), is_executable, ItemKind::File.as_str()])?;
+    Ok(written > 0)
 }
 
 /// The row of `item` goes. Its id is not given again.

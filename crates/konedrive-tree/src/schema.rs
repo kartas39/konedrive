@@ -17,14 +17,20 @@ mod old_store;
 pub use old_store::{decide_old_store, find_stored_version, list_old_store_upload_sessions, OldStoreDecision, RebuildLoss, StoreOrigin, StoredVersion};
 
 /// The schema this daemon reads and writes, kept in `meta` as
-/// `schema_version`. A store of any other version — an earlier one, or a newer
-/// daemon's — is rebuilt from a full listing and never brought to this one in
-/// place ([`decide_old_store`]).
+/// `schema_version`. A store of the version before, where the change between the two
+/// only adds, is brought to this one in place; a store of any other version — an
+/// earlier one, or a newer daemon's — is rebuilt from a full listing
+/// ([`decide_old_store`]).
 ///
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "28";
+pub const SCHEMA_VERSION: &str = "29";
+
+/// The column of `items` that version 29 added, as the schema of a new store has it and as
+/// the step from version 28 adds it ([`old_store`]): one text, so that a store brought
+/// from 28 and a store made at 29 have the same column.
+pub(crate) const IS_EXECUTABLE_COLUMN: &str = "is_executable INTEGER NOT NULL DEFAULT 0";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with.
@@ -88,7 +94,8 @@ pub const SCHEMA_VERSION: &str = "28";
 ///   folder has an ignored name and no binding: it is derived from the rows above, and kept
 ///   by the writers of a local place, of `is_name_ignored` and of a binding
 ///   ([`crate::item_store`]'s `item_row`), so that the index of what is unsent can leave out
-///   what is left here without a walk up from each row. A row is made with, and moved to, only a local, an OneDrive and a synced parent that is
+///   what is left here without a walk up from each row. `is_executable` is the owner's
+///   executable bit of a file, this computer's alone. A row is made with, and moved to, only a local, an OneDrive and a synced parent that is
 ///   the row of a directory (the triggers `items_parent_directory_insert` and
 ///   `items_parent_directory_update`, asked per row, at one read by the key for each side:
 ///   a directory's row is written before what is in it). A row is not deleted while another
@@ -146,6 +153,7 @@ fn schema() -> String {
              confirmed_at_count INTEGER NOT NULL DEFAULT 0,
              seen_in_full_listing INTEGER NOT NULL DEFAULT 0,
              unsent_since INTEGER,
+             {is_executable_column},
              CHECK (kind IN ('{file}', '{directory}')),
              CHECK ((onedrive_drive_id IS NULL) = (onedrive_item_id IS NULL)),
              CHECK (onedrive_drive_id != '' AND onedrive_item_id != ''),
@@ -209,6 +217,7 @@ fn schema() -> String {
          CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
                                 path TEXT NOT NULL, detail TEXT NOT NULL);
          CREATE TABLE conflicts (kept_copy TEXT PRIMARY KEY, at INTEGER NOT NULL, original TEXT NOT NULL);",
+        is_executable_column = IS_EXECUTABLE_COLUMN,
         step_memory = step_memory_schema(),
         place_change_records = place_change_records_schema(),
         own_upload_contents = own_upload_contents_schema(),

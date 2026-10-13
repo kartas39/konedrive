@@ -50,6 +50,12 @@ fn a_start_refused_for_no_drive_waits_for_the_account() {
 }
 
 #[test]
+fn a_folder_of_an_older_konedrive_says_to_remove_the_account_and_add_it_again() {
+    let why = decide_refused_sync(&Sync::Stopped(Why::NotStarted), None, &StartRefusal::LegacyPlaceholders, Path::new(FOLDER), START);
+    assert!(matches!(&why, Why::CannotStart(said) if said.contains(FOLDER) && said.contains("older version") && said.contains("Remove this account and add it again")), "{why:?}");
+}
+
+#[test]
 fn any_other_refusal_of_a_folder_that_was_not_taken_down_is_said_with_its_cause() {
     for (refusal, named) in [(StartRefusal::Store("the store is locked".into()), "the store is locked"), (StartRefusal::Mount("no fuse".into()), "no fuse")] {
         let why = decide_refused_sync(&Sync::Stopped(Why::NotStarted), None, &refusal, Path::new(FOLDER), START);

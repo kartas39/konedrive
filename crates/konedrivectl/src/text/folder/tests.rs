@@ -85,7 +85,7 @@ fn the_activity_says_why_a_directory_was_not_removed_here() {
     );
     assert!(lines[1].ends_with("/r/a.txt  (3 KB)"), "{out}");
     // A store made anew that lost something: the kind, the folder, and the daemon's sentence.
-    let rebuilt = activity_text(&[event("store-rebuilt", "/r", "konedrive's records of this folder were of an older version and were made anew; lost with them: 3 pin(s)")]);
-    assert!(rebuilt.trim_end().ends_with("store-rebuilt  /r  (konedrive's records of this folder were of an older version and were made anew; lost with them: 3 pin(s))"), "{rebuilt}");
+    let rebuilt = activity_text(&[event("store-rebuilt", "/r", "The database of this folder was of an older version and was rebuilt; lost with it: 3 pin(s)")]);
+    assert!(rebuilt.trim_end().ends_with("store-rebuilt  /r  (The database of this folder was of an older version and was rebuilt; lost with it: 3 pin(s))"), "{rebuilt}");
     assert!(lines[2].ends_with("/r/b.txt"), "{out}");
 }

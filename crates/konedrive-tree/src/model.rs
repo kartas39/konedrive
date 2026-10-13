@@ -427,6 +427,14 @@ pub struct Item {
     /// listing: what a listing fetched before that count says of the item may be older than
     /// what was confirmed.
     pub confirmed_at_count: u64,
+    /// The owner's executable bit of a file, as a program set it through the mount (chmod,
+    /// or the mode a file was made with): the folder shows the file with it. OneDrive
+    /// keeps no modes, so it is this computer's alone and no part of any version: it stays
+    /// with the item through a rename and a move, and no step sends it. Never set for a
+    /// directory. Read with the row; written by
+    /// [`ItemStore::set_executable_bit`](crate::ItemStore::set_executable_bit) alone, never
+    /// by a write of the whole row.
+    pub is_executable: bool,
     /// A stamp from one counter of the store, given when the item's local version first came
     /// to differ from what the two sides last agreed on — in its place or its content, or
     /// by one of the two being there and the other not — and `None` while they agree. The

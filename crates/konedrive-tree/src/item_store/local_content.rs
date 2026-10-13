@@ -1,6 +1,7 @@
 //! What the mount writes of a file's local content that is no `LocalVersionChange` by
-//! itself: its time set, its presence on disk written with a change in one transaction,
-//! and its presence written only while the content is still the one the caller saw.
+//! itself: its time set, its executable bit, its presence on disk written with a change in
+//! one transaction, and its presence written only while the content is still the one the
+//! caller saw.
 //!
 //! **State owned:** none of its own: the local content's time, and `content_presence`,
 //! which `content_presence` writes unconditionally and `step_commit` for a step of the
@@ -15,6 +16,8 @@
 // test: a_time_set_on_a_clean_copy_leaves_the_file_synced
 // test: a_time_set_on_changed_content_is_the_times_of_that_content
 // test: a_time_set_is_refused_while_a_writer_holds_the_file
+// test: an_executable_bit_stays_with_the_file_through_its_other_writes_and_leaves_nothing_unsent
+// test: a_directory_has_no_executable_bit
 // test: a_file_opened_for_writing_with_nothing_on_disk_is_on_disk_in_the_same_transaction
 // test: a_refused_change_leaves_the_presence_as_it_was
 // test: a_file_made_open_for_writing_is_made_and_opened_in_one_transaction
@@ -91,6 +94,17 @@ impl ItemStore<'_> {
                 row.synced_content = Some(content.clone());
             }
             write_item(tx, &row)
+        })
+    }
+
+    /// The file `item` has its owner's executable bit from now on, or has it no more: what
+    /// a chmod through the mount asked ([`Item::is_executable`](crate::Item)). Nothing
+    /// else of the row changes, so nothing becomes unsent. One transaction. Refused for an
+    /// id with no row and for a directory.
+    pub fn set_executable_bit(&mut self, item: LocalItemId, is_executable: bool) -> Result<(), TreeError> {
+        self.write(|tx| match super::item_row::set_executable_bit(tx, item, is_executable)? {
+            true => Ok(()),
+            false => Err(refuse(format!("item {item} is no file with a row: it has no executable bit"))),
         })
     }
 
