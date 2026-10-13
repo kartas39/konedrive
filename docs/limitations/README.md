@@ -43,6 +43,7 @@ its text. An id is never given twice: a new entry takes the next number its lett
 
 ## What we chose
 
+- [F303](F303.md) — The executable bit of a file is kept on this computer only
 - [F302](F302.md) — A removal made here is sent to OneDrive with no local trash and no confirmation
 - [F299](F299.md) — A directory that holds in OneDrive what the folder cannot show cannot be removed here
 - [F298](F298.md) — A change made in the folder on disk while the daemon is not running is not a move or a removal in OneDrive
