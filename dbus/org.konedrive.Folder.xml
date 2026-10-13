@@ -109,6 +109,14 @@
     <method name="SetThumbnails">
       <arg name="on" type="b" direction="in"/>
     </method>
+    <!-- An account's own sync setting, as SetThumbnails is. How many gigabytes
+         of the free space of the disk the folder is on the downloads of pinned
+         files leave: a pinned file whose download would leave less is not
+         downloaded, and LastError and Trouble say how many wait. 0 keeps
+         nothing free. A read of a file and Files.Hydrate are not held. -->
+    <method name="SetFreeSpaceReserve">
+      <arg name="gigabytes" type="t" direction="in"/>
+    </method>
     <!-- Lifts the automatic hold (HeldBack) now, until the network's Metered,
          UPower's OnBattery or the power profile changes, or
          Accounts.PauseOnMetered / OnBattery does. Only this account's hold is
@@ -228,5 +236,7 @@
     <property name="LiveChanges" type="s" access="read"/>
     <!-- See SetThumbnails; true until it is called. -->
     <property name="Thumbnails" type="b" access="read"/>
+    <!-- See SetFreeSpaceReserve; 10 until it is called. -->
+    <property name="FreeSpaceReserve" type="t" access="read"/>
   </interface>
 </node>

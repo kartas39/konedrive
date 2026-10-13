@@ -76,6 +76,10 @@ pub struct TransfersConfig {
 /// `[transfers] download_after` when `config.toml` does not say: 1 MiB.
 pub const DOWNLOAD_AFTER: u64 = 1 << 20;
 
+/// How many gigabytes of the free space of the disk an account's folder is on the
+/// downloads of its pinned files leave, when its section names none.
+pub const DEFAULT_FREE_SPACE_RESERVE_GB: u64 = 10;
+
 impl Config {
     /// Each account's transfer pool ceiling: `[transfers] max`, clamped into
     /// [`konedrive_graph::pool::CEILING_MIN`]–[`konedrive_graph::pool::CEILING_MAX`] with a warning when it is
@@ -187,6 +191,11 @@ pub struct AccountConfig {
     /// time that has passed is no pause, and stays here until the section is written again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) paused_until: Option<i64>,
+    /// How many gigabytes of the free space of the disk the account's folder is on the
+    /// downloads of pinned files leave; `None` for
+    /// [`DEFAULT_FREE_SPACE_RESERVE_GB`]. 0 keeps nothing free.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) free_space_reserve_gb: Option<u64>,
     /// The user asked for read-only while changes were unsent: the account stays read-write
     /// until nothing is unsent and then switches by itself (`account::mode`,
     /// `keep_read_only_wish`). Absent while no such wish stands, and in every file written
@@ -222,6 +231,7 @@ impl AccountConfig {
             machine_name: String::new(),
             thumbnails: None,
             paused_until: None,
+            free_space_reserve_gb: None,
             read_only_wanted: false,
             old_pause_on_metered: None,
             old_on_battery: None,
@@ -231,6 +241,11 @@ impl AccountConfig {
     /// `thumbnails`, absent meaning on.
     pub(crate) fn thumbnails_on(&self) -> bool {
         self.thumbnails.unwrap_or(true)
+    }
+
+    /// `free_space_reserve_gb`, absent meaning [`DEFAULT_FREE_SPACE_RESERVE_GB`].
+    pub(crate) fn free_space_reserve_gb(&self) -> u64 {
+        self.free_space_reserve_gb.unwrap_or(DEFAULT_FREE_SPACE_RESERVE_GB)
     }
 }
 

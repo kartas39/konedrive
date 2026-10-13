@@ -16,12 +16,13 @@ pub(super) fn configured_ignore(persist: &Persist) -> SharedIgnore {
 }
 
 impl SyncService {
-    /// The account's own settings that decide what runs (`Folder.Thumbnails`).
+    /// The account's own settings that decide what runs (`Folder.Thumbnails`,
+    /// `Folder.FreeSpaceReserve`).
     pub(crate) fn run_settings(&self) -> Settings {
         self.running.settings()
     }
 
-    /// `SetThumbnails`, `Pause`, `Resume`: `change` is written to the account's section of
+    /// `SetThumbnails`, `SetFreeSpaceReserve`, `Pause`, `Resume`: `change` is written to the account's section of
     /// `config.toml`, and taken at once. Refused `Unsupported` for a folder not connected to
     /// OneDrive. Nothing here needs the account's sync to be running.
     pub(crate) async fn change_run_settings(&self, change: impl FnOnce(&mut Settings) + Send + 'static) -> Result<(), SyncError> {
@@ -42,6 +43,9 @@ impl SyncService {
                     if after.thumbnails != before.thumbnails {
                         a.thumbnails = Some(after.thumbnails);
                     }
+                    if after.free_space_reserve_gb != before.free_space_reserve_gb {
+                        a.free_space_reserve_gb = Some(after.free_space_reserve_gb);
+                    }
                     // By the file, not by memory: a timed pause that ran out is gone from
                     // memory and still written there.
                     if a.paused_until != after.paused_until {
@@ -56,6 +60,18 @@ impl SyncService {
         .await
         .map_err(|e| SyncError::Io(format!("the settings task failed: {e}")))??;
         self.show_pause();
+        Ok(())
+    }
+
+    /// `SetFreeSpaceReserve(gigabytes)`: how much of the free space of this computer's disk
+    /// the downloads of pinned files leave from now on, written to `config.toml`. The
+    /// plan of a running sync is woken: downloads that waited for space may start, and
+    /// ones not started yet may wait.
+    pub(crate) async fn set_free_space_reserve(&self, gigabytes: u64) -> Result<(), SyncError> {
+        self.change_run_settings(move |s| s.free_space_reserve_gb = gigabytes).await?;
+        if let Some(parts) = self.view().parts {
+            parts.sync_plan_wake.wake(crate::sync_parts::sync_plan_wake::WakeCause::SendingHoldChanged);
+        }
         Ok(())
     }
 

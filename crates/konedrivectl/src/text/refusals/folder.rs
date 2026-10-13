@@ -97,7 +97,7 @@ enum Group {
     /// What reads or steers the upload queue: `upload-queue`, `pause`, `resume`, `ignore`,
     /// `not-uploaded`, the large delete.
     Uploads,
-    /// `thumbnails`, `anyway`.
+    /// `thumbnails`, `free-space`, `anyway`.
     Settings,
     /// `skipped`, `activity`, `conflicts`, `dismiss`.
     Lists,
@@ -526,7 +526,7 @@ fn uploads(told: &Told<'_>, refusal: &Refusal) -> String {
     }
 }
 
-/// `sync thumbnails` and `sync anyway`.
+/// `sync thumbnails`, `sync free-space` and `sync anyway`.
 fn settings(told: &Told<'_>, refusal: &Refusal) -> String {
     match refusal {
         Refusal::Unsupported => "this folder is not connected to OneDrive, so it has no sync settings".to_owned(),

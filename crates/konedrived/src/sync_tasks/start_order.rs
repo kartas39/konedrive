@@ -696,6 +696,11 @@ fn start_sync_tasks(input: &FolderStartInput, store: &Store, mount: &Arc<ItemMou
         marks_announcer: Arc::new(move |items| folder_steps.announce_marks_changed(items)),
         after_folder_steps: thumbnail_filler.is_some().then(|| Arc::clone(&thumbnail_nudge)),
         unsent_count_report: Arc::clone(&input.unsent_count_report),
+        free_space_reader: mount.free_space_reader(),
+        free_space_reserve_reader: {
+            let running = Arc::clone(&input.running);
+            Arc::new(move || crate::sync_plan_task::disk_space::count_reserve_bytes(running.settings().free_space_reserve_gb))
+        },
     });
     let plan_loop = tokio::spawn(Arc::clone(&plan).run(stop.clone()));
     SyncTasks { listing_poller: Some(listing_poller), poll, plan, plan_loop, thumbnail_filler, sending_holds: Arc::clone(sending_holds), sync_plan_wake: Arc::clone(sync_plan_wake), stop }

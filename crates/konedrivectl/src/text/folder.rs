@@ -172,6 +172,15 @@ pub fn thumbnails_text(on: bool) -> &'static str {
     }
 }
 
+/// `sync free-space`' answer.
+pub fn free_space_text(gigabytes: u64) -> String {
+    // TODO: wording
+    match gigabytes {
+        0 => "Free space: nothing is kept free — files kept on this device are downloaded until the disk is full.".to_owned(),
+        _ => format!("Free space: {gigabytes} GB stay free — a file kept on this device is not downloaded while its download would leave less."),
+    }
+}
+
 /// `sync ignore add` of a pattern that is on the list.
 pub fn ignored_already_text(pattern: &str) -> String {
     format!("`{pattern}` is on the list already.")

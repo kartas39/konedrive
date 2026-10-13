@@ -253,6 +253,7 @@ class FakeFolder : public FakeFolderInterface
     Q_PROPERTY(bool Writable READ writable)
     Q_PROPERTY(QString LiveChanges READ liveChanges)
     Q_PROPERTY(bool Thumbnails READ thumbnails)
+    Q_PROPERTY(qulonglong FreeSpaceReserve READ freeSpaceReserve)
 
 public:
     FakeFolder(QObject *parent, FakeSync *sync)
@@ -281,6 +282,7 @@ public:
                                   {QStringLiteral("Writable"), true},
                                   {QStringLiteral("LiveChanges"), QStringLiteral("off")},
                                   {QStringLiteral("Thumbnails"), true},
+                                  {QStringLiteral("FreeSpaceReserve"), qulonglong(10)},
                               })
     {
     }
@@ -305,6 +307,7 @@ public:
     bool writable() const { return value("Writable").toBool(); }
     QString liveChanges() const { return value("LiveChanges").toString(); }
     bool thumbnails() const { return value("Thumbnails").toBool(); }
+    qulonglong freeSpaceReserve() const { return value("FreeSpaceReserve").toULongLong(); }
 
     /// What the daemon decided of the account as a whole: the fake decides nothing, a
     /// test says the state and the reason, with whatever else changes in the same message.
@@ -326,6 +329,7 @@ public Q_SLOTS:
     void SetIgnorePatterns(const QStringList &patterns, const QDBusMessage &message);
     void SyncAnyway();
     void SetThumbnails(bool on);
+    void SetFreeSpaceReserve(qulonglong gigabytes);
 };
 
 class FakeTransfers : public FakeFolderInterface
@@ -723,6 +727,12 @@ inline void FakeFolder::SyncAnyway()
 {
     m_sync->calls << QStringLiteral("SyncAnyway");
     set({{QStringLiteral("HeldBack"), QString()}});
+}
+
+inline void FakeFolder::SetFreeSpaceReserve(qulonglong gigabytes)
+{
+    m_sync->calls << QStringLiteral("SetFreeSpaceReserve:") + QString::number(gigabytes);
+    set({{QStringLiteral("FreeSpaceReserve"), gigabytes}});
 }
 
 inline void FakeFolder::SetThumbnails(bool on)

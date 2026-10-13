@@ -204,6 +204,12 @@ pub struct TransferStatus {
     /// reading counted them (`SyncPlanTask::publish_round`), and to none when it stops. On
     /// the bus only through `queue`, which counts what is left to download from it.
     pub pinned_download: konedrive_tree::PinnedDownloadTotal,
+    /// The downloads of pinned files that are not started because they would not leave
+    /// the free space the account keeps on this computer's disk; `None` while none
+    /// waits. ONE writer: the plan's task, each time it starts the steps of a plan
+    /// (`SyncPlanTask::start_steps`), and to none when it stops. On the bus as a part
+    /// of `LastError` and `Folder.Trouble` ([`running_trouble`]).
+    pub disk_space_shortage: Option<DiskSpaceShortage>,
     /// `DownloadLeftCount`, `DownloadLeftBytes`, `DownloadDoneBytes`, `DownloadTimeLeft` and
     /// the same four for uploads: counted from the rest by [`totals::run`].
     pub queue: totals::QueueTotals,
@@ -259,6 +265,32 @@ impl UploadQueueNote {
     }
 }
 
+/// The downloads of pinned files that wait for space on this computer's disk: how many
+/// and for how many bytes, with the free space of the filesystem the backing directory is
+/// on and what of it the account keeps free, as they were when the downloads were held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskSpaceShortage {
+    pub(crate) count: u32,
+    pub(crate) bytes: u64,
+    pub(crate) free_space: u64,
+    pub(crate) reserve: u64,
+}
+
+impl DiskSpaceShortage {
+    /// The shortage as `LastError` says it.
+    pub(crate) fn text(&self) -> String {
+        let size = crate::status::activity::human_size;
+        // TODO: wording
+        format!(
+            "{} file(s) kept on this device wait for disk space: {} to download, {} free, {} is kept free",
+            self.count,
+            size(self.bytes),
+            size(self.free_space),
+            size(self.reserve)
+        )
+    }
+}
+
 /// `at` (Unix seconds) as the clock on the wall shows it here, `HH:MM`.
 fn clock(at: i64) -> String {
     let seconds = at as libc::time_t;
@@ -273,7 +305,7 @@ fn clock(at: i64) -> String {
 
 /// The problems of a folder that keeps running, in the order `LastError` says them and
 /// joined as it joins them: what the registration ran into, the sync's trouble, then the
-/// upload queue's note; `None` with none.
+/// upload queue's note, then the pinned files that wait for disk space; `None` with none.
 ///
 /// With the sentence, its kind: [`TroubleKind::Unreachable`] only when OneDrive out of
 /// reach is all that is wrong — the kind the sync's trouble carries, and no other part
@@ -281,8 +313,9 @@ fn clock(at: i64) -> String {
 pub fn running_trouble(s: &SyncSnapshot) -> Option<(String, TroubleKind)> {
     let upload_queue = s.upload_queue.note.as_ref().map(UploadQueueNote::text).unwrap_or_default();
     let (sync, kind) = s.cycle.sync_trouble.as_ref().map_or(("", TroubleKind::Other), |t| (t.text.as_str(), t.kind));
-    let alone = s.folder.last_error.is_empty() && upload_queue.is_empty();
-    let text = joined([s.folder.last_error.as_str(), sync, upload_queue.as_str()]);
+    let disk_space = s.transfers.disk_space_shortage.as_ref().map(DiskSpaceShortage::text).unwrap_or_default();
+    let alone = s.folder.last_error.is_empty() && upload_queue.is_empty() && disk_space.is_empty();
+    let text = joined([s.folder.last_error.as_str(), sync, upload_queue.as_str(), disk_space.as_str()]);
     (!text.is_empty()).then(|| (text, if alone { kind } else { TroubleKind::Other }))
 }
 
@@ -305,14 +338,15 @@ pub fn published_state(s: &SyncSnapshot) -> &'static str {
     }
 }
 
-/// `LastError` as published: the registration's text, the sync's trouble, then the upload queue's
-/// note, in that order — problems only. Where local work was moved out of the way is a
+/// `LastError` as published: the registration's text, the sync's trouble, the upload queue's
+/// note, then the pinned files that wait for disk space, in that order — problems only. Where local work was moved out of the way is a
 /// conflict (`Conflicts.List()`, `Conflicts.Count`), not a problem, and is not said here:
 /// said here, it stayed until a Forget, and a folder that
 /// ever had a conflict read as trouble for good.
 pub fn published_error(s: &SyncSnapshot) -> String {
     let upload_queue = s.upload_queue.note.as_ref().map(UploadQueueNote::text).unwrap_or_default();
-    joined([s.folder.last_error.as_str(), s.cycle.sync_trouble.as_ref().map_or("", |t| t.text.as_str()), upload_queue.as_str()])
+    let disk_space = s.transfers.disk_space_shortage.as_ref().map(DiskSpaceShortage::text).unwrap_or_default();
+    joined([s.folder.last_error.as_str(), s.cycle.sync_trouble.as_ref().map_or("", |t| t.text.as_str()), upload_queue.as_str(), disk_space.as_str()])
 }
 
 /// Shared, observable sync state (see `account::state::StateHandle`, the same

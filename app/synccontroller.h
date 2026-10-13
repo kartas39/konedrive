@@ -91,6 +91,9 @@ class SyncController : public QObject
     Q_PROPERTY(QString liveChanges READ liveChanges NOTIFY syncChanged)
     /// The account's own sync setting (Thumbnails).
     Q_PROPERTY(bool thumbnails READ thumbnails NOTIFY syncChanged)
+    /// The account's own sync setting (FreeSpaceReserve): the gigabytes of the disk's
+    /// free space that downloads of files kept on this device leave.
+    Q_PROPERTY(int freeSpaceReserve READ freeSpaceReserve NOTIFY syncChanged)
     /// What a copy of a file changed on both sides is named after: "Report-<machine>.docx".
     Q_PROPERTY(QString machineName READ machineName NOTIFY syncChanged)
     /// Uploads under way (Transfers.Uploads).
@@ -205,6 +208,7 @@ public:
     bool writable() const { return m_writable; }
     QString liveChanges() const { return m_liveChanges; }
     bool thumbnails() const { return m_thumbnails; }
+    int freeSpaceReserve() const { return m_freeSpaceReserve; }
     QString machineName() const { return m_machineName; }
     TransferModel *uploads() const { return m_uploads; }
     qulonglong downloadSpeed() const { return m_downloadSpeed; }
@@ -277,6 +281,8 @@ public:
     Q_INVOKABLE void syncAnyway();
     /// SetThumbnails; a refusal lands in actionError.
     Q_INVOKABLE void setThumbnails(bool on);
+    /// SetFreeSpaceReserve; a refusal lands in actionError.
+    Q_INVOKABLE void setFreeSpaceReserve(int gigabytes);
     /// SetIgnorePatterns; a refusal lands in actionError.
     Q_INVOKABLE void setIgnorePatterns(const QStringList &patterns);
     /// The list with `pattern` (trimmed) added, if it is not there yet.
@@ -377,6 +383,7 @@ private:
     bool m_writable = true;
     QString m_liveChanges = QStringLiteral("off");
     bool m_thumbnails = true;
+    int m_freeSpaceReserve = 10;
     QString m_machineName;
     TransferModel *m_uploads;
     /// Adds one sample to each history (every second).

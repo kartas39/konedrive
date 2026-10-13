@@ -34,7 +34,7 @@ pub enum SyncAction<'a> {
     Pause,
     Resume,
     Ignore,
-    /// `sync thumbnails`: an account's own sync setting.
+    /// `sync thumbnails`, `sync free-space`: an account's own sync setting.
     Settings,
     /// `sync anyway`.
     Anyway,

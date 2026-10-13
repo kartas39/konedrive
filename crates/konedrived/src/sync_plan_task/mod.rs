@@ -105,6 +105,7 @@ use crate::onedrive_steps::session_cancellations::SessionCancellations;
 use crate::sync_parts::sending_holds::{SendingHold, SendingHolds};
 
 /// The first filling of a folder: no event per item shown, one at its start and its end.
+pub(crate) mod disk_space;
 pub(crate) mod first_filling;
 /// The failed tries of the steps towards the folder and of the rows, kept for the run.
 pub(crate) mod local_step_tries;
@@ -186,6 +187,13 @@ pub(crate) struct SyncPlanTaskParts {
     /// all of them stay only here). The task is the ONE that says it; nobody asks the
     /// count on a timer. It must not block.
     pub(crate) unsent_count_report: Arc<dyn Fn(u64) + Send + Sync>,
+    /// Measures what the filesystem the backing directory is on has free for the daemon,
+    /// in bytes (`ItemMount::measure_free_space`); `None` when it cannot be measured.
+    /// Asked each time the downloads of a plan are chosen (`disk_space`).
+    pub(crate) free_space_reader: Arc<dyn Fn() -> Option<u64> + Send + Sync>,
+    /// Reads how much of that free space the downloads of pinned files leave, in bytes:
+    /// the account's setting as it is now (`Settings::free_space_reserve_gb`).
+    pub(crate) free_space_reserve_reader: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
 
 /// How often the bytes of the uploads that run are published while one runs, in seconds
@@ -395,6 +403,11 @@ impl SyncPlanTask {
                             let next_cleaning_try = *crate::panic::lock(&self.next_cleaning_try);
                             next_wake = decide_next_wake(&round.plan, parts.sending_holds.find_end(now), next_quota_read, next_cleaning_try, now);
                             steps_left_to_start = self.start_steps(round.plan.steps, now);
+                            // Nothing says that space was freed on the disk: while a download waits for it, the plan is made again by itself.
+                            if parts.state.get().transfers.disk_space_shortage.is_some() {
+                                let next_space_check = now.saturating_add(disk_space::SPACE_CHECKED_EVERY);
+                                next_wake = Some(next_wake.map_or(next_space_check, |at| at.min(next_space_check)));
+                            }
                             let has_folder_steps = steps_left_to_start.iter().any(|step| step_choice::decide_step_class(step) == StepClass::Folder) || parts.running_steps.list_steps().iter().any(|step| step.class == StepClass::Folder);
                             self.note_first_filling(FirstFillingFact::PlanMade { has_folder_steps }).await;
                         }
@@ -437,7 +450,10 @@ impl SyncPlanTask {
         }
         // A stopped sync shows no count of its own: the task, the one writer, says so last.
         crate::upload_queue::publish_stopped_queue(&parts.state);
-        parts.state.update_if_changed(|state| state.transfers.pinned_download = konedrive_tree::PinnedDownloadTotal::default());
+        parts.state.update_if_changed(|state| {
+            state.transfers.pinned_download = konedrive_tree::PinnedDownloadTotal::default();
+            state.transfers.disk_space_shortage = None;
+        });
         // The task that cancels upload sessions heard the stop: it ends after the request it is at.
         let session_cancellations_task = crate::panic::lock(&self.session_cancellations_task).take();
         if let Some(Err(error)) = match session_cancellations_task {
@@ -747,21 +763,45 @@ impl SyncPlanTask {
     /// other as its own. For each step towards OneDrive it starts, the sync mark of its
     /// items is announced (`marks_announcer`: the emblem turns to "uploading"). Answers the steps that stay for a later round of this plan. While
     /// OneDrive is full no content is sent: the steps of the last plan that send content
-    /// stay, each would be refused in its turn.
+    /// stay, each would be refused in its turn. And no download of a pinned file that
+    /// would not leave the free space the account keeps
+    /// ([`hold_downloads_for_space`](Self::hold_downloads_for_space)): it stays too.
     fn start_steps(self: &Arc<Self>, planned: Vec<SyncStep>, now: i64) -> Vec<SyncStep> {
         let parts = &self.parts;
         let mut held_classes = parts.sending_holds.list_held_classes(now);
         if parts.onedrive_space.is_full() {
             held_classes.insert(StepClass::Content);
         }
-        let choice = step_choice::decide_steps_to_start(planned, &parts.running_steps.list_steps(), &self.read_step_limits(), &held_classes);
+        let running = parts.running_steps.list_steps();
+        let (planned, held_for_space) = self.hold_downloads_for_space(planned, &running);
+        let mut choice = step_choice::decide_steps_to_start(planned, &running, &self.read_step_limits(), &held_classes);
         if !choice.show_steps.is_empty() {
             self.start_show_steps(choice.show_steps);
         }
         for step in choice.steps {
             self.start_step(step);
         }
+        choice.left.extend(held_for_space);
         choice.left
+    }
+
+    /// Takes out of `planned` the downloads of pinned files that would not leave the free
+    /// space the account keeps (`disk_space::hold_downloads_for_space`, with the space
+    /// measured now), and publishes how many wait (`TransferStatus::disk_space_shortage`:
+    /// none while none does); the journal has a line when the wait begins and one when it
+    /// ends. Answers what is left of `planned`, in its order, and the downloads held.
+    fn hold_downloads_for_space(&self, planned: Vec<SyncStep>, running: &[RunningStep]) -> (Vec<SyncStep>, Vec<SyncStep>) {
+        let parts = &self.parts;
+        let choice = disk_space::hold_downloads_for_space(planned, running, (parts.free_space_reader)(), (parts.free_space_reserve_reader)());
+        let before = parts.state.get().transfers.disk_space_shortage;
+        parts.state.update_if_changed(|state| state.transfers.disk_space_shortage = choice.shortage);
+        // TODO: wording
+        match (before, choice.shortage) {
+            (None, Some(shortage)) => tracing::warn!("pinned files of {} are not downloaded for lack of disk space: {}", parts.folder.display(), shortage.text()),
+            (Some(_), None) => tracing::info!("no pinned file of {} waits for disk space any more", parts.folder.display()),
+            (None, None) | (Some(_), Some(_)) => {}
+        }
+        (choice.steps, choice.held)
     }
 
     /// Starts `step`, any but a `ShowItem`, as a task of its own: marks every row it

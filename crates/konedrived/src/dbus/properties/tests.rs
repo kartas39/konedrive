@@ -27,8 +27,8 @@ async fn every_property_on_the_bus_is_a_row_of_the_table() {
     };
     let with = |rows: BTreeSet<String>, others: &[&str]| -> BTreeSet<String> { rows.into_iter().chain(others.iter().map(|name| (*name).to_owned())).collect() };
 
-    // `Source` goes out with `Path`; the two settings by the call that sets them.
-    assert_eq!(on_the_bus(&Folder::new(service.clone())), with(rows(FOLDER), &["Source", "IgnorePatterns", "Thumbnails"]));
+    // `Source` goes out with `Path`; the three settings by the call that sets them.
+    assert_eq!(on_the_bus(&Folder::new(service.clone())), with(rows(FOLDER), &["Source", "IgnorePatterns", "Thumbnails", "FreeSpaceReserve"]));
     assert_eq!(on_the_bus(&UploadQueue::new(service.clone())), rows(QUEUE));
     assert_eq!(on_the_bus(&Transfers::new(service.clone())), rows(MOVING));
     assert_eq!(on_the_bus(&LocalScan::new(service.clone())), rows(SCAN));
