@@ -352,6 +352,28 @@ copy_over_a_file_updates_its_item() {
     check_sent
 }
 
+# -- what a program asks of a file besides its content
+
+calls_besides_reads_and_writes_are_answered_as_by_a_local_folder() {
+    begin_folder
+    seed_folder D R docs
+    seed_file A R a.txt 'the version of OneDrive'
+    seed_file B D online.txt 'online'
+    register_folder
+    download a.txt
+    check "a file is no terminal" "$(user "python3 -c \"import os; print(os.isatty(os.open('docs/online.txt', os.O_RDONLY)))\"")" False
+    check "a second name of a file is refused" "$(errno_of "os.link('a.txt', 'linked.txt')")" EPERM
+    check "a directory is synced" "$(errno_of "os.fsync(os.open('docs', os.O_RDONLY))")" none
+    check "the folder itself is synced" "$(errno_of "os.fsync(os.open('.', os.O_RDONLY))")" none
+    check "a file is ready to be read and written" "$(user "python3 -c \"import os, select; p = select.poll(); p.register(os.open('a.txt', os.O_RDWR)); r = p.poll(0)[0][1]; print(bool(r & select.POLLIN) and bool(r & select.POLLOUT))\"")" True
+    user "python3 -c \"import os; fd = os.open('set-aside.bin', os.O_WRONLY | os.O_CREAT, 0o644); os.posix_fallocate(fd, 0, 4096); os.close(fd)\""
+    check "the space set aside is the file's size" "$(user "stat -c %s set-aside.bin")" 4096
+    check_within 20 "OneDrive has the file whose space was set aside" onedrive_has set-aside.bin
+    check_sent
+    check "the daemon answers them without a warning" "$(grep -c 'Not Implemented' "$LOGS/service.err")" 0
+    check "the folder" "$(listing)" "a.txt docs docs/online.txt set-aside.bin"
+}
+
 # -- changed here and in OneDrive
 
 # check_both_versions_kept <stem> <extension> <OneDrive's text> <this computer's text>
@@ -452,6 +474,7 @@ every_change_errno() {
     echo "move $(errno_of "os.rename('a.txt', 'docs/a.txt')")"
     echo "unlink $(errno_of "os.unlink('docs/online.txt')")"
     echo "rmdir $(errno_of "os.rmdir('empty')")"
+    echo "link $(errno_of "os.link('a.txt', 'linked.txt')")"
     echo "utime $(errno_of "os.utime('a.txt', (1, 1))")"
 }
 
@@ -468,7 +491,7 @@ read_only_folder_refuses_every_change() {
     wait_for 5 modes_are "555 555 444 444 "
     check "the modes of the folder, a directory and a file show no write bit" "$(user "stat -c %a . docs a.txt docs/online.txt" | tr '\n' ' ')" "555 555 444 444 "
     check "every change is refused as on a read-only filesystem" "$(every_change_errno | tr '\n' ' ')" \
-        "create EROFS mkdir EROFS write EROFS o_trunc EROFS truncate EROFS rename EROFS move EROFS unlink EROFS rmdir EROFS utime EROFS "
+        "create EROFS mkdir EROFS write EROFS o_trunc EROFS truncate EROFS rename EROFS move EROFS unlink EROFS rmdir EROFS link EROFS utime EROFS "
     check_folder_holds a.txt 'the version of OneDrive'
     check_folder_holds docs/online.txt 'online'
     check "the folder is as it was" "$(listing)" "a.txt docs docs/online.txt empty"
@@ -825,6 +848,7 @@ file_writes() {
         file_opened_with_o_trunc_and_closed_is_uploaded_empty \
         copies_arrive_in_onedrive_as_new_files \
         copy_over_a_file_updates_its_item \
+        calls_besides_reads_and_writes_are_answered_as_by_a_local_folder \
         file_changed_in_onedrive_before_the_upload_keeps_both \
         file_changed_in_onedrive_while_a_change_waits_keeps_both \
         file_removed_in_onedrive_while_changed_here_is_uploaded_again \

@@ -867,6 +867,18 @@ fn a_file_made_with_an_executable_mode_is_executable_and_a_directory_never() {
 }
 
 #[test]
+fn a_directory_is_synced_and_one_the_folder_does_not_show_has_nothing_to_sync() {
+    let mount = Requests::new();
+    let directory = mount.make("d", MadeKind::Directory).unwrap().entry.item.local_item_id;
+    assert_eq!(mount.ask(move |requests| requests.answer_fsyncdir(directory)), Ok(()));
+    assert_eq!(mount.ask(|requests| requests.answer_fsyncdir(ROOT)), Ok(()), "the folder itself");
+    let not_on_disk = mount.fixture.show_onedrive_directory("in-onedrive").local_item_id;
+    assert_eq!(mount.ask(move |requests| requests.answer_fsyncdir(not_on_disk)), Ok(()), "a directory of OneDrive none of whose content is on disk");
+    mount.remove("d", ItemKind::Directory).unwrap();
+    assert_eq!(mount.ask(move |requests| requests.answer_fsyncdir(directory)), Ok(()), "a directory that is gone");
+}
+
+#[test]
 fn a_request_by_a_handle_that_is_not_open_is_ebadf() {
     let mount = Requests::new();
     let file = mount.fixture.make_own_file("a.txt", b"abc").local_item_id;

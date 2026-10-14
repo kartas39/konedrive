@@ -101,6 +101,17 @@ fn the_store_finishes_its_queue_when_dropped() {
 }
 
 #[test]
+fn the_write_ahead_log_of_a_store_on_disk_is_synced_and_one_in_memory_has_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tree.sqlite");
+    let store = Store::new(TreeStore::open(&path).unwrap());
+    store.call_blocking(|s| s.set_meta("written", Some("kept"))).unwrap();
+    assert!(dir.path().join("tree.sqlite-wal").exists(), "a commit is in the log");
+    store.sync_write_ahead_log().unwrap();
+    Store::new(TreeStore::in_memory().unwrap()).sync_write_ahead_log().unwrap();
+}
+
+#[test]
 fn a_store_survives_reopening_and_is_private() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
