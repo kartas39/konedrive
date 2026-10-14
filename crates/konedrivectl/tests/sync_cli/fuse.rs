@@ -70,7 +70,7 @@ async fn a_folder_served_through_fuse_is_driven_from_the_command_line() {
     assert!(pinned.status.success(), "{pinned:?}");
     wait_for(|| state(&file) == "hydrated").await;
     let refused = run(addr, &["sync", "dehydrate", file.to_str().unwrap()]);
-    assert!(!refused.status.success() && err_text(&refused).contains("is kept on this device because the folder"), "{refused:?}");
+    assert!(!refused.status.success() && err_text(&refused).contains("is kept on this device, so its space is not freed up"), "{refused:?}");
     let unpinned = run(addr, &["sync", "unpin", docs.to_str().unwrap()]);
     assert!(unpinned.status.success(), "{unpinned:?}");
     let space = run(addr, &["sync", "free-up-space"]);
