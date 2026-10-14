@@ -326,6 +326,9 @@ copies_arrive_in_onedrive_as_new_files() {
     seed_file B R online.txt 'the content of a file that is not downloaded'
     register_folder
     download downloaded.txt
+    # What cp asks first of a file whose blocks are fewer than its size, as a big file that
+    # is not downloaded: where its data is.
+    check "a file has its data from where it is asked" "$(user "python3 -c \"import os; print(os.lseek(os.open('online.txt', os.O_RDONLY), 0, os.SEEK_DATA))\"")" 0
     user "cp downloaded.txt copy-of-downloaded.txt && cp online.txt copy-of-online.txt"
     check_folder_holds copy-of-downloaded.txt 'the content of a downloaded file'
     check_folder_holds copy-of-online.txt 'the content of a file that is not downloaded'
@@ -334,7 +337,7 @@ copies_arrive_in_onedrive_as_new_files() {
     check "the files copied keep their items" "$(onedrive id downloaded.txt) $(onedrive id online.txt)" "A B"
     check_sent
     check_state online.txt hydrated
-    check "the daemon answers the kernel's copy without a warning" "$(grep -c copy_file_range "$LOGS/service.err")" 0
+    check "the daemon answers what the copies asked of it without a warning" "$(grep -c 'Not Implemented' "$LOGS/service.err")" 0
 }
 
 copy_over_a_file_updates_its_item() {
