@@ -7,10 +7,10 @@
 //!
 //! **Answers for:** one function of `ItemKernelRequests` per request, and its answer
 //! turned into the kernel's reply; and the requests that file leaves here (init, statfs,
-//! access, interrupt, symlink, setxattr, removexattr, copy_file_range, lseek). The
-//! kernel's numbers come in fuser's types and are the mount's own from the first line on: a
-//! node id is a local item id, a file handle an [`Fh`], the caller's id the id of its thread
-//! (by which the inotify bridge's own requests are told).
+//! access, interrupt, symlink, link, setxattr, removexattr, copy_file_range, lseek, ioctl,
+//! poll, fallocate). The kernel's numbers come in fuser's types and are the mount's own from
+//! the first line on: a node id is a local item id, a file handle an [`Fh`], the caller's id
+//! the id of its thread (by which the inotify bridge's own requests are told).
 //!
 //! A reply that goes to the write-operation thread or to the runtime is moved into a
 //! closure ([`ReplyTo`]); dropped unanswered — the thread stopped, the task aborted — it
@@ -26,8 +26,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fuser::{
-    AccessFlags, BsdFileFlags, CopyFileRangeFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags, KernelConfig, LockOwner, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus,
-    ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
+    AccessFlags, BsdFileFlags, CopyFileRangeFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags, IoctlFlags, KernelConfig, LockOwner, OpenFlags, PollEvents, PollFlags, PollNotifier, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus,
+    ReplyEmpty, ReplyEntry, ReplyIoctl, ReplyLseek, ReplyOpen, ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
 use konedrive_tree::{Item, ItemKind};
 use tokio::task::AbortHandle;
@@ -335,6 +335,33 @@ impl Filesystem for KernelRequests {
         }
     }
 
+    fn fsyncdir(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, _datasync: bool, reply: ReplyEmpty) {
+        match self.requests.answer_fsyncdir(to_local_item_id(ino)) {
+            Ok(()) => reply.ok(),
+            Err(errno) => reply.error(errno),
+        }
+    }
+
+    /// A file here is no terminal and has no flags of a filesystem: every ioctl is
+    /// `ENOTTY`, the answer of one that does not apply to the file (`isatty` asks it to see
+    /// whether a file is a terminal). The kernel asks each one: it keeps no answer.
+    fn ioctl(&self, _req: &Request, _ino: INodeNo, _fh: FileHandle, _flags: IoctlFlags, _cmd: u32, _in_data: &[u8], _out_size: u32, reply: ReplyIoctl) {
+        reply.error(Errno::ENOTTY);
+    }
+
+    /// A file here is always ready: after `ENOSYS` the kernel answers every poll of this
+    /// mount so by itself, as it does for a filesystem with no poll of its own.
+    fn poll(&self, _req: &Request, _ino: INodeNo, _fh: FileHandle, _ph: PollNotifier, _events: PollEvents, _flags: PollFlags, reply: ReplyPoll) {
+        reply.error(Errno::ENOSYS);
+    }
+
+    /// No space is set aside ahead of the writes: after `ENOSYS` the kernel answers every
+    /// fallocate of this mount `EOPNOTSUPP` by itself, and `posix_fallocate` then writes
+    /// the range through `write` as any other write.
+    fn fallocate(&self, _req: &Request, _ino: INodeNo, _fh: FileHandle, _offset: u64, _length: u64, _mode: i32, reply: ReplyEmpty) {
+        reply.error(Errno::ENOSYS);
+    }
+
     fn release(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _flags: OpenFlags, _lock_owner: Option<LockOwner>, _flush: bool, reply: ReplyEmpty) {
         self.requests.answer_release(to_fh(fh));
         reply.ok();
@@ -470,6 +497,12 @@ impl Filesystem for KernelRequests {
 
     /// A symbolic link has nothing OneDrive could hold: none is made.
     fn symlink(&self, _req: &Request, _parent: INodeNo, _name: &OsStr, _target: &Path, reply: ReplyEntry) {
+        reply.error(self.refuse_unsupported(Errno::EPERM));
+    }
+
+    /// OneDrive has no second name of a file: `EPERM`, as link(2) answers of a filesystem
+    /// that makes no hard links.
+    fn link(&self, _req: &Request, _ino: INodeNo, _newparent: INodeNo, _newname: &OsStr, reply: ReplyEntry) {
         reply.error(self.refuse_unsupported(Errno::EPERM));
     }
 

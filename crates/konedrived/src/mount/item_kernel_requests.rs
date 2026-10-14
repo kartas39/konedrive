@@ -25,6 +25,7 @@
 //! | setattr (time) | mount, write | `set_modified_time` | the time (`set_local_modified_time`) |
 //! | setattr (mode) | mount, write | `set_executable_bit` | the executable bit of a file (`set_executable_bit`) |
 //! | write, fsync, flush | mount | `ItemHandles::find_file_to_write` | none per write |
+//! | fsyncdir | mount | `PlaceChanges::open_at_row_path`, `Store::sync_write_ahead_log` | — |
 //! | release | mount, write | `close_writer` | `ClosedChanged` or `ClosedUnchanged` |
 //!
 //! **Threads.** Every answer here is a plain function on the mount's own thread, but
@@ -394,12 +395,14 @@ pub(crate) struct ItemKernelRequests {
     free_up: Arc<ItemFreeUp>,
     access_mode_switch: Arc<AccessModeSwitch>,
     reply_attributes: Arc<WriteReplyAttributes>,
+    store: Store,
     runtime: tokio::runtime::Handle,
 }
 
 impl ItemKernelRequests {
     /// Made by the mount's build, last before the session. `store` is for the attributes
-    /// a write operation's reply carries ([`WriteReplyAttributes`]); `access_mode_switch`
+    /// a write operation's reply carries ([`WriteReplyAttributes`]) and for the sync of its
+    /// log at fsyncdir; `access_mode_switch`
     /// refuses a change of a read-only folder before it is queued.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -418,8 +421,8 @@ impl ItemKernelRequests {
         store: Store,
         runtime: tokio::runtime::Handle,
     ) -> Self {
-        let reply_attributes = Arc::new(WriteReplyAttributes { store, lookup: Arc::clone(&lookup) });
-        Self { lookup, read_connections, place_changes, item_handles, write_operations, write_operation_thread, inotify_bridge, downloader, download_states, range_fetcher, free_up, access_mode_switch, reply_attributes, runtime }
+        let reply_attributes = Arc::new(WriteReplyAttributes { store: store.clone(), lookup: Arc::clone(&lookup) });
+        Self { lookup, read_connections, place_changes, item_handles, write_operations, write_operation_thread, inotify_bridge, downloader, download_states, range_fetcher, free_up, access_mode_switch, reply_attributes, store, runtime }
     }
 
     /// lookup. For the inotify bridge's own thread (`ItemInotifyBridge::is_own_thread` of
@@ -876,6 +879,28 @@ impl ItemKernelRequests {
             Some((_, backing_file)) => backing_file.sync_all().map_err(|error| to_errno(&error)),
             None => Ok(()),
         }
+    }
+
+    /// fsyncdir, on the mount's own thread: the names made in `node` and moved into or out
+    /// of it are on disk once it answers, as the content of a file is after fsync. Two
+    /// syncs: the backing directory of `node`, for the names that have a file or directory
+    /// on disk; then the store's write-ahead log (`Store::sync_write_ahead_log`), for the
+    /// names of what is not on disk, which only the rows hold. Nothing on disk to sync of a
+    /// directory none of whose content is (it is made on disk with the first that comes),
+    /// nor of one the folder does not show any more.
+    pub(super) fn answer_fsyncdir(&self, node: LocalItemId) -> Result<(), Errno> {
+        let opened = self.place_changes.open_at_row_path(OpenMode::Read, || {
+            self.read_connections.read(|reader| match reader.find_item(node)? {
+                Some(row) if row.kind == ItemKind::Directory => Ok(reader.find_path(node)?.map(|path| (path, ()))),
+                Some(_) | None => Ok(None),
+            })
+        });
+        match opened {
+            Ok(Some((backing_directory, ()))) => backing_directory.sync_all().map_err(|error| to_errno(&error))?,
+            Ok(None) | Err(OpenAtRowError::NoFile { .. }) => {}
+            Err(error) => return Err(Errno::from_i32(decide_open_errno(&error))),
+        }
+        self.store.sync_write_ahead_log().map_err(|error| to_errno(&error))
     }
 
     /// release. The kernel is answered at once; a reader's handle is closed on the

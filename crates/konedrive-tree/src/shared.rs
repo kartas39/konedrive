@@ -211,6 +211,22 @@ impl Store {
         self.call_reading_connection_blocking(move |store: &mut TreeStore| f(&ReadStore::of(store)))
     }
 
+    /// Puts what was last committed on disk, as a commit with `synchronous = FULL` would: the
+    /// store's write-ahead log synced. The store commits with `NORMAL`, whose last commits a
+    /// power loss may take back; this is for a caller that tells a program its change is on
+    /// disk (an fsync of a directory). Nothing for a store in memory, or one with no log on
+    /// disk: nothing waits in it.
+    pub fn sync_write_ahead_log(&self) -> std::io::Result<()> {
+        let Some(path) = &self.path else { return Ok(()) };
+        let mut log = path.clone().into_os_string();
+        log.push("-wal");
+        match std::fs::File::open(&log) {
+            Ok(log) => log.sync_all(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     /// How many handles of this store there are, this one among them: what a test asks to
     /// see that a part it stopped and dropped holds none any more.
     #[cfg(any(test, feature = "testing"))]
