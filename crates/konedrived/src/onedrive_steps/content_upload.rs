@@ -62,7 +62,9 @@
 // test: a_session_found_gone_otherwise_is_forgotten_and_said
 // test: an_answer_with_another_hash_for_a_new_file_is_remembered_and_its_removal_asked
 // test: an_answer_with_another_hash_for_an_existing_item_keeps_the_fact_of_the_own_upload
-// test: the_guard_is_asked_again_before_the_last_fragment_of_an_existing_item
+// test: a_changed_file_of_several_fragments_goes_into_its_item
+// test: a_rename_in_onedrive_does_not_hold_back_the_content_sent_into_the_item
+// test: a_change_of_the_content_in_onedrive_during_the_session_refuses_its_last_fragment
 // test: a_changed_item_that_holds_the_hash_sent_is_the_upload_that_went_through
 // test: the_hash_sent_is_that_of_the_bytes_read_for_the_fragments
 // test: the_upload_slot_is_held_from_the_first_request_to_the_end
@@ -494,7 +496,7 @@ impl ContentUpload {
             Ok(progress) => {
                 session.next_offset = progress.next;
                 session.expires_at = progress.expires.or(session.expires_at);
-                self.send_fragments(item, target, file, session, false).await
+                self.send_fragments(item, target, file, session).await
             }
             Err(WriteError::SessionGone) => Ok(self.follow_gone_session(item, target, file, &session).await?),
             Err(error) => {
@@ -553,24 +555,13 @@ impl ContentUpload {
         let session = UploadSession { address: UploadSessionAddress::new(opened.url), expires_at: opened.expires, next_offset: 0, content, empty_file_place };
         let (kept, unsent_since) = (session.clone(), item.unsent_since);
         match self.write_memory(move |memory| memory.remember_upload_session(id, unsent_since, &kept)).await? {
-            UploadSessionStanding::Continued => self.send_fragments(item, target, file, session, true).await,
+            UploadSessionStanding::Continued => self.send_fragments(item, target, file, session).await,
             // The row went or the bytes changed: the cancel is queued already.
             UploadSessionStanding::Abandoned => Err(StepOutcome::NotRun(StepObstacle::ContentChanged).into()),
             UploadSessionStanding::OfAnotherItem => {
                 tracing::error!("the upload session opened for item {id} is kept as another item's");
                 Err(StepOutcome::Failed(StepFailure::Store { detail: format!("the upload session opened for item {id} is another item's") }).into())
             }
-        }
-    }
-
-    /// Whether the item an existing-item upload goes into is still what the guard names:
-    /// the refusal its opening would get now, when it is not.
-    async fn find_broken_guard(&self, existing_item_id: &str, guard: &RequestGuard) -> Result<Option<RefusedRequest>, StepOutcome> {
-        match self.graph.drive.item(existing_item_id).await {
-            Ok(found) if found.e_tag.as_deref() != Some(guard.as_str()) && found.c_tag.as_deref() != Some(guard.as_str()) => Ok(Some(RefusedRequest::Changed)),
-            Ok(_) => Ok(None),
-            Err(DriveError::NotFound) => Ok(Some(RefusedRequest::NotFound)),
-            Err(error) => Err(StepOutcome::Refused(decide_read_refusal(error))),
         }
     }
 
@@ -583,11 +574,10 @@ impl ContentUpload {
     /// for it, and it starts over wherever OneDrive does not stand at the end of what was
     /// hashed. Between two fragments, the first too:
     /// [`decide_stop_between_fragments`] with `SendingHolds::is_held` of content and
-    /// `OneDriveSpace::is_full`. Before the last fragment of an existing item the guard is
-    /// asked again (`item`, `G/mod.rs:217`; `Job::guard_broken`, `:381`) — but when the
-    /// opening was the request just before (`is_guard_asked`): another eTag and
-    /// cTag than the guard, or no item, gives the session up and is the refusal the
-    /// opening would get now.
+    /// `OneDriveSpace::is_full`. The item an existing item's session goes into is not read
+    /// before the last fragment: OneDrive refuses that fragment itself when the item's
+    /// content changed since the session was opened, as a session gone (`404`), and takes
+    /// it after a rename or a move (measured on OneDrive personal, 2026-10-14).
     ///
     /// What ends it otherwise: a read that says the file changed or is open for writing
     /// (`StepTrouble`) — the session is given up for a changed file, kept for a writer,
@@ -598,10 +588,9 @@ impl ContentUpload {
     /// expects the same offset) is `StepRefusal::Transient`, the session kept; a session
     /// answered gone: [`follow_gone_session`](Self::follow_gone_session); any other
     /// refusal keeps the session for the next try.
-    async fn send_fragments(&self, item: &ItemVersions, target: &ContentTarget, file: &Arc<LocalContentFile>, session: UploadSession, mut is_guard_asked: bool) -> Result<SentContent, SendContentError> {
+    async fn send_fragments(&self, item: &ItemVersions, target: &ContentTarget, file: &Arc<LocalContentFile>, session: UploadSession) -> Result<SentContent, SendContentError> {
         let id = item.local_item_id;
         let (size, fragment_size) = (file.size(), self.limits.chunk.max(1));
-        let existing_item_id = self.find_target_item_id(item, target)?;
         let address = session.address.clone();
         let (mut hasher, mut hashed, mut next) = (QuickXor::new(), 0u64, session.next_offset);
         // What a read that failed makes of the session and answers.
@@ -622,21 +611,6 @@ impl ContentUpload {
                 return Err(StepOutcome::Failed(StepFailure::AnswerUnreadable { detail: format!("the upload session expects bytes from {next} of {size}") }).into());
             }
             let len = (size - next).min(fragment_size);
-            if next + len >= size && !is_guard_asked {
-                if let ContentTarget::ExistingItem { guard } = target {
-                    match self.find_broken_guard(&existing_item_id, guard).await? {
-                        None => {}
-                        Some(RefusedRequest::NotFound) => {
-                            self.abandon_session(item).await?;
-                            return Err(Self::decide_not_found(target).into());
-                        }
-                        Some(_) => {
-                            self.abandon_session(item).await?;
-                            return Ok(self.follow_changed_item(item, target, file).await?);
-                        }
-                    }
-                }
-            }
             // The hash follows OneDrive: it starts over wherever the session does not stand at the end of what was read for it.
             if hashed != next {
                 (hasher, hashed) = (QuickXor::new(), 0);
@@ -671,7 +645,7 @@ impl ContentUpload {
                             return Err(StepOutcome::Failed(StepFailure::Store { detail: format!("the upload session of item {id} is another item's") }).into());
                         }
                     }
-                    (next, is_guard_asked) = (progress.next, false);
+                    next = progress.next;
                 }
                 Ok(ChunkOutcome::Done(answer)) => {
                     self.running_steps.tell_progress(id, size, size);
@@ -716,7 +690,9 @@ impl ContentUpload {
     /// item for an existing one, the file at the session's own place for a new one,
     /// compared by the hash of the whole file (`LocalContentFile::hash`) —, it is the
     /// upload that went through (`LostAnswers::read_request_outcome`; `Job::ended`,
-    /// `upload/content/session.rs:397`), answered with no session to forget; otherwise
+    /// `upload/content/session.rs:397`), answered with no session to forget; an existing
+    /// item that is not as the step was planned from it — its content changed in OneDrive,
+    /// which ends its session, or it is gone — is `StepRefusal::ItemChanged`; otherwise
     /// the step answers `StepRefusal::UploadSessionGone`, and its next try opens a new
     /// session (today's worker opened one in the same run, once).
     async fn follow_gone_session(&self, item: &ItemVersions, target: &ContentTarget, file: &Arc<LocalContentFile>, session: &UploadSession) -> Result<SentContent, StepOutcome> {
@@ -729,6 +705,11 @@ impl ContentUpload {
         };
         match self.lost_answers.read_request_outcome(item, request).await.map_err(FailedRead::into_outcome)? {
             LostAnswerFate::WentThrough(Some(found)) => Ok(Self::describe_found_content(target, found, sent_hash)),
+            // OneDrive ends an existing item's session when the item's content changes meanwhile.
+            LostAnswerFate::ItemChanged if matches!(target, ContentTarget::ExistingItem { .. }) => {
+                tracing::info!("the upload session of item {id} ended with the item changed in OneDrive");
+                Err(StepOutcome::Refused(StepRefusal::ItemChanged))
+            }
             LostAnswerFate::WentThrough(None) | LostAnswerFate::DidNotGoThrough | LostAnswerFate::ItemChanged | LostAnswerFate::NameHeld { .. } => {
                 tracing::info!("the upload session of item {id} ended with its content not in OneDrive: the upload starts over");
                 Err(StepOutcome::Refused(StepRefusal::UploadSessionGone))

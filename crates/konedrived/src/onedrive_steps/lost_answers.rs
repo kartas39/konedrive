@@ -65,7 +65,7 @@ use konedrive_graph::pool::Class;
 use konedrive_graph::quickxor::QuickXor;
 use konedrive_tree::{ConfirmedItem, DriveId, ItemKind, ItemPlace, ItemVersions, OneDriveItemId, OneDriveItemReference, RecordedRequest, RequestRecord, StepCommitOutcome, TreeError, TreeStore};
 
-use super::confirmed_item::{decide_guard, to_confirmed_item, to_graph_name};
+use super::confirmed_item::{decide_content_guard, decide_guard, to_confirmed_item, to_graph_name, RequestGuard};
 use super::graph_refusal::decide_read_refusal;
 use super::GraphAccess;
 use crate::sync_parts::step_outcome::{StepFailure, StepOutcome, StepRefusal};
@@ -107,8 +107,10 @@ pub(crate) enum LostAnswerFate {
     /// none for a removal, whose item is gone.
     WentThrough(Option<ConfirmedItem>),
     /// OneDrive has the item as the step was planned from it — what the request was
-    /// guarded with (`confirmed_item::decide_guard`): the eTag planned from, or, for an
-    /// item guarded by the cTag of its synced content, that cTag —, or
+    /// guarded with: the cTag of the content for a content sent
+    /// (`confirmed_item::decide_content_guard`), else the eTag planned from, or, for an
+    /// item guarded by the cTag of its synced content, that cTag
+    /// (`confirmed_item::decide_guard`) —, or
     /// nothing at the place a new item was sent to: the request changed nothing.
     DidNotGoThrough,
     /// OneDrive has the item neither as planned nor as asked, or does not have an item
@@ -168,13 +170,9 @@ fn decide_failed_read(error: DriveError) -> FailedRead {
 }
 
 /// Whether `found` is the item as the step was planned from it: it has what the request
-/// was guarded with. Never for an item with no guard.
-fn is_as_planned(item: &ItemVersions, found: &DriveItem) -> bool {
-    match (&item.onedrive_etag, decide_guard(item)) {
-        (Some(etag), _) => found.e_tag.as_deref() == Some(etag.as_str()),
-        (None, Some(ctag)) => found.c_tag.as_deref() == Some(ctag.as_str()),
-        (None, None) => false,
-    }
+/// was guarded with (`guard`). Never for an item with no guard.
+fn is_as_planned(guard: Option<RequestGuard>, found: &DriveItem) -> bool {
+    guard.is_some_and(|guard| guard.matches(found))
 }
 
 /// Whether `found` holds the content of `sent_hash`; an empty file with no hash holds the
@@ -221,10 +219,16 @@ pub fn decide_lost_answer_fate(request: &SentRequest<'_>, item: &ItemVersions, f
         SentRequest::SendMove { parent, name } if found.parent_reference.as_ref().and_then(|at| at.id.as_deref()).is_some_and(|id| id.eq_ignore_ascii_case(parent.item_id.as_str())) && found.name.as_deref().map(OsStr::new) == Some(*name) => {
             went_through(found)
         }
-        SentRequest::SendContent { .. } | SentRequest::SendMove { .. } | SentRequest::SendRemoval => match is_as_planned(item, found) {
-            true => Ok(LostAnswerFate::DidNotGoThrough),
-            false => Ok(LostAnswerFate::ItemChanged),
-        },
+        SentRequest::SendContent { .. } | SentRequest::SendMove { .. } | SentRequest::SendRemoval => {
+            let guard = match request {
+                SentRequest::SendContent { .. } => decide_content_guard(item),
+                _ => decide_guard(item),
+            };
+            match is_as_planned(guard, found) {
+                true => Ok(LostAnswerFate::DidNotGoThrough),
+                false => Ok(LostAnswerFate::ItemChanged),
+            }
+        }
     }
 }
 

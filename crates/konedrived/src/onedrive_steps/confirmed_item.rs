@@ -17,6 +17,8 @@
 // test: a_drive_id_spelt_in_another_case_is_the_folders_drive
 // test: the_guard_is_the_etag_planned_from_else_the_ctag_of_the_synced_content
 // test: an_item_with_neither_has_no_guard
+// test: the_guard_of_a_content_is_the_ctag_of_onedrives_content_else_the_synced_ones_else_the_etag
+// test: a_guard_matches_an_item_by_the_tag_it_names
 
 use std::ffi::OsStr;
 
@@ -25,13 +27,30 @@ use konedrive_tree::{ConfirmedItem, ContentVersion, DriveId, ItemVersions, OneDr
 
 use crate::sync_parts::step_outcome::{StepFailure, StepRefusal};
 
-/// The `If-Match` value of a guarded request.
+/// The `If-Match` value of a guarded request, and which of the item's two tags it is.
+/// OneDrive takes either (measured on OneDrive personal, 2026-10-14).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RequestGuard(String);
+pub(crate) enum RequestGuard {
+    /// The item's eTag, which any change of the item raises: of its content, and of its
+    /// name, place or time too.
+    ETag(String),
+    /// The cTag of the item's content, which only a change of the content raises.
+    CTag(String),
+}
 
 impl RequestGuard {
     pub fn as_str(&self) -> &str {
-        &self.0
+        match self {
+            Self::ETag(tag) | Self::CTag(tag) => tag,
+        }
+    }
+
+    /// Whether `found` still has the tag this guard names. Pure.
+    pub fn matches(&self, found: &DriveItem) -> bool {
+        match self {
+            Self::ETag(tag) => found.e_tag.as_deref() == Some(tag.as_str()),
+            Self::CTag(tag) => found.c_tag.as_deref() == Some(tag.as_str()),
+        }
     }
 }
 
@@ -49,18 +68,39 @@ pub(crate) fn to_graph_name(name: &OsStr) -> Result<&str, StepRefusal> {
 /// which counts a try and asks for nothing: the step waits, and is planned with a guard
 /// once a listing that names the item wrote its eTag. Pure.
 pub(crate) fn decide_guard(item: &ItemVersions) -> Option<RequestGuard> {
-    let synced_ctag = || match &item.synced_content {
+    let synced_ctag = || find_ctag(item.synced_content.as_ref()).map(RequestGuard::CTag);
+    item.onedrive_etag.clone().map(RequestGuard::ETag).or_else(synced_ctag)
+}
+
+/// What a request that sends a content into `item`'s item of OneDrive is guarded with:
+/// the cTag of the content OneDrive has as the row knows it — its OneDrive version's,
+/// else the synced content's. Only a change of the content breaks it: a rename or a move
+/// made in OneDrive meanwhile does not hold the upload back, and neither does the eTag
+/// OneDrive raises when an upload session is opened with the file's time (measured on
+/// OneDrive personal, 2026-10-14). With no cTag known, the guard of any other request
+/// ([`decide_guard`]). Pure.
+pub(crate) fn decide_content_guard(item: &ItemVersions) -> Option<RequestGuard> {
+    let onedrive_content = item.onedrive.as_ref().and_then(|onedrive| onedrive.content.as_ref());
+    find_ctag(onedrive_content).or_else(|| find_ctag(item.synced_content.as_ref())).map(RequestGuard::CTag).or_else(|| decide_guard(item))
+}
+
+/// The cTag of `content`, when it is one OneDrive answered with. Pure.
+fn find_ctag(content: Option<&ContentVersion>) -> Option<String> {
+    match content {
         Some(ContentVersion::Hashed { ctag, .. }) => ctag.clone(),
         Some(ContentVersion::ChangedHere { .. }) | None => None,
-    };
-    item.onedrive_etag.clone().or_else(synced_ctag).map(RequestGuard)
+    }
 }
 
 /// What a request that follows a read of `answer` is guarded with: the eTag just read,
 /// else its cTag; an answer with neither gives an empty guard, and what OneDrive makes of
 /// it (today's `Guard::of_item`). Pure.
 pub(crate) fn to_guard_of_answer(answer: &DriveItem) -> RequestGuard {
-    RequestGuard(answer.e_tag.clone().or_else(|| answer.c_tag.clone()).unwrap_or_default())
+    match (&answer.e_tag, &answer.c_tag) {
+        (Some(etag), _) => RequestGuard::ETag(etag.clone()),
+        (None, Some(ctag)) => RequestGuard::CTag(ctag.clone()),
+        (None, None) => RequestGuard::ETag(String::new()),
+    }
 }
 
 /// `answer` as a commit takes it, in the drive `drive_id` unless the answer names
