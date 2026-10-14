@@ -233,6 +233,9 @@ private Q_SLOTS:
         QTRY_VERIFY(waits->property("visible").toBool());
         QCOMPARE(waits->property("text").toString(), QStringLiteral("Switching to read-only: 2 changes still to send"));
         QVERIFY(now->property("visible").toBool() && cancel->property("visible").toBool());
+        // The daemon's signal shows the line before SetMode answers; the switch shows
+        // the mode the account runs in once the call has ended.
+        QTRY_VERIFY(accounts.at(0)->account()->switchingTo().isEmpty());
         QVERIFY(uploadSwitch->property("checked").toBool());
         QObject *accountError = window->findChild<QObject *>(QStringLiteral("accountError"));
         QVERIFY(accountError);
