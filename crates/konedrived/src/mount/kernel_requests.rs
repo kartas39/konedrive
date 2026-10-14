@@ -7,10 +7,10 @@
 //!
 //! **Answers for:** one function of `ItemKernelRequests` per request, and its answer
 //! turned into the kernel's reply; and the requests that file leaves here (init, statfs,
-//! access, interrupt, symlink, setxattr, removexattr). The kernel's numbers come in
-//! fuser's types and are the mount's own from the first line on: a node id is a local
-//! item id, a file handle an [`Fh`], the caller's id the id of its thread (by which the
-//! inotify bridge's own requests are told).
+//! access, interrupt, symlink, setxattr, removexattr, copy_file_range). The kernel's
+//! numbers come in fuser's types and are the mount's own from the first line on: a node id
+//! is a local item id, a file handle an [`Fh`], the caller's id the id of its thread (by
+//! which the inotify bridge's own requests are told).
 //!
 //! A reply that goes to the write-operation thread or to the runtime is moved into a
 //! closure ([`ReplyTo`]); dropped unanswered — the thread stopped, the task aborted — it
@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fuser::{
-    AccessFlags, BsdFileFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags, KernelConfig, LockOwner, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus,
+    AccessFlags, BsdFileFlags, CopyFileRangeFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags, KernelConfig, LockOwner, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus,
     ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
 use konedrive_tree::{Item, ItemKind};
@@ -497,6 +497,13 @@ impl Filesystem for KernelRequests {
 
     fn removexattr(&self, _req: &Request, _ino: INodeNo, _name: &OsStr, reply: ReplyEmpty) {
         reply.error(self.refuse_unsupported(Errno::ENOTSUP));
+    }
+
+    /// The kernel copies by reads and writes of its own: every byte of a copy goes through
+    /// `read` and `write` here, as any program's, and the copy is uploaded as any written
+    /// file. After `ENOSYS` the kernel asks no copy of this mount again.
+    fn copy_file_range(&self, _req: &Request, _ino_in: INodeNo, _fh_in: FileHandle, _offset_in: u64, _ino_out: INodeNo, _fh_out: FileHandle, _offset_out: u64, _len: u64, _flags: CopyFileRangeFlags, reply: ReplyWrite) {
+        reply.error(Errno::ENOSYS);
     }
 }
 

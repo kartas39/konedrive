@@ -318,6 +318,37 @@ file_opened_with_o_trunc_and_closed_is_uploaded_empty() {
     check_sent
 }
 
+# -- a copy: the kernel copies by reads and writes of the daemon
+
+copies_arrive_in_onedrive_as_new_files() {
+    begin_folder
+    seed_file A R downloaded.txt 'the content of a downloaded file'
+    seed_file B R online.txt 'the content of a file that is not downloaded'
+    register_folder
+    download downloaded.txt
+    user "cp downloaded.txt copy-of-downloaded.txt && cp online.txt copy-of-online.txt"
+    check_folder_holds copy-of-downloaded.txt 'the content of a downloaded file'
+    check_folder_holds copy-of-online.txt 'the content of a file that is not downloaded'
+    check_onedrive_holds copy-of-downloaded.txt 'the content of a downloaded file'
+    check_onedrive_holds copy-of-online.txt 'the content of a file that is not downloaded'
+    check "the files copied keep their items" "$(onedrive id downloaded.txt) $(onedrive id online.txt)" "A B"
+    check_sent
+    check_state online.txt hydrated
+    check "the daemon answers the kernel's copy without a warning" "$(grep -c copy_file_range "$LOGS/service.err")" 0
+}
+
+copy_over_a_file_updates_its_item() {
+    begin_folder
+    seed_file A R a.txt 'the content copied'
+    seed_file B R b.txt 'the version replaced by the copy'
+    register_folder
+    user "cp a.txt b.txt"
+    check_folder_holds b.txt 'the content copied'
+    check_onedrive_holds b.txt 'the content copied'
+    check "the same item of OneDrive was updated" "$(onedrive id b.txt)" B
+    check_sent
+}
+
 # -- changed here and in OneDrive
 
 # check_both_versions_kept <stem> <extension> <OneDrive's text> <this computer's text>
@@ -789,6 +820,8 @@ file_writes() {
         file_truncated_to_nothing_is_uploaded_empty \
         file_opened_with_o_trunc_and_written_is_uploaded \
         file_opened_with_o_trunc_and_closed_is_uploaded_empty \
+        copies_arrive_in_onedrive_as_new_files \
+        copy_over_a_file_updates_its_item \
         file_changed_in_onedrive_before_the_upload_keeps_both \
         file_changed_in_onedrive_while_a_change_waits_keeps_both \
         file_removed_in_onedrive_while_changed_here_is_uploaded_again \
