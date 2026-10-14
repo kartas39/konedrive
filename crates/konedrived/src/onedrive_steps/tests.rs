@@ -261,14 +261,23 @@ async fn each_written_step_answers_its_event_with_the_path_of_its_commit() {
 }
 
 #[tokio::test]
-async fn a_request_is_guarded_by_the_etag_the_step_was_planned_from_else_the_synced_ctag() {
-    for staged in [StagedStep::SendMove, StagedStep::SendFileRemoval, StagedStep::SendEmptyContent] {
+async fn a_request_is_guarded_by_the_etag_planned_from_else_the_synced_ctag_and_a_content_by_its_ctag() {
+    for staged in [StagedStep::SendMove, StagedStep::SendFileRemoval] {
         let (folder, step) = stage(staged).await;
         let etag = step.item().onedrive_etag.clone().expect("a listed item has an eTag");
         folder.run(step).await;
         let guards = folder.graph.with(|cloud| cloud.guards.clone());
         assert_eq!(guards.first().map(|(_, tag)| tag.clone()), Some(etag), "{staged:?}: {guards:?}");
     }
+    // A content sent into the item: the cTag of the content OneDrive has, which a rename does not raise.
+    let (folder, step) = stage(StagedStep::SendEmptyContent).await;
+    let ctag = match step.item().onedrive.as_ref().and_then(|onedrive| onedrive.content.as_ref()) {
+        Some(konedrive_tree::ContentVersion::Hashed { ctag: Some(ctag), .. }) => ctag.clone(),
+        other => panic!("OneDrive's content with a cTag: {other:?}"),
+    };
+    folder.run(step).await;
+    let guards = folder.graph.with(|cloud| cloud.guards.clone());
+    assert_eq!(guards.first(), Some(&("me/drive/items/a.txt/content".to_owned(), ctag)), "{guards:?}");
     // No eTag is known: the cTag of the content the two sides agreed on guards.
     let (folder, step) = stage(StagedStep::SendFileRemoval).await;
     let OneDriveStep::SendFileRemoval { mut item } = step else { unreachable!() };

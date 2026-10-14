@@ -53,6 +53,9 @@ struct Session {
     size: u64,
     data: Vec<u8>,
     mtime: i64,
+    /// For an existing item, the cTag its content had when the session was opened: a
+    /// change of the content meanwhile ends the session.
+    opened_on_ctag: Option<String>,
 }
 
 pub(crate) fn qx(content: &[u8]) -> String {
@@ -423,6 +426,8 @@ impl Cloud {
         ResponseTemplate::new(status).set_body_json(self.json(&self.items[id]))
     }
 
+    /// Whether `if_match` lets a change of `item` through: OneDrive takes its eTag or its
+    /// cTag (measured on OneDrive personal, 2026-10-14).
     fn guard(item: &FakeItem, if_match: Option<&str>) -> bool {
         if_match.is_none_or(|tag| tag == item.etag || tag == item.ctag)
     }
@@ -656,7 +661,19 @@ impl Cloud {
             self.created.insert(id.clone(), crate::clock::unix_now());
             self.placeholders.insert(sid.clone(), placeholder);
         }
-        self.sessions.insert(sid.clone(), Session { target, size, data: Vec::new(), mtime });
+        // As OneDrive does for a personal drive (measured, 2026-10-14): a session of an
+        // existing item opened with the file's time raises the item's eTag, not its cTag.
+        let opened_on_ctag = match &target {
+            Target::Existing { id } => {
+                if body["item"].get("fileSystemInfo").is_some() {
+                    let etag = self.tag("e", id);
+                    self.items.get_mut(id).expect("checked by the caller").etag = etag;
+                }
+                Some(self.items[id].ctag.clone())
+            }
+            Target::New { .. } => None,
+        };
+        self.sessions.insert(sid.clone(), Session { target, size, data: Vec::new(), mtime, opened_on_ctag });
         ResponseTemplate::new(200).set_body_json(json!({
             "uploadUrl": format!("{}/upload/{sid}", self.base),
             "expirationDateTime": "2099-01-01T00:00:00Z",
@@ -676,7 +693,7 @@ impl Cloud {
     fn session_existing(&mut self, id: &str, if_match: Option<&str>, body: &Value) -> ResponseTemplate {
         let Some(item) = self.items.get(id) else { return error(404, "itemNotFound") };
         if !Self::guard(item, if_match) {
-            return error(412, "preconditionFailed");
+            return error(412, "notAllowed");
         }
         self.open_session(Target::Existing { id: id.into() }, body)
     }
@@ -744,6 +761,14 @@ impl Cloud {
             }));
         }
         let session = self.sessions.remove(sid).expect("checked");
+        // As OneDrive does for a personal drive (measured, 2026-10-14): the last fragment of
+        // an existing item whose content changed since the session was opened is refused,
+        // and the content stays; a rename or a move meanwhile is no change of it.
+        if let (Target::Existing { id }, Some(opened_on_ctag)) = (&session.target, &session.opened_on_ctag) {
+            if self.items.get(id).is_some_and(|item| item.ctag != *opened_on_ctag) {
+                return error(404, "itemNotFound");
+            }
+        }
         // The session's own placeholder becomes the file.
         self.placeholders.remove(sid);
         match self.land(&session.target, session.data, session.mtime) {
@@ -762,7 +787,7 @@ impl Cloud {
     fn put_existing(&mut self, id: &str, if_match: Option<&str>) -> ResponseTemplate {
         let Some(item) = self.items.get(id) else { return error(404, "itemNotFound") };
         if !Self::guard(item, if_match) {
-            return error(412, "preconditionFailed");
+            return error(412, "notAllowed");
         }
         match self.land(&Target::Existing { id: id.into() }, Vec::new(), 0) {
             Ok((status, id)) => self.answer(status, &id),

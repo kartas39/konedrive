@@ -383,17 +383,50 @@ async fn a_changed_item_that_holds_the_hash_sent_is_the_upload_that_went_through
     assert_eq!((folder.count("PUT", "upload/"), cloud_content(&folder, "a.txt")), (0, Some(b"another's work".to_vec())));
 }
 
+/// A change made here to a file OneDrive has, of several fragments: it goes into the item
+/// in one session, though opening that session raised the item's eTag, and the item is not
+/// read before the last fragment.
 #[tokio::test]
-async fn the_guard_is_asked_again_before_the_last_fragment_of_an_existing_item() {
+async fn a_changed_file_of_several_fragments_goes_into_its_item() {
+    let content = two_fragments();
+    let (folder, step) = folder_with_a_changed_file(&content).await;
+    let outcome = folder.run(step).await;
+    assert!(matches!(outcome, StepOutcome::Written { .. }), "{outcome:?}");
+    assert_eq!(cloud_content(&folder, "a.txt"), Some(content));
+    assert_eq!((folder.count("POST", "createUploadSession"), folder.count("GET", "items/a.txt")), (1, 0));
+}
+
+/// The content is guarded by its cTag: a rename in OneDrive, which raises the eTag alone,
+/// does not hold the upload back, before its session is opened or during it.
+#[tokio::test]
+async fn a_rename_in_onedrive_does_not_hold_back_the_content_sent_into_the_item() {
+    let content = two_fragments();
+    let (folder, step) = folder_with_a_changed_file(&content).await;
+    folder.graph.with(|cloud| cloud.rename("a.txt", "R", "b.txt"));
+    let outcome = folder.run(step).await;
+    assert!(matches!(outcome, StepOutcome::Written { .. }), "renamed before the opening: {outcome:?}");
+    assert_eq!(cloud_content(&folder, "b.txt"), Some(content.clone()));
+
+    let (folder, step) = folder_with_a_changed_file(&content).await;
+    run_stopped_after_the_first_fragment(&folder, &step).await;
+    folder.graph.with(|cloud| cloud.rename("a.txt", "R", "b.txt"));
+    let outcome = folder.run(step).await;
+    assert!(matches!(outcome, StepOutcome::Written { .. }), "renamed during the session: {outcome:?}");
+    assert_eq!(cloud_content(&folder, "b.txt"), Some(content));
+}
+
+/// Another's change of the content while the session waited: OneDrive refuses the last
+/// fragment and keeps that content; the step answers the item changed, and the session is
+/// forgotten.
+#[tokio::test]
+async fn a_change_of_the_content_in_onedrive_during_the_session_refuses_its_last_fragment() {
     let (folder, step) = folder_with_a_changed_file(&two_fragments()).await;
     run_stopped_after_the_first_fragment(&folder, &step).await;
-    let sent_before = folder.count("PUT", "upload/");
-    // Another changed the item while the session waited.
     folder.graph.with(|cloud| cloud.edit("a.txt", b"another's work"));
 
     assert_eq!(folder.run(step.clone()).await, StepOutcome::Refused(StepRefusal::ItemChanged));
-    assert_eq!((folder.count("PUT", "upload/"), cloud_content(&folder, "a.txt")), (sent_before, Some(b"another's work".to_vec())), "the last fragment is not sent over another's change");
-    assert_eq!((folder.memory(step.item().local_item_id).upload_session, cancellation_count(&folder)), (None, 1));
+    assert_eq!(cloud_content(&folder, "a.txt"), Some(b"another's work".to_vec()), "the last fragment is not taken over another's change");
+    assert_eq!(folder.memory(step.item().local_item_id).upload_session, None);
 }
 
 #[tokio::test]

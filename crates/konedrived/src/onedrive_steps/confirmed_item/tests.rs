@@ -99,12 +99,36 @@ fn a_drive_id_spelt_in_another_case_is_the_folders_drive() {
     assert_eq!(to_confirmed_item(&drive_item(unnamed), &drive()).expect("readable").item.drive_id.as_str(), "d1");
 }
 
+fn hashed(ctag: Option<&str>) -> Option<ContentVersion> {
+    Some(ContentVersion::Hashed { size: 1, mtime: 1, mtime_nsec: 0, hash: None, ctag: ctag.map(str::to_owned) })
+}
+
 #[test]
 fn the_guard_is_the_etag_planned_from_else_the_ctag_of_the_synced_content() {
-    let synced = |ctag: Option<&str>| Some(ContentVersion::Hashed { size: 1, mtime: 1, mtime_nsec: 0, hash: None, ctag: ctag.map(str::to_owned) });
-    let guard = |item: ItemVersions| decide_guard(&item).map(|guard| guard.as_str().to_owned());
-    assert_eq!(guard(versions(Some("e-9"), synced(Some("c-9")))), Some("e-9".to_owned()));
-    assert_eq!(guard(versions(None, synced(Some("c-9")))), Some("c-9".to_owned()));
+    assert_eq!(decide_guard(&versions(Some("e-9"), hashed(Some("c-9")))), Some(RequestGuard::ETag("e-9".to_owned())));
+    assert_eq!(decide_guard(&versions(None, hashed(Some("c-9")))), Some(RequestGuard::CTag("c-9".to_owned())));
+}
+
+/// A content is guarded by the cTag of what OneDrive has, which a rename does not raise.
+#[test]
+fn the_guard_of_a_content_is_the_ctag_of_onedrives_content_else_the_synced_ones_else_the_etag() {
+    let with_onedrive = |onedrive_ctag: Option<&str>, synced_ctag: Option<&str>| ItemVersions {
+        onedrive: Some(ItemVersion { place: None, content: hashed(onedrive_ctag) }),
+        ..versions(Some("e-9"), hashed(synced_ctag))
+    };
+    assert_eq!(decide_content_guard(&with_onedrive(Some("c-onedrive"), Some("c-synced"))), Some(RequestGuard::CTag("c-onedrive".to_owned())));
+    assert_eq!(decide_content_guard(&with_onedrive(None, Some("c-synced"))), Some(RequestGuard::CTag("c-synced".to_owned())));
+    assert_eq!(decide_content_guard(&with_onedrive(None, None)), Some(RequestGuard::ETag("e-9".to_owned())));
+    assert_eq!(decide_content_guard(&versions(None, None)), None);
+}
+
+#[test]
+fn a_guard_matches_an_item_by_the_tag_it_names() {
+    let found = drive_item(json!({ "id": "x", "eTag": "e-2", "cTag": "c-1" }));
+    assert!(RequestGuard::CTag("c-1".to_owned()).matches(&found), "renamed: the content is the same");
+    assert!(!RequestGuard::ETag("e-1".to_owned()).matches(&found));
+    assert!(RequestGuard::ETag("e-2".to_owned()).matches(&found));
+    assert!(!RequestGuard::CTag("e-2".to_owned()).matches(&found), "a cTag is not compared with the eTag");
 }
 
 #[test]

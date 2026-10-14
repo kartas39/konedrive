@@ -13,7 +13,9 @@
 //! 1. takes what it sends from the versions it was planned from, never from the row as it
 //!    is when the request leaves: the place sent is the step's `parent` and `name`, the
 //!    guard is `item.onedrive_etag`, else the cTag of `item.synced_content`
-//!    (`confirmed_item::decide_guard`), the content is `item.local.content`. A name is
+//!    (`confirmed_item::decide_guard`) — for a content sent into an item, the cTag of the
+//!    content OneDrive has (`confirmed_item::decide_content_guard`) —, the content is
+//!    `item.local.content`. A name is
 //!    given to Graph through `confirmed_item::to_graph_name`. What it reads of the store
 //!    before the request is one read (`Store::read_items`): the item's memory
 //!    (`ItemReader::find_item_memory`), and what its case says;
@@ -82,7 +84,7 @@
 //! upload tests are the reference for every scenario (`upload/tests/`), and the races'
 //! test of design §12 puts a death at every point between a request and its commit:
 // test: each_case_sends_the_request_of_its_planned_versions_and_commits_the_answer
-// test: a_request_is_guarded_by_the_etag_the_step_was_planned_from_else_the_synced_ctag
+// test: a_request_is_guarded_by_the_etag_planned_from_else_the_synced_ctag_and_a_content_by_its_ctag
 // test: a_temporary_name_is_remembered_before_the_request_of_a_new_item_and_of_a_move
 // test: a_commit_that_finds_the_rows_changed_after_a_new_item_was_made_removes_it_when_the_row_is_gone
 // test: a_commit_that_finds_the_rows_changed_otherwise_asks_for_a_cycle
@@ -96,11 +98,12 @@
 // test: a_step_whose_commit_may_not_begin_writes_nothing
 // test: each_written_step_answers_its_event_with_the_path_of_its_commit
 // test: a_step_that_sends_no_content_holds_a_metadata_slot_for_its_request
-// A 412 is answered `ItemChanged` and waits for a listing to write the item's eTag (`SendContent`,
-// `SendMove`, `SendFileRemoval`). That is enough: OneDrive moves an eTag with no change of content (an
-// image's moved twice within a minute of its upload), and the delta names an item whose eTag alone
-// moved, with the new eTag and the cTag it had (measured on a personal account, 2026-10-11, by a
-// change of the time of last change and of the description).
+// A 412 is answered `ItemChanged` and waits for a listing to write the item's eTag or cTag
+// (`SendContent`, `SendMove`, `SendFileRemoval`). That is enough: OneDrive moves an eTag with no change
+// of content (an image's moved twice within a minute of its upload), and the delta names an item whose
+// eTag alone moved, with the new eTag and the cTag it had (measured on a personal account, 2026-10-11,
+// by a change of the time of last change and of the description). A content is guarded by its cTag,
+// which none of that moves.
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -132,7 +135,7 @@ pub(crate) mod name_holders;
 /// whose answer was never committed.
 pub(crate) mod session_cancellations;
 
-use confirmed_item::{decide_guard, to_confirmed_item, to_graph_name, RequestGuard};
+use confirmed_item::{decide_content_guard, decide_guard, to_confirmed_item, to_graph_name, RequestGuard};
 use content_upload::{hash_content, ContentTarget, ContentUpload, NewFilePlace, SendContentError, SentContent};
 use graph_refusal::{decide_plain_refusal, decide_read_refusal, decide_refusal, RefusedRequest};
 use lost_answers::{FailedRead, LostAnswerFate, LostAnswers, SentRequest};
@@ -255,12 +258,13 @@ impl OneDriveSteps {
     }
 
     /// The item of OneDrive `item` is bound to, in the folder's drive, and what a request
-    /// about it is guarded with; the failure for an item with neither.
-    fn find_guarded_item(&self, item: &ItemVersions) -> Result<(OneDriveItemReference, RequestGuard), StepOutcome> {
+    /// about it is guarded with, by `decide` (`decide_guard`, or `decide_content_guard` for
+    /// a content); the failure for an item with neither.
+    fn find_guarded_item(&self, item: &ItemVersions, decide: fn(&ItemVersions) -> Option<RequestGuard>) -> Result<(OneDriveItemReference, RequestGuard), StepOutcome> {
         let unreadable = |what: &str| StepOutcome::Failed(StepFailure::AnswerUnreadable { detail: format!("item {} has {what}", item.local_item_id) });
         let onedrive_item = item.onedrive_item.clone().ok_or_else(|| unreadable("no item of OneDrive"))?;
         self.check_drive(item, &onedrive_item)?;
-        let guard = decide_guard(item).ok_or_else(|| unreadable("no eTag and no cTag to guard a request with"))?;
+        let guard = decide(item).ok_or_else(|| unreadable("no eTag and no cTag to guard a request with"))?;
         Ok((onedrive_item, guard))
     }
 
@@ -580,8 +584,9 @@ impl OneDriveSteps {
     /// `SendContent`: the content of a file OneDrive has, changed here, is sent into that
     /// item where OneDrive has it, guarded.
     ///
-    /// The content is opened as for a new file. An item with no guard
-    /// (`confirmed_item::decide_guard`) is `StepFailure::AnswerUnreadable`. Request: the
+    /// The content is opened as for a new file. Guarded by the cTag of the content OneDrive
+    /// has (`confirmed_item::decide_content_guard`); an item with no guard is
+    /// `StepFailure::AnswerUnreadable`. Request: the
     /// content half of today's `Job::update` (`upload/content.rs:326`, from
     /// `:354`) over `Job::send`: `ContentUpload::send_content` with
     /// `ContentTarget::ExistingItem { guard }` (`G/upload.rs:56`). The commit writes to
@@ -597,7 +602,7 @@ impl OneDriveSteps {
     /// binding any more, or a second `SendContent` of the same item committed first: a
     /// listing cycle is asked for.
     async fn run_send_content(&self, item: &ItemVersions) -> StepOutcome {
-        let guard = match self.find_guarded_item(item) {
+        let guard = match self.find_guarded_item(item, decide_content_guard) {
             Ok((_, guard)) => guard,
             Err(outcome) => return outcome,
         };
@@ -653,7 +658,7 @@ impl OneDriveSteps {
     /// `RowsChanged` — also when the directory sent into has no OneDrive version any
     /// more: a listing cycle is asked for.
     async fn run_send_move(&self, item: &ItemVersions, parent: &OneDriveItemReference, name: &OsStr) -> StepOutcome {
-        let (onedrive_item, guard) = match self.find_guarded_item(item) {
+        let (onedrive_item, guard) = match self.find_guarded_item(item, decide_guard) {
             Ok(guarded) => guarded,
             Err(outcome) => return outcome,
         };
@@ -769,7 +774,7 @@ impl OneDriveSteps {
     /// Commit: `commit_send_file_removal(item)`, which forgets what was kept for the
     /// request. `RowsChanged`: a listing cycle is asked for.
     async fn run_send_file_removal(&self, item: &ItemVersions) -> StepOutcome {
-        let (onedrive_item, guard) = match self.find_guarded_item(item) {
+        let (onedrive_item, guard) = match self.find_guarded_item(item, decide_guard) {
             Ok(guarded) => guarded,
             Err(outcome) => return outcome,
         };

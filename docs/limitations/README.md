@@ -28,7 +28,6 @@ its text. An id is never given twice: a new entry takes the next number its lett
 - [F297](F297.md) — A range read of a file that is not on disk is not checked against the content's version
 - [F39](F39.md) — An upload cannot tell OneDrive its size up front
 - [F66](F66.md) — Consent to write stays with Microsoft after the account turns read-only
-- [F80](F80.md) — A finishing upload can replace an edit just made in OneDrive
 - [F172](F172.md) — An unfinished upload holds its name in OneDrive with an empty file
 - [F295](F295.md) — "Open in OneDrive" opens under whichever personal account the browser is signed in to
 - [F300](F300.md) — No links, special files or extended attributes of the user's own in the folder
