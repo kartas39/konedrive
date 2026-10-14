@@ -57,12 +57,14 @@ impl DriveClient {
     /// Which drive `token` reaches, and its quota. A token Graph rejects is
     /// [`DriveError::Failed`] with the status `401`.
     pub async fn drive(&self, token: &str) -> Result<Drive, DriveError> {
-        let drive: DriveBody = self.account_json("me/drive", token).await?;
+        let drive: DriveBody = self.account_json("me/drive?$select=id,quota", token).await?;
         Ok(Drive { id: drive.id, quota: drive.quota })
     }
 
+    /// `route` may ask for some fields (`?$select=`); a failure names its path alone.
     async fn account_json<T: DeserializeOwned>(&self, route: &str, token: &str) -> Result<T, DriveError> {
         let url = self.base.join(route).map_err(|e| DriveError::Failed(e.to_string().into()))?;
+        let route = route.split_once('?').map_or(route, |(path, _)| path);
         let response = self.send(Auth::Bearer(token), Throttle::Pass, || self.api.get(url.clone())).await?;
         let status = Status::of(&response);
         if status.is_success() {

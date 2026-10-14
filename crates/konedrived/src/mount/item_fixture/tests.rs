@@ -358,10 +358,11 @@ async fn the_fake_onedrive_answers_the_drive_the_fixtures_store_knows() {
     let fake_onedrive = fixture.start_fake_onedrive().await;
 
     assert_eq!(fake_onedrive.client().drive_id().await.expect("the drive"), DRIVE_ID);
-    // The quota is the fake's own, and its reads are counted as the fake counts them.
+    // The quota is the fake's own, and its reads are counted as the fake counts them: the
+    // look at the drive's id is not one.
     fake_onedrive.with(|cloud| cloud.free = Some(7));
     assert_eq!(fake_onedrive.client().quota().await.expect("the quota").remaining, Some(7));
-    assert_eq!(fake_onedrive.with(|cloud| cloud.quota_reads()), 2);
+    assert_eq!(fake_onedrive.with(|cloud| cloud.quota_reads()), 1);
 }
 
 #[tokio::test]

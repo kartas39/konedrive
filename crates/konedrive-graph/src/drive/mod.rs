@@ -183,15 +183,15 @@ impl DriveClient {
         self
     }
 
-    /// The signed-in account's drive.
+    /// The signed-in account's drive: its id alone is asked for.
     pub async fn drive_id(&self) -> Result<String, DriveError> {
-        let body: DriveBody = self.get_json(self.route("me/drive")?).await?;
+        let body: DriveBody = self.get_json(self.route("me/drive?$select=id")?).await?;
         Ok(body.id)
     }
 
-    /// The signed-in account's quota: one request.
+    /// The signed-in account's quota: one request, which asks for the quota alone.
     pub async fn quota(&self) -> Result<DriveQuota, DriveError> {
-        let body: QuotaBody = self.get_json(self.route("me/drive")?).await?;
+        let body: QuotaBody = self.get_json(self.route("me/drive?$select=quota")?).await?;
         Ok(body.quota)
     }
 
