@@ -1,5 +1,5 @@
 use serde_json::json;
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use std::sync::Arc;
@@ -39,9 +39,15 @@ async fn profile_falls_back_to_user_principal_name() {
 }
 
 #[tokio::test]
-async fn drive_reads_its_id_and_quota() {
+async fn drive_reads_its_id_and_quota_and_asks_for_them_alone() {
     let server = MockServer::start().await;
-    mock_get(&server, "/me/drive", 200, json!({"id": "d", "quota": {"used": 10, "total": 100, "remaining": 90}})).await;
+    Mock::given(method("GET"))
+        .and(path("/me/drive"))
+        .and(query_param("$select", "id,quota"))
+        .and(header("authorization", "Bearer T"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "d", "quota": {"used": 10, "total": 100, "remaining": 90}})))
+        .mount(&server)
+        .await;
     assert_eq!(
         graph(&server).drive("T").await.unwrap(),
         Drive { id: "d".into(), quota: DriveQuota { used: 10, total: 100, remaining: Some(90), state: String::new() } }

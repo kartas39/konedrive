@@ -84,6 +84,16 @@ fn decode(segment: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// A request as the log keeps it: the decoded path below the server and, when it has
+/// one, `?` and the decoded query (`me/drive?$select=quota`).
+pub(crate) fn logged_route(request: &Request) -> String {
+    let path = request.url.path_segments().map(|segments| segments.map(decode).collect::<Vec<_>>().join("/")).unwrap_or_default();
+    match request.url.query() {
+        Some(query) => format!("{path}?{}", decode(query)),
+        None => path,
+    }
+}
+
 #[derive(Default)]
 pub struct Cloud {
     pub(crate) items: BTreeMap<String, FakeItem>,
@@ -99,7 +109,8 @@ pub struct Cloud {
     base: String,
     /// Scripted answers: (method, a fragment of the path, the answer, how many times).
     script: Vec<(String, String, ResponseTemplate, u32)>,
-    /// Every request: method and decoded path below the server.
+    /// Every request: method and decoded path below the server, with its query
+    /// ([`logged_route`]).
     pub log: Vec<(String, String)>,
     /// The `If-Match` of every request that had one: path, tag.
     pub(crate) guards: Vec<(String, String)>,
@@ -305,10 +316,12 @@ impl Cloud {
         self.delays.push((method.into(), fragment.into(), wait, times));
     }
 
-    /// How many times the quota was read (`GET me/drive`).
+    /// How many times the quota was read: `GET me/drive` that asks for it. A look at the
+    /// drive's id alone (`$select=id`, each listing's) is not one.
     #[cfg(test)]
     pub(crate) fn quota_reads(&self) -> usize {
-        self.log.iter().filter(|(m, p)| m == "GET" && p == "me/drive").count()
+        let asks_for_quota = |route: &str| route.strip_prefix("me/drive?$select=").is_some_and(|fields| fields.split(',').any(|field| field == "quota"));
+        self.log.iter().filter(|(method, route)| method == "GET" && asks_for_quota(route)).count()
     }
 
     /// An upload session for a new file at (`parent`, `name`) opened by
@@ -435,7 +448,7 @@ impl Cloud {
         let method = request.method.to_string();
         let segments: Vec<String> = request.url.path_segments().map(|s| s.map(decode).collect()).unwrap_or_default();
         let joined = segments.join("/");
-        self.log.push((method.clone(), joined.clone()));
+        self.log.push((method.clone(), logged_route(request)));
         if let Some(throttle) = self.throttles.iter_mut().find(|(m, f, _, _, left, _)| *m == method && joined.contains(f.as_str()) && *left > 0) {
             if throttle.2 > 0 {
                 throttle.2 -= 1;

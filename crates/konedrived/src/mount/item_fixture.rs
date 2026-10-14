@@ -157,9 +157,9 @@ struct FixtureDriveAnswer {
 }
 
 impl wiremock::Respond for FixtureDriveAnswer {
-    fn respond(&self, _request: &wiremock::Request) -> wiremock::ResponseTemplate {
+    fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
         let mut cloud = crate::panic::lock(&self.cloud);
-        cloud.log.push(("GET".to_owned(), "me/drive".to_owned()));
+        cloud.log.push(("GET".to_owned(), crate::fake_onedrive::logged_route(request)));
         wiremock::ResponseTemplate::new(200).set_body_json(match cloud.free {
             Some(free) => serde_json::json!({ "id": DRIVE_ID, "quota": { "remaining": free, "state": if free == 0 { "exceeded" } else { "normal" } } }),
             None => serde_json::json!({ "id": DRIVE_ID }),
