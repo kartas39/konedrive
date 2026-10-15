@@ -98,7 +98,6 @@
 //! commit with the record, and then the undo or the discard. What a listing's page does
 //! between a step's disk and its commit, and what a death leaves there, is between the
 //! two.
-#![allow(dead_code)]
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;

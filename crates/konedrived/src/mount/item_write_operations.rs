@@ -49,7 +49,6 @@
 // test: every_operation_wakes_the_plan_after_its_row_and_never_before
 // test: a_read_only_folder_refuses_every_operation_before_anything_is_read
 // test: a_reader_that_opens_by_path_during_an_operation_gets_the_file_of_its_row
-#![allow(dead_code)]
 
 use std::fs::File;
 use std::io;
@@ -59,7 +58,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::Errno;
-use konedrive_tree::{Item, LocalItemId, PlaceChangeRecord, PlaceChangeRecordId, RowRefusalReason, Store, TreeError, TreeStore};
+use konedrive_tree::{LocalItemId, PlaceChangeRecord, PlaceChangeRecordId, RowRefusalReason, Store, TreeError, TreeStore};
 
 use super::access_mode_switch::AccessModeSwitch;
 use super::backing_directory::BackingDirectory;
@@ -85,7 +84,7 @@ mod rename;
 mod tests;
 
 pub(super) use content_write::FileToFill;
-pub(super) use make::{MadeItem, MadeKind};
+pub(super) use make::MadeKind;
 pub(super) use rename::RenameMode;
 
 /// The errno a program gets when the store refuses a change of a local version

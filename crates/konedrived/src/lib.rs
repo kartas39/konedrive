@@ -9,13 +9,10 @@ pub(crate) mod content_source;
 pub(crate) mod local;
 pub(crate) mod sync_parts;
 pub mod mount;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod folder_steps;
 pub(crate) mod onedrive_steps;
 pub(crate) mod listing;
 pub mod desktop;
-// Some of what it holds is called by its tests alone.
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod sync_plan_task;
 pub(crate) mod sync_tasks;
 pub mod upload_queue;

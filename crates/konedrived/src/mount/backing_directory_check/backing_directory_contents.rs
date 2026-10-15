@@ -130,7 +130,7 @@ fn read_one(backing_directory: &BackingDirectory, rel: &Path) -> DirectoryScan {
         // A directory's count of links is of the directories in it.
         let links = if kind == ItemKind::File && metadata.nlink() > 1 { EntryLinks::Several } else { EntryLinks::One };
         let ctag = match kind == ItemKind::File && onedrive_id.is_some() {
-            true => match backing_directory.try_read_ctag_mark(&rel.join(&name)) {
+            true => match backing_directory.read_ctag_mark(&rel.join(&name)) {
                 Ok(ctag) => ctag,
                 // A cTag that is not known would compare as the row's own.
                 Err(e) => {
@@ -258,6 +258,7 @@ impl BackingDirectoryContents {
     }
 
     /// The entry of this name in `directory`.
+    #[cfg(test)]
     pub(super) fn find_inside(&self, directory: Option<EntryIndex>, name: &OsStr) -> Option<EntryIndex> {
         let inside = self.list_inside(directory);
         self.entries[inside.clone()].binary_search_by(|entry| entry.name.as_os_str().cmp(name)).ok().map(|at| inside.start + at)

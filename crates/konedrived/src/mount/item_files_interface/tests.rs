@@ -46,7 +46,6 @@ fn a_path_outside_the_folder_and_a_path_the_folder_does_not_show_are_refused() {
     assert!(matches!(run.block_on(files.download(&outside)), Err(FilesRefusal::OutsideFolder)));
     assert!(matches!(run.block_on(files.free_up(&outside)), Err(FilesRefusal::OutsideFolder)));
     assert!(matches!(run.block_on(files.set_pin(&outside, true)), Err(FilesRefusal::OutsideFolder)));
-    assert!(matches!(run.block_on(files.count_downloaded_below(&outside)), Err(FilesRefusal::OutsideFolder)));
 
     let not_shown = fixture.disk_path("no such name.txt");
     assert!(matches!(run.block_on(files.find_path_status(&not_shown)), Err(FilesRefusal::NotInOneDrive)));
@@ -210,25 +209,6 @@ fn the_status_of_a_path_is_the_rows_sync_state_its_pin_and_what_runs_for_it() {
     assert!(status("docs/remote.txt").is_downloading && !status("docs/remote.txt").is_open_for_writing);
     assert!(status("docs/clean.txt").is_open_for_writing && !status("docs/clean.txt").is_downloading);
     fixture.item_handles.remove_writer(writer);
-}
-
-#[test]
-fn what_is_downloaded_below_a_path_is_counted_from_the_rows() {
-    let fixture = ItemFixture::new();
-    fixture.show_onedrive_directory("docs");
-    make_clean_copy(&fixture, "docs/a.txt", &[1; 100]);
-    make_clean_copy(&fixture, "docs/b.txt", &[2; 23]);
-    fixture.show_onedrive_file("docs/remote.txt", &[3; 1000]);
-    make_clean_copy(&fixture, "outside.txt", &[4; 7]);
-    let files = make_files_interface(&fixture);
-    let run = fixture.runtime();
-    // The backing directory is not walked: what the rows say counts.
-    fs::remove_file(fixture.disk_path("docs/b.txt")).unwrap();
-
-    assert_eq!(run.block_on(files.count_downloaded_below(&fixture.disk_path("docs"))).unwrap(), DownloadedSpace { files: 2, bytes: 123 });
-    assert_eq!(run.block_on(files.count_downloaded_below(&fixture.folder())).unwrap(), DownloadedSpace { files: 3, bytes: 130 });
-    assert_eq!(run.block_on(files.count_downloaded_below(&fixture.disk_path("docs/a.txt"))).unwrap(), DownloadedSpace { files: 1, bytes: 100 });
-    assert_eq!(run.block_on(files.count_downloaded_below(&fixture.disk_path("docs/remote.txt"))).unwrap(), DownloadedSpace::default());
 }
 
 /// The status of a file with `sync_state`, as far as the state for the menu reads it.

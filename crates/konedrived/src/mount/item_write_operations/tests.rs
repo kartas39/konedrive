@@ -13,9 +13,10 @@ use std::time::Duration;
 use konedrive_tree::{ContentPresence, ContentVersion, ItemKind, ItemPlace, ItemVersion, LocalVersionChange, OneDriveItemId, OneDriveItemReference, Placement, RowRefusal, RowRefusalReason};
 
 use super::*;
+use super::make::MadeItem;
+use konedrive_tree::Item;
 use crate::mount::item_fixture::{onedrive_id_of, ItemFixture, DRIVE_ID};
 use crate::mount::mount_take_down::TakeDownCause;
-use crate::mount::place_changes::OpenMode;
 
 /// What a test has run at a point of an operation.
 pub(super) type Hook = Arc<dyn Fn(OperationPoint) + Send + Sync>;
@@ -396,7 +397,7 @@ fn a_reader_that_opens_by_path_during_an_operation_gets_the_file_of_its_row() {
     operations.run_at(OperationPoint::DiskChanged, move || {
         let (place_changes, read_connections) = (Arc::clone(&place_changes), Arc::clone(&read_connections));
         let thread = std::thread::spawn(move || {
-            let opened = place_changes.open_at_row_path(OpenMode::Read, || read_connections.read(|reader| Ok(reader.find_path(moved)?.map(|path| (path, ())))));
+            let opened = place_changes.open_at_row_path(|| read_connections.read(|reader| Ok(reader.find_path(moved)?.map(|path| (path, ())))));
             let mut content = String::new();
             opened.unwrap().expect("the row has a path").0.read_to_string(&mut content).unwrap();
             content

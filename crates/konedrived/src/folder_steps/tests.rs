@@ -417,7 +417,7 @@ fn a_step_after_a_take_down_was_asked_for_and_one_whose_thread_stopped_do_not_ru
     let (disk_before, rows_before) = (read_disk(&fixture), fixture.list_items());
 
     let take_down = Arc::clone(&fixture.mount_take_down);
-    fixture.run_on_write_operation_thread(move || take_down.ask(TakeDownCause::StoreFailed { detail: "the test asks".into() }));
+    fixture.run_on_write_operation_thread(move || take_down.ask(TakeDownCause::UndoFailed { path: "the test asks".into() }));
     for step in all.clone() {
         assert_eq!(run(&fixture, &steps, step.clone()), StepOutcome::NotRun(StepObstacle::SendingStopped), "{step:?}");
     }
@@ -850,7 +850,7 @@ fn the_sync_marks_are_announced_for_each_item_the_folder_shows_at_its_place_now(
 
     // After a take-down was asked the folder is on its way down: nobody is told.
     let take_down = Arc::clone(&fixture.mount_take_down);
-    fixture.run_on_write_operation_thread(move || take_down.ask(TakeDownCause::StoreFailed { detail: "the test asks".into() }));
+    fixture.run_on_write_operation_thread(move || take_down.ask(TakeDownCause::UndoFailed { path: "the test asks".into() }));
     steps.announce_marks_changed(vec![file, directory]);
     assert_eq!(list_announced(&fixture).len(), 4);
 }

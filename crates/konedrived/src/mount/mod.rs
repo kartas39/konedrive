@@ -38,11 +38,7 @@
 //!   each folder a plain directory without its write bits after the daemon's end.
 
 mod access_mode_switch;
-// Some of what it holds is called by its tests alone, or by nothing.
-#[allow(dead_code, unused_imports)]
 mod backing_directory;
-// Some of what it holds is called by its tests alone.
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod backing_directory_check;
 mod errno;
 mod range_readers;
@@ -51,7 +47,6 @@ mod stale_mount;
 // the kernel's table of mounts and the folder on disk and nothing of the rows, so it is the same
 // for whichever mount was served.
 mod tidy_step;
-#[allow(dead_code, unused_imports)]
 mod upload_rules;
 mod write_operation_thread;
 mod item_announcements;
@@ -66,14 +61,10 @@ mod item_free_up;
 mod item_handles;
 mod item_inotify_bridge;
 mod item_kernel_requests;
-// Some of what it holds is called by its tests alone.
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_lookup;
 mod item_mount;
 mod item_range_fetcher;
 mod item_read_origin;
-// Some of what it holds is called by its tests alone.
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_write_operations;
 mod kernel_requests;
 mod mount_take_down;

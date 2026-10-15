@@ -80,16 +80,15 @@
 // test: a_removals_path_is_that_of_its_synced_place
 // test: a_running_upload_is_shown_under_its_items_path
 // test: an_item_not_shown_that_is_still_here_says_its_path_and_what_keeps_it
-#![allow(dead_code, unused_variables, unused_imports)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use konedrive_dbus::rows::{Change, KeptBack, KeptBackFiles, KeptBackReason, NotInFolder, Transfer};
-use konedrive_tree::{ContentVersion, Group, Item, ItemKind, ItemMemory, ItemNotShown, ItemReader, ItemVersions, LocalItemId, Reason, StepCommitOutcome, TreeError, TreeStore, UnsentTotal, WaitReason, WaitsFor, READ_ONLY_FOLDER};
+use konedrive_tree::{ContentVersion, Group, Item, ItemKind, ItemMemory, ItemNotShown, ItemReader, LocalItemId, Reason, TreeError, UnsentTotal, WaitReason, WaitsFor, READ_ONLY_FOLDER};
 
-use crate::sync_parts::published_plan::{decide_is_shown_blocked, ItemAnswer, PublishedPlan};
-use crate::sync_parts::running_steps::{RunningStep, RunningSteps, StepClass};
+use crate::sync_parts::published_plan::{decide_is_shown_blocked, ItemAnswer};
+use crate::sync_parts::running_steps::{RunningStep, StepClass};
 use crate::status::snapshot::SyncStateHandle;
 use crate::sync_parts::onedrive_space::OneDriveSpace;
 use crate::sync_parts::sending_holds::{SendingHold, SendingHolds};

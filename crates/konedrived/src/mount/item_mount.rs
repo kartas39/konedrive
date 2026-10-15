@@ -35,7 +35,6 @@
 // test: a_build_that_fails_leaves_the_folder_without_its_write_bits
 // test: a_stopped_mount_leaves_the_folder_without_its_write_bits_and_a_forget_gives_them_back
 // test: the_flags_of_ignored_names_are_gone_over_as_a_job_of_the_write_operation_thread
-#![allow(dead_code, unused_variables)]
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -131,7 +130,6 @@ pub(crate) struct ItemMount {
     /// parts, not the runner.
     folder_step_parts: FolderStepParts,
     item_content_files: Arc<ItemContentFiles>,
-    item_handles: Arc<ItemHandles>,
     files_interface: Arc<ItemFilesInterface>,
     start_check_findings: StartCheckFindings,
     /// The store's writer and the upload rules: what the go-over of the ignored names
@@ -333,11 +331,6 @@ impl ItemMount {
     /// The local contents: the steps towards OneDrive's and the row steps'.
     pub(crate) fn item_content_files(&self) -> &Arc<ItemContentFiles> {
         &self.item_content_files
-    }
-
-    /// What programs hold open: whether a file is open for writing.
-    pub(crate) fn item_handles(&self) -> &Arc<ItemHandles> {
-        &self.item_handles
     }
 
     /// The `Files` interface of the bus.

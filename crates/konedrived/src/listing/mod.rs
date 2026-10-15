@@ -4,7 +4,5 @@
 
 pub(crate) mod classify;
 pub(crate) mod listing_cycle;
-// Some of what it holds is called by its tests alone.
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod listing_poller;
 pub(crate) mod live;

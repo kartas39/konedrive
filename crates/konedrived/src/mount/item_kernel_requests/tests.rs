@@ -56,7 +56,6 @@ impl Requests {
             Arc::clone(&fixture.item_handles),
             Arc::clone(&fixture.download_states),
             Arc::clone(&fixture.access_mode_switch),
-            Arc::clone(&fixture.upload_rules),
             Arc::clone(&fixture.running_steps),
             Arc::clone(&fixture.published_plan),
             Arc::clone(&fixture.backing_directory),
@@ -106,7 +105,6 @@ impl Requests {
             free_up,
             Arc::clone(&fixture.access_mode_switch),
             fixture.store.clone(),
-            fixture.runtime(),
         ));
         Requests { requests, write_operations, fixture }
     }
@@ -392,7 +390,7 @@ fn a_request_by_a_node_whose_row_is_gone_is_stale() {
 fn a_request_with_a_handle_whose_row_is_gone_is_answered_from_the_handles_file() {
     let mount = Requests::new();
     let made = mount.make("n.txt", MadeKind::FileOpenedForWriting).unwrap();
-    let (node, fh) = (made.entry.item.local_item_id, made.fh);
+    let (node, fh) = (made.entry.local_item_id(), made.fh);
     assert_eq!(mount.write(fh, 0, b"abcdef"), Ok(6));
     mount.remove("n.txt", ItemKind::File).unwrap();
     assert!(mount.fixture.find_item(node).is_none());
@@ -678,7 +676,7 @@ fn a_file_opened_to_be_overwritten_is_cut_and_nothing_is_downloaded() {
 fn a_created_file_written_and_closed_is_one_unsent_item_with_its_bytes() {
     let mount = Requests::new();
     let made = mount.make("new.txt", MadeKind::FileOpenedForWriting).unwrap();
-    let (node, fh) = (made.entry.item.local_item_id, made.fh);
+    let (node, fh) = (made.entry.local_item_id(), made.fh);
     assert_ne!(fh, Fh::NOT_OPENED);
     assert_eq!((made.entry.attributes.ino, made.entry.attributes.size, made.entry.attributes.kind), (to_node_id(node), 0, FileType::RegularFile));
     assert_eq!(mount.lookup(ROOT, "new.txt").unwrap().attributes().ino, to_node_id(node));
@@ -704,7 +702,7 @@ fn each_request_writes_the_change_its_line_of_the_table_names() {
     let directory = mount.make("d", MadeKind::Directory).unwrap();
     assert_eq!((directory.entry.attributes.kind, directory.fh), (FileType::Directory, Fh::NOT_OPENED));
     let file = mount.make("d/f.txt", MadeKind::File).unwrap();
-    let (node, place) = (file.entry.item.local_item_id, ItemPlace { parent_local_item_id: directory.entry.item.local_item_id, name: "f.txt".into() });
+    let (node, place) = (file.entry.local_item_id(), ItemPlace { parent_local_item_id: directory.entry.local_item_id(), name: "f.txt".into() });
     assert_eq!((file.entry.attributes.ino, file.entry.attributes.size, file.fh), (to_node_id(node), 0, Fh::NOT_OPENED));
     let made = mount.row(node);
     assert!(made.local.as_ref().unwrap().place.as_ref() == Some(&place) && made.unsent_since.is_some() && made.content_presence == ContentPresence::OnDisk, "{made:?}");
@@ -730,7 +728,7 @@ fn each_request_writes_the_change_its_line_of_the_table_names() {
     mount.rename("d/f.txt", "g.txt").unwrap();
     assert_eq!(mount.id("g.txt"), node);
     assert!(mount.fixture.find_item_at("d/f.txt").is_none() && mount.fixture.disk_path("g.txt").is_file());
-    let replaced = mount.make("h.txt", MadeKind::File).unwrap().entry.item.local_item_id;
+    let replaced = mount.make("h.txt", MadeKind::File).unwrap().entry.local_item_id();
     mount.rename("g.txt", "h.txt").unwrap();
     assert_eq!(mount.id("h.txt"), node);
     assert!(mount.fixture.find_item(replaced).is_none() && mount.fixture.find_item_at("g.txt").is_none());
@@ -780,7 +778,7 @@ fn each_refusal_of_a_write_operation_reaches_the_reply_with_its_errno() {
 fn a_file_renamed_while_it_is_open_is_closed_into_the_row_at_its_new_place() {
     let mount = Requests::new();
     let made = mount.make("a.txt", MadeKind::FileOpenedForWriting).unwrap();
-    let (node, fh) = (made.entry.item.local_item_id, made.fh);
+    let (node, fh) = (made.entry.local_item_id(), made.fh);
     mount.write(fh, 0, b"one").unwrap();
     let reader = mount.open_to_read(node).unwrap().fh;
 
@@ -858,18 +856,18 @@ fn a_file_made_with_an_executable_mode_is_executable_and_a_directory_never() {
     let make = |name: &'static str, kind, is_executable| mount.queue(move |requests, reply| requests.queue_make(ROOT, OsStr::new(name), kind, is_executable, A_PROGRAM, reply)).unwrap().entry;
     let (script, plain) = (make("run.sh", MadeKind::File, true), make("notes.txt", MadeKind::FileOpenedForWriting, false));
     assert_eq!((script.attributes.perm, plain.attributes.perm), (0o755, 0o644));
-    assert!(mount.row(script.item.local_item_id).is_executable);
+    assert!(mount.row(script.local_item_id()).is_executable);
     let directory = make("d", MadeKind::Directory, true);
     assert_eq!(directory.attributes.perm, 0o755);
-    assert!(!mount.row(directory.item.local_item_id).is_executable);
-    assert_eq!(mount.set_executable_bit(directory.item.local_item_id, true).unwrap().perm, 0o755, "a chmod of a directory is answered and keeps nothing");
-    assert!(!mount.row(directory.item.local_item_id).is_executable);
+    assert!(!mount.row(directory.local_item_id()).is_executable);
+    assert_eq!(mount.set_executable_bit(directory.local_item_id(), true).unwrap().perm, 0o755, "a chmod of a directory is answered and keeps nothing");
+    assert!(!mount.row(directory.local_item_id()).is_executable);
 }
 
 #[test]
 fn a_directory_is_synced_and_one_the_folder_does_not_show_has_nothing_to_sync() {
     let mount = Requests::new();
-    let directory = mount.make("d", MadeKind::Directory).unwrap().entry.item.local_item_id;
+    let directory = mount.make("d", MadeKind::Directory).unwrap().entry.local_item_id();
     assert_eq!(mount.ask(move |requests| requests.answer_fsyncdir(directory)), Ok(()));
     assert_eq!(mount.ask(|requests| requests.answer_fsyncdir(ROOT)), Ok(()), "the folder itself");
     let not_on_disk = mount.fixture.show_onedrive_directory("in-onedrive").local_item_id;
@@ -914,7 +912,7 @@ fn the_bridges_own_lookup_is_answered_from_the_announcement_in_progress() {
     assert_eq!(find(Some(appearing), "kept.txt").err(), Some(Errno::ENOENT));
 
     // Any other name, and a file whose content changed: from the rows, as for everyone.
-    assert!(matches!(find(Some(vanishing), "kept.txt"), Ok(LookupAnswer::Shown(entry)) if entry.item.local_item_id == kept));
+    assert!(matches!(find(Some(vanishing), "kept.txt"), Ok(LookupAnswer::Shown(entry)) if entry.local_item_id() == kept));
     let changed = ItemAnnouncement::ContentChanged { item: kept, place: place_of("kept.txt") };
     assert!(matches!(find(Some(changed), "kept.txt"), Ok(LookupAnswer::Shown(entry)) if entry.attributes.size == 4));
 }
@@ -943,7 +941,7 @@ fn the_bridges_own_requests_are_answered_from_the_rows_and_make_nothing() {
 
     // mkdir, mknod: the entry the rows have, nothing made.
     let answered = mount.make_as("kept.txt", MadeKind::File, its_thread).unwrap();
-    assert_eq!((answered.entry.item.local_item_id, answered.fh), (kept, Fh::NOT_OPENED));
+    assert_eq!((answered.entry.local_item_id(), answered.fh), (kept, Fh::NOT_OPENED));
     assert_eq!(mount.make_as("none", MadeKind::Directory, its_thread).err(), Some(Errno::ENOENT));
     // unlink, rmdir: done for a name the folder does not show, and nothing removed of one it shows.
     assert_eq!(mount.remove_as("none.txt", ItemKind::File, its_thread), Ok(()));
@@ -958,7 +956,7 @@ fn the_bridges_own_requests_are_answered_from_the_rows_and_make_nothing() {
     assert_ne!(seconds_of(touched.mtime), 5);
     // lookup, with nothing being announced: from the rows.
     let name = OsString::from("kept.txt");
-    assert!(matches!(mount.ask(move |requests| requests.answer_lookup(ROOT, &name, its_thread)), Ok(LookupAnswer::Shown(entry)) if entry.item.local_item_id == kept));
+    assert!(matches!(mount.ask(move |requests| requests.answer_lookup(ROOT, &name, its_thread)), Ok(LookupAnswer::Shown(entry)) if entry.local_item_id() == kept));
 
     assert_eq!(mount.fixture.write_operation_thread.count_queued_jobs(), 0, "none of it is a job of the write-operation thread");
     drop(held);

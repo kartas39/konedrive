@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-use super::downloaded_copies::DiskMarks;
+use super::disk_marks::DiskMarks;
 use crate::folder::disk::HOLDING;
 
 /// Whether `folder`, which is not mounted over yet, holds what an older konedrive left: a

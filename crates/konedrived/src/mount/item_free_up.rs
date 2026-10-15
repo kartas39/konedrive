@@ -31,7 +31,6 @@
 //! on disk with nothing of the kernel's saying so, and whoever shows it — a file
 //! manager's emblem — asks again. A file that was left, and a copy that could not be
 //! removed and is on disk in its row again, are as they were: nothing is announced.
-#![allow(dead_code)]
 
 use std::path::PathBuf;
 use std::sync::Arc;

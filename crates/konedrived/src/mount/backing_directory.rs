@@ -8,13 +8,10 @@
 //!
 //! What it answers for, each in a module of its own:
 //!
-//! - [`file_handles`]: the entry at a path, with its file handle and metadata, and the
-//!   OneDrive id it is marked with;
-//! - [`downloaded_copies`]: the downloaded copy of a OneDrive file — whether a path holds it,
-//!   marking one, removing one;
-//! - [`file_operations`]: the files and directories a change makes, renames and removes;
-//! - [`directory_marks`]: the directories down to a path, each marked with its OneDrive id;
-//! - [`download_landing`]: a finished download marked as a downloaded copy and given its name;
+//! - [`disk_metadata`]: what the filesystem says of an entry: its kind, size, blocks and time;
+//! - [`disk_marks`]: the marks an entry carries — the OneDrive id it belongs to, and whether it
+//!   is that file's downloaded copy;
+//! - [`file_operations`]: the files and directories a change makes and removes;
 //! - [`write_bits`]: the write bits of the folder on disk, removed while no mount lies over
 //!   it and restored for the daemon or the user;
 //! - [`legacy_placeholders`]: a directory that holds an older konedrive's placeholders, which
@@ -28,19 +25,15 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
-mod directory_marks;
-mod download_landing;
-mod downloaded_copies;
-mod file_handles;
+mod disk_marks;
+mod disk_metadata;
 mod file_operations;
 mod legacy_placeholders;
 mod write_bits;
 
-pub(super) use download_landing::LandingOutcome;
-#[cfg_attr(not(test), allow(unused_imports))]
-pub(super) use downloaded_copies::DiskMarks;
-pub(super) use file_handles::{DiskEntry, DiskMetadata};
-pub(crate) use file_handles::EntryKind;
+pub(super) use disk_marks::DiskMarks;
+pub(super) use disk_metadata::DiskMetadata;
+pub(crate) use disk_metadata::EntryKind;
 pub(crate) use write_bits::restore_write_bits;
 pub(super) use write_bits::{to_mode_bits, remove_write_bits, WriteBits};
 

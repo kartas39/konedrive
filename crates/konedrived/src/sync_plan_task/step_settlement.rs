@@ -74,7 +74,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use konedrive_tree::{ActivityKind, ActivityRow, FactStanding, FailedTryStanding, ItemVersions, LocalItemId, OneDriveStep, Reason, Refusal, RefusedVersion, SpaceRefusal, StepFact, SyncStep, TakenName, TreeError, TreeStore};
+use konedrive_tree::{ActivityKind, ActivityRow, FactStanding, FailedTryStanding, ItemVersions, LocalItemId, OneDriveStep, Reason, Refusal, RefusedVersion, SpaceRefusal, SyncStep, TakenName, TreeError, TreeStore};
 
 use super::local_step_tries::{LocalStep, LocalStepTries};
 use crate::sync_parts::step_outcome::{RowsChangedFollowUp, StepEvent, StepFailure, StepObstacle, StepOutcome, StepRefusal};
@@ -101,10 +101,6 @@ pub(crate) enum MemoryWrite {
     SpaceRefusal(SpaceRefusal),
     /// `StepMemory::remember_taken_name(item, unsent_since, taken_name)`.
     TakenName(TakenName),
-    /// `StepMemory::forget_fact`.
-    // TODO: no step answers this yet. Check with issue #238 whether the step that ends an exchange of names is to forget its temporary name (`TemporaryName`: "or its step forgets it"), and fix if needed.
-    #[allow(dead_code)]
-    Forget(StepFact),
 }
 
 /// What a step's end says of the tries the task keeps (`LocalStepTries`). A failed try
@@ -485,7 +481,6 @@ fn write_memory(store: &mut TreeStore, settlement: &StepSettlement, write: &Memo
         MemoryWrite::TakenName(taken_name) => {
             let _: FactStanding = store.step_memory().remember_taken_name(item, unsent_since, taken_name)?;
         }
-        MemoryWrite::Forget(fact) => store.step_memory().forget_fact(item, *fact)?,
     }
     Ok(None)
 }

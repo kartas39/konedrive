@@ -8,7 +8,6 @@ use konedrive_tree::{ContentPresence, ContentVersion, FileSyncState, FolderStep,
 use super::{make_stand_in_hash, onedrive_id_of, ContentFetch, ContentRefusal, DiskMarksRead, ItemFixture, DRIVE_ID, ONEDRIVE_MTIME, ROOT_ONEDRIVE_ID, START_TIME};
 use crate::sync_parts::step_outcome::{RowsChangedFollowUp, StepOutcome, StepRefusal};
 use crate::mount::mount_take_down::TakeDownCause;
-use crate::mount::place_changes::OpenMode;
 use crate::content_source::source::SourceError;
 
 /// One of each thing a builder makes: an agreed directory and an agreed file with their
@@ -169,7 +168,7 @@ fn a_job_runs_on_the_write_operation_thread_and_on_a_mount_like_thread_where_the
     // reading connection: on the mount-like thread, the same at every call.
     let (place_changes, read_connections, id) = (std::sync::Arc::clone(&fixture.place_changes), std::sync::Arc::clone(&fixture.read_connections), own.local_item_id);
     let open = move || {
-        let opened = place_changes.open_at_row_path(OpenMode::Read, || read_connections.read(|reader| Ok(reader.find_path(id)?.map(|path| (path, ())))));
+        let opened = place_changes.open_at_row_path(|| read_connections.read(|reader| Ok(reader.find_path(id)?.map(|path| (path, ())))));
         (opened.unwrap().is_some(), std::thread::current().id())
     };
     let (first, second) = (fixture.run_on_mount_like_thread(open.clone()), fixture.run_on_mount_like_thread(open));
@@ -274,7 +273,7 @@ fn the_clock_the_poll_handle_and_the_take_downs_are_the_tests_to_hold() {
     assert_eq!(asked.load(Ordering::SeqCst), 0);
 
     assert!(fixture.access_mode_switch.is_read_write(), "the fixture's own folder takes changes from the start");
-    let cause = TakeDownCause::StoreFailed { detail: "a test".into() };
+    let cause = TakeDownCause::UndoFailed { path: "a test".into() };
     fixture.mount_take_down.ask(cause.clone());
     assert_eq!(*crate::panic::lock(&fixture.take_downs), [cause]);
     assert!(!fixture.access_mode_switch.is_read_write());

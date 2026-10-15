@@ -22,7 +22,6 @@
 // test: a_file_whose_handle_outlived_its_row_has_the_attributes_of_the_handles_file
 // test: a_name_that_is_vanishing_has_attributes_of_its_kind_and_nothing_else
 // test: a_time_before_1970_is_shown_as_it_is
-#![allow(dead_code, unused_variables)]
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

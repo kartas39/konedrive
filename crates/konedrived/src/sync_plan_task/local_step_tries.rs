@@ -122,10 +122,12 @@ impl LocalStep {
         Self { item: step.local_item_id(), kind, planned_from }
     }
 
+    #[cfg(test)]
     pub(crate) fn item(&self) -> LocalItemId {
         self.item
     }
 
+    #[cfg(test)]
     pub(crate) fn kind(&self) -> LocalStepKind {
         self.kind
     }
@@ -181,6 +183,7 @@ impl LocalStepTries {
     }
 
     /// The tries kept of the step of `item` of this `kind`, when any are.
+    #[cfg(test)]
     pub(crate) fn find_tries(&self, item: LocalItemId, kind: LocalStepKind) -> Option<&LocalStepTry> {
         self.tries.get(&(item, kind))
     }

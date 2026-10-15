@@ -23,7 +23,6 @@
 // test: the_requests_are_aborted_at_a_stop_and_the_steps_towards_the_folder_are_left_running
 // test: a_step_whose_commit_has_begun_is_left_to_a_stop_and_settled
 // test: a_stop_aborts_a_request_in_flight_of_every_class_but_the_one_towards_the_folder
-#![allow(dead_code, unused_variables)]
 
 use std::collections::{BTreeMap, BTreeSet};
 

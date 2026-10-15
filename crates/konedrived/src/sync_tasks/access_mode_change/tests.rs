@@ -137,7 +137,7 @@ fn a_mount_whose_take_down_was_asked_is_not_switched_to_read_write() {
     fixture.runtime().block_on(async {
         switch_to_read_write(&mount, &sending_holds).await.unwrap();
         switch_to_read_only(&mount, &sending_holds, &RunningSteps::new()).await.unwrap();
-        mount.folder_step_parts().mount_take_down.ask(TakeDownCause::StoreFailed { detail: "a fault".into() });
+        mount.folder_step_parts().mount_take_down.ask(TakeDownCause::UndoFailed { path: "a fault".into() });
 
         let switched = switch_to_read_write(&mount, &sending_holds).await;
 
@@ -162,7 +162,7 @@ fn the_wanted_access_mode_is_the_mounts_and_the_holds_before_any_plan() {
         let mount = fixture.build_mount();
         let (_, sending_holds) = make_holds();
         if is_take_down_asked {
-            mount.folder_step_parts().mount_take_down.ask(TakeDownCause::StoreFailed { detail: "a fault".into() });
+            mount.folder_step_parts().mount_take_down.ask(TakeDownCause::UndoFailed { path: "a fault".into() });
         }
 
         let applied = fixture.runtime().block_on(apply_wanted_access_mode(&mount, &sending_holds, wanted));

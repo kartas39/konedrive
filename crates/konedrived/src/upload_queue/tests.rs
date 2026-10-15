@@ -459,26 +459,16 @@ fn an_item_not_shown_that_is_still_here_says_its_path_and_what_keeps_it() {
 // ---- the readers, over a store ----
 
 /// A folder with an unsent item in every state, and what the last plan answered for
-/// each. The rows come to be unsent in the order of the fields.
+/// each. The rows come to be unsent in the order they are made in.
 struct QueueFixture {
     fixture: ItemFixture,
-    docs: LocalItemId,
     old_a: LocalItemId,
-    old_b: LocalItemId,
     old: LocalItemId,
-    created: LocalItemId,
     uploading: LocalItemId,
-    moved: LocalItemId,
-    changed: LocalItemId,
     gone: LocalItemId,
     refused: LocalItemId,
     too_big: LocalItemId,
     left_out: LocalItemId,
-    faulty: LocalItemId,
-    unread: LocalItemId,
-    made_directory: LocalItemId,
-    spaced: LocalItemId,
-    named: LocalItemId,
     answers: BTreeMap<LocalItemId, ItemAnswer>,
     running: Vec<RunningStep>,
 }
@@ -542,7 +532,7 @@ impl QueueFixture {
             (named, ItemAnswer::Waiting(WaitReason::User(Reason::NameCharacters))),
         ]);
         let running = vec![step(uploading, StepClass::Content, 4, 10)];
-        QueueFixture { fixture, docs, old_a, old_b, old, created, uploading, moved, changed, gone, refused: refused_id, too_big: too_big_id, left_out, faulty, unread, made_directory, spaced, named, answers, running }
+        QueueFixture { fixture, old_a, old, uploading, gone, refused: refused_id, too_big: too_big_id, left_out, answers, running }
     }
 
     /// `Changes(limit)`, as the owner of the folder's state answers it.

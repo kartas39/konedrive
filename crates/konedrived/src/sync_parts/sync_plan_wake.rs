@@ -13,7 +13,6 @@
 // test: a_cause_given_before_the_wait_is_answered_at_once
 // test: causes_given_while_nobody_waits_are_answered_together_and_once
 // test: a_wait_with_nothing_given_ends_when_a_cause_is_given
-#![allow(dead_code, unused_variables)]
 
 use std::collections::BTreeSet;
 

@@ -260,23 +260,20 @@ The folder on disk:
 
 - `backing_directory.rs` — `BackingDirectory`: the directory the mount lies over, by its
   descriptor. `[tests]`
-- `backing_directory/directory_marks.rs` — the directories down to a path, each marked with the
-  OneDrive id of the directory it backs. `[tests]`
-- `backing_directory/downloaded_copies.rs` — which file holds the whole content of a OneDrive
-  file: the marks of a downloaded copy. `[tests]`
-- `backing_directory/download_landing.rs` — a finished download given its path. `[tests]`
-- `backing_directory/file_handles.rs` — the entry at a path, looked at once: its file handle,
-  its metadata, the id it is marked with. `[tests]`
-- `backing_directory/file_operations.rs` — make, rename and remove at a path: one call of the
-  filesystem each, with nothing decided. `[tests]`
+- `backing_directory/disk_marks.rs` — `DiskMarks`: the marks an entry carries, the OneDrive id
+  it belongs to and whether it is that file's downloaded copy. `[tests]`
+- `backing_directory/disk_metadata.rs` — `DiskMetadata`: what the filesystem says of an entry,
+  its kind, size, blocks and time.
+- `backing_directory/file_operations.rs` — make and remove at a path, and the file without a
+  name a download is built in: one call of the filesystem each, with nothing decided. `[tests]`
 - `backing_directory/write_bits.rs` — the write bits of the folder on disk: taken off while no
   mount lies over it, given back when one does or when the folder is forgotten. `[tests]`
 - `backing_directory/legacy_placeholders.rs` — a folder an older konedrive kept, which holds
   placeholders: a mount is never put over one. `[tests]`
 - `place_changes.rs` — `PlaceChanges`: every change of a place in the backing directory, and
   every open of a backing file by the path of a row, with the undo of each. `[tests]`
-- `upload_rules.rs` — `UploadRules`: what is uploaded at all (the ignore list), and the names
-  no program may make (the daemon's own, a file manager's trash). `[tests]`
+- `upload_rules.rs` — `UploadRules`: what is uploaded at all (the ignore list), and a file
+  manager's trash, which no program may make. `[tests]`
 
 Before the mount goes over the folder:
 

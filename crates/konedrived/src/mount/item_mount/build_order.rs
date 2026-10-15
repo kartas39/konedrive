@@ -62,6 +62,8 @@ pub(super) struct PartsToStop {
     pub(super) write_operation_thread: Arc<WriteOperationThread>,
     pub(super) inotify_bridge: Arc<ItemInotifyBridge>,
     pub(super) downloader: Arc<ItemDownloader>,
+    /// What a test of the stop looks at: the downloader aborts what it holds.
+    #[cfg(test)]
     pub(super) download_states: Arc<ItemDownloadStates>,
     pub(super) read_connections: Arc<ReadConnections>,
 }
@@ -128,7 +130,6 @@ fn build_over(backing_directory: Arc<BackingDirectory>, setup: ItemMountSetup, r
         Arc::clone(&item_handles),
         Arc::clone(&download_states),
         Arc::clone(&access_mode_switch),
-        Arc::clone(&upload_rules),
         Arc::clone(&running_steps),
         published_plan,
         Arc::clone(&backing_directory),
@@ -189,19 +190,24 @@ fn build_over(backing_directory: Arc<BackingDirectory>, setup: ItemMountSetup, r
         free_up,
         Arc::clone(&access_mode_switch),
         store.clone(),
-        runtime,
     );
     let mount = ItemMount {
         backing_directory,
         access_mode_switch,
         folder_step_parts,
         item_content_files,
-        item_handles,
         files_interface,
         start_check_findings,
         store,
         upload_rules,
-        parts_to_stop: PartsToStop { write_operation_thread, inotify_bridge, downloader, download_states, read_connections },
+        parts_to_stop: PartsToStop {
+            write_operation_thread,
+            inotify_bridge,
+            downloader,
+            #[cfg(test)]
+            download_states,
+            read_connections,
+        },
         session: Mutex::new(None),
         is_stopped: AtomicBool::new(false),
     };

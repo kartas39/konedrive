@@ -53,14 +53,12 @@
 // test: a_folder_started_and_stopped_leaves_no_task_running
 // test: a_folder_taken_down_for_a_fault_is_started_again_by_its_owner_and_by_no_task_of_the_sync
 // test: a_sync_dropped_unstopped_has_its_stop_token_cancelled
-#![allow(dead_code, unused_variables)]
 
 use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::sync_plan_task::SyncPlanTask;
 use crate::sync_parts::sync_plan_wake::SyncPlanWake;
 use crate::listing::listing_poller::{ListingPollHandle, ListingPoller};
 use crate::sync_parts::sending_holds::SendingHolds;
@@ -81,7 +79,6 @@ pub(crate) struct SyncTasks {
     /// answers, also once the poller was taken. The plan's
     /// task were given clones of the same.
     poll: ListingPollHandle,
-    plan: Arc<SyncPlanTask>,
     plan_loop: JoinHandle<()>,
     /// The thumbnail filler (`desktop::thumbs::ThumbnailFiller`); none without a cache to
     /// fill. It holds a clone of the store until it ends.
@@ -102,11 +99,6 @@ impl SyncTasks {
     /// Asks the listing for a cycle.
     pub(crate) fn poll(&self) -> ListingPollHandle {
         self.poll.clone()
-    }
-
-    /// Wakes the plan: after the user's answer, a change of the ignore list, a pin.
-    pub(crate) fn sync_plan_wake(&self) -> &Arc<SyncPlanWake> {
-        &self.sync_plan_wake
     }
 
     /// The token that tells the sync to stop: a clone of the one every task and the step

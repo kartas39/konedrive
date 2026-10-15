@@ -10,7 +10,9 @@
 //! so the places stay as they were read for every row it has not taken from the folder.
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
+#[cfg(test)]
+use std::ffi::OsStr;
 
 use konedrive_tree::{Item, LocalItemId};
 
@@ -38,11 +40,13 @@ impl ItemRows {
         rows
     }
 
+    #[cfg(test)]
     pub(super) fn find(&self, item: LocalItemId) -> Option<&Item> {
         self.items.get(&item)
     }
 
     /// The item the folder shows in `directory` under `name`.
+    #[cfg(test)]
     pub(super) fn find_at(&self, directory: LocalItemId, name: &OsStr) -> Option<&Item> {
         self.shown_inside.get(&directory)?.get(name).and_then(|id| self.items.get(id))
     }

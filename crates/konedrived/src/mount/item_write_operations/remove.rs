@@ -28,7 +28,6 @@
 // test: an_entry_that_cannot_be_put_back_asks_for_the_take_down_and_keeps_its_record
 // test: a_directory_that_holds_what_no_row_says_stays_on_disk_unmarked_and_its_row_goes
 // test: a_file_open_for_writing_is_removed_and_its_writers_close_writes_nothing
-#![allow(dead_code)]
 
 use std::ffi::OsStr;
 use std::path::PathBuf;

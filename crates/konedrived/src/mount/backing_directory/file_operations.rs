@@ -1,9 +1,9 @@
-//! The files and directories a change makes, renames and removes in the backing directory: each
-//! one call of the filesystem at a path, with nothing decided here.
+//! The files and directories a change makes and removes in the backing directory, and the
+//! file without a name a download is built in: each one call of the filesystem, with nothing
+//! decided here.
 
-use std::fs::{self, DirEntry, File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::os::fd::AsFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
@@ -16,14 +16,7 @@ impl BackingDirectory {
         fs::symlink_metadata(self.resolve_path(rel)).ok()
     }
 
-    /// The names in the directory `rel`; none when it cannot be read.
-    pub(in crate::mount) fn list_directory(&self, rel: &Path) -> impl Iterator<Item = DirEntry> {
-        fs::read_dir(self.resolve_path(rel)).into_iter().flatten().flatten()
-    }
-
-    /// The names in the directory `rel`, or why it cannot be read: for what must not take
-    /// a directory it could not read for an empty one.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The names in the directory `rel`, or why it cannot be read.
     pub(in crate::mount) fn read_directory(&self, rel: &Path) -> io::Result<fs::ReadDir> {
         fs::read_dir(self.resolve_path(rel))
     }
@@ -37,22 +30,18 @@ impl BackingDirectory {
         OpenOptions::new().read(true).write(true).create_new(true).mode(to_mode_bits(EntryKind::File, WriteBits::Present)).open(self.resolve_path(rel))
     }
 
+    /// A file of the backing directory's filesystem that is in no directory, to build a
+    /// download in.
+    pub(in crate::mount) fn make_unnamed_file(&self) -> io::Result<File> {
+        File::options().read(true).write(true).custom_flags(libc::O_TMPFILE).mode(to_mode_bits(EntryKind::File, WriteBits::Present)).open(self.resolve_root_directory_path())
+    }
+
     pub(in crate::mount) fn remove_directory(&self, rel: &Path) -> io::Result<()> {
         fs::remove_dir(self.resolve_path(rel))
     }
 
     pub(in crate::mount) fn remove_file(&self, rel: &Path) -> io::Result<()> {
         fs::remove_file(self.resolve_path(rel))
-    }
-
-    pub(in crate::mount) fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        fs::rename(self.resolve_path(from), self.resolve_path(to))
-    }
-
-    /// Exchanges what is at `from` and what is at `to`, both of which are there, in one
-    /// step: each is at the other's path afterwards (`RENAME_EXCHANGE`).
-    pub(in crate::mount) fn exchange(&self, from: &Path, to: &Path) -> io::Result<()> {
-        nix::fcntl::renameat2(self.descriptor.as_fd(), from, self.descriptor.as_fd(), to, nix::fcntl::RenameFlags::RENAME_EXCHANGE).map_err(io::Error::from)
     }
 
     /// The file at `rel`, open to read.

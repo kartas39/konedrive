@@ -25,7 +25,6 @@
 // test: a_reader_not_on_disk_keeps_the_content_it_was_opened_as
 // test: a_reader_that_was_not_on_disk_goes_on_from_the_backing_file_once_it_landed
 // test: a_directory_read_in_parts_reads_the_items_it_listed_first
-#![allow(dead_code, unused_variables)]
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;

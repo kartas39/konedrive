@@ -97,7 +97,7 @@ fn a_sign_in_makes_every_next_try_due_ends_the_hold_wakes_the_plan_and_asks_for_
 }
 
 #[test]
-fn a_refresh_wakes_the_plan_and_asks_for_a_cycle_and_the_network_back_wakes_the_live_socket_too() {
+fn a_refresh_wakes_the_plan_and_asks_for_a_cycle() {
     let fixture = ItemFixture::new();
     fixture.runtime().block_on(async {
         let graph = fixture.start_fake_onedrive().await;
@@ -112,11 +112,6 @@ fn a_refresh_wakes_the_plan_and_asks_for_a_cycle_and_the_network_back_wakes_the_
 
         assert_eq!(sync_plan_wake.wait().await, BTreeSet::from([WakeCause::RefreshAsked]), "the task makes the next tries due on this cause");
         assert_eq!(asked_cycle_count.load(std::sync::atomic::Ordering::SeqCst), 1);
-
-        started.tasks.wake_for_network();
-
-        assert_eq!(sync_plan_wake.wait().await, BTreeSet::from([WakeCause::SendingHoldChanged]), "no next try is made due for the network");
-        assert_eq!(asked_cycle_count.load(std::sync::atomic::Ordering::SeqCst), 2);
         stop(started).await;
     });
 }

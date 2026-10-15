@@ -473,7 +473,6 @@ const REQUEST_IN_FLIGHT_ASKED_AGAIN_AFTER: Duration = Duration::from_secs(5);
 
 /// What a switch to read-only does, by what is unsent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum ReadOnlySwitch {
     /// Made at once: nothing is unsent, or the user forced it. `unsent` is what stays
     /// here under the hold.

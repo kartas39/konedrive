@@ -16,7 +16,6 @@
 // test: what_was_published_is_read_back_per_item
 // test: a_new_plan_replaces_the_answers_of_the_one_before
 // test: the_count_of_what_will_not_be_sent_is_the_last_plans
-#![allow(dead_code, unused_variables)]
 
 use std::collections::BTreeMap;
 
