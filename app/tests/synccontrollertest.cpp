@@ -459,13 +459,11 @@ private Q_SLOTS:
         startFake();
         m_fake->freedFiles = 3;
         m_fake->freedBytes = 3 * 1024 * 1024;
-        m_fake->busyFiles = 1;
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         controller.freeUpSpace();
         QTRY_VERIFY(!controller.freeUpResult().isEmpty());
         QVERIFY2(controller.freeUpResult().contains(QStringLiteral("Freed 3 files")), qPrintable(controller.freeUpResult()));
-        QVERIFY2(controller.freeUpResult().contains(QStringLiteral("1 file was in use")), qPrintable(controller.freeUpResult()));
         QVERIFY(!controller.freeingUp());
     }
 };

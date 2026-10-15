@@ -35,9 +35,6 @@ public:
         , m_client(new konedrive::SyncClient(QDBusConnection::sessionBus(), this))
     {
         connect(m_client, &konedrive::SyncClient::failed, this, &KAbstractFileItemActionPlugin::error);
-        connect(m_client, &konedrive::SyncClient::freeUpKeptBusy, this, [this](uint busy) {
-            Q_EMIT error(i18ncp("@info", "%1 file is in use or was changed here and was kept.", "%1 files are in use or were changed here and were kept.", busy));
-        });
         connect(m_client, &konedrive::SyncClient::webUrlReady, this, [this](const QString &path, const QString &address) {
             // Only an address of the web is handed to the desktop, whatever
             // answered on the bus: never a local file or another scheme.

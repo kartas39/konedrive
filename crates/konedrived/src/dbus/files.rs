@@ -77,22 +77,20 @@ impl Files {
         Ok(unpinned)
     }
 
-    /// "Free up space" for each path, which no pin holds for afterwards. `busy` counts the
-    /// files kept because they were in use or changed here. Every account's paths are
-    /// checked first.
-    #[zbus(out_args("files", "bytes", "busy", "skipped_pinned"))]
-    async fn free_up(&self, paths: Vec<String>) -> Result<(u32, u64, u32, u32), Fault> {
+    /// "Free up space" for each path, which no pin holds for afterwards. Every account's
+    /// paths are checked first.
+    #[zbus(out_args("files", "bytes", "skipped_pinned"))]
+    async fn free_up(&self, paths: Vec<String>) -> Result<(u32, u64, u32), Fault> {
         let groups = self.manager.route_all(&paths).await?;
         for (account, paths) in &groups {
             account.sync.check_free_up(paths).await?;
         }
-        let mut total = (0, 0, 0, 0);
+        let mut total = (0, 0, 0);
         for (account, paths) in groups {
             let freed = account.sync.free_up(&paths).await?;
             total.0 += freed.files;
             total.1 += freed.bytes;
-            total.2 += freed.busy + freed.modified;
-            total.3 += freed.pinned;
+            total.2 += freed.pinned;
         }
         Ok(total)
     }

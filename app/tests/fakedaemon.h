@@ -322,7 +322,7 @@ public Q_SLOTS:
     void Unregister();
     void Refresh(const QDBusMessage &message);
     KonedriveNotInFolderList Skipped();
-    /// Answers (u files, t bytes, u busy) by hand, so that it can be held.
+    /// Answers (u files, t bytes) by hand, so that it can be held.
     void FreeUpSpace(const QDBusMessage &message);
     void Pause(uint seconds);
     void Resume();
@@ -599,7 +599,7 @@ public:
     /// Answers the held FreeUpSpace() call.
     void finishFreeUp()
     {
-        bus.send(heldFreeUp.createReply({QVariant::fromValue(freedFiles), QVariant::fromValue(freedBytes), QVariant::fromValue(busyFiles)}));
+        bus.send(heldFreeUp.createReply({QVariant::fromValue(freedFiles), QVariant::fromValue(freedBytes)}));
         heldFreeUp = QDBusMessage();
     }
 
@@ -626,7 +626,6 @@ public:
     KonedriveNotInFolderList skippedList{{QStringLiteral("/home/u/OneDrive/Personal Vault"), QStringLiteral("personal-vault"), QString(), QString()}};
     uint freedFiles = 0;
     qulonglong freedBytes = 0;
-    uint busyFiles = 0;
     /// Changes(), oldest first.
     KonedriveUploadQueueList uploadQueueRows;
     /// NotUploaded().

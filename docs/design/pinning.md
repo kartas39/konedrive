@@ -119,7 +119,7 @@ into an item (`ItemReader::find_item_by_path`).
 |---|---|---|
 | `Pin(paths)` | `as → u` | A pin holds for each path from now on. A directory is pinned whole: a pin or an exception below it comes off. A path a directory above pins gets no mark of its own and loses an exception it had. The plan is woken, and downloads what the pin holds. Answers how many paths a mark changed for |
 | `Unpin(paths)` | `as → u` | No pin holds for each path from now on, and nothing else changes: what is downloaded stays. A path a directory above pins gets an exception. A directory is let go whole. Answers how many paths a mark changed for |
-| `FreeUp(paths)` | `as → (u files, t bytes, u busy, u skipped_pinned)` | As `Unpin`, and then everything at and below each path is freed up |
+| `FreeUp(paths)` | `as → (u files, t bytes, u skipped_pinned)` | As `Unpin`, and then everything at and below each path is freed up |
 | `Menu(paths)` | `as → a{sv}` | What a context menu may offer for a selection (§4.2) |
 | `Folder.PinnedCount` | `u` | How many pins there are, the exceptions not among them, of bindings rows still have (`ItemReader::count_pins`) |
 
@@ -142,8 +142,8 @@ download or a step is busy with, is left; a clean copy is freed.
   change not uploaded yet, or is open for writing, refuses the whole call `NotUploaded` before
   anything changes; one inside a directory is left and counted. A pin below a freed directory
   comes off with it: the directory is let go whole. `skipped_pinned` counts every downloaded file
-  left — one a download or a step is busy with, one changed here or open for writing — and `busy`
-  is always 0. One `freed` event per path that freed anything.
+  left — one a download or a step is busy with, one changed here or open for writing. One
+  `freed` event per path that freed anything.
 - **`Files.Dehydrate(path)`**, the single file, is refused `NotAllowed` for a file a pin holds
   for, with the message `<path> is pinned: unpin it first`, which `konedrivectl` reads back.
 - **`Folder.FreeUpSpace()`** frees every downloaded file of the folder and leaves every file a

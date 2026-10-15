@@ -212,10 +212,9 @@ public:
         uint queued = 0;
         /// Unpin's `unpinned`.
         uint unpinned = 0;
-        /// FreeUp's `files`, `bytes`, `busy`, `skipped_pinned`.
+        /// FreeUp's `files`, `bytes`, `skipped_pinned`.
         uint files = 0;
         qulonglong bytes = 0;
-        uint busy = 0;
         uint skippedPinned = 0;
     };
 
@@ -319,8 +318,7 @@ public Q_SLOTS:
         answer(QStringLiteral("FreeUp"),
                paths,
                message,
-               {QVariant::fromValue(defaultAnswer.files), QVariant::fromValue(defaultAnswer.bytes), QVariant::fromValue(defaultAnswer.busy),
-                QVariant::fromValue(defaultAnswer.skippedPinned)});
+               {QVariant::fromValue(defaultAnswer.files), QVariant::fromValue(defaultAnswer.bytes), QVariant::fromValue(defaultAnswer.skippedPinned)});
     }
 
     void WebUrl(const QString &path, const QDBusMessage &message)

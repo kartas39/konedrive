@@ -25,10 +25,10 @@ impl Folder {
         Ok(self.service.skipped().await?)
     }
 
-    #[zbus(out_args("files", "bytes", "busy"))]
-    async fn free_up_space(&self) -> Result<(u32, u64, u32)> {
+    #[zbus(out_args("files", "bytes"))]
+    async fn free_up_space(&self) -> Result<(u32, u64)> {
         let freed = self.service.free_up_space().await?;
-        Ok((freed.files, freed.bytes, freed.busy))
+        Ok((freed.files, freed.bytes))
     }
 
     /// Nothing is uploaded, and OneDrive is not asked for changes, for

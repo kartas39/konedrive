@@ -67,14 +67,13 @@
       <!-- For Qt's generator (app/skippeditem.h); ignored by everything else. -->
       <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveNotInFolderList"/>
     </method>
-    <!-- Frees the space of every downloaded file under the folder that is not in use:
-         how many files, how many bytes, how many were skipped as busy. A
-         file with a change waiting to be uploaded is left, and counted as
-         busy. -->
+    <!-- Frees the space of every downloaded file under the folder: how many
+         files, how many bytes. A file a pin keeps, a download is filling, a
+         program holds open for writing or with a change waiting to be
+         uploaded is left, and not counted. -->
     <method name="FreeUpSpace">
       <arg name="files" type="u" direction="out"/>
       <arg name="bytes" type="t" direction="out"/>
-      <arg name="busy" type="u" direction="out"/>
     </method>
     <!-- Pauses the account: nothing is uploaded, OneDrive is not asked for
          changes (so nothing is replaced), and no thumbnail is fetched, for
