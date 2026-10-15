@@ -14,8 +14,8 @@ A change that adds, moves or removes a file changes its line here.
   directory. A `tests.rs` has no line of its own; the files of a `tests/` directory have.
 - What a layer is, what state it owns and what of it is tested without the rest is said in the
   module doc at the top of its `mod.rs` (for the store: `item_store.rs`, `step_memory.rs`,
-  `sync_plan.rs`). [`docs/design/`](design/README.md) describes the mechanism before the mount
-  and is being rewritten: until then the module docs are what explains the code.
+  `sync_plan.rs`). [`docs/design/`](design/README.md) says what the parts are, what holds
+  between them, and why.
 
 ## The words
 

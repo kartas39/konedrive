@@ -7,7 +7,7 @@ for whoever implements: it says what does not work, why, and why it stays.
 What a change in our code would remove is not a limit: it is an issue on GitHub. How the code works
 belongs in the code and in `docs/design/`.
 
-**An entry** is a file named by its id (`F53.md`) and a line here. It has a title and four short
+**An entry** is a file named by its id (`F296.md`) and a line here. It has a title and four short
 lines: why the limit exists, what follows from it, why it stays, and where to look. No retelling of
 the code. Ids do not change.
 

@@ -179,7 +179,7 @@ and before a release is built.
 kernel, the filesystem, OneDrive or the desktop decides, or removing the limit would give up
 something the project chose to keep. It is written for whoever implements.
 
-- If your change meets such a limit, add an entry: a file named by its id (`F53.md`) and a line
+- If your change meets such a limit, add an entry: a file named by its id (`F296.md`) and a line
   for it in the index, `docs/limitations/README.md`. An entry is a title and four short lines:
   why the limit exists, what follows from it, why it stays, where to look. No retelling of the
   code.
