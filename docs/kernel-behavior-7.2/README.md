@@ -5,7 +5,8 @@ for a sync folder that was a plain directory whose opens a root helper intercept
 does not work that way: its sync folder is a FUSE mount the daemon serves, and it has no helper.
 The record is kept for what it says of the kernel. The programmes it names (`tests/vm/…`) and the
 helper (`crates/konedrive-helper`) are not in this tree, so the commands below cannot be run
-from it; the branch `dev` holds them. The suite that mounts a sync
+from it; `dev` before the mount (`b60144a0^`) holds them, and the design document they cite,
+`docs/design/hydration.md`. The suite that mounts a sync
 folder is `tests/fuse-probe/run.sh` ([`../developing.md`](../developing.md), "The VM suite").
 
 Everything stated as a result below, except where §10 says otherwise, was
