@@ -212,7 +212,7 @@ impl ContentSource for Replaceable {
 }
 
 /// What a test's service was made with, for the test to act on: found again by
-/// [`parts`].
+/// `parts`, in the tests.
 #[derive(Clone)]
 pub(crate) struct Parts {
     /// Read by this crate's tests alone.
@@ -292,7 +292,7 @@ impl Builder {
     }
 
     /// The service, made with all of it and added to its registry, as the account manager
-    /// adds the daemon's. [`parts`] finds what it was made with.
+    /// adds the daemon's. The tests find what it was made with by `parts`.
     pub fn build(self) -> Arc<SyncService> {
         let registry = self.registry.unwrap_or_else(Registry::new);
         let account = match self.account {

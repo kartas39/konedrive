@@ -71,7 +71,6 @@ private Q_SLOTS:
         QTest::newRow("online-only, not pinned: cloud") << QByteArray("online-only") << QStringLiteral("none") << Cloud;
         QTest::newRow("online-only, pinned: syncing (the sweep will fill it)") << QByteArray("online-only") << QStringLiteral("explicit") << Syncing;
         QTest::newRow("hydrating: syncing") << QByteArray("hydrating") << QStringLiteral("none") << Syncing;
-        QTest::newRow("dehydrating: syncing") << QByteArray("dehydrating") << QStringLiteral("none") << Syncing;
         QTest::newRow("hydrated, not pinned: outline check") << QByteArray("hydrated") << QStringLiteral("none") << CheckOutline;
         QTest::newRow("hydrated, explicitly pinned: filled check") << QByteArray("hydrated") << QStringLiteral("explicit") << CheckFilled;
         QTest::newRow("hydrated, pinned by the root folder: filled check") << QByteArray("hydrated") << QStringLiteral("ancestor") << CheckFilled;

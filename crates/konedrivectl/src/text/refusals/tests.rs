@@ -293,7 +293,7 @@ fn several_paths_are_never_put_inside_one_files_quotes() {
 fn a_call_that_got_no_answer_is_said_so() {
     let unanswered = zbus::Error::InputOutput(std::sync::Arc::new(std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out")));
     assert!(super::is_unanswered(&unanswered));
-    assert_eq!(super::explain_sync_error(SyncAction::Pause, &unanswered, ""), "pausing the sync failed: konedrived did not answer within 25 seconds");
+    assert_eq!(super::explain_sync_error(SyncAction::Pause, &unanswered, Context::default()), "pausing the sync failed: konedrived did not answer within 25 seconds");
     let closed = zbus::Error::InputOutput(std::sync::Arc::new(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed")));
     assert!(!super::is_unanswered(&closed));
 }

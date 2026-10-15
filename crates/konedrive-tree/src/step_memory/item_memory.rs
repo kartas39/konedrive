@@ -335,19 +335,6 @@ pub struct TakenName {
     pub holder_name: OsString,
 }
 
-/// The kinds of fact a step forgets by name once it is done with them. An upload session is
-/// not among them: one that ended and one that is given up are forgotten by two operations,
-/// since only the second leaves a cancel to send. Nor is the item an upload left, which is
-/// forgotten by its own id, wherever it is kept.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StepFact {
-    TemporaryName,
-    FailedTries,
-    SpaceRefusal,
-    Refusal,
-    TakenName,
-}
-
 /// What became of an item an upload left that was given to the store.
 #[must_use = "an item that is not left to remove is one the folder has: its removal is not asked"]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

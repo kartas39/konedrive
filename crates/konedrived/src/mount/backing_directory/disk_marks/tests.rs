@@ -115,8 +115,8 @@ fn an_entry_is_marked_with_an_id_and_nothing_else() {
     file(dir.path(), None, None);
     fs::set_permissions(dir.path().join(AT), fs::Permissions::from_mode(0o444)).unwrap();
     fs::create_dir(dir.path().join("docs")).unwrap();
-    backing_directory.write_onedrive_id_mark(Path::new(AT), "A").unwrap();
-    backing_directory.write_onedrive_id_mark(Path::new("docs"), "D").unwrap();
+    backing_directory.mark_with_onedrive_id(Path::new(AT), "A").unwrap();
+    backing_directory.mark_with_onedrive_id(Path::new("docs"), "D").unwrap();
     let marks = DiskMarks::try_read(&dir.path().join(AT)).unwrap();
     assert_eq!((marks.onedrive_id().as_deref(), marks.is_whole()), (Some("A"), false));
     assert_eq!(fs::metadata(dir.path().join(AT)).unwrap().permissions().mode() & 0o777, 0o444);

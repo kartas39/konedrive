@@ -123,7 +123,7 @@ fn the_session_a_commit_is_told_ended_is_forgotten_and_another_is_cancelled() {
         let ended = address("1");
         assert_eq!(store.item_store().commit_send_content(&planned_from, &sent, is_told.then_some(&ended)).unwrap(), StepCommitOutcome::Written);
         assert_eq!((item(&mut store, file).unsent_since, said(&mut store, file).upload_session), (None, None), "told: {is_told}");
-        store.step_memory().forget_fact(file, StepFact::TakenName).unwrap();
+        forget_fact(&mut store, file, StepFact::TakenName);
         assert_eq!((kept(&store, file), abandoned(&mut store)), (ItemMemory::default(), if is_told { vec![] } else { vec![address("1")] }));
     }
 }

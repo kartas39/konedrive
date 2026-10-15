@@ -470,15 +470,6 @@ impl ItemReader<'_> {
         Ok(UnsentTotal { count: count.max(0) as u64, bytes: bytes.max(0) as u64 })
     }
 
-    /// The items that are left here — no binding, and an ignored name of their own or of a
-    /// directory above — by local item id, after `after`, at most `limit`.
-    /// No member of the bus calls it: `NotUploaded()` lists what is kept back, and what is
-    /// left here is listed nowhere. Nothing outside the tests calls it.
-    pub fn list_items_left_here(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
-        let sql = format!("SELECT {ITEM_COLUMNS} FROM items WHERE {LEFT_HERE} AND local_item_id > ?1 ORDER BY local_item_id LIMIT ?2");
-        self.list_items(&sql, params![after.map_or(0, LocalItemId::as_i64), limit as i64])
-    }
-
     /// The path the two sides last agreed on for `item`, relative to the root: the name of
     /// its synced place, below the path of that directory as the folder shows it, or as it
     /// was agreed on where the directory is not shown either. `None` when nothing was

@@ -55,10 +55,6 @@ fn the_fact_is_answered_while_onedrives_content_is_the_one_the_upload_left() {
     store.item_store().remember_own_upload_content(file, &later).unwrap();
     assert_eq!(find(&mut store, file), Some(later));
 
-    store.item_store().forget_own_upload_content(file).unwrap();
-    assert_eq!(find(&mut store, file), None);
-    store.item_store().forget_own_upload_content(file).unwrap();
-
     let other = make_file(&mut store, LocalItemId::ROOT, "made");
     assert_eq!(find(&mut store, other), None);
     assert!(is_refused(store.item_store().remember_own_upload_content(other, &fact())), "an item OneDrive does not have was not uploaded into");

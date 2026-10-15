@@ -403,7 +403,7 @@ impl AccountService {
 
     /// `TokenExport.ReadOnly` (`docs/design/desktop.md` §2.11; SECURITY.md): a token that can change nothing, whatever the
     /// account's mode.
-    #[cfg(any(test, feature = "dev-tools"))]
+    #[cfg(feature = "dev-tools")]
     pub(crate) async fn read_only_token(&self) -> Result<String, AuthError> {
         self.tokens.read_only_token().await
     }

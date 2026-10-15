@@ -34,7 +34,7 @@ pub use folded_name::FoldedName;
 pub use item_store::{ConfirmedItem, ConfirmedOneDriveVersion, ItemStore, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay, StepCommitOutcome};
 pub use step_memory::{
     is_content_of, EmptyFileSession, FactStanding, FailedTries, FailedTryStanding, ItemMemory, ItemMemoryParts, ItemRefusalReason, ItemTakenName, MismatchedItem, MismatchedItemStanding, MismatchedItemUpload, OpeningTry, OpeningWindow, RecordedRequest, Refusal, RefusedVersion, RequestRecord,
-    SpaceFit, SpaceRefusal, StepFact, StepMemory, TakenName, TemporaryName, TimedWait, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
+    SpaceFit, SpaceRefusal, StepMemory, TakenName, TemporaryName, TimedWait, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
     UPLOAD_SESSION_OPENING_KEPT,
 };
 pub use item_store::{OwnUploadContent, PinChange};

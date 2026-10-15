@@ -25,6 +25,35 @@ use FailedTryStanding::{ChangeGone, Counted};
 use MismatchedItemStanding::{LeftToRemove, OfFolder};
 use UploadSessionStanding::{Abandoned, Continued, OfAnotherItem};
 
+/// The kinds of fact a test takes away by name, as the step that is done with one does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepFact {
+    TemporaryName,
+    FailedTries,
+    SpaceRefusal,
+    Refusal,
+    TakenName,
+}
+
+/// `fact` of `item` is forgotten. Nothing for an id with no row.
+fn forget_fact(store: &mut TreeStore, item: LocalItemId, fact: StepFact) {
+    store
+        .step_memory()
+        .write(|tx| {
+            change_memory(tx, item, |_, memory| {
+                match fact {
+                    StepFact::TemporaryName => memory.temporary_name = None,
+                    StepFact::FailedTries => memory.failed_tries = None,
+                    StepFact::SpaceRefusal => memory.space_refusal = None,
+                    StepFact::Refusal => memory.refusal = None,
+                    StepFact::TakenName => memory.taken_name = None,
+                }
+                Ok(())
+            })
+        })
+        .unwrap();
+}
+
 fn address(of: &str) -> UploadSessionAddress {
     UploadSessionAddress::new(format!("https://up/{of}"))
 }
@@ -222,12 +251,12 @@ fn each_fact_is_forgotten_by_itself_and_the_last_takes_the_row() {
         }),
     ];
     for (fact, clear) in steps {
-        store.step_memory().forget_fact(file, fact).unwrap();
+        forget_fact(&mut store, file, fact);
         clear(&mut expected);
         assert_eq!(said(&mut store, file), expected, "{fact:?} forgotten");
     }
     assert_eq!((count(&store, "step_memory"), abandoned(&mut store)), (0, vec![]));
-    store.step_memory().forget_fact(LocalItemId::new(99), StepFact::Refusal).unwrap();
+    forget_fact(&mut store, LocalItemId::new(99), StepFact::Refusal);
 }
 
 /// Nothing is remembered of an id with no row.
@@ -347,7 +376,7 @@ fn what_was_learnt_of_a_place_is_not_answered_once_the_place_changed() {
     assert_eq!(store.step_memory().list_refusal_reasons(None, None, 10).unwrap(), []);
     assert!(kept(&store, file).refusal.is_some(), "kept until the next write");
 
-    store.step_memory().forget_fact(file, StepFact::SpaceRefusal).unwrap();
+    forget_fact(&mut store, file, StepFact::SpaceRefusal);
     assert_eq!(kept(&store, file), with_no_version);
     rename(&mut store, file, "report");
     assert_eq!(said(&mut store, file), with_no_version, "at the place again: what was taken away is not answered again");
@@ -419,7 +448,7 @@ fn the_tries_are_counted_and_the_items_that_wait_are_read_soonest_first() {
     assert_eq!(store.step_memory().clear_next_tries().unwrap(), 2);
     assert_eq!(store.step_memory().list_timed_waits(10).unwrap(), []);
     assert_eq!(said(&mut store, b).failed_tries, Some(FailedTries { count: 2, next_try_at: None, last_failure: Reason::Locked }));
-    store.step_memory().forget_fact(b, StepFact::FailedTries).unwrap();
+    forget_fact(&mut store, b, StepFact::FailedTries);
     assert_eq!(remember_try(&mut store, b, &Reason::Network, Some(1)), Counted(1), "counted anew after a step went through");
 }
 
@@ -466,7 +495,7 @@ fn a_refusal_of_a_removal_is_not_answered_for_the_next_removal() {
         assert_eq!((said(&mut store, file), store.step_memory().list_refusal_reasons(None, None, 10).unwrap()), (ItemMemory::default(), vec![]));
         if writes_in_between {
             let _ = remember_try(&mut store, file, &Reason::Network, None);
-            store.step_memory().forget_fact(file, StepFact::FailedTries).unwrap();
+            forget_fact(&mut store, file, StepFact::FailedTries);
         }
         remove(&mut store, file);
         let second = removal_stamp(&mut store, file);

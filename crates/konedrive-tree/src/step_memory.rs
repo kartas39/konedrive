@@ -108,7 +108,7 @@ mod upload_session_openings;
 pub(crate) use item_memory::ConfirmedRequest;
 pub use item_memory::{
     is_content_of, FactStanding, FailedTries, FailedTryStanding, ItemMemory, ItemMemoryParts, MismatchedItem, MismatchedItemStanding, Refusal, RefusedVersion, SpaceFit, SpaceRefusal,
-    StepFact, TakenName, TemporaryName, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
+    TakenName, TemporaryName, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
 };
 pub use refusal_reasons::ItemRefusalReason;
 pub use request_records::{RecordedRequest, RequestRecord};
@@ -466,12 +466,6 @@ impl StepMemory<'_> {
     /// `record`, read some time ago, is settled: it goes when it is still its item's record.
     pub fn forget_request_record_as_read(&mut self, record: &RequestRecord) -> Result<bool, TreeError> {
         self.write(|tx| request_records::forget_record_as_read(tx, record))
-    }
-
-    /// `fact` of `item` is forgotten: its step is done with it. Nothing for an id with no
-    /// row.
-    pub fn forget_fact(&mut self, item: LocalItemId, fact: StepFact) -> Result<(), TreeError> {
-        self.write(|tx| forget_fact(tx, item, fact))
     }
 
     /// Runs `work` in a transaction of its own and commits what it did; an error leaves the
@@ -833,21 +827,6 @@ pub(crate) fn forget_refusals_for(conn: &Connection, reason: &Reason) -> Result<
 pub(crate) fn remember_taken_name(conn: &Connection, item: LocalItemId, unsent_since: Option<u64>, taken_name: &TakenName) -> Result<FactStanding, TreeError> {
     check_name(&taken_name.holder_name)?;
     write_fact(conn, item, |row, memory| Ok(learn_of_unsent_change(row, memory, unsent_since, |memory| memory.taken_name = Some(taken_name.clone()))))
-}
-
-/// [`StepMemory::forget_fact`], inside the caller's transaction.
-pub(crate) fn forget_fact(conn: &Connection, item: LocalItemId, fact: StepFact) -> Result<(), TreeError> {
-    change_memory(conn, item, |_, memory| {
-        match fact {
-            StepFact::TemporaryName => memory.temporary_name = None,
-            StepFact::FailedTries => memory.failed_tries = None,
-            StepFact::SpaceRefusal => memory.space_refusal = None,
-            StepFact::Refusal => memory.refusal = None,
-            StepFact::TakenName => memory.taken_name = None,
-        }
-        Ok(())
-    })?;
-    Ok(())
 }
 
 /// A name a step made up or OneDrive gave is kept only when it is not the empty text: an
