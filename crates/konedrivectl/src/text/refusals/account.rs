@@ -18,7 +18,8 @@ pub fn explain_dev_error(error: &zbus::Error, prefix: &str) -> String {
 
 /// [`explain_dev_error`]'s decision, on the name and message alone — so it
 /// can be tested with a name and a message that disagree, the same shape
-/// [`refusal_text`](super::refusal_text) is tested with.
+/// the folder's refusals are tested with.
+#[cfg(test)]
 pub fn dev_refusal_text(name: Option<&str>, detail: &str, prefix: &str) -> String {
     dev_text(name.map(Refusal::parse).as_ref(), detail, prefix)
 }
@@ -106,6 +107,7 @@ pub fn explain_account_error(action: AccountAction<'_>, error: &zbus::Error) -> 
 }
 
 /// [`explain_account_error`]'s decision, on the name and message alone.
+#[cfg(test)]
 pub fn account_refusal_text(action: AccountAction<'_>, name: Option<&str>, detail: &str) -> String {
     account_text(action, name.map(Refusal::parse).as_ref(), detail)
 }

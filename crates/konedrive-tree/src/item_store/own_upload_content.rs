@@ -8,7 +8,7 @@
 //! `step_memory`: that table's row goes whenever the steps remember nothing else of the
 //! item, and is dropped and moved with a binding by rules that are not this fact's. It is
 //! answered while the row's OneDrive content is `onedrive_content`; the row of the fact
-//! stays until it is forgotten or the item's row goes.
+//! stays until a later upload's replaces it or the item's row goes.
 //!
 //! **Answers for:** without it, an upload into an existing item that
 //! ended with another hash reads at the next plan as "changed on both sides", and the
@@ -72,15 +72,6 @@ impl ItemStore<'_> {
             values.extend(content_values(Some(&upload.local_content)));
             let places = (1..=values.len()).map(|n| format!("?{n}")).collect::<Vec<_>>().join(", ");
             tx.prepare_cached(&format!("INSERT OR REPLACE INTO own_upload_contents (local_item_id, {}) VALUES ({places})", fact_columns()))?.execute(params_from_iter(values))?;
-            Ok(())
-        })
-    }
-
-    /// The fact is done with: the content was sent again and confirmed, or OneDrive's was
-    /// taken.
-    pub fn forget_own_upload_content(&mut self, item: LocalItemId) -> Result<(), TreeError> {
-        self.write(|tx| {
-            tx.prepare_cached("DELETE FROM own_upload_contents WHERE local_item_id = ?1")?.execute([item.as_i64()])?;
             Ok(())
         })
     }

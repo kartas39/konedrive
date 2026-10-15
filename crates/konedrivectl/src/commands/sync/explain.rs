@@ -7,12 +7,12 @@ use konedrive_dbus::Refusal;
 use konedrivectl::text::files::refused_path;
 use konedrivectl::text::folder::needs_attention_text;
 use konedrivectl::text::formats::{no_such_path_text, NOT_UTF8_PATH};
-use konedrivectl::text::refusals::{explain_sync_error_in, is_unanswered, Context, SyncAction};
+use konedrivectl::text::refusals::{explain_sync_error, is_unanswered, Context, SyncAction};
 
 use crate::daemon::{Chosen, Daemon, Folders};
 
 /// Passes a folder call's result through, turning a refusal into what the person running
-/// this should read (`explain_sync_error_in`): matched by the D-Bus error name, and said in
+/// this should read (`explain_sync_error`): matched by the D-Bus error name, and said in
 /// terms of their own file.
 pub(super) async fn explained<T>(
     chosen: &Chosen,
@@ -38,7 +38,7 @@ pub(super) async fn explained<T>(
     };
     let prefix = chosen.prefix();
     let context = Context { root: &root, source: &source, folders: &[], foreign, prefix: &prefix, several: false };
-    Err(anyhow!("{}", explain_sync_error_in(action, &error, context)))
+    Err(anyhow!("{}", explain_sync_error(action, &error, context)))
 }
 
 /// Passes a `Files` call's result on `paths` through, as [`explained`] does. `Files` finds
@@ -74,7 +74,7 @@ pub(super) async fn explained_paths<T>(
     let roots = folders.roots();
     let prefix = folders.prefix(held_by);
     let context = Context { root: &root, source: &source, folders: &roots, foreign: false, prefix: &prefix, several };
-    Err(anyhow!("{}", explain_sync_error_in(action.about(&named), &error, context)))
+    Err(anyhow!("{}", explain_sync_error(action.about(&named), &error, context)))
 }
 
 /// A `Files` call, for [`explained_paths`].

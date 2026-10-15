@@ -23,8 +23,8 @@ FileState readFileState(const QString &path)
         return FileState::NotAFile;
     }
 
-    // The longest value is "online-only" / "dehydrating"; anything that does
-    // not fit is not a state this plugin knows.
+    // The longest value is "online-only"; anything that does not fit is not
+    // a state this plugin knows.
     char value[32];
     const ssize_t size = ::lgetxattr(native.constData(), StateAttribute, value, sizeof value);
     if (size < 0) {
@@ -42,9 +42,6 @@ FileState readFileState(const QString &path)
     }
     if (state == "hydrated") {
         return FileState::Hydrated;
-    }
-    if (state == "dehydrating") {
-        return FileState::Dehydrating;
     }
     return FileState::Unrecognised;
 }
@@ -186,7 +183,6 @@ Emblem emblemFor(FileState state, bool pinned)
         // that finishes it looks exactly like a file already downloading.
         return pinned ? Emblem::Syncing : Emblem::Cloud;
     case FileState::Hydrating:
-    case FileState::Dehydrating:
         return Emblem::Syncing;
     case FileState::Hydrated:
         return pinned ? Emblem::CheckFilled : Emblem::CheckOutline;
@@ -202,7 +198,7 @@ QStringList overlayNames(Emblem emblem)
 {
     // Breeze names, checked against /usr/share/icons/breeze{,-dark}:
     //   - status/*/cloudstatus.svg (online-only);
-    //   - status/*/state-sync.svg (hydrating, dehydrating, or pinned and
+    //   - status/*/state-sync.svg (hydrating, or pinned and
     //     still online-only -- the sweep is filling it);
     //   - actions/*/dialog-ok.svg, a bare check with no fill behind it, for
     //     a hydrated file nobody asked to keep (the OUTLINE case). Not

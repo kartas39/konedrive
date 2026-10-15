@@ -34,7 +34,6 @@ enum class FileState {
     OnlineOnly,
     Hydrating,
     Hydrated,
-    Dehydrating,
     /// The attribute holds a value this plugin does not know.
     Unrecognised,
     /// A directory, a symbolic link, anything else that is not a regular

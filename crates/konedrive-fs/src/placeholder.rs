@@ -13,7 +13,6 @@ use xattr::FileExt;
 
 pub const XATTR_ITEM_ID: &str = "user.konedrive.item-id";
 pub const XATTR_STATE: &str = "user.konedrive.state";
-pub const XATTR_STAMP: &str = "user.konedrive.stamp";
 pub const XATTR_ROOT: &str = "user.konedrive.root";
 /// On a OneDrive folder's root directory: the drive id of the account it shows. A folder
 /// forgotten by one account is refused to another that is not the same drive.
@@ -29,19 +28,11 @@ pub const XATTR_PIN: &str = "user.konedrive.pin";
 /// emblem plugin reads it as it reads the state (`docs/design/writes.md` §7).
 pub const XATTR_SYNC: &str = "user.konedrive.sync";
 
-/// The modes of a folder's entries while no mount lies over it, without their write bits,
-/// and while one does (`docs/design/mount.md` §8.4).
-pub const LOCKED_FILE_MODE: u32 = 0o444;
-pub const LOCKED_DIR_MODE: u32 = 0o555;
-pub const OPEN_FILE_MODE: u32 = 0o644;
-pub const OPEN_DIR_MODE: u32 = 0o755;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     OnlineOnly,
     Hydrating,
     Hydrated,
-    Dehydrating,
 }
 
 impl State {
@@ -50,7 +41,6 @@ impl State {
             Self::OnlineOnly => "online-only",
             Self::Hydrating => "hydrating",
             Self::Hydrated => "hydrated",
-            Self::Dehydrating => "dehydrating",
         }
     }
 }
@@ -63,7 +53,6 @@ impl FromStr for State {
             "online-only" => Ok(Self::OnlineOnly),
             "hydrating" => Ok(Self::Hydrating),
             "hydrated" => Ok(Self::Hydrated),
-            "dehydrating" => Ok(Self::Dehydrating),
             _ => Err(()),
         }
     }
@@ -72,7 +61,7 @@ impl FromStr for State {
 /// Combines results from an operation and a mode restoration, ensuring both
 /// errors are reported: if op() fails and restore also
 /// fails, both failures are in the error message.
-pub fn combine_op_and_restore_results<T>(
+fn combine_op_and_restore_results<T>(
     op_result: io::Result<T>,
     restore_result: io::Result<()>,
     mode: u32,
@@ -112,7 +101,7 @@ pub fn with_owner_write<T>(file: &File, op: impl FnOnce() -> io::Result<T>) -> i
     combine_op_and_restore_results(result, restored, mode)
 }
 
-pub fn set_mode(file: &File, mode: u32) -> io::Result<()> {
+fn set_mode(file: &File, mode: u32) -> io::Result<()> {
     nix::sys::stat::fchmod(file.as_fd(), Mode::from_bits_truncate(mode))?;
     Ok(())
 }
@@ -161,6 +150,7 @@ fn read_xattr(file: &impl AsFd, name: &str) -> io::Result<Option<String>> {
 /// `user.konedrive.state` had been truncated, half-written or set by hand to
 /// something we do not recognise would be taken for the user's own, whole
 /// file.
+#[cfg(test)]
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
     #[error("cannot read {XATTR_STATE}: {0}")]
@@ -171,6 +161,7 @@ pub enum StateError {
 
 /// `Ok(None)` means, and only means, that the attribute is absent — the file
 /// carries no `user.konedrive.state` at all.
+#[cfg(test)]
 pub fn read_state(file: &impl AsFd) -> Result<Option<State>, StateError> {
     match read_xattr(file, XATTR_STATE)? {
         None => Ok(None),
@@ -183,10 +174,6 @@ pub fn read_state(file: &impl AsFd) -> Result<Option<State>, StateError> {
 
 pub fn write_state(file: &File, state: State) -> io::Result<()> {
     set_xattr(file, XATTR_STATE, state.as_str().as_bytes())
-}
-
-pub fn read_item_id(file: &impl AsFd) -> io::Result<Option<String>> {
-    read_xattr(file, XATTR_ITEM_ID)
 }
 
 pub fn write_item_id(file: &File, item_id: &str) -> io::Result<()> {
@@ -215,41 +202,6 @@ pub fn set_mtime(file: &File, mtime: SystemTime) -> io::Result<()> {
     let spec = nix::sys::time::TimeSpec::new(seconds, nanos as i64);
     nix::sys::stat::futimens(file.as_fd(), &spec, &spec)?;
     Ok(())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Stamp {
-    pub size: u64,
-    pub mtime_sec: i64,
-    pub mtime_nsec: i64,
-}
-
-impl Stamp {
-    pub fn of(file: &File) -> io::Result<Self> {
-        use std::os::unix::fs::MetadataExt;
-        let meta = file.metadata()?;
-        Ok(Self {
-            size: meta.len(),
-            mtime_sec: meta.mtime(),
-            mtime_nsec: meta.mtime_nsec(),
-        })
-    }
-
-    fn encode(self) -> String {
-        format!("{} {}.{}", self.size, self.mtime_sec, self.mtime_nsec)
-    }
-
-    /// The attribute's value parsed, for a caller that read it by name
-    /// without opening the file.
-    pub fn decode(value: &str) -> Option<Self> {
-        let (size, time) = value.split_once(' ')?;
-        let (sec, nsec) = time.split_once('.')?;
-        Some(Self {
-            size: size.parse().ok()?,
-            mtime_sec: sec.parse().ok()?,
-            mtime_nsec: nsec.parse().ok()?,
-        })
-    }
 }
 
 /// How far an interrupted download got, durably: the cTag of the
@@ -290,19 +242,13 @@ pub fn remove_progress(file: &File) -> io::Result<()> {
     remove_xattr(file, XATTR_PROGRESS)
 }
 
-/// Writes `stamp` as the file's `user.konedrive.stamp`, rather than the file's own size
-/// and time.
-pub fn write_given_stamp(file: &File, stamp: Stamp) -> io::Result<()> {
-    set_xattr(file, XATTR_STAMP, stamp.encode().as_bytes())
-}
-
 /// Releases every block while keeping the logical size.
 ///
 /// A zero-length file has no blocks to release, and `fallocate` with `len ==
 /// 0` returns `EINVAL` unconditionally at the VFS level (not filesystem
 /// specific), so that case is short-circuited before the syscall rather than
 /// surfaced as an error.
-pub fn punch_all(file: &File) -> io::Result<()> {
+pub(crate) fn punch_all(file: &File) -> io::Result<()> {
     let size = file.metadata()?.len() as i64;
     if size == 0 {
         return Ok(());

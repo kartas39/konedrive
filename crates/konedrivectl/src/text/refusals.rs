@@ -3,7 +3,9 @@ use konedrive_dbus::Refusal;
 mod account;
 mod folder;
 
-pub use account::{account_refusal_text, dev_refusal_text, explain_account_error, explain_dev_error, AccountAction};
+#[cfg(test)]
+pub use account::{account_refusal_text, dev_refusal_text};
+pub use account::{explain_account_error, explain_dev_error, AccountAction};
 
 /// The `sync` subcommand a refusal answered, with the path it named — the
 /// context a refusal needs to be explained in terms of *this* user's file.
@@ -123,23 +125,6 @@ fn read_error(error: &zbus::Error) -> (Option<Refusal>, String) {
     (Refusal::from_error(error), detail)
 }
 
-/// What to tell a person when a folder call made for `action` failed.
-///
-/// Decides by the D-Bus error **name** ([`Refusal`]), never the
-/// message: every refusal the folder makes arrives under
-/// `konedrive_dbus::ERROR_PREFIX`, and each gets a sentence saying what
-/// happened to the user's file and what they can do about it. `root` is the
-/// registered folder (`Folder.Path`, possibly empty), which two refusals name.
-///
-/// The daemon's own message is kept only where it is the specific part:
-/// `Unsupported` (which filesystem feature is missing) and anything with no
-/// name of its own (`Failed`, or an error from the bus itself), where it is
-/// all there is.
-pub fn explain_sync_error(action: SyncAction<'_>, error: &zbus::Error, root: &str) -> String {
-    let (refusal, detail) = read_error(error);
-    folder::text(&folder::Told { action, detail: &detail, root, prefix: "konedrivectl", several: false }, refusal.as_ref())
-}
-
 /// What the CLI knows of the daemon besides a refusal, read after it: the
 /// folder of the account the refusal is about (`Folder.Path`: the chosen
 /// account's, or for a path, the folder that holds it), what it shows
@@ -174,20 +159,33 @@ impl Context<'_> {
     }
 }
 
-/// [`explain_sync_error`], with what [`Context`] adds: a folder that is not
+/// What to tell a person when a folder call made for `action` failed.
+///
+/// Decides by the D-Bus error **name** ([`Refusal`]), never the
+/// message: every refusal the folder makes arrives under
+/// `konedrive_dbus::ERROR_PREFIX`, and each gets a sentence saying what
+/// happened to the user's file and what they can do about it.
+///
+/// The daemon's own message is kept only where it is the specific part:
+/// `Unsupported` (which filesystem feature is missing) and anything with no
+/// name of its own (`Failed`, or an error from the bus itself), where it is
+/// all there is.
+///
+/// [`Context`] adds what the CLI knows besides: a folder that is not
 /// connected yet is told so, a path in no account's folder is told which
 /// folders there are, and a folder that was another account's is told so.
-pub fn explain_sync_error_in(action: SyncAction<'_>, error: &zbus::Error, context: Context<'_>) -> String {
+pub fn explain_sync_error(action: SyncAction<'_>, error: &zbus::Error, context: Context<'_>) -> String {
     let (refusal, detail) = read_error(error);
     text_in(action, refusal.as_ref(), &detail, context)
 }
 
-/// [`explain_sync_error_in`]'s decision, on the name and message alone.
+/// [`explain_sync_error`]'s decision, on the name and message alone.
+#[cfg(test)]
 pub fn refusal_text_in(action: SyncAction<'_>, name: Option<&str>, detail: &str, context: Context<'_>) -> String {
     text_in(action, name.map(Refusal::parse).as_ref(), detail, context)
 }
 
-/// [`refusal_text_in`], on the refusal read.
+/// [`explain_sync_error`]'s decision, on the refusal read.
 fn text_in(action: SyncAction<'_>, refusal: Option<&Refusal>, detail: &str, context: Context<'_>) -> String {
     use SyncAction::*;
     let path = action.path();
@@ -242,8 +240,9 @@ fn text_in(action: SyncAction<'_>, refusal: Option<&Refusal>, detail: &str, cont
     }
 }
 
-/// [`explain_sync_error`]'s decision, on the name and message alone — so it
+/// The sentence for `name` refused with `detail`, with nothing [`Context`] adds — so it
 /// can be tested with a name and a message that disagree.
+#[cfg(test)]
 pub fn refusal_text(action: SyncAction<'_>, name: Option<&str>, detail: &str, root: &str) -> String {
     let told = folder::Told { action, detail, root, prefix: "konedrivectl", several: false };
     folder::text(&told, name.map(Refusal::parse).as_ref())

@@ -6,7 +6,7 @@ use konedrive_dbus::Refusal;
 use konedrivectl::choice::{choose, Source};
 use konedrivectl::text::accounts::{account_list_text, removed_text};
 use konedrivectl::text::formats::warning_text;
-use konedrivectl::text::refusals::{explain_account_error, explain_sync_error_in, AccountAction, Context, SyncAction};
+use konedrivectl::text::refusals::{explain_account_error, explain_sync_error, AccountAction, Context, SyncAction};
 use konedrivectl::text::status::{decide_read_only_asked, mode_shown_text, read_only_asked_text, SWITCH_CANCELLED};
 
 use super::browser::{open_browser, spawn_browser};
@@ -58,7 +58,7 @@ pub(crate) async fn account(daemon: &Daemon, option: Option<&str>, command: Acco
                 let source = sync.folder.source().await.unwrap_or_default();
                 let context = Context { root: &folder, source: &source, ..Default::default() };
                 let action = SyncAction::Remove(&target.label);
-                bail!("{}", explain_sync_error_in(action, &error, context));
+                bail!("{}", explain_sync_error(action, &error, context));
             }
             print!("{}", removed_text(&target.label, &folder));
         }

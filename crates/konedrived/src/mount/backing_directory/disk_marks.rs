@@ -66,10 +66,12 @@ impl BackingDirectory {
         self.read_attribute(rel, XATTR_ITEM_ID)
     }
 
-    /// Marks the entry at `rel` with the OneDrive id `id`: it belongs to that file or
-    /// directory of OneDrive from here on.
+    /// Marks the entry at `rel` with the OneDrive id `id` and nothing else: it belongs to
+    /// that file or directory of OneDrive from here on, and is no whole copy of what OneDrive
+    /// has of it. Also an entry that has no write bit: the bit is lifted for the call.
     pub(in crate::mount) fn mark_with_onedrive_id(&self, rel: &Path, id: &str) -> io::Result<()> {
-        xattr::set(self.resolve_path(rel), XATTR_ITEM_ID, id.as_bytes())
+        let entry = File::open(self.resolve_path(rel))?;
+        placeholder::with_owner_write(&entry, || xattr::FileExt::set_xattr(&entry, XATTR_ITEM_ID, id.as_bytes()))
     }
 
     /// Takes the OneDrive id off the entry at `rel`: it is the user's own from here on.
@@ -108,14 +110,6 @@ impl BackingDirectory {
             }
             Ok(())
         })
-    }
-
-    /// Marks the entry at `rel` with the OneDrive id `id` and nothing else: it is the own
-    /// entry of that item of OneDrive from here on, and no whole copy of what OneDrive has
-    /// of it. Also a file that has no write bit: the bit is lifted for the call.
-    pub(in crate::mount) fn write_onedrive_id_mark(&self, rel: &Path, id: &str) -> io::Result<()> {
-        let entry = File::open(self.resolve_path(rel))?;
-        placeholder::with_owner_write(&entry, || xattr::FileExt::set_xattr(&entry, XATTR_ITEM_ID, id.as_bytes()))
     }
 }
 

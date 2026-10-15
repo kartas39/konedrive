@@ -1059,7 +1059,7 @@ fn begin_next_try(store: &mut TreeStore, id: LocalItemId, kind: ItemKind, fact: 
         }
         None => {
             let other_fact = if fact == Fact::TakenName { StepFact::FailedTries } else { StepFact::TakenName };
-            store.step_memory().forget_fact(id, other_fact).unwrap();
+            forget_fact(store, id, other_fact);
         }
     }
 }

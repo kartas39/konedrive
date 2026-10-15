@@ -117,6 +117,7 @@ impl TokenManager {
 
     /// Caches the access token obtained at sign-in, as asked for with what a refresh asks
     /// for now: valid for what its response says or, when it says nothing, for that.
+    #[cfg(any(test, feature = "testing"))]
     pub async fn seed(&self, response: &TokenResponse) {
         self.seed_as(response, self.asked()).await;
     }

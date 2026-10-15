@@ -257,8 +257,8 @@ impl<'a, 'store> PlaceWalk<'a, 'store> {
     fn write_mark_change(&mut self, change: MarkChange, onedrive_id: Option<&str>, path: &Path) {
         let written = match (change, onedrive_id) {
             (MarkChange::Nothing, _) => Ok(()),
-            (MarkChange::WriteId, Some(onedrive_id)) => self.backing_directory.write_onedrive_id_mark(path, onedrive_id),
-            (MarkChange::ReplaceWithId, Some(onedrive_id)) => self.backing_directory.remove_onedrive_marks(path).and_then(|()| self.backing_directory.write_onedrive_id_mark(path, onedrive_id)),
+            (MarkChange::WriteId, Some(onedrive_id)) => self.backing_directory.mark_with_onedrive_id(path, onedrive_id),
+            (MarkChange::ReplaceWithId, Some(onedrive_id)) => self.backing_directory.remove_onedrive_marks(path).and_then(|()| self.backing_directory.mark_with_onedrive_id(path, onedrive_id)),
             (MarkChange::TakeOff, _) => self.backing_directory.remove_onedrive_marks(path),
             // An id is written for an item that has one.
             (MarkChange::WriteId | MarkChange::ReplaceWithId, None) => Ok(()),

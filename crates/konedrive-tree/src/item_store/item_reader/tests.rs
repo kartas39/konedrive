@@ -387,23 +387,6 @@ fn the_unsent_total_leaves_out_what_is_left_here_and_sums_the_local_content() {
 }
 
 #[test]
-fn the_items_left_here_are_read_bounded() {
-    let mut store = TreeStore::in_memory().unwrap();
-    make_file(&mut store, ROOT, "sent");
-    let lock = make_file_of_size(&mut store, ROOT, "x.tmp", 1, true);
-    let cache = store.item_store().apply(&LocalVersionChange::Made { kind: ItemKind::Directory, place: place(ROOT, ".cache"), content: None, is_name_ignored: true, replaced: None }).unwrap();
-    let below = make_file(&mut store, cache, "below");
-    let items = store.item_store();
-    let reader = items.reader();
-    let left = |after, limit| ids(&reader.list_items_left_here(after, limit).unwrap());
-
-    assert_eq!(left(None, 10), [lock, cache, below]);
-    assert_eq!(left(None, 2), [lock, cache]);
-    assert_eq!(left(Some(cache), 2), [below]);
-    assert_eq!(left(Some(below), 2), []);
-}
-
-#[test]
 fn the_path_of_an_item_the_folder_does_not_show_is_that_of_its_synced_place() {
     let mut store = store_with_listed_root();
     let a = show_listed_directory(&mut store, "A", "R", "a");
