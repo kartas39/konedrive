@@ -1,6 +1,6 @@
 //! Keeps KDE's file indexer out of a OneDrive folder: Baloo
-//! reads every file's content to index it, and a read of a placeholder
-//! downloads it — the whole drive, in the background, the moment Baloo
+//! reads every file's content to index it, and a read of a file that is not
+//! on disk downloads it — the whole drive, in the background, the moment Baloo
 //! walks it.
 //!
 //! A OneDrive folder is excluded (`config add excludeFolders`) only after
@@ -21,7 +21,7 @@
 //! cost, in the log: no Baloo file-name search inside the folder, so KRunner
 //! and Dolphin's own search do not find files there.
 //!
-//! A folder's wiring (`sync::Wiring::new`) starts with [`Baloo::disabled`]
+//! A folder's wiring (`account_folder::Wiring::new`) starts with [`Baloo::disabled`]
 //! (no program, no settings file), which runs and reads nothing at all — a
 //! test that says nothing of Baloo must never reach the real
 //! `~/.config/baloofilerc`. Only `main` gives [`Baloo::default`]

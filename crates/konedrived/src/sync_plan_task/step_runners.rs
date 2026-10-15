@@ -45,7 +45,7 @@ impl StepRunners {
     /// to `OneDriveSteps::run`; `DownloadContent` to `FolderSteps::run_download_content`,
     /// with no lease; every other step towards the folder to `FolderSteps::run`, and the
     /// show steps to `FolderSteps::run_show_items`, each under the folder's lease, so that
-    /// a Forget waits for it as it waits for a reconcile today. The wait for the lease
+    /// a Forget waits for it. The wait for the lease
     /// races `stop`, the token of the sync's stop (`SyncTasks::stop_handle`): a step that
     /// still waits for the lease when the stop comes ends as `NotRun(SendingStopped)` and
     /// touches nothing — whoever stops the sync holds the folder's write lock, which the

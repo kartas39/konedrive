@@ -2,7 +2,7 @@
 //! binding they follow.
 //!
 //! **State owned:** the table `pins`, which holds an item's own mark by its OneDrive item
-//! id (design §5: a pin follows the binding): a pin (`is_kept` 1), "always keep on this
+//! id (`docs/design/pinning.md` §2.1: a pin follows the binding): a pin (`is_kept` 1), "always keep on this
 //! device", or an exception (`is_kept` 0), "not this one" below a pinned directory
 //! (`PinMark`). The nearest mark at an item or above it in the folder decides whether a
 //! pin holds for it (`item_row::find_is_pinned`): an exception below a pin wins over the
@@ -24,8 +24,8 @@
 //!
 //! **Answers for:** `Files.Pin` / `Unpin` / `FreeUp`; and that no mark outlives what it
 //! was of: a pinned file removed here whose removal was confirmed, an item a listing says
-//! is gone and what a full listing's sweep takes, lose their mark with no caller's care
-//! (the map's UNSURE-2.c). An item that is not in OneDrive any more by its row, and is
+//! is gone and what a full listing's sweep takes, lose their mark with no caller's care.
+//! An item that is not in OneDrive any more by its row, and is
 //! bound still, can be given a pin; it goes with the row.
 //!
 //! **Tested without the rest:**
@@ -141,7 +141,7 @@ impl ItemStore<'_> {
     /// Makes a pin hold for `item` (`is_pinned`), or not, in one transaction: every mark
     /// the folder shows below a directory comes off, and the item gets the mark of its own
     /// that says so against the marks above it ([`decide_own_pin_mark`]), by its binding.
-    /// Called by `fuse::ItemFilesInterface::set_pin` as one job of the store's thread; the
+    /// Called by `mount::ItemFilesInterface::set_pin` as one job of the store's thread; the
     /// caller wakes the plan, which downloads what the pin holds.
     pub fn set_item_pin(&mut self, item: LocalItemId, is_pinned: bool) -> Result<PinChange, TreeError> {
         self.write(|tx| {

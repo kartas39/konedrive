@@ -3,10 +3,10 @@
 //!
 //! **State owned:** none.
 //!
-//! **Answers for:** design §8's order for a landing: the file is synced, given its name,
-//! its directory synced, and then the row says `OnDisk`; and design §7: a landing is
-//! conditional — it checks the versions it was downloaded as, and otherwise changes
-//! nothing. The marks: the item id, the whole-copy state and, newly, the cTag the copy
+//! **Answers for:** the order for a landing (`docs/design/mount.md` §3.3, §5.4): the file
+//! is synced, given its name, its directory synced, and then the row says `OnDisk`; and a
+//! landing is conditional (`docs/design/sync.md` §7.1) — it checks the versions it was
+//! downloaded as, and otherwise changes nothing. The marks: the item id, the whole-copy state and the cTag the copy
 //! was downloaded as (the check at start reads an id-only mark as "holds nothing").
 //!
 //! **Who syncs what:** the downloader syncs the file's data BEFORE the job is queued,

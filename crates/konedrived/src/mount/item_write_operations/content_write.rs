@@ -1,12 +1,12 @@
 //! A file's content changed by a program: open for writing, truncate, the time set, and
-//! the last close. The row first (design §8).
+//! the last close. The row first (`docs/design/mount.md` §3.3).
 //!
 //! **Decides:** `decide_open_change` and `decide_close_change`. **Writes:**
 //! `OpenedForWriting` at the first writer's open, before a byte goes to disk;
 //! `ClosedChanged` with the size and the times read from the backing file through the
 //! handle, or `ClosedUnchanged`, at the last close; `Truncated` for a truncation with no
 //! writer; `ItemStore::set_local_modified_time` for a time alone. One rule for both
-//! access modes: a close is written whatever the mode is by then (the map's E22).
+//! access modes: a close is written whatever the mode is by then.
 //!
 //! **Three of these make a backing file**, and with it an entry and maybe the directories
 //! above it: the first writer's open and the open to overwrite of a file that is not on
@@ -181,8 +181,7 @@ impl ItemWriteOperations {
     /// or truncated to `new_size` (`None`: opened): [`decide_file_to_fill`] of its row. A
     /// read-only folder refuses here, before anything is downloaded for a write it will
     /// not take. Called on the mount's thread, before the job is queued; the download
-    /// then runs on the runtime and the job after it (as today,
-    /// `write_operations/write.rs:54`). Read through the calling thread's own reading
+    /// then runs on the runtime and the job after it. Read through the calling thread's own reading
     /// connection (`ReadConnections::read`), as a lookup reads: it waits for neither the
     /// store's thread nor the one reading thread the plan and the bus share.
     pub(in crate::mount) fn find_file_to_fill(&self, node: LocalItemId, new_size: Option<u64>) -> Result<FileToFill, Errno> {
@@ -337,7 +336,7 @@ impl ItemWriteOperations {
 
     /// The writer's file a request about `node` with `fh` is answered from, with the item
     /// it writes: the handle's, when `fh` is a writer's — also for a node whose row is
-    /// gone (design §3) — else that of any writer of `node`.
+    /// gone (`docs/design/mount.md` §4.1) — else that of any writer of `node`.
     fn find_writer(&self, node: LocalItemId, fh: Option<Fh>) -> Option<(LocalItemId, Arc<File>)> {
         fh.and_then(|fh| self.item_handles.find_file_to_write(fh)).or_else(|| self.item_handles.find_writer_file(node).map(|backing_file| (node, backing_file)))
     }
@@ -357,8 +356,8 @@ impl ItemWriteOperations {
     /// backing file is then made: on record before that row (`MakeEntry { owner:
     /// Item(node) }`), the record taken by itself once the file is made — then the
     /// file is cut and given the time the row was given. A node whose row is gone, asked
-    /// with the `fh` of a writer: the handle's file is cut, and no row written (design
-    /// §3). A file on disk is opened before its row is written, so that one that cannot
+    /// with the `fh` of a writer: the handle's file is cut, and no row written
+    /// (`docs/design/mount.md` §4.1). A file on disk is opened before its row is written, so that one that cannot
     /// be opened writes none; a file that cannot be cut after its row is the mount's
     /// take-down. The attributes after it are the caller's to read, as getattr does.
     pub(in crate::mount) fn truncate(&self, node: LocalItemId, fh: Option<Fh>, size: u64) -> Result<(), Errno> {
@@ -460,8 +459,8 @@ impl ItemWriteOperations {
     /// file until the row has the new size. The program was answered already: a failure
     /// is logged, and the check at start mends the row. Called on the write-operation
     /// thread; a job dropped at the mount's stop leaves `content_before_write` set, which
-    /// the check at start reads (the map's RISK-7.d). Written whatever the access mode is
-    /// by now (the map's E22).
+    /// the check at start reads (`docs/design/mount.md` §7.2). Written whatever the access
+    /// mode is by now.
     pub(in crate::mount) fn close_writer(&self, fh: Fh) {
         let Some(closing) = self.item_handles.find_closing_writer(fh) else { return };
         if closing.outcome == CloseOutcome::StillOpenElsewhere {

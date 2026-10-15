@@ -1,4 +1,4 @@
-//! Microsoft Graph's upload sessions (`docs/design/writes.md` §6.1 and §6.3): every
+//! Microsoft Graph's upload sessions (`docs/design/writes.md` §4.3): every
 //! non-empty file goes through one, so that a new file carries
 //! `conflictBehavior: fail`, a changed one `If-Match`, and both their time as
 //! `fileSystemInfo`. The caller opens the session
@@ -9,7 +9,7 @@
 //! a session cannot carry, is a `PUT` followed by a `PATCH` for its time
 //! ([`DriveClient::upload_empty`]).
 //!
-//! An open session holds its name in OneDrive with an empty placeholder until
+//! An open session holds its name in OneDrive with an empty file until
 //! it completes or is cancelled, so a session is never simply
 //! dropped: a fragment OneDrive refuses for now (`429`, `503`, a dropped
 //! connection, a timeout) is sent again to the same session

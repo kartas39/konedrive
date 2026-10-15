@@ -4,17 +4,15 @@
 //! **State owned:** whether the account's OneDrive is full, and when the quota is read
 //! next while it is. Changed by a quota read and by a 507, through the functions here;
 //! what waits for space per file is the step memory's (`SpaceRefusal`), not kept here.
-//! Today: `space.rs`'s `Space` and the rows' `waiting-for-space`.
 //! It is the ONE owner of "OneDrive is full": the plan is given it as a value, an upload
-//! asks it between two fragments, the bus reads it. It is not kept across a restart (the
-//! map's C3): the folder's start reads the quota once before the first plan
-//! (`sync_tasks::start_order`).
+//! asks it between two fragments, the bus reads it. It is not kept across a restart: the
+//! folder's start reads the quota once before the first plan (`sync_tasks::start_order`).
 //!
-//! **Answers for:** the plan's `is_onedrive_full`; design §6, "what is not sent: content,
-//! while OneDrive is full (moves and removals go on)"; `UploadQueue.QuotaFull`.
+//! **Answers for:** the plan's `is_onedrive_full`; what is not sent: content, while
+//! OneDrive is full, moves and removals going on (`docs/design/writes.md` §4.7);
+//! `UploadQueue.QuotaFull`.
 //!
-//! **Tested without the rest** (`refuse_for_space` over wiremock directly, as today's
-//! `upload/space` tests; no fixture):
+//! **Tested without the rest** (`refuse_for_space` over wiremock directly; no fixture):
 // test: a_quota_that_says_exceeded_or_less_than_a_mebibyte_left_is_full
 // test: a_quota_that_says_nothing_of_the_space_changes_nothing
 // test: a_507_with_space_left_is_the_files_own_refusal_and_not_a_full_onedrive
@@ -55,7 +53,7 @@ const QUOTA_READ_INTERVAL: i64 = 30 * 60;
 const QUOTA_READ_REUSE: i64 = 10;
 
 /// Whether `quota` says OneDrive is full: its state is "exceeded", or less than a
-/// mebibyte is left (`space.rs:62`, `no_space`). `None` for a quota that says nothing of
+/// mebibyte is left. `None` for a quota that says nothing of
 /// the space: neither what is left nor a state. Pure.
 pub(crate) fn decide_is_full(quota: &DriveQuota) -> Option<bool> {
     if quota.remaining.is_none() && quota.state.is_empty() {
@@ -135,8 +133,6 @@ impl OneDriveSpace {
     /// (`WakeCause::QuotaRead`); the task asks nothing of OneDrive on that cause: it takes
     /// what is free from here ([`find_free_space`](Self::find_free_space)), calls
     /// `StepMemory::forget_fitting_space_refusals` with it and makes the plan again.
-    /// Replaces `space.rs:234`, `:247` (`apply_quota`, `decide_quota`) and `:279`
-    /// (`release_fitting`).
     ///
     /// The read is written into the account's quota here, as made at `now`, whoever made
     /// it: one path for the folder's own reads and the account's. For a read the account
@@ -151,10 +147,10 @@ impl OneDriveSpace {
     }
 
     /// OneDrive answered 507 to content of `size` bytes: reads the quota at once
-    /// (`DriveClient::quota`, `crates/konedrive-graph/src/drive/mod.rs:194`; a read less
+    /// (`DriveClient::quota`; a read less
     /// than 10 s old is used again) and answers the refusal: with space left the file
     /// alone is too big (`free_space` given), with none OneDrive is full. Called by the
-    /// steps that send content. Replaces `space.rs:201` (`space_refused`).
+    /// steps that send content.
     ///
     /// A quota that cannot be read, or that says nothing of the space, counts as full:
     /// OneDrive just said so, and the read in 30 minutes decides. `size` decides nothing
@@ -199,7 +195,7 @@ impl OneDriveSpace {
     }
 
     /// An upload of `bytes` was committed: they come off what the account's quota says is
-    /// left, until the next read (`Quota::uploaded`; today `space.rs:149`, `space_used`).
+    /// left, until the next read (`Quota::uploaded`).
     /// Called by the steps that send content, after their commit was written.
     pub(crate) fn count_uploaded(&self, bytes: u64) {
         self.quota.uploaded(bytes);

@@ -1,6 +1,6 @@
 //! The plan converges: the rows of a store, changed at random on both sides, are planned and
 //! the steps run until no step is left, and then the two sides are equal and nothing was
-//! lost (`docs/tasks/item-versions-design.md`, §12).
+//! lost (`docs/design/sync.md` §10).
 //!
 //! Every row is made by an operation of [`ItemStore`](crate::ItemStore): a change of the
 //! folder by `apply`, a change of OneDrive by a listing, and what the two agree on by the
@@ -53,7 +53,7 @@ mod step_rules;
 mod random_changes;
 /// The stand-in for OneDrive and the folder: the commits of the steps.
 mod step_stand_in;
-/// The sequences of the reviews, as the reviews ran them, with the state each ends in.
+/// Sequences of changes run through the store step by step, with the state each ends in.
 mod review_sequences;
 
 use plan_input::{describe_every_item, plan_next_steps, CallerFacts, WideningCount};
@@ -615,7 +615,7 @@ fn run(seed: u64, kind: RunKind, times: usize, changes: usize) -> Result<World, 
 
 const RUN_KINDS: [RunKind; 5] = [RunKind::Plain, RunKind::ListingOfTwoPages, RunKind::FewItemsGiven, RunKind::CallerFactsDrawn, RunKind::RequestsInFlight];
 
-/// The design's §12, "convergence": new. A few seeds of each kind of run; more of the one
+/// Convergence (`docs/design/sync.md` §10). A few seeds of each kind of run; more of the one
 /// with requests in flight, whose cases are rarer.
 #[test]
 fn changes_made_at_random_on_both_sides_converge_and_nothing_is_lost() {
@@ -716,7 +716,7 @@ fn names_here(world: &mut World, items: &[LocalItemId]) -> Vec<String> {
     items.iter().map(|item| world.store.item_store().find_item(*item).unwrap().unwrap().local.unwrap().place.unwrap().name.to_string_lossy().into_owned()).collect()
 }
 
-/// Stage B proved a circle of two and of three names; here four and five go round, on
+/// Beyond the circles of two and of three names: four and five go round, on
 /// either side, and three circles at once, one of them on both sides.
 #[test]
 fn circles_of_four_and_more_names_and_several_circles_at_once_converge() {
@@ -753,9 +753,9 @@ fn directories_moved_into_one_another_in_a_ring_of_four_converge() {
     world.run_to_the_end().and_then(|_| world.check_converged(&expected)).unwrap_or_else(|failure| panic!("{failure}\n{}", describe_rows(&rows(&mut world.store))));
 }
 
-// -- the findings of the review of part 3, as the review ran them
+// -- names that fold to one, and a directory removed while its move runs
 
-/// The review's M3: a listing that has ended names two files in one directory under names
+/// A listing that has ended names two files in one directory under names
 /// that fold to one. Both are shown, and nothing asks for a listing again.
 #[test]
 fn two_files_onedrive_lists_under_names_that_fold_to_one_are_both_shown() {
@@ -769,7 +769,7 @@ fn two_files_onedrive_lists_under_names_that_fold_to_one_are_both_shown() {
     }
 }
 
-/// The review's M1, its sequence: `a` is renamed here and its move is running; meanwhile a
+/// `a` is renamed here and its move is running; meanwhile a
 /// file is moved out of `a/b`, and `a` is removed with all in it. Whichever order the steps
 /// run in, the file that was moved out is on both sides at the end.
 #[test]

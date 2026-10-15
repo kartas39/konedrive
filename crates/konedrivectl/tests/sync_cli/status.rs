@@ -34,8 +34,8 @@ async fn binary_skipped_lists_what_is_not_in_the_folder_and_why() {
 }
 
 /// The daemon's own wiring (`daemon/manager.rs`, `account_folder::mode::watch_account`) makes a
-/// registered OneDrive folder follow `Account.Mode`: read-write takes the read-only lock off,
-/// read-only puts it back. (How `SetMode` turns `Mode` is `konedrived`'s `tests/mode.rs`.)
+/// registered OneDrive folder follow `Account.Mode`: read-write makes it take changes,
+/// read-only makes it refuse them. (How `SetMode` turns `Mode` is `konedrived`'s `tests/mode.rs`.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "mounts a filesystem: run in the VM"]
 async fn the_folder_follows_the_accounts_mode() {
@@ -86,7 +86,7 @@ async fn binary_status_says_when_the_check_at_start_of_a_read_only_folder_finish
 /// signed in about, and nothing OneDrive-related to say either — a plain
 /// statement of the actual reason, not the empty "Nothing is skipped."
 /// that would otherwise print (the silent-looking kind of success of `docs/design/desktop.md`
-/// §10.1, where an unrecognised state shows no emblem).
+/// §11.1, where an unrecognised state shows no emblem).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_skipped_with_no_folder_registered_says_so() {
     let f = harness().await;

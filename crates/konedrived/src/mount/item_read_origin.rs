@@ -3,12 +3,12 @@
 //! **State owned:** none: the decisions of open-to-read and of read, as functions of the
 //! row.
 //!
-//! **Answers for:** design §9, "a read": content on disk comes from the backing file,
-//! found by the path of the row's local version (design §8) and opened through
-//! `PlaceChanges::open_at_row_path`, so that no rename comes between the row and the open;
-//! content not on disk comes as ranges from OneDrive, or the file is downloaded, as
-//! today. A reader of a file that is not on disk reads ONE content: the one it was
-//! opened as.
+//! **Answers for:** a read (`docs/design/mount.md` §5.1): content on disk comes from the
+//! backing file, found by the path of the row's local version (`docs/design/mount.md`
+//! §3.2) and opened through `PlaceChanges::open_at_row_path`, so that no rename comes
+//! between the row and the open; content not on disk comes as ranges from OneDrive, or
+//! the file is downloaded. A reader of a file that is not on disk reads ONE content: the
+//! one it was opened as.
 //!
 //! **Tested without the rest**, a test per case:
 // test: a_file_on_disk_is_opened_from_its_backing_file
@@ -59,8 +59,7 @@ pub(super) fn decide_open_to_read(item: &Item) -> Result<OpenToRead, Errno> {
 /// What a range of a file that is not on disk is fetched by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RangeSource {
-    /// The drive and the item: the content source is asked by both (the map's MISSING:
-    /// today `ContentSource::read_range` takes an item id alone).
+    /// The drive and the item; the content source is asked by the item id.
     pub(crate) onedrive_item: OneDriveItemReference,
     /// The content the range is a part of: its size is the end of the file, and its cTag
     /// tells a download or a range of another version.

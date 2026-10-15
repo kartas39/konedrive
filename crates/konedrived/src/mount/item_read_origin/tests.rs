@@ -52,7 +52,7 @@ fn a_reader_whose_content_landed_since_reads_the_backing_file() {
     assert_eq!(decide_not_on_disk_read_origin(&landed, &content("c1", 10)), NotOnDiskReadOrigin::LandedSince);
 }
 
-/// The review's S2: the content landed, and then a writer opened the file. The row's
+/// The content landed, and then a writer opened the file. The row's
 /// content is the writer's by now, and the content the reader opened is the one the row
 /// keeps from before the write: it is on disk, in the backing file.
 #[test]

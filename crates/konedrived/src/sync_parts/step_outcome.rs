@@ -2,11 +2,12 @@
 //! towards OneDrive, towards the folder, of the rows alone — and the plan's task settles.
 //!
 //! **State owned:** none: values. It is here, below the runners, because the runner
-//! towards the folder (`fuse`), the one towards OneDrive (`upload`) and the task that
-//! reads their answers (`sync`) must name one type, and none of them may name the others
+//! towards the folder (`folder_steps`), the one towards OneDrive (`onedrive_steps`) and
+//! the task that reads their answers (`sync_plan_task`) must name one type, and none of
+//! them may name the others
 //! above it.
 //!
-//! **Answers for:** design §7: a step that is done says so with its commit; a step whose
+//! **Answers for:** `docs/design/sync.md` §7: a step that is done says so with its commit; a step whose
 //! commit found other rows than it was planned from changed nothing; a step OneDrive
 //! refuses decides nothing, and says which refusal it was.
 //!
@@ -60,7 +61,7 @@ pub(crate) enum StepRefusal {
     /// taken name; a listing cycle is asked for.
     NameTaken { place: ItemPlace, holder_name: OsString },
     /// 409: the empty file of an upload session holds the name, and it is not provably
-    /// this folder's own: the step waits for it (design §7's first exception).
+    /// this folder's own: the step waits for it (`docs/design/writes.md` §4.4).
     NameHeldByUploadSession,
     /// 412: the item changed in OneDrive since the versions the step was planned from. A
     /// listing cycle is asked for.
@@ -125,7 +126,7 @@ pub(crate) enum StepFailure {
     Store { detail: String },
     /// A change of the backing directory could not be undone after its commit was
     /// refused: the mount is taken down, and the folder starts over through the check at
-    /// start (design §8).
+    /// start (`docs/design/mount.md` §8.1).
     UndoFailed { path: PathBuf },
     /// Graph answered what cannot be read as the item asked for.
     AnswerUnreadable { detail: String },

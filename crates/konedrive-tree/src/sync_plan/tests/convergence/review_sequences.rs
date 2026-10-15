@@ -1,5 +1,5 @@
-//! The sequences of the reviews of the plan, as the reviews ran them: through the store,
-//! the caller in miniature and the commits of the steps, from the tree every run begins
+//! Sequences of changes, each run through the store, the caller in miniature and the
+//! commits of the steps, from the tree every run begins
 //! with — `a` {`b` {`c.txt`}, `c.txt`, `e.txt`}, `d` {`f`}, `g`, `c.txt`. Each says the
 //! state it ends in: what OneDrive has, and what the folder shows.
 
@@ -76,7 +76,7 @@ fn world_with_the_users_own_in_a_directory_the_folder_cannot_show() -> (World, [
     (world, [d, f, mine])
 }
 
-/// The second review's M1. The user removes their own file and `d` (`rm -r d`). Nothing is
+/// The user removes their own file and `d` (`rm -r d`). Nothing is
 /// sent: OneDrive has below `d` what the folder never showed when `d` was removed — the
 /// plan itself had taken `f` off the folder.
 ///
@@ -98,7 +98,7 @@ fn a_directory_the_folder_cannot_show_removed_here_with_the_users_own_is_not_rem
     assert_eq!((plan.steps.len(), plan.waits.len(), plan.faults.len()), (0, 0, 0), "{plan:?}");
 }
 
-/// The second review's M1, the rename (`mv d d-mine`): no move is sent for a directory the
+/// `mv d d-mine`: no move is sent for a directory the
 /// folder cannot show.
 ///
 /// End: OneDrive has `d` under its name, with `f`. The folder shows `d-mine/mine.txt`,
@@ -121,7 +121,7 @@ fn a_directory_the_folder_cannot_show_renamed_here_is_not_renamed_in_onedrive() 
     assert!(mine_row.onedrive.is_some() && mine_row.local == mine_row.onedrive);
 }
 
-/// The second review's M2, with the fact given as the input's doc says it is
+/// With the fact given as the input's doc says it is
 /// ([`SyncPlanInput::destinations_of_running_steps`]). `mv g d/g`: the request moves `g`
 /// into `d` in OneDrive, and its answer is lost — no commit, and the request stays on
 /// record, not settled. `mv d/g g`; remove `d/f` and `d`. While the record stands, `g` has
@@ -167,7 +167,7 @@ fn a_move_into_a_directory_whose_answer_was_lost_holds_the_directorys_removal_un
     }
 }
 
-/// From the review of the check at start: after a store was rebuilt, the check binds an
+/// After a store was rebuilt, the check at start binds an
 /// entry to the item of OneDrive its mark names; the entry is a copy of that file at
 /// another place (`d/a.txt`), and a listing says the item is at `a/a.txt`. No move is sent
 /// and the entry is not moved: the binding was a guess, and is given up.
@@ -195,7 +195,7 @@ fn an_entry_bound_by_its_mark_at_another_place_than_onedrive_has_the_item_gives_
     assert_eq!((local_place(&own), content_of(&own.local)), (Some(place(d, "a.txt")), Some("h888-5888".to_owned())));
 }
 
-/// Stage 0b's §2.1, through the store: the time of a clean copy is set here. No plan takes
+/// Through the store: the time of a clean copy is set here. No plan takes
 /// it back: nothing is to do, the row keeps the time that was set, on both the local
 /// content and the content agreed on, and OneDrive's keeps OneDrive's.
 #[test]
@@ -215,7 +215,7 @@ fn a_time_set_on_a_clean_copy_is_not_taken_back_by_the_plan() {
     assert_eq!((&after.onedrive, after.unsent_since, after.content_presence), (&before.onedrive, None, ContentPresence::OnDisk));
 }
 
-/// The third review's S3, its sequence: `g` is removed here by itself; a listing says
+/// `g` is removed here by itself; a listing says
 /// OneDrive moved it into `d` and changed its content; `d/f` and `d` are removed here. The
 /// content OneDrive alone has is not removed with `d`: the removal of `d` is of the folder
 /// alone.
@@ -267,7 +267,7 @@ fn merge_new_file_with_onedrives(world: &mut World) -> LocalItemId {
     panic!("no merge was planned");
 }
 
-/// The third review's S4 c, its two sequences: a merge was just written, and then OneDrive
+/// A merge was just written, and then OneDrive
 /// renames the item, or the user does. The merge is something agreed on, so the binding is
 /// no guess: the rename is a move of one item, towards the folder or towards OneDrive, and
 /// no second item is made on either side.
@@ -291,7 +291,7 @@ fn an_item_renamed_on_either_side_right_after_its_merge_is_moved_and_not_sent_as
     assert_eq!(world.store.item_store().find_item_at(ROOT, "x".as_ref()).unwrap(), None, "no second item under the old name");
 }
 
-/// The third review's S5, its sequence: an entry `copy` the check at start bound by its
+/// An entry `copy` the check at start bound by its
 /// mark to the directory OneDrive has as `a/docs`, with the user's own `new.txt` in it.
 /// The binding is a guess and is given up; the file waits for that, and is sent once, into
 /// the directory the folder's `copy` is made as. Nothing of the user's is ever sent into
@@ -383,7 +383,7 @@ fn an_exchange_of_names_killed_under_the_temporary_name_ends_with_the_names_exch
     assert_nothing_is_left_to_plan(&mut world);
 }
 
-/// The review's M1 and M1b. `mv c.txt t; mkdir c.txt; mv t c.txt/c.txt`: the new directory
+/// `mv c.txt t; mkdir c.txt; mv t c.txt/c.txt`: the new directory
 /// is made in OneDrive under its temporary name, as the name it takes is the file's still.
 /// The request goes through and its answer is lost; after the start a listing makes a row
 /// of the directory OneDrive has under that name. The plan merges the two rows, sends the

@@ -57,8 +57,8 @@ pub enum DeltaNext {
     Done(String),
 }
 
-/// A file's bytes, and the offset the first of them belongs at (part 1's
-/// `served_from` contract).
+/// A file's bytes, and the offset the first of them belongs at (`served_from`:
+/// `docs/design/decisions.md` §3.14).
 pub struct Download {
     pub served_from: u64,
     pub stream: Box<dyn AsyncRead + Send + Unpin>,
@@ -472,7 +472,7 @@ fn content_range_start(headers: &header::HeaderMap) -> Option<u64> {
     range.split('-').next()?.trim().parse().ok()
 }
 
-/// Which `410` Graph answered (`docs/design/writes.md` §9): the two resync codes
+/// Which `410` Graph answered (`docs/design/sync.md` §5.4): the two resync codes
 /// Microsoft names are told apart by the body; anything else is the plain
 /// resync.
 async fn resync(response: reqwest::Response) -> DriveError {

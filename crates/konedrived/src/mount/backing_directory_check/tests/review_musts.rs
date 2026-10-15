@@ -1,6 +1,6 @@
-//! The MUSTs of the three reviews of the check that followed moves, copies and removals by
-//! the marks (`docs/tasks/item-versions-part-5-review.txt`, `-review-2.txt`,
-//! `-review-3.txt`), each as its sequence and the outcome it has now. In every one of them
+//! Moves, copies, links and removals made by hand while no daemon ran, which a check that
+//! followed the marks would have read as moves and removals, each as its sequence and the
+//! outcome it has (`docs/design/mount.md` §7.1). In every one of them
 //! nothing is removed or moved in the rows of an item OneDrive has: such an item is at
 //! most not shown any more, with nothing to be sent.
 
@@ -23,7 +23,7 @@ fn check_removing_and_moving_nothing_of_onedrive(f: &mut Folder) -> Vec<(DiskFin
 
 // ---- Review 1 ----
 
-/// M1 a): `mv top.txt secret/ ; chmod 000 secret`. The row of the user's own file goes; the
+/// `mv top.txt secret/ ; chmod 000 secret`. The row of the user's own file goes; the
 /// file is a new item at the next start that can read.
 #[test]
 fn review_1_m1_a_a_file_of_the_users_own_moved_into_a_directory_that_cannot_be_read() {
@@ -42,7 +42,7 @@ fn review_1_m1_a_a_file_of_the_users_own_moved_into_a_directory_that_cannot_be_r
     f.assert_settled();
 }
 
-/// M1 b): an edited, unsent file of OneDrive and a directory with a clean copy in it, moved
+/// An edited, unsent file of OneDrive and a directory with a clean copy in it, moved
 /// into a directory that cannot be read. Two removals were to be sent; none is.
 #[test]
 fn review_1_m1_b_items_of_onedrive_moved_into_a_directory_that_cannot_be_read() {
@@ -75,7 +75,7 @@ fn review_1_m1_b_items_of_onedrive_moved_into_a_directory_that_cannot_be_read() 
     f.assert_settled();
 }
 
-/// M1 c): `mv docs docs2 ; chmod 000 docs2`.
+/// `mv docs docs2 ; chmod 000 docs2`.
 #[test]
 fn review_1_m1_c_a_directory_of_onedrive_renamed_and_made_unreadable() {
     if is_root() {
@@ -90,7 +90,7 @@ fn review_1_m1_c_a_directory_of_onedrive_renamed_and_made_unreadable() {
     assert!(f.row("docs").is_some() && f.row("docs2").is_none());
 }
 
-/// M2 a): a file of OneDrive that is not downloaded, in a directory of the user's own that
+/// A file of OneDrive that is not downloaded, in a directory of the user's own that
 /// is renamed by hand.
 #[test]
 fn review_1_m2_a_a_directory_of_the_users_own_renamed_with_a_file_of_onedrive_not_on_disk_in_it() {
@@ -105,7 +105,7 @@ fn review_1_m2_a_a_directory_of_the_users_own_renamed_with_a_file_of_onedrive_no
     f.assert_settled();
 }
 
-/// M2 b): a file saved at the name of a directory of OneDrive that has nothing on disk: the
+/// A file saved at the name of a directory of OneDrive that has nothing on disk: the
 /// whole tree was removed in OneDrive.
 #[test]
 fn review_1_m2_b_a_file_at_the_name_of_a_directory_of_onedrive_that_has_none_on_disk() {
@@ -126,7 +126,7 @@ fn review_1_m2_b_a_file_at_the_name_of_a_directory_of_onedrive_that_has_none_on_
     f.assert_settled();
 }
 
-/// M2 c): `mkdir report` where `report` is a file that is not downloaded.
+/// `mkdir report` where `report` is a file that is not downloaded.
 #[test]
 fn review_1_m2_c_a_directory_made_at_the_name_of_a_file_that_is_not_downloaded() {
     let mut f = folder();
@@ -137,7 +137,7 @@ fn review_1_m2_c_a_directory_made_at_the_name_of_a_file_that_is_not_downloaded()
     f.assert_settled();
 }
 
-/// M3 a) and b): one item id in two drives, nothing touched by hand.
+/// One item id in two drives, nothing touched by hand.
 #[test]
 fn review_1_m3_one_item_id_in_two_drives_with_nothing_touched() {
     for is_first_on_disk in [false, true] {
@@ -152,7 +152,7 @@ fn review_1_m3_one_item_id_in_two_drives_with_nothing_touched() {
     }
 }
 
-/// M4: a copy bound by its mark in a rebuilt store, gone before a listing agreed on it.
+/// A copy bound by its mark in a rebuilt store, gone before a listing agreed on it.
 #[test]
 fn review_1_m4_a_copy_bound_by_its_mark_that_is_gone_before_the_plan_compared_it() {
     let mut f = folder();
@@ -168,7 +168,7 @@ fn review_1_m4_a_copy_bound_by_its_mark_that_is_gone_before_the_plan_compared_it
 
 // ---- Review 2 ----
 
-/// M1: one item id in two drives; one twin is saved by an editor that renames a new file
+/// One item id in two drives; one twin is saved by an editor that renames a new file
 /// over it. Its removal was sent.
 #[test]
 fn review_2_m1_a_twin_saved_by_rename() {
@@ -194,7 +194,7 @@ fn review_2_m1_a_twin_saved_by_rename() {
     }
 }
 
-/// M2: the whole copy of d1!X comes to be in the root while the folder shows no row of it;
+/// The whole copy of d1!X comes to be in the root while the folder shows no row of it;
 /// d2!X, which is not downloaded, was moved to it and had its content replaced.
 #[test]
 fn review_2_m2_a_marked_file_is_never_taken_as_the_other_drives_item() {
@@ -215,7 +215,7 @@ fn review_2_m2_a_marked_file_is_never_taken_as_the_other_drives_item() {
     }
 }
 
-/// M3: `cp -a docs docs-copy` without a.txt; `cp -a docs/a.txt a-copy.txt`; `chmod 000 docs`.
+/// `cp -a docs docs-copy` without a.txt; `cp -a docs/a.txt a-copy.txt`; `chmod 000 docs`.
 /// The item, which nobody touched, was moved to the copy.
 #[test]
 fn review_2_m3_an_untouched_item_in_a_directory_that_cannot_be_read_and_copies_of_it() {
@@ -242,7 +242,7 @@ fn review_2_m3_an_untouched_item_in_a_directory_that_cannot_be_read_and_copies_o
 
 // ---- Review 3 ----
 
-/// M1: a file saved by rename gets the id of its item as its mark; trashed and restored, it
+/// A file saved by rename gets the id of its item as its mark; trashed and restored, it
 /// had no row, was not shown and was never sent.
 #[test]
 fn review_3_m1_a_file_the_check_marked_trashed_and_restored() {
@@ -270,7 +270,7 @@ fn review_3_m1_a_file_the_check_marked_trashed_and_restored() {
     f.assert_settled();
 }
 
-/// M2: `ln docs/a.txt a-link.txt`, start after start, and then `mv docs/a.txt docs/b.txt`.
+/// `ln docs/a.txt a-link.txt`, start after start, and then `mv docs/a.txt docs/b.txt`.
 #[test]
 fn review_3_m2_a_hard_link_and_then_a_rename() {
     let mut f = folder_of_each();
@@ -288,7 +288,7 @@ fn review_3_m2_a_hard_link_and_then_a_rename() {
     f.assert_settled();
 }
 
-/// M2, both in one stop: `ln docs/a.txt a-link.txt ; mv docs/a.txt docs/b.txt`. The item
+/// Both in one stop: `ln docs/a.txt a-link.txt ; mv docs/a.txt docs/b.txt`. The item
 /// was moved to the link.
 #[test]
 fn review_3_m2_a_hard_link_and_a_rename_in_one_stop() {
@@ -301,8 +301,8 @@ fn review_3_m2_a_hard_link_and_a_rename_in_one_stop() {
     f.assert_settled();
 }
 
-/// M2, two items made one file (`ln -f docs/a.txt docs/b.txt`): the mark alternated between
-/// the two ids, one of them was sent again at every start, and a rename removed the other.
+/// Two items made one file (`ln -f docs/a.txt docs/b.txt`), which a check that followed
+/// the marks would have read as one id and then the other at each start.
 #[test]
 fn review_3_m2_two_items_on_one_file() {
     let mut f = folder_of_each();
@@ -314,7 +314,7 @@ fn review_3_m2_two_items_on_one_file() {
         f.assert_settled();
     }
     assert_eq!((f.mark_of("docs/a.txt").as_deref(), f.mark_of("docs/b.txt").as_deref()), (Some("A"), Some("A")));
-    // Review S4: an upload of one name marks the file as that name's item; the other
+    // An upload of one name marks the file as that name's item; the other
     // name's row is not "changed here" for it, at this start or the next.
     f.mark_copy("docs/a.txt", "B");
     for _ in 0..2 {
@@ -329,7 +329,7 @@ fn review_3_m2_two_items_on_one_file() {
     f.assert_settled();
 }
 
-/// M3: `cp -a p/a.txt a-copy.txt ; mv x/q q2 ; mv p q2/p`. The item was moved to the copy,
+/// `cp -a p/a.txt a-copy.txt ; mv x/q q2 ; mv p q2/p`. The item was moved to the copy,
 /// out of its directory.
 #[test]
 fn review_3_m3_an_item_in_a_moved_directory_and_a_copy_of_it_nearer_the_root() {
@@ -354,7 +354,7 @@ fn review_3_m3_an_item_in_a_moved_directory_and_a_copy_of_it_nearer_the_root() {
     f.assert_settled();
 }
 
-/// M4: `mv docs old ; mkdir docs ; mv old docs/old ; echo new > docs/new.txt`. Everything in
+/// `mv docs old ; mkdir docs ; mv old docs/old ; echo new > docs/new.txt`. Everything in
 /// docs was left for good, said as "may be unread".
 #[test]
 fn review_3_m4_a_directory_of_onedrive_put_into_a_new_directory_of_its_own_name() {

@@ -1,4 +1,4 @@
-//! Design §10's table over a backing directory and a store: a test for each row of it, by
+//! The table of `docs/design/mount.md` §7.2 over a backing directory and a store: a test for each row of it, by
 //! the kind of the item, its binding, and whether its content is on disk, changed here or
 //! clean.
 
@@ -40,7 +40,7 @@ fn a_clean_copy_marked_with_another_ctag_than_its_rows_is_changed_and_one_with_n
     assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 6)]);
 }
 
-/// Design §10, the first row's last sentence (the review's M1): a row that still keeps
+/// The table's second row: a row that still keeps
 /// the content of before a write is never made clean by size and time.
 #[test]
 fn a_file_a_dead_daemon_had_open_for_writing_is_changed_here_whatever_its_size_and_time_say() {

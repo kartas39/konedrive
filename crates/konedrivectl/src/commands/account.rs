@@ -66,7 +66,7 @@ pub(crate) async fn account(daemon: &Daemon, option: Option<&str>, command: Acco
     Ok(())
 }
 
-/// `account mode` (`docs/design/writes.md` §2.2): the chosen account's mode, or a switch. A switch to
+/// `account mode` (`docs/design/writes.md` §2): the chosen account's mode, or a switch. A switch to
 /// read-write opens the sign-in the daemon answers with, as `login` does, and waits until the
 /// account is read-write or says why it is not.
 async fn account_mode(daemon: &Daemon, option: Option<&str>, mode: Option<&str>, force: bool) -> anyhow::Result<()> {

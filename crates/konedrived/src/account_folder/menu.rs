@@ -1,4 +1,4 @@
-//! What the context menu may offer for a selection (`Files.Menu`, `docs/design/pinning.md` §5).
+//! What the context menu may offer for a selection (`Files.Menu`, `docs/design/pinning.md` §4.2).
 //!
 //! The answer restates what `Pin`, `Unpin`, `FreeUp` and `WebUrl` take and refuse, so
 //! that a file manager shows only what would go through, and decides nothing itself:

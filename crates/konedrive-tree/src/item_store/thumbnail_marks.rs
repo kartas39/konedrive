@@ -1,14 +1,15 @@
 //! Which version of a file's content a thumbnail was last made for, kept by local item id.
 //!
 //! **State owned:** what tells that a thumbnail in the cache is of the content the row has
-//! now: today `onedrive_items.thumb_key` (cTag, path, time). Written by
-//! [`ItemStore::set_thumbnail_made`] alone.
+//! now: its cTag, its path and its time. Written by [`ItemStore::set_thumbnail_made`]
+//! alone.
 //! Kept in a table of its own, `thumbnail_marks`, keyed by local item id, which goes with
 //! the item's row by a trigger of its own (`thumbnail_marks_item_gone`). The table and
 //! the index of the files a thumbnail is made for (`items_image_or_video`) come with the
 //! raise of the schema's version that only adds (`schema::old_store`).
 //!
-//! **Answers for:** the thumbnail filler's two questions (`desktop/thumbs.rs:110`, `:258`).
+//! **Answers for:** the thumbnail filler's two questions (`desktop/thumbs.rs`): what to
+//! make a thumbnail for, and that one was made.
 //!
 //! **Tested without the rest:**
 // test: the_shown_images_and_videos_without_a_thumbnail_of_their_content_are_candidates

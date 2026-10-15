@@ -46,8 +46,7 @@
 //! its end; an empty file's slot is let go with its one request. A read of `LostAnswers`
 //! takes a `Class::Metadata` slot of its own.
 //!
-//! **Tested without the rest**, against the fixture's fake OneDrive (reference:
-//! `upload/tests/sessions.rs`, `interrupted_sessions.rs`, `candidates.rs:65-156`):
+//! **Tested without the rest**, against the fixture's fake OneDrive:
 // test: an_empty_file_is_sent_by_one_request_and_opens_no_session
 // test: an_opening_is_kept_before_the_request_and_the_session_before_its_first_byte
 // test: an_opening_whose_request_was_answered_for_certain_is_settled_and_one_whose_answer_was_lost_stays
@@ -141,7 +140,7 @@ pub(crate) enum UploadStart {
 
 /// How the upload of a content of `size` bytes begins, from what the step memory still
 /// says of the item. Pure. A session is resumed only for the full content version, change
-/// count included (the map's F15): the step memory answers no other. Wherever the file
+/// count included: the step memory answers no other. Wherever the file
 /// is by now: a session of a new file is gone on with at the place of its empty file.
 pub(crate) fn decide_upload_start(memory: &ItemMemory, size: u64) -> UploadStart {
     match (&memory.upload_session, size) {
@@ -156,8 +155,7 @@ pub(crate) fn decide_upload_start(memory: &ItemMemory, size: u64) -> UploadStart
 /// writes that are not allowed, a throttle): `StepOutcome::NotRun(StepObstacle::SendingStopped)`. For a
 /// full OneDrive (`OneDriveSpace::is_full`), when nothing holds:
 /// `StepOutcome::Refused(StepRefusal::NoSpace { free_space: None })`, which the settlement
-/// writes nothing for. Either way the session is kept. Today's `stop_between_fragments`
-/// (`upload/content/session.rs:57`).
+/// writes nothing for. Either way the session is kept.
 pub(crate) fn decide_stop_between_fragments(is_content_held: bool, is_onedrive_full: bool) -> Option<StepOutcome> {
     match (is_content_held, is_onedrive_full) {
         (true, _) => Some(StepOutcome::NotRun(StepObstacle::SendingStopped)),
@@ -310,10 +308,8 @@ impl ContentUpload {
     /// Takes the pool's upload slot (the module's doc). Nothing is sent while OneDrive is
     /// full ([`decide_stop_between_fragments`], asked before the first request too).
     /// Reads the item's memory (`ItemReader::find_item_memory`), then
-    /// [`decide_upload_start`]: `upload_empty` (`G/upload.rs:287`; today
-    /// `Job::send_empty`, `upload/content/session.rs:178`), with the content's time; or
-    /// `upload_status` (`G/upload.rs:252`; `Job::resume`, `:216`); or
-    /// `create_upload_session` (`G/upload.rs:131`; `Job::open`, `:230`) — and then the
+    /// [`decide_upload_start`]: `upload_empty`, with the content's time; or
+    /// `upload_status`; or `create_upload_session` — and then the
     /// fragments ([`send_fragments`](Self::send_fragments)). The step memory is written
     /// in the order the module says.
     ///
@@ -327,8 +323,8 @@ impl ContentUpload {
     /// the runner is answered an outcome: a 507 by `OneDriveSpace::refuse_for_space`
     /// (with `file.size()`); a 412 of an existing item by one read of the item
     /// (`LostAnswers::read_request_outcome` with `SentRequest::SendContent`): the hash
-    /// sent, there already, is this step's own earlier upload and is answered as sent
-    /// (`upload/content.rs:400-403`), anything else is `StepRefusal::ItemChanged`; a 404
+    /// sent, there already, is this step's own earlier upload and is answered as sent,
+    /// anything else is `StepRefusal::ItemChanged`; a 404
     /// is `ItemGone` for an existing item and `DirectoryGone` for a new file; a 409 of
     /// an existing item, which names no place, is `ItemChanged`; a gone
     /// session by [`follow_gone_session`](Self::follow_gone_session); an answer lost to
@@ -565,8 +561,7 @@ impl ContentUpload {
         }
     }
 
-    /// Sends the fragments of `file` from `session.next_offset` on: `upload_chunk`
-    /// (`G/upload.rs:190`; `Job::fragment`, `upload/content/session.rs:285`), each of at
+    /// Sends the fragments of `file` from `session.next_offset` on: `upload_chunk`, each of at
     /// most `Limits::chunk` bytes, read by `LocalContentFile::read_fragment` off the
     /// runtime, each followed by `StepMemory::advance_upload_session` and the progress
     /// told (`RunningSteps::tell_progress`). The hash sent is that of the bytes read
@@ -689,12 +684,12 @@ impl ContentUpload {
     /// (`forget_ended_upload_session`); when the content sent is there already — the
     /// item for an existing one, the file at the session's own place for a new one,
     /// compared by the hash of the whole file (`LocalContentFile::hash`) —, it is the
-    /// upload that went through (`LostAnswers::read_request_outcome`; `Job::ended`,
-    /// `upload/content/session.rs:397`), answered with no session to forget; an existing
+    /// upload that went through (`LostAnswers::read_request_outcome`), answered with no
+    /// session to forget; an existing
     /// item that is not as the step was planned from it — its content changed in OneDrive,
     /// which ends its session, or it is gone — is `StepRefusal::ItemChanged`; otherwise
     /// the step answers `StepRefusal::UploadSessionGone`, and its next try opens a new
-    /// session (today's worker opened one in the same run, once).
+    /// session.
     async fn follow_gone_session(&self, item: &ItemVersions, target: &ContentTarget, file: &Arc<LocalContentFile>, session: &UploadSession) -> Result<SentContent, StepOutcome> {
         let (id, ended) = (item.local_item_id, session.address.clone());
         self.write_memory(move |memory| memory.forget_ended_upload_session(id, &ended)).await?;
@@ -717,13 +712,13 @@ impl ContentUpload {
         }
     }
 
-    /// Asks that `sent.item` holds the hash of the content sent (`Job::finish`,
-    /// `upload/content.rs:465`); an answer that carries no hash is taken as sent. When it
+    /// Asks that `sent.item` holds the hash of the content sent; an answer that carries no
+    /// hash is taken as sent. When it
     /// holds another, nothing is committed and the step answers
     /// `StepRefusal::ContentMismatch`, after: for a new file the made item
     /// remembered (`StepMemory::remember_mismatched_item`, with
     /// `MismatchedItem::of_answer` of the answer's cTag and eTag) BEFORE its removal is
-    /// asked (`delete_item`, `G/write.rs:140`, guarded by the answer's eTag) — and its
+    /// asked (`delete_item`, guarded by the answer's eTag) — and its
     /// removal is asked only when the store
     /// answers `MismatchedItemStanding::LeftToRemove`: `OfFolder` says the folder has
     /// that item by now, and nothing is removed; removed or found gone, it is forgotten
@@ -732,7 +727,7 @@ impl ContentUpload {
     /// remembered, and the plan is told of it (`SyncPlanInput::items_left_by_uploads`).
     /// For an existing item the fact is kept
     /// (`ItemStore::remember_own_upload_content`: OneDrive's content of the answer, the
-    /// local content sent). The content is then sent again (the owner's decision). The session that
+    /// local content sent). The content is then sent again (`docs/design/writes.md` §4.3). The session that
     /// ended is forgotten here (`forget_ended_upload_session`): no commit will.
     async fn check_sent_content(&self, item: &ItemVersions, target: &ContentTarget, sent: &SentContent) -> Result<(), StepOutcome> {
         let id = item.local_item_id;
@@ -773,7 +768,7 @@ impl ContentUpload {
                 let contents = (sent.item.content.clone(), item.local.as_ref().and_then(|local| local.content.clone()));
                 if let (Some(onedrive_content), Some(local_content)) = contents {
                     let upload = OwnUploadContent { onedrive_content, local_content };
-                    // The content is sent again (the owner's decision). The fact is the plan's to read (`SyncPlanInput::own_upload_contents`, filled from `ItemReader::find_own_upload_content`): with it the listing that brings what this upload left is no change of OneDrive's, and the content is sent again with no conflict copy.
+                    // The content is sent again. The fact is the plan's to read (`SyncPlanInput::own_upload_contents`, filled from `ItemReader::find_own_upload_content`): with it the listing that brings what this upload left is no change of OneDrive's, and the content is sent again with no conflict copy.
                     self.graph.store.call(move |store| store.item_store().remember_own_upload_content(id, &upload)).await.map_err(fail_store)?;
                 }
             }
@@ -782,8 +777,8 @@ impl ContentUpload {
     }
 
     /// Before a new file is sent: the item an earlier upload of this item left with other
-    /// content (`memory.mismatched_item`; nothing to do with none) is read (`item`,
-    /// `G/mod.rs:217`) and: adopted — answered as sent, with no session and at the place
+    /// content (`memory.mismatched_item`; nothing to do with none) is read (`item`) and:
+    /// adopted — answered as sent, with no session and at the place
     /// OneDrive has it — when it holds the hash of `file` after all and no row is bound
     /// to it (`ItemReader::find_bound_item`); removed (`delete_item`, guarded by the
     /// eTag just read) when it is unchanged since that upload
@@ -793,8 +788,7 @@ impl ContentUpload {
     /// `StepMemory::forget_removed_mismatched_item`, which takes the OneDrive version of a
     /// row a listing made of it; adopted or another's by `forget_mismatched_item`, by the
     /// item's reference, drive and id —; a read or a removal that fails otherwise leaves it
-    /// remembered and is the step's outcome. Today `Job::clear_bad_item`
-    /// (`upload/content.rs:165`).
+    /// remembered and is the step's outcome.
     pub(crate) async fn remove_mismatched_item(&self, item: &ItemVersions, memory: &ItemMemory, file: &Arc<LocalContentFile>) -> Result<Option<SentContent>, StepOutcome> {
         let Some(left) = memory.mismatched_item.clone() else { return Ok(None) };
         // Removed or gone: the row a listing made of it loses its OneDrive version with it. Another's by now, or adopted: OneDrive has it still.

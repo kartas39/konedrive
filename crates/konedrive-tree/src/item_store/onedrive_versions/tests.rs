@@ -553,7 +553,7 @@ fn each_change_is_answered_written_or_refused_with_its_reason_and_a_refused_one_
     assert_eq!(onedrive_side(&mut store), expected);
 }
 
-/// N1 of the review: a listing that contradicts itself about the root is refused for the
+/// A listing that contradicts itself about the root is refused for the
 /// root, and the rest of the page is written: a root with the empty text for an id, and a
 /// root whose id is that of a file or of an item the folder shows. Row 1 stays as it was.
 #[test]
@@ -847,7 +847,7 @@ fn a_full_listing_takes_what_it_did_not_see_at_its_end_and_nothing_before() {
     assert_eq!(onedrive_side(&mut store), after, "the full listing ended: a listing of changes takes nothing it does not name");
 }
 
-/// M1 of the review, the order the entry promises. A step's upload of X is confirmed; a
+/// A step's upload of X is confirmed; a
 /// listing of changes fetched before that, one page with its link, says another client
 /// changed X since. The call leaves X to be read again, and so writes no link and ends no
 /// listing. The reading of X fails and the daemon stops: the store still has the old link,
@@ -915,7 +915,7 @@ fn what_was_read_again_is_given_with_the_same_link_which_is_then_written() {
     assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-2"), "a link to the next page ends no listing");
 }
 
-/// S3 of the review: a full listing is resumed after a stop, and its remaining pages come
+/// A full listing is resumed after a stop, and its remaining pages come
 /// with a later count. A new file a step sent, confirmed after the listing had passed its
 /// place, was not seen and is not taken: the sweep is bounded by the count the listing
 /// began at, which the store kept, and the file is read again.

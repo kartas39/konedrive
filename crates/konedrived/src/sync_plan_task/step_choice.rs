@@ -34,7 +34,7 @@ pub(crate) struct StepLimits {
     /// The pool's slots and [`STEPS_BEYOND_SLOTS`]: counted here; the slot is taken by
     /// the content upload, which waits for it.
     pub(crate) content: usize,
-    /// One, as today's worker sends what is not content one at a time.
+    /// One: what is not content is sent one at a time (`docs/design/sync.md` §8.3).
     pub(crate) metadata: usize,
     /// The pool's slots and [`STEPS_BEYOND_SLOTS`]: counted here; the slot is taken by
     /// the downloader, which waits for it.

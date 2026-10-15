@@ -1,7 +1,7 @@
 use super::{account_refusal_text, dev_refusal_text, refusal_text, refusal_text_in, AccountAction, Context, SyncAction};
 
 /// `account mode` and `export-access-token --read-write` explain each refusal by its
-/// name (`docs/design/desktop.md` §2.6): a read-only account, and, for the token
+/// name (`docs/design/desktop.md` §2.10): a read-only account, and, for the token
 /// alone, a drive `write_test_drive_ids` does not list.
 #[test]
 fn a_refused_mode_is_explained_by_its_name() {

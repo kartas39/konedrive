@@ -65,7 +65,7 @@ fn a_store_of_an_older_version_is_rebuilt_and_never_migrated() {
 fn a_store_of_the_version_before_is_migrated_in_place_and_keeps_what_it_held() {
     assert_eq!(decide_old_store(&StoredVersion::Version("29".to_owned())), OldStoreDecision::Migrate);
 
-    // A store as version 29 had it: today's, without the column version 30 added.
+    // A store as version 29 had it: this build's, without the column version 30 added.
     let dir = tempfile::tempdir().unwrap();
     let path = store_path(&dir);
     let mut store = store_in_file_with_listed_root(&path);
@@ -178,7 +178,7 @@ fn a_rebuild_counts_what_it_loses_before_the_file_goes() {
     let event = |path: &str| ActivityRow { at: 1, kind: ActivityKind::Uploaded, path: path.into(), detail: String::new() };
     store.add_activity(&[event("a"), event("b"), event("c")]).unwrap();
     store.add_conflicts(&[ConflictRow { at: 1, original: "/f".into(), kept_copy: "/f (copy)".into() }]).unwrap();
-    // What the tables of an older version hold of what is unsent and of sessions: a store of today's version has neither table.
+    // What the tables of an older version hold of what is unsent and of sessions: a store of this build's version has neither table.
     store
         .bench_sql(
             "CREATE TABLE outbox (kind TEXT, rel TEXT, state TEXT, handle BLOB);
@@ -192,7 +192,7 @@ fn a_rebuild_counts_what_it_loses_before_the_file_goes() {
     assert_eq!(count_rebuild_loss(&store.conn), Some(expected), "a removal and a move of a file not on disk, in the rows and in the outbox");
     drop(store);
 
-    // A store of today's version loses nothing: it is kept.
+    // A store of this build's version loses nothing: it is kept.
     assert_eq!(TreeStore::open_with_origin(&path).unwrap().1, StoreOrigin::Kept);
     set_stored_version(&path, "19");
     let (store, origin) = TreeStore::open_with_origin(&path).unwrap();
@@ -269,7 +269,7 @@ fn no_upload_session_is_listed_where_none_is_to_cancel() {
     let dir = tempfile::tempdir().unwrap();
     assert!(list_old_store_upload_sessions(&store_path(&dir)).unwrap().is_empty(), "no file");
 
-    // A store of today's version goes on with its sessions: none is listed, whatever it holds.
+    // A store of this build's version goes on with its sessions: none is listed, whatever it holds.
     let todays = dir.path().join("todays.sqlite");
     make_old_store_with_sessions(&todays, SCHEMA_VERSION, &["https://up/kept"]);
     assert!(list_old_store_upload_sessions(&todays).unwrap().is_empty());

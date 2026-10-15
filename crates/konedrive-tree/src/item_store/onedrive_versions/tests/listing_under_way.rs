@@ -8,7 +8,7 @@ fn whole(store: &mut TreeStore) -> (Vec<Item>, Option<String>, Option<ListingUnd
     (every_row(store), store.delta_link().unwrap(), under_way(store))
 }
 
-/// S1 a) of the second review. A listing of changes is fetched; before its answer is
+/// A listing of changes is fetched; before its answer is
 /// given, the store is told to start over (OneDrive asked for it), and the full listing's
 /// first page is written. The answer of the listing of changes comes then, with its delta
 /// link: it is refused whole. Taken as the full listing's last page, it would end it and
@@ -32,7 +32,7 @@ fn a_page_of_a_listing_the_store_gave_up_is_refused_whole() {
     assert_eq!((listed(&mut store, "A").onedrive, item(&mut store, kept).onedrive, bound(&mut store, "B")), (version(ROOT, "a", Some("1")), version(ROOT, "kept", Some("1")), None));
 }
 
-/// S1 b) of the second review. No page begins a listing: in a store that has a delta
+/// No page begins a listing: in a store that has a delta
 /// link and no listing under way, the pages of a full listing that was not begun are
 /// refused, whatever id they come with, and are not written as a listing of changes,
 /// which would take nothing of what OneDrive removed meanwhile.

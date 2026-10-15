@@ -68,7 +68,7 @@ async fn refuses_anything_that_is_not_a_real_directory() {
 }
 
 /// The probe is not decoration: a directory can be empty, be a
-/// directory, and still be unable to hold a single placeholder. Here it
+/// directory, and still be unable to hold a single downloaded copy. Here it
 /// is one we cannot write into at all — the cheapest unprivileged stand-in
 /// for a filesystem that refuses the features, and the one thing that
 /// fails if `probe_dir` is dropped from the checks.
@@ -93,7 +93,7 @@ async fn refuses_a_directory_the_probe_cannot_use() {
 /// The empty requirement belongs to *first* registration
 /// only. A folder that already carries a valid `user.konedrive.root`
 /// is a root being re-registered, and re-registration is expected to
-/// find it full of exactly the placeholders and hydrated files this
+/// find it full of exactly the downloaded copies and files this
 /// daemon itself put there — refusing it as though it were some other,
 /// foreign non-empty folder would make every restart unregister every
 /// root.
@@ -159,7 +159,7 @@ async fn a_bogus_root_id_is_replaced_by_a_real_one() {
 /// message with an errno about an attribute name, on a folder it does not
 /// name. Here the folder is both unusable and non-empty, and it is the
 /// unusability that must be reported: a folder that cannot hold a
-/// placeholder at all cannot be a sync root whether it is empty or not.
+/// downloaded copy at all cannot be a sync root whether it is empty or not.
 #[tokio::test]
 async fn an_unusable_directory_is_reported_as_unusable_even_when_it_is_not_empty() {
     use std::os::unix::fs::PermissionsExt;

@@ -32,7 +32,7 @@ use crate::content_source::source::ContentSource;
 /// it is now.
 pub(super) struct Folder {
     pub(crate) standing: Standing,
-    /// The account's mode as the folder follows it (`docs/design/writes.md` §2, §2.2):
+    /// The account's mode as the folder follows it (`docs/design/writes.md` §2.1):
     /// a read-only folder's mount takes no change, a read-write one's does.
     pub(crate) wanted: Mode,
     pub(crate) is: Is,
@@ -42,7 +42,7 @@ pub(super) struct Folder {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Standing {
     Active,
-    /// `config.toml` gives the account what an earlier account has (`docs/design/accounts.md` §4.1): its
+    /// `config.toml` gives the account what an earlier account has (`docs/design/accounts.md` §4.2): its
     /// folder is not brought up and no registration is made. The sentence that says why.
     HeldBack(String),
     /// `Accounts.Remove` is taking the account away: nothing is registered or brought up
@@ -81,11 +81,10 @@ pub(super) struct Kept {
     /// Where the folder's files are downloaded from: the drive, from its first bring-up
     /// on (`None` when the daemon was given no drive).
     pub(crate) source: Option<Arc<dyn ContentSource>>,
-    /// The per-root tree lock (`docs/design/writes.md` §9): the plan's task holds it
-    /// across each commit that touches `onedrive_items`, the mount's recorder across each change it
-    /// records, and a cycle must hold it from staging to swap, or the swap reverts the
-    /// commit. One for as long as the folder is recorded, so that what took it before a
-    /// sync was started again still keeps the new sync's cycle out.
+    /// The folder's tree lock (`docs/design/mount.md` §2.3): every job of the mount's
+    /// write-operation thread runs under it, and so does the commit of a step towards
+    /// OneDrive; the listing takes none. One for as long as the folder is recorded, so that
+    /// what took it before a sync was started again still keeps the new sync's commits out.
     pub(crate) tree_lock: Arc<tokio::sync::Mutex<()>>,
     /// What the folder's sync left when it was stopped: the store, the mount — still
     /// served, so that the folder shows its names also while no sync runs — and what the

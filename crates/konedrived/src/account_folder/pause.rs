@@ -1,4 +1,4 @@
-//! What holds an account's background work back (`docs/design/writes.md` §11): the user's
+//! What holds an account's background work back (`docs/design/writes.md` §6.3): the user's
 //! pause, the automatic hold, and the clock that ends a timed pause.
 //!
 //! **The pause** is per account and kept with the account's settings, in its section of

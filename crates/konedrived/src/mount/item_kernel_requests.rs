@@ -1,8 +1,9 @@
 //! What each request of the kernel does in the model of rows: the function it calls and
-//! the change of a local version it writes. The table of design §9, request by request.
+//! the change of a local version it writes. The table of `docs/design/mount.md` §4.1,
+//! request by request.
 //!
 //! **State owned:** none; [`ItemKernelRequests`] holds the parts the requests go through.
-//! At the switch `kernel_requests` (the `fuser::Filesystem`) calls one function here per
+//! `kernel_requests` (the `fuser::Filesystem`) calls one function here per
 //! request and turns its answer into the reply; node ids are local item ids from the
 //! first line on. It is a layer of its own, under the `Filesystem`, so that every request
 //! is tested with no kernel and no mount.
@@ -41,12 +42,11 @@
 //!   mount's thread;
 //! - *what goes to the write-operation thread* (make, remove, rename, the writers'
 //!   opens, truncate, the time, a writer's release): queued as one job with the reply
-//!   moved into the job (`ReplyTo`), as today (`kernel_requests/write_requests.rs`);
+//!   moved into the job (`ReplyTo`);
 //! - everything else is answered where it was asked.
 //!
 //! **A read-only folder** refuses every request that changes the folder here, on the
-//! mount's thread, before anything is queued or downloaded (`EROFS`), as today
-//! (`write_requests.rs`, `run_in_read_write_folder`): the thread's jobs wait for the tree
+//! mount's thread, before anything is queued or downloaded (`EROFS`): the thread's jobs wait for the tree
 //! lock, and a program is not made to wait for it to be told. The operation asks the
 //! mode again on the thread, and that answer counts. A mount whose take-down was asked
 //! is read-only (`MountTakeDown::ask`), so it refuses the same way. The last close is
@@ -84,11 +84,12 @@
 //!
 //! **Nothing is announced to the inotify bridge here.** What a program asks for through
 //! the mount the kernel tells its watchers itself; the bridge is for what a step towards
-//! the folder changed (design §9). The bridge is held to tell its own requests
+//! the folder changed (`docs/design/mount.md` §9). The bridge is held to tell its own requests
 //! (`is_own_thread`) and the name it is announcing (`find_in_progress`).
 //!
-//! Unchanged, and not here: init, statfs, access, interrupt, symlink, link, setxattr,
-//! removexattr (refused as today), forget (nothing is kept per node: design §14).
+//! Not here: init, statfs, access, interrupt, symlink, link, setxattr, removexattr
+//! (refused: `docs/design/mount.md` §4.2), forget (nothing is kept per node:
+//! `docs/design/decisions.md` §2.1).
 //!
 //! **Tested without the rest**, over the fixture (`item_fixture`), and no kernel:
 // test: each_request_writes_the_change_its_line_of_the_table_names
@@ -166,13 +167,12 @@ use super::write_operation_thread::WriteOperationThread;
 mod tests;
 
 /// For how long the kernel may keep the attributes and the name of an entry the folder
-/// shows, as today (`attributes::TTL`). The one such time of the mount: the kernel's
+/// shows (`docs/design/mount.md` §4.1). The one such time of the mount: the kernel's
 /// interface (`kernel_requests`) answers with it too.
 pub(super) const ATTRIBUTE_LIFETIME: Duration = Duration::from_secs(1);
 
 /// How far behind its written-up-to mark the file of a running download is surely
-/// written: a piece the download writes is no larger than this. Today's
-/// `kernel_requests::read_origin::WRITTEN_BEHIND`, which goes with that module.
+/// written: a piece the download writes is no larger than this.
 const WRITTEN_BEHIND: u64 = 1 << 20;
 
 /// How often an open or a read starts over because the row changed between its two
@@ -315,8 +315,8 @@ pub(super) fn decide_read_after_download(heard: Result<(), i32>) -> Result<(), E
 
 /// What the inotify bridge's own unlink or rmdir is answered, by what a lookup of the
 /// name found: done when the folder shows no such name (`ENOENT`, or a directory that is
-/// gone itself), and `EROFS` when it still shows one — nothing is removed for the bridge,
-/// as today (`lookup_requests.rs`, `check_announced_remove`). Any other errno is the
+/// gone itself), and `EROFS` when it still shows one — nothing is removed for the bridge
+/// (`docs/design/mount.md` §9). Any other errno is the
 /// lookup's own. Pure.
 pub(super) fn decide_announced_removal(found: Result<(), Errno>) -> Result<(), Errno> {
     match found {
@@ -369,7 +369,7 @@ impl WriteReplyAttributes {
     /// The attributes of `node` after a truncation or a time set on it, as getattr
     /// answers them (`ItemLookup::describe_node`): of its row when the folder shows it;
     /// of the file `fh` holds when the row is gone or shows nothing and the handle is
-    /// that node's (design §3); `ESTALE` otherwise.
+    /// that node's (`docs/design/mount.md` §4.1); `ESTALE` otherwise.
     fn find_attributes(&self, node: LocalItemId, fh: Option<Fh>) -> Result<FileAttr, Errno> {
         let row = self.store.call_blocking(move |store| store.item_store().reader().find_item(node)).map_err(|error| {
             tracing::warn!("the row of item {node} could not be read for the attributes of a reply: {error}");
@@ -379,8 +379,8 @@ impl WriteReplyAttributes {
     }
 }
 
-/// The answers to the kernel's requests, over the rows. Opaque outside `fuse`: the
-/// switch's `fuser::Filesystem` is made over it.
+/// The answers to the kernel's requests, over the rows. Opaque outside `mount`: the
+/// `fuser::Filesystem` of `kernel_requests` is made over it.
 pub(crate) struct ItemKernelRequests {
     lookup: Arc<ItemLookup>,
     read_connections: Arc<ReadConnections>,
@@ -451,14 +451,15 @@ impl ItemKernelRequests {
     }
 
     /// getattr. `ItemLookup::find_attributes`: one row by key; a file open for writing is
-    /// answered with its writer's file's size and times (design §4); a node whose row is
-    /// gone, from the file of the handle the request carries (design §3).
+    /// answered with its writer's file's size and times (`docs/design/sync.md` §3); a node
+    /// whose row is gone, from the file of the handle the request carries
+    /// (`docs/design/mount.md` §4.1).
     pub(super) fn answer_getattr(&self, node: LocalItemId, fh: Option<Fh>) -> Result<FileAttr, Errno> {
         self.lookup.find_attributes(node, fh)
     }
 
     /// opendir. `ItemLookup::find_shown_item`, then `ItemHandles::add_directory`: a node
-    /// whose row is gone is `ESTALE` (today opendir always succeeds), and a file is
+    /// whose row is gone is `ESTALE`, and a file is
     /// `ENOTDIR`.
     pub(super) fn answer_opendir(&self, node: LocalItemId) -> Result<Fh, Errno> {
         match self.lookup.find_shown_item(node)?.kind {
@@ -471,7 +472,7 @@ impl ItemKernelRequests {
     /// whole of it, kept and handed out, never copied: the caller skips to `offset` and
     /// clones the items it puts into its reply, so that a part costs what it answers. A
     /// reading from the start (`offset` 0) calls `ItemLookup::list_entries` and keeps it
-    /// (`ItemHandles::keep_listed_items`); a later part reads what was kept, as today:
+    /// (`ItemHandles::keep_listed_items`); a later part reads what was kept:
     /// offsets are places in that one listing. readdirplus then calls
     /// [`describe_listed_item`](Self::describe_listed_item) for each item it puts into
     /// its reply.
@@ -515,7 +516,7 @@ impl ItemKernelRequests {
     /// the item and its content (`ItemHandles::add_file`). `ENOENT` from the disk for a
     /// row that says on disk: `ItemFreeUp::mend_missing_copy` as a job of the
     /// write-operation thread, waited for here, then decided once more; a second time it
-    /// is `ENOENT`, as today. No local version is written. Opening downloads nothing.
+    /// is `ENOENT`. No local version is written. Opening downloads nothing.
     pub(super) fn answer_open_to_read(&self, node: LocalItemId) -> Result<OpenedFile, Errno> {
         let mut is_mended = false;
         for _try in 0..ROW_TRIES {
@@ -628,7 +629,7 @@ impl ItemKernelRequests {
     /// (another content than the one opened is `ESTALE`), the bytes counted towards the
     /// whole download (`count_bytes_read`, then `ItemDownloader::download` as
     /// `DownloadAsker::Read`, with no waiter, at the threshold). No row is read here. The
-    /// caller keeps the task's abort handle for the kernel's interrupt, as today
+    /// caller keeps the task's abort handle for the kernel's interrupt
     /// (`interruptible_reads`).
     pub(super) async fn fetch_read_range(&self, range: RangeToFetch) -> Result<Vec<u8>, Errno> {
         let bytes = self.fetch_range(&range).await?;
@@ -786,7 +787,7 @@ impl ItemKernelRequests {
 
     /// rename. `ItemWriteOperations::rename` on the write-operation thread: the disk, then
     /// `Moved` or `SavedOver`. An exchange is `EINVAL` there, and `EROFS` here in a
-    /// read-only folder, as today.
+    /// read-only folder.
     pub(super) fn queue_rename(&self, directory: LocalItemId, name: &OsStr, new_directory: LocalItemId, new_name: &OsStr, mode: RenameMode, reply: ReplyTo<()>) {
         let (write_operations, name, new_name) = (Arc::clone(&self.write_operations), name.to_owned(), new_name.to_owned());
         self.queue_change(reply, move || write_operations.rename(directory, &name, new_directory, &new_name, mode));
@@ -795,8 +796,8 @@ impl ItemKernelRequests {
     /// setattr with a size, on the mount's thread: what must be on disk first
     /// (`find_file_to_fill` with the size). A file a program holds open for writing has
     /// its content on disk, and is asked nothing of its row: so a truncation through the
-    /// handle of a file that was removed or saved over since is not refused here (design
-    /// §3). `EROFS` in a read-only folder.
+    /// handle of a file that was removed or saved over since is not refused here
+    /// (`docs/design/mount.md` §4.1). `EROFS` in a read-only folder.
     pub(super) fn decide_truncate(&self, node: LocalItemId, size: u64) -> Result<FileToFill, Errno> {
         if self.item_handles.is_open_for_writing(node) {
             self.access_mode_switch.check_read_write()?;
@@ -833,7 +834,7 @@ impl ItemKernelRequests {
     /// setattr with a time and no size. `ItemWriteOperations::set_modified_time`, with the
     /// `fh` the request carries; the operation answers no attributes, and `reply` is
     /// answered as getattr answers, with the `fh` ([`WriteReplyAttributes`]). Owner and
-    /// the other times are ignored, as today.
+    /// the other times are ignored.
     /// For the bridge's own thread: answered as getattr, on the mount's thread.
     pub(super) fn queue_set_modified_time(&self, node: LocalItemId, fh: Option<Fh>, mtime: i64, mtime_nsec: u32, thread_id: u32, reply: ReplyTo<FileAttr>) {
         if self.inotify_bridge.is_own_thread(thread_id) {
@@ -863,7 +864,7 @@ impl ItemKernelRequests {
     }
 
     /// write. `ItemHandles::find_file_to_write`, `mark_written`, the bytes into the
-    /// backing file, on the mount's own thread. No row is touched (design §8). `EBADF`
+    /// backing file, on the mount's own thread. No row is touched (`docs/design/mount.md` §3.3). `EBADF`
     /// for a handle that may not write.
     pub(super) fn answer_write(&self, fh: Fh, offset: u64, bytes: &[u8]) -> Result<u32, Errno> {
         let (item, backing_file) = self.item_handles.find_file_to_write(fh).ok_or(Errno::EBADF)?;

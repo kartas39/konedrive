@@ -35,7 +35,7 @@ fn each_case_of_a_make_is_decided() {
         assert_eq!(decide_make(&MakeCase { is_hidden_name: true, ..case(kind) }), Err(Errno::EPERM), "{kind:?}: a name the mount hides");
         assert_eq!(decide_make(&MakeCase { is_trash: true, ..case(kind) }), Err(Errno::EPERM), "{kind:?}: the trash");
         assert_eq!(decide_make(&MakeCase { holder: Some(make_row(5, ItemKind::File)), ..case(kind) }), Err(Errno::EEXIST), "{kind:?}: a taken name");
-        // Today's order: no directory, then the name, then what holds it.
+        // The order: no directory, then the name, then what holds it.
         assert_eq!(decide_make(&MakeCase { directory: None, is_hidden_name: true, holder: Some(make_row(5, ItemKind::File)), ..case(kind) }), Err(Errno::ENOENT));
         assert_eq!(decide_make(&MakeCase { is_hidden_name: true, holder: Some(make_row(5, ItemKind::File)), ..case(kind) }), Err(Errno::EPERM));
     }
@@ -285,7 +285,7 @@ fn a_made_entry_that_cannot_be_removed_again_asks_for_the_take_down_and_keeps_it
     assert!(operations.fixture.disk_path("made.txt").is_file(), "what could not be removed is still there, for the check at start");
 }
 
-/// The review's S3: what `make` answers comes out of the job that wrote the row, and a
+/// What `make` answers comes out of the job that wrote the row, and a
 /// created file has its writer whatever the rows say a moment later. Here the row is
 /// gone again by the time a second read would be made.
 #[test]

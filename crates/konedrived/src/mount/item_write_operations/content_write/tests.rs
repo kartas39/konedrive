@@ -479,7 +479,7 @@ fn a_backing_file_that_cannot_be_made_after_its_row_asks_for_the_take_down() {
     operations.fixture.assert_rows_and_disk_agree();
 }
 
-/// The review's M1: what a restart of the daemon leaves of a program that holds a file
+/// What a restart of the daemon leaves of a program that holds a file
 /// open, wrote into it and put its time back (`cp -p` does, before its close).
 #[test]
 fn bytes_written_through_a_handle_that_was_never_closed_are_unsent_after_the_check_at_start_though_size_and_time_stand() {
@@ -504,7 +504,7 @@ fn bytes_written_through_a_handle_that_was_never_closed_are_unsent_after_the_che
     assert_eq!(operations.fixture.find_item(doc), Some(row));
 }
 
-/// What M1's rule costs, accepted by the owner: a file a program held open for writing
+/// What the rule of a writer at a stop costs: a file a program held open for writing
 /// and never wrote into is sent once more.
 #[test]
 fn a_file_opened_for_writing_and_never_closed_is_changed_here_after_the_check_at_start_also_when_nothing_was_written() {
@@ -519,7 +519,7 @@ fn a_file_opened_for_writing_and_never_closed_is_changed_here_after_the_check_at
     assert!(row.unsent_since.is_some(), "{row:?}");
 }
 
-/// The review's S4: the plan's reads and the bus share the store's one reading thread,
+/// The plan's reads and the bus share the store's one reading thread,
 /// and an open for writing does not wait behind them.
 #[test]
 fn what_is_downloaded_before_a_write_is_read_without_waiting_for_the_stores_reading_thread() {

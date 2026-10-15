@@ -44,7 +44,7 @@ fn every_marked_entry_is_bound_to_the_id_of_its_mark_and_an_unmarked_one_is_new(
     f.assert_settled();
 }
 
-/// Review 3, M1's second half: a file that carries the id alone holds the person's bytes.
+/// A file that carries the id alone holds the person's bytes.
 #[test]
 fn a_file_marked_with_an_id_alone_is_bound_with_its_bytes_as_content_changed_here() {
     let mut f = folder();
@@ -93,7 +93,7 @@ fn check_after_rebuild(f: &mut Folder) -> Vec<(DiskFinding, usize)> {
     found(&findings)
 }
 
-/// Review S1 b): `cp -a docs/z.txt docs/a.txt`, and the store rebuilt before the next start.
+/// `cp -a docs/z.txt docs/a.txt`, and the store rebuilt before the next start.
 /// The copy sorts first, was bound, and the plan sent a move of the item to the copy's name.
 #[test]
 fn an_id_a_file_and_its_copy_carry_binds_neither_and_both_are_new_without_their_marks() {
@@ -109,7 +109,7 @@ fn an_id_a_file_and_its_copy_carry_binds_neither_and_both_are_new_without_their_
     assert_eq!(check_after_rebuild(&mut f), [(DiskFinding::Made, 2), (DiskFinding::MarkedWithoutRow, 3)]);
 }
 
-/// Review S1 a): `ln docs/z.txt docs/a.txt` with the rows intact, and the store rebuilt
+/// `ln docs/z.txt docs/a.txt` with the rows intact, and the store rebuilt
 /// later. The file has one set of marks for both names: they are left as they are, and
 /// while both names carry the id it binds neither, at this start and at every later one.
 #[test]
@@ -126,7 +126,7 @@ fn an_id_two_names_of_one_file_carry_binds_neither_and_the_marks_of_the_file_are
     }
 }
 
-/// Review S1 c): `cp -a zdir adir`, rebuilt store. The whole directory of OneDrive was
+/// `cp -a zdir adir`, rebuilt store. The whole directory of OneDrive was
 /// renamed to the copy's name.
 #[test]
 fn an_id_a_directory_and_its_copy_carry_binds_neither_nor_what_is_in_them() {

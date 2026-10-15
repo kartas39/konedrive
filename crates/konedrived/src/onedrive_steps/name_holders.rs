@@ -1,5 +1,6 @@
-//! Who holds a name OneDrive answered is taken, for a new file: design §7's first
-//! exception — the empty file of an upload session that holds the name — and the adoption
+//! Who holds a name OneDrive answered is taken, for a new file: the first of the two
+//! causes no listing shows (`docs/design/sync.md` §7.3, `docs/design/writes.md` §4.4) —
+//! the empty file of an upload session that holds the name — and the adoption
 //! of the step's own earlier upload.
 //!
 //! **State owned:** when a session of another item that names no end was first seen
@@ -11,11 +12,9 @@
 //! **Answers for:** a 409 never making a conflict copy of the folder's own empty file,
 //! and never a loop: this folder's own is removed, an unknown one's is waited for, and
 //! any other holder is the plan's (`StepRefusal::NameTaken`, kept as a taken name).
-//! Today: `Job::own_placeholder` (`upload/content.rs:239`), `opened_placeholder` (`:279`),
-//! `taken` (`upload/steps/shared.rs:272`).
 //!
 //! **Tested without the rest**, a test per case of [`NameHolder`], then against the
-//! fixture's fake OneDrive (reference: `upload/tests/sessions.rs:293-784`):
+//! fixture's fake OneDrive:
 // test: no_holder_by_now_is_a_name_that_is_free
 // test: the_empty_file_of_this_items_own_session_is_gone_on_with
 // test: the_empty_file_of_another_items_live_session_is_waited_for
@@ -45,8 +44,7 @@ use super::GraphAccess;
 use crate::sync_parts::step_outcome::{StepFailure, StepOutcome, StepRefusal};
 
 /// How far OneDrive's clock may be behind or ahead of this computer's when the time an
-/// empty file was made is compared with an opening's window, in seconds
-/// (`upload/content.rs:30`).
+/// empty file was made is compared with an opening's window, in seconds.
 const CLOCK_SLACK: i64 = 5 * 60;
 
 /// How long after it was first seen holding a name a session of another item that names
@@ -101,14 +99,13 @@ pub(crate) enum NameHolder {
     /// again.
     AbandonedSession(UploadSessionAddress),
     /// An empty file no listing told of, made within a window in which this folder was
-    /// about to open a session there (the clock's slack: 5 minutes, `content.rs:30`):
+    /// about to open a session there (the clock's slack: 5 minutes, [`CLOCK_SLACK`]):
     /// provably this folder's own, removed, then the request sent again.
     OwnEmptyFile(OneDriveItemReference),
     /// A file no row is bound to that holds the content sent: this step's own earlier
     /// upload, adopted. Before `UnknownEmptyFile` on purpose: an empty file is sent by
     /// one request with no opening kept, so the replay of one whose answer was lost finds
-    /// an empty file no listing told of, and adopts it as today's worker does
-    /// (`upload/steps/shared.rs:300`); after the cases above, so that an empty file a
+    /// an empty file no listing told of, and adopts it; after the cases above, so that an empty file a
     /// session or an opening of this folder explains is never adopted — a cancel of that
     /// session would take the item.
     OwnEarlierUpload(ConfirmedItem),
@@ -211,14 +208,14 @@ impl NameHolders {
         seen.clone()
     }
 
-    /// After a 409 on `SendNewFile`: reads the holder (`child`, `G/mod.rs:228`), whether a
+    /// After a 409 on `SendNewFile`: reads the holder (`child`), whether a
     /// row is bound to it (`ItemReader::find_bound_item`), and the step memory's sessions
     /// and windows at the place (`ItemReader::list_empty_file_sessions`,
     /// `list_opening_windows`; the place as the step memory names it: the directory of
     /// the place of `item.local`, under `name`), and
     /// decides ([`decide_name_holder`]). Then acts on what is the folder's own: cancels
     /// an abandoned session (`SessionCancellations::cancel_session`), removes its own
-    /// empty file (`delete_item`, `G/write.rs:140`, guarded by the eTag just read),
+    /// empty file (`delete_item`, guarded by the eTag just read),
     /// forgets another item's session that ended
     /// (`StepMemory::forget_ended_upload_session`), and once the place is resolved — the
     /// empty file removed, the name found free, or the holder not this folder's — calls
@@ -227,8 +224,7 @@ impl NameHolders {
     /// the step sends its request once more, and a second 409 in the same step is
     /// `StepRefusal::NameHeldByUploadSession`: no step asks a third time. A cancel or a
     /// removal OneDrive does not carry out answers `Err` with
-    /// `StepRefusal::NameHeldByUploadSession` too (today `Reason::SessionOpen`,
-    /// `upload/content.rs:306`); a read that fails, its refusal.
+    /// `StepRefusal::NameHeldByUploadSession` too; a read that fails, its refusal.
     /// `sent_hash` is the hash of the whole file (`LocalContentFile::hash`), which the
     /// runner reads for this call.
     pub(crate) async fn find_name_holder(&self, item: &ItemVersions, parent: &OneDriveItemReference, name: &OsStr, sent_hash: Option<&str>) -> Result<NameHolder, StepOutcome> {
@@ -302,7 +298,7 @@ impl NameHolders {
     }
 
     /// After a 409 on `SendMove`: the name of the item that holds `name` in `parent`, as
-    /// OneDrive spells it (`child`, `G/mod.rs:228`), for `StepRefusal::NameTaken`.
+    /// OneDrive spells it (`child`), for `StepRefusal::NameTaken`.
     /// `None` when nothing holds it by now: the step answers `StepRefusal::Transient`,
     /// and its next try sends the move again. A read that fails is the step's outcome.
     /// Nothing is adopted here: a move that went through before is answered 412, not

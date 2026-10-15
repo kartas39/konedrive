@@ -3,10 +3,11 @@
 //!
 //! **State owned:** none of its own; it rewrites `is_name_ignored` and, through the
 //! statements of `item_row` that keep it, `is_below_ignored_directory`, of rows that stay
-//! where they are. Every other writer of the flag writes it with a place (design §3).
+//! where they are. Every other writer of the flag writes it with a place
+//! (`docs/design/sync.md` §3).
 //!
-//! **Answers for:** design §3, "when the list of ignored names is changed, the rows are
-//! gone over once".
+//! **Answers for:** when the list of ignored names is changed, the rows are gone over
+//! once (`docs/design/writes.md` §3).
 //!
 //! **Tested without the rest:**
 // test: an_unbound_item_whose_name_the_new_list_ignores_is_left_here_with_what_is_below_it
@@ -54,7 +55,7 @@ impl ItemStore<'_> {
     /// Called by the change of the account's ignore list (`account_folder/settings.rs`), under the
     /// tree lock, so that no write operation gives a name its flag by the old list after
     /// it; the plan's task is woken after it. `is_name_ignored` is the upload rules' pure
-    /// question of a name (`fuse::UploadRules::is_name_ignored`). MISSING-4.f.
+    /// question of a name (`mount::UploadRules::is_name_ignored`).
     pub fn rewrite_ignored_names(&mut self, is_name_ignored: &dyn Fn(&OsStr) -> bool) -> Result<u64, TreeError> {
         self.write(|tx| {
             let mut changed = 0;

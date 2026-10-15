@@ -5,7 +5,7 @@
 //! its outcome; `write_step_settlements` writes the answers of the steps that ended
 //! together in one job of the store.
 //!
-//! **Answers for:** design §7: "a step that OneDrive refuses decides nothing" — it is
+//! **Answers for:** a step that OneDrive refuses decides nothing (`docs/design/sync.md` §7.3) — it is
 //! remembered and waits; a taken name and a changed item ask for a cycle. The table:
 //!
 //! | Outcome | Step memory | Else |
@@ -24,7 +24,7 @@
 //! | `Refused(NoSpace)`, of a step that sends no content | `remember_failed_try(Quota, next)` | — (no refusal for lack of space is kept: it is a content's) |
 //! | `Refused(Throttled)` | — (no try counted) | all sending held until the time |
 //! | `Refused(SignedOut)` | — (no try counted) | all sending held until the sign-in |
-//! | `Refused(Forbidden \| RefusedForGood)` | `remember_refusal`, with `RefusedVersion::Shown` of the local version sent, or `Removal` for a removal | the event, once per reason |
+//! | `Refused(Forbidden \| RefusedForGood \| TooLarge)` | `remember_refusal`, with `RefusedVersion::Shown` of the local version sent, or `Removal` for a removal | the event, once per reason |
 //! | `Refused(Locked \| UploadSessionGone \| Transient)` | `remember_failed_try(reason, next)` | — |
 //! | `NotRun(OpenForWriting \| SendingStopped)` | — | — (the close, or the end of the hold, wakes the plan) |
 //! | `NotRun(ContentChanged \| BackingFileMissing \| PlaceHeldOnDisk)` | `remember_failed_try(reason, next)` | the journal: none of them ends by itself |
@@ -176,11 +176,8 @@ fn find_refused_version(step: &SyncStep) -> RefusedVersion {
 /// listing ended. While the folder is filled for the first time (`is_first_filling`,
 /// `FirstFilling::is_under_way`) an item shown is no event: nothing was added in OneDrive.
 /// Pure.
-// OPEN: the map's MISSING-4.c: today a cycle logs one batch, capped, and "a folder
-// removed with everything in it is one removal" (`remote/listing/reconcile.rs:376-391`).
-// Written as: each step's events are logged as they come, up to today's cap per listing;
-// a removed directory is one event because its children's `RemoveItem` steps answer
-// none. Pure, and can change without touching a signature.
+// Each step's events are logged as they come, up to `PER_KIND` per listing; a removed
+// directory is one event because its children's `RemoveItem` steps answer none.
 pub(crate) fn decide_events_to_log(events: &[StepEvent], logged_since_listing_ended: usize, is_first_filling: bool) -> Vec<StepEvent> {
     let mut left = crate::status::activity::PER_KIND.saturating_sub(logged_since_listing_ended);
     let mut logged = Vec::new();
@@ -200,7 +197,7 @@ pub(crate) fn decide_events_to_log(events: &[StepEvent], logged_since_listing_en
 }
 
 /// When the next try of a step that failed `count` times is due, Unix seconds: a second
-/// after the first failure, doubling to an hour (`upload/engine.rs:108`, `backoff_after`).
+/// after the first failure, doubling to an hour (`docs/design/writes.md` §4.6).
 /// Pure.
 pub fn decide_next_try(count: u32, now: i64) -> i64 {
     let wait = BACKOFF_FIRST.as_secs().saturating_mul(1u64 << count.saturating_sub(1).min(20));

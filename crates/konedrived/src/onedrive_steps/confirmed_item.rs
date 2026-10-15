@@ -3,11 +3,11 @@
 //!
 //! **State owned:** none: two pure functions.
 //!
-//! **Answers for:** stage C's "before each commit": Graph's `driveItem` as a
+//! **Answers for:** Graph's `driveItem` as a step's commit takes it, a
 //! `ConfirmedItem` — the id, `parentReference`, the name Graph stored (not the one sent),
 //! the eTag, and for a file size, time, quickXorHash and cTag as
-//! `ContentVersion::Hashed`. And the map's F10: the guard comes from the versions the step
-//! was planned from.
+//! `ContentVersion::Hashed`. And the guard comes from the versions the step was planned
+//! from (`docs/design/writes.md` §4.2).
 //!
 //! **Tested without the rest:**
 // test: an_answer_is_confirmed_with_the_name_graph_stored
@@ -63,7 +63,7 @@ pub(crate) fn to_graph_name(name: &OsStr) -> Result<&str, StepRefusal> {
 
 /// What a request about `item` is guarded with: the eTag of the OneDrive version it was
 /// planned from, else the cTag of the content the two sides agreed on (an edit made on a
-/// download whose eTag is not known: `upload/steps/shared.rs:198-221`, `Guard`). `None`
+/// download whose eTag is not known). `None`
 /// for an item with neither: its guarded step is answered `StepFailure::AnswerUnreadable`,
 /// which counts a try and asks for nothing: the step waits, and is planned with a guard
 /// once a listing that names the item wrote its eTag. Pure.
@@ -94,7 +94,7 @@ fn find_ctag(content: Option<&ContentVersion>) -> Option<String> {
 
 /// What a request that follows a read of `answer` is guarded with: the eTag just read,
 /// else its cTag; an answer with neither gives an empty guard, and what OneDrive makes of
-/// it (today's `Guard::of_item`). Pure.
+/// it. Pure.
 pub(crate) fn to_guard_of_answer(answer: &DriveItem) -> RequestGuard {
     match (&answer.e_tag, &answer.c_tag) {
         (Some(etag), _) => RequestGuard::ETag(etag.clone()),
@@ -104,8 +104,7 @@ pub(crate) fn to_guard_of_answer(answer: &DriveItem) -> RequestGuard {
 }
 
 /// `answer` as a commit takes it, in the drive `drive_id` unless the answer names
-/// another. Pure. Replaces `upload/steps/shared.rs:159` (`answer_row`): the commit
-/// resolves both references to rows itself. A file's content is
+/// another. Pure. The commit resolves both references to rows itself. A file's content is
 /// `ContentVersion::Hashed` of the answer's size, `fileSystemInfo` time in whole
 /// seconds, quickXorHash and cTag. Unreadable (`StepFailure::AnswerUnreadable`): an
 /// answer with no id, no parent's id, no name or no eTag, and one that names the item as

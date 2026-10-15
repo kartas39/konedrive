@@ -1,6 +1,6 @@
 //! The name of a conflict copy: the name the user's own item is renamed to here when another
-//! item has, or takes, the name it had. The scheme is that of the daemon's `copy_name`
-//! (`local/names.rs`), which goes at the switch; here the name is also chosen free.
+//! item has, or takes, the name it had, chosen free on both sides as OneDrive compares
+//! names (`docs/design/writes.md` §5).
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};

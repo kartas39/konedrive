@@ -41,7 +41,7 @@ impl Folder {
         Ok(self.service.resume_syncing().await?)
     }
 
-    /// The account's ignore list from now on; a Full local scan follows.
+    /// The account's ignore list from now on; the rows' flags of ignored names are gone over.
     async fn set_ignore_patterns(
         &self,
         patterns: Vec<String>,

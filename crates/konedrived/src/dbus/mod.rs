@@ -9,7 +9,7 @@
 //! - `/org/konedrive/Accounts/<id>`: one account's `org.konedrive.Account` (and
 //!   `TokenExport` in a development build), over its `account::AccountService`; and the
 //!   interfaces of its folder — `Folder`, `Transfers`, `UploadQueue`, `Conflicts`,
-//!   `LocalScan`, `ActivityLog` — over its `sync::SyncService`.
+//!   `LocalScan`, `ActivityLog` — over its `account_folder::SyncService`.
 //!
 //! `export` puts them on the bus, `signals` announces what changes by itself
 //! (`properties` is the table of it), and `fault` is how every call is refused.

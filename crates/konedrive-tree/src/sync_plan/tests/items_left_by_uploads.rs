@@ -44,7 +44,7 @@ fn another_file_at_the_name_of_what_an_upload_left_waits_for_its_removal() {
     assert_eq!(answer(&given, 4), Answer::Exclusion(ExclusionReason::NameIgnored));
 }
 
-/// The review's S2: what the file's own upload left is passed over where the holder of the
+/// What the file's own upload left is passed over where the holder of the
 /// name is found, so that another item OneDrive has under a name of that fold is asked.
 #[test]
 fn another_item_of_the_name_is_asked_past_what_the_files_own_upload_left() {

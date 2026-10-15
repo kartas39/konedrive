@@ -104,7 +104,7 @@ fn rows_of_a_directory_made_under_its_temporary_name(listed_kind: ItemKind) -> S
     given
 }
 
-/// The review's M1 and M1b (`LocalPlaceAvailability::IsTemporaryNameOf`): the row a listing
+/// `LocalPlaceAvailability::IsTemporaryNameOf`: the row a listing
 /// made under another item's temporary name is not shown; it is that item, and the two
 /// are merged. Not told, the plan shows the listed row and makes the directory a second
 /// time, under the next temporary name.

@@ -2,10 +2,10 @@
 //!
 //! **State owned:** none.
 //!
-//! **Answers for:** stage C's notes, "when a commit answers `RowsChanged`", and design
-//! §6's cell "made and removed here before it was sent: if its sending is running, the
-//! step finds the row gone at its commit and removes in OneDrive what it made". After a
-//! restart nothing of this is done (the owner's decision, the map's F2): a file uploaded
+//! **Answers for:** a commit that answers `RowsChanged` after a step made an item: made
+//! and removed here before it was sent, while its sending ran, the step finds the row
+//! gone at its commit and removes in OneDrive what it made (`docs/design/sync.md` §7.2,
+//! `docs/design/writes.md` §4.5). After a restart nothing of this is done: a file uploaded
 //! and then removed here, the daemon killed before the confirmation, comes back from
 //! OneDrive with the listing as any item of OneDrive's and is shown again; no layer asks
 //! whose it was.
@@ -53,16 +53,15 @@ impl MadeItems {
     }
 
     /// After `RowsChanged` on `MakeDirectory` or `SendNewFile`: reads the row,
-    /// [`decide_made_item_fate`], and removes what was made (`delete_item`,
-    /// `G/write.rs:140`, guarded by the eTag of the answer; `delete_folder`, `:153`, for
+    /// [`decide_made_item_fate`], and removes what was made (`delete_item`, guarded by
+    /// the eTag of the answer; `delete_folder`, for
     /// a directory: unguarded, and it takes only what this step made — a directory is
     /// adopted as the step's own only when it is empty, `lost_answers`) or asks for a
     /// cycle. Called with NO lock held: the tree lock of the
     /// commit was let go. Answers `MadeItemRemoved` for an item removed or found gone,
     /// `MadeItemLeft` for a removal OneDrive did not carry out (a 412: another changed it
     /// since; any failure), `CycleWanted` for a row that is still there — and for a row
-    /// that cannot be read: nothing is removed on a guess. Today:
-    /// `landed_away` (`upload/steps/shared.rs:663`) and `never_uploaded` (`:632`).
+    /// that cannot be read: nothing is removed on a guess.
     pub(crate) async fn follow_up_new_item(&self, item: &ItemVersions, made: &ConfirmedItem) -> RowsChangedFollowUp {
         let id = item.local_item_id;
         let row = match self.graph.store.read_items(move |items| items.find_item(id)).await {

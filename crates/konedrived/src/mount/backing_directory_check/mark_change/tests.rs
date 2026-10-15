@@ -33,7 +33,7 @@ fn the_marks_of_the_entry_of_a_row_onedrive_never_had_are_not_touched() {
     }
 }
 
-/// Review 3, M2: a mark is the file's, and another name of the file may be another item's.
+/// A mark is the file's, and another name of the file may be another item's.
 #[test]
 fn the_marks_of_a_file_that_has_several_names_are_never_written_or_taken_off() {
     for owner in [BoundRow, UnboundRow, NewItem, NewItemBoundByMark] {
@@ -43,7 +43,7 @@ fn the_marks_of_a_file_that_has_several_names_are_never_written_or_taken_off() {
     }
 }
 
-/// Review S1: a copy made with its marks, in a store that was rebuilt, is the user's own, and
+/// A copy made with its marks, in a store that was rebuilt, is the user's own, and
 /// so is what it was copied from.
 #[test]
 fn the_mark_of_an_id_several_entries_carry_is_taken_off_each_that_has_one_name() {

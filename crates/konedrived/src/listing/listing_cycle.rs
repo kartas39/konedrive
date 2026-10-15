@@ -1,5 +1,5 @@
-//! One cycle of OneDrive's delta listing written into the rows: the pages fetched with
-//! today's Graph code and given to the store page by page.
+//! One cycle of OneDrive's delta listing written into the rows: the pages fetched from
+//! Graph and given to the store page by page (`docs/design/sync.md` §5.1).
 //!
 //! **State owned:** the turn (one cycle at a time). Which listing is under way, the link
 //! to its next page, the delta link and the count the guard against an outdated listing
@@ -7,17 +7,17 @@
 //! for is the store's too (`full_listing_request`). Nothing of a cycle is kept in memory
 //! between two cycles: a stop loses nothing.
 //!
-//! **Answers for:** design §4 — the cycle writes OneDrive versions only, and takes no
-//! tree lock and no lease of the folder: a `mkdir` does not wait behind a listing — and
-//! design §7's guard: a page is given with the count read when its fetch began; what the
+//! **Answers for:** the cycle writes OneDrive versions only, and takes no tree lock and
+//! no lease of the folder: a `mkdir` does not wait behind a listing
+//! (`docs/design/sync.md` §3) — and the guard against an outdated listing
+//! (`docs/design/sync.md` §5.3): a page is given with the count read when its fetch began; what the
 //! store answers is outdated is read again and given again with the same link, and no
-//! link is asked from before a call has written it. It replaces `listing/fetch.rs`,
-//! `listing/stage.rs` and `listing/reconcile.rs`; what a cycle decided for the folder is
-//! the plan's now, which is woken after every page.
+//! link is asked from before a call has written it. What the folder does about it is the
+//! plan's, which is woken after every page.
 //!
 //! **One cycle:**
 //!
-//! 1. the account is checked against the folder's drive (`check_account`, as today);
+//! 1. the account is checked against the folder's drive (`check_account`);
 //! 2. how to begin is decided ([`decide_listing_start`]) and said to the store
 //!    (`begin_full_listing`, `begin_delta_listing`, or the full listing found under way
 //!    with the next link it kept). One listing id names one enumeration of OneDrive:
@@ -154,7 +154,7 @@ async fn cancellable<T>(cancel: &CancellationToken, request: impl std::future::F
     cancel.run_until_cancelled(request).await.ok_or(CycleError::Cancelled)
 }
 
-/// Trouble with Graph as a cycle says it, as today (`listing.rs:185`).
+/// Trouble with Graph as a cycle says it.
 fn describe_drive_error(error: DriveError) -> CycleError {
     match error {
         DriveError::SignedOut => CycleError::SignedOut,
@@ -232,7 +232,7 @@ impl ListingCycle {
     /// One cycle, from the check of the account to the listing's end or the first
     /// failure, and what came of it published (the folder's trouble, `LastChecked`).
     /// Called by `ListingPoller`, on its schedule, on a refresh and when the live socket
-    /// says so, as today's `Listing::cycle` (`listing.rs:284`). `cancel` ends it between two
+    /// says so. `cancel` ends it between two
     /// requests; the page being written is written whole. A page the store refuses because
     /// its listing was given up ends the cycle with what it did until then, and no fault.
     pub(crate) async fn run(&self, cancel: &CancellationToken) -> Result<ListingCycleReport, CycleError> {
@@ -294,11 +294,10 @@ impl ListingCycle {
         }
     }
 
-    /// The drive the token reaches is the folder's: as today (`listing.rs:395-428`), with
-    /// the drive written to `config.toml` here, at the first cycle that sees it, where
-    /// today the next reconcile writes it under the folder's lock (`reconcile.rs:218`;
-    /// the map's MISSING-4.a): the write is of the account's record alone and needs no
-    /// lock of the folder. Also sets the store's drive, which `write_listed_changes`
+    /// The drive the token reaches is the folder's (`docs/design/accounts.md` §6.1), with
+    /// the drive written to `config.toml` here, at the first cycle that sees it: the write
+    /// is of the account's record alone and needs no lock of the folder. Also sets the
+    /// store's drive, which `write_listed_changes`
     /// refuses to work without. Nothing is kept here of a drive written: whether it is
     /// asked of `config.toml` itself, so the write is done by one cycle. The mark of the
     /// drive on the folder's own directory (`folder::root::mark_drive`) is not written
@@ -372,9 +371,8 @@ impl ListingCycle {
     }
 
     /// Reads the count of confirmations (`ItemStore::confirmation_count`), then asks Graph
-    /// for the page at `from` (`DriveClient::delta`,
-    /// `crates/konedrive-graph/src/drive/mod.rs:199`) and classifies its items
-    /// (`folder::classify::classify`, unchanged). The count is read first: what a step
+    /// for the page at `from` (`DriveClient::delta`) and classifies its items
+    /// (`listing::classify::classify`). The count is read first: what a step
     /// confirms while the request is under way is stamped later than the page.
     async fn fetch_page(&self, from: &DeltaFrom, cancel: &CancellationToken) -> Result<FetchedPage, PageFetchError> {
         let fetch_began_at_count = self.read_confirmation_count().await.map_err(PageFetchError::Store)?;
@@ -433,8 +431,7 @@ impl ListingCycle {
     }
 
     /// Each of `items` as OneDrive has it now: an upsert, or a removal for one that is
-    /// gone (`DriveClient::item`, `crates/konedrive-graph/src/drive/mod.rs:217`; today's
-    /// `fresh`, `listing/stage.rs:182`), and the count read before the first request,
+    /// gone (`DriveClient::item`), and the count read before the first request,
     /// which the next call of `write_listed_changes` is given with them and the page's
     /// own link. Every item asked is answered, as there or as gone, and under the id
     /// that was asked ([`name_by_asked_id`]): the store answers again one that is not.
@@ -454,8 +451,7 @@ impl ListingCycle {
     /// The listing ended: the plan woken with `WakeCause::ListingEnded`, the thumbnail
     /// filler nudged (`after_listing`), `last_checked` written
     /// (`TreeStore::set_last_checked`), the conflicts on record looked over (through
-    /// `report`). As today's `after_cycle` (`listing.rs:340`) without what told the
-    /// upload queue. Called as soon as the store ended the listing.
+    /// `report`). Called as soon as the store ended the listing.
     /// The wake and the nudge come first, and nothing that can fail stands before them:
     /// the listing ended in the store whatever becomes of the rest.
     async fn end_cycle(&self, report: &ListingCycleReport) -> Result<(), CycleError> {
@@ -526,8 +522,7 @@ pub(crate) enum CycleError {
     #[error("cannot reach OneDrive ({0}); trying again")]
     Offline(String),
     /// A failure of the tree store, in its own words ("the tree store: …"), that ends
-    /// the cycle and stops the folder (quality finding `RE6`). Not every store failure ends a cycle: those the
-    /// read-write reconcile only logs and passes over after its commit do not come here.
+    /// the cycle and stops the folder.
     #[error("{0}")]
     Store(String),
     #[error("the folder could not be brought up to date: {0}")]

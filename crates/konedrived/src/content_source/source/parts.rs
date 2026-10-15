@@ -1,11 +1,11 @@
-//! A large pinned download in parallel parts (`docs/design/hydration.md` §7.5).
+//! A large pinned download in parallel parts (`docs/design/mount.md` §5.3).
 //!
 //! One stream from OneDrive does not fill a fast link, so a large pinned file is cut into
 //! pieces of [`PIECE`] bytes (the last one shorter). Each stream downloads one piece at a time
 //! with a bounded range, writes it at its offset, and takes the next piece not yet taken, in
 //! file order.
 //!
-//! - The file's **first stream** runs in the slot the pins' worker took for it. It may add
+//! - The file's **first stream** runs in the slot the download took for it. It may add
 //!   **extra streams**, each in a large slot of the pool taken without waiting
 //!   (`try_acquire_sized`), only while nothing waits for a slot, and only when no other file in
 //!   parts that wants more streams has fewer ([`Share`]). After each piece an extra stream gives

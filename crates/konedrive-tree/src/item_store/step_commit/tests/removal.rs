@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use super::*;
 
-/// The second review's S4: a file is made at the place a file was removed from, while that
+/// A file is made at the place a file was removed from, while that
 /// removal is being sent, and takes its binding. What OneDrive confirmed — the item is
 /// gone — is written to the row that has the binding now: the made file gives the binding
 /// up to a row that is left with it alone, stamped, and is the user's own, sent as a new
@@ -50,7 +50,7 @@ fn can_be_sent(store: &mut TreeStore, item: &ItemVersions, below: &[ItemVersions
     store.item_store().can_directory_removal_be_sent(item, below, &BTreeSet::new(), &BTreeSet::new()).unwrap()
 }
 
-/// The first review's S2 and the brief's §8: the store answers, to a step before its
+/// The store answers, to a step before its
 /// request leaves, what the plan asked, of the rows as they are then; and the commit asks
 /// it again. The removal of a directory can be sent while all the rows say OneDrive has
 /// below it was removed here with it, as it was planned.
@@ -81,7 +81,7 @@ fn the_removal_of_a_directory_is_not_sent_while_the_folder_shows_what_onedrive_h
     assert!(row(&mut store, kept).onedrive.is_some());
 }
 
-/// The third review's S3, at the step and at the commit: a listing says OneDrive changed
+/// A listing says OneDrive changed
 /// the content of the file that was removed here with the directory. That file comes
 /// back, so the removal is not sent, whatever versions it is asked with — those it was
 /// planned from, or the rows' own — and a commit that comes all the same writes nothing.
@@ -104,7 +104,7 @@ fn the_removal_of_a_directory_is_not_sent_once_onedrive_changed_the_content_of_a
     assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below).unwrap(), StepCommitOutcome::Written);
 }
 
-/// The second review's M1 and M3, at the step: a listing brought a file OneDrive made in the
+/// A listing brought a file OneDrive made in the
 /// directory, which the folder never showed. The removal is not sent, and a commit that
 /// comes all the same writes nothing: the rows do not say all of it was removed here.
 #[test]
@@ -117,12 +117,12 @@ fn the_removal_of_a_directory_is_not_sent_while_onedrive_has_below_it_what_the_f
     assert!(bound(&mut store, "N").onedrive.is_some());
 }
 
-/// The second review's M2 and S5, at the step: a request of this client that is not
+/// A request of this client that is not
 /// settled sends an item into the directory or into one below it; the caller says so, and
 /// the removal is not sent. Nor while a listing is under way. The commit asks the rows
 /// alone: once the request went through there is nothing to hold back.
 ///
-/// The third review's S6: the removal's own request is on record before it leaves, and
+/// The removal's own request is on record before it leaves, and
 /// names the directory and what is removed with it. The caller gives the sets as it gives
 /// them to the plan, that record in them, and the removal is not held back by itself.
 #[test]
@@ -144,7 +144,7 @@ fn the_removal_of_a_directory_is_not_sent_while_a_request_not_settled_sends_into
     assert!(can_be_sent(&mut store, &[], &[]));
 }
 
-/// The second review's M3, its sequence: the removal of `d` is confirmed while a listing is
+/// The removal of `d` is confirmed while a listing is
 /// under way, and the listing's page, fetched before, names a file OneDrive made in `d` and
 /// says `g` was moved into it. Neither is written: the rows keep the rule that an item's
 /// directory exists in OneDrive, and the three are answered, to be read again.
@@ -213,7 +213,7 @@ fn the_removal_of_a_directory_is_planned_asked_and_committed_with_what_an_upload
     assert!(bound(&mut store, "LEFT").onedrive.is_some());
 }
 
-/// The review's M4, at the plan, the step and the commit: the content OneDrive has of the
+/// The content OneDrive has of the
 /// file that was removed here with the directory is what an upload of this folder left in
 /// place of what it sent. That is no change of OneDrive's, and the file is removed with
 /// the directory. Once a listing writes another content the fact says nothing, and the

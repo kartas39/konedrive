@@ -23,7 +23,7 @@ fn check_standing(folder: &Folder) -> Result<(), SyncError> {
     }
 }
 
-/// `docs/design/hydration.md` §14.1's refusal on overlap: an account keeps exactly one folder, up or not.
+/// `docs/design/accounts.md` §7.1, refusal 3: an account keeps exactly one folder, up or not.
 fn check_absent(folder: &Folder) -> Result<(), SyncError> {
     match folder.is {
         Is::Absent => Ok(()),
@@ -35,7 +35,7 @@ impl SyncService {
     /// Binds an empty (or previously-registered) folder to the account, and brings it up.
     ///
     /// Refused before anything is touched when nobody is signed in, when the daemon was
-    /// given no drive to show, or when a folder is already recorded (§14.1).
+    /// given no drive to show, or when a folder is already recorded (`docs/design/accounts.md` §7.1).
     pub async fn register_root(&self, path: &Path) -> Result<(), SyncError> {
         // A folder that is up refuses at once: its sync is not stopped for a call that
         // changes nothing.
@@ -67,7 +67,7 @@ impl SyncService {
         self.register(stopped, path).await
     }
 
-    /// Holds this account's folder back (`docs/design/accounts.md` §4.1): `config.toml` gives
+    /// Holds this account's folder back (`docs/design/accounts.md` §4.2): `config.toml` gives
     /// the account an id, a label, a drive or a folder an earlier account
     /// has. The folder is not brought up, `State` reads `error`,
     /// `LastError` says why, and a registration is refused the same way. The folder it
@@ -97,7 +97,7 @@ impl SyncService {
         persist.store.account(&persist.account).map(|account| account.label).unwrap_or_else(|| "another account".into())
     }
 
-    /// `docs/design/hydration.md` §14.1: a root is bound to the signed-in drive, so there has to be one.
+    /// `docs/design/accounts.md` §7.1, refusal 2: a root is bound to the signed-in drive, so there has to be one.
     fn require_sign_in(&self) -> Result<(), SyncError> {
         if self.wiring.account.snapshot().state != SignInState::SignedIn {
             return Err(SyncError::NotSignedIn);

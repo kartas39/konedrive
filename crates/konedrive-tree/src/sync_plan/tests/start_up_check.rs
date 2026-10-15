@@ -4,7 +4,7 @@
 
 use super::*;
 
-/// The second review's S5: the caller names the items the check left; what the folder
+/// The caller names the items the check left; what the folder
 /// shows in one of them, or the two sides agreed is in it, at any depth, is held with it —
 /// nothing of it is sent, a removal neither, and nothing is taken over for it.
 #[test]

@@ -88,7 +88,7 @@ impl From<ConfigError> for AccountError {
     }
 }
 
-/// Why `Account.SetMode` or a `TokenExport` token was refused (`docs/design/writes.md` §2.2, §2.3), each under its own
+/// Why `Account.SetMode` or a `TokenExport` token was refused (`docs/design/desktop.md` §2.2, §2.11), each under its own
 /// D-Bus error name.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ModeError {
@@ -109,7 +109,7 @@ pub enum ModeError {
 }
 
 /// What `TokenExport.ReadWrite` refuses a drive `write_test_drive_ids` does not list with
-/// (`docs/design/writes.md` §2.3).
+/// (`docs/design/desktop.md` §2.11).
 pub(crate) const EXPORT_NOT_ALLOWED: &str = "a read-write access token is handed out only for the test \
      accounts listed in write_test_drive_ids in config.toml, and this account's drive is not one of \
      them";
@@ -131,8 +131,8 @@ pub const DRIVE_NOT_KNOWN: &str = "This account's OneDrive drive is not known ye
 pub const NO_DRIVE_RECORDED: &str = "config.toml sets this account to read-write, but records no \
      OneDrive drive for it; it runs read-only until a sign-in records one";
 
-/// `LastError` of a read-write account whose token does not carry `Files.ReadWrite` (`docs/design/writes.md`
-/// §2.3). It runs read-only until it signs in with that permission.
+/// `LastError` of a read-write account whose token does not carry `Files.ReadWrite` (`docs/design/accounts.md`
+/// §10). It runs read-only until it signs in with that permission.
 pub const SIGN_IN_TO_WRITE: &str = "Changes made here are not uploaded: this account's sign-in does \
      not allow konedrive to change files in OneDrive. Switch it to read-write again to sign in with \
      that permission.";
@@ -186,7 +186,7 @@ pub trait AccountFolder: Send + Sync {
     /// forced or not (nothing is unsent then), in the one order of a switch
     /// (`AccountService::set_mode`): `config.toml` written and the mode worked out again
     /// first — so that the account's snapshot says read-only before the folder is told,
-    /// and the folder's watcher cannot turn it back —, then this call, awaited — and,
+    /// and the folder's watch of the mode cannot turn it back —, then this call, awaited — and,
     /// for as long as a request is in flight
     /// ([`has_request_in_flight`](Self::has_request_in_flight), asked after a short wait
     /// each time), nothing more —, and only then the token that can write given up. So no request leaves
@@ -376,7 +376,7 @@ impl AccountService {
             retired: std::sync::atomic::AtomicBool::new(false),
         });
         service.install_oauth(&client_id);
-        // Every refresh says what its token is valid for (`docs/design/writes.md` §2). Weak: the token
+        // Every refresh says what its token is valid for (`docs/design/accounts.md` §10). Weak: the token
         // manager is the service's own.
         let me = Arc::downgrade(&service);
         service.tokens.set_on_granted(Arc::new(move |asked: &'static str, granted: &str| {
@@ -391,7 +391,7 @@ impl AccountService {
         &self.id
     }
 
-    /// `Account.Mode`: the mode the account runs in (`docs/design/writes.md` §2). Read-write only while
+    /// `Account.Mode`: the mode the account runs in (`docs/design/accounts.md` §10). Read-write only while
     /// `config.toml` says so, and its last token carried `Files.ReadWrite` and was seen to
     /// reach the drive recorded for it; [`recompute_mode`](Self::recompute_mode) keeps it.
     pub fn mode(&self) -> Mode {
@@ -460,7 +460,7 @@ impl AccountService {
             .set_oauth((!client_id.is_empty()).then(|| self.oauth_client(client_id, self.mode())));
     }
 
-    /// Works out the mode the account runs in (`docs/design/writes.md` §2); publishes it, says in
+    /// Works out the mode the account runs in (`docs/design/accounts.md` §10); publishes it, says in
     /// `LastError` why an account runs read-only against `config.toml` — or holds more than
     /// it asked for — and makes every refresh ask for that mode's scope. Read-write needs
     /// all of:
@@ -516,7 +516,7 @@ impl AccountService {
         self.install_oauth(&self.state.get().client_id);
     }
 
-    /// A token asked for with `asked` turned out valid for `granted` (`docs/design/writes.md` §2):
+    /// A token asked for with `asked` turned out valid for `granted` (`docs/design/accounts.md` §10):
     /// recorded, and the mode worked out again. The token manager calls this after every
     /// refresh, with its refresh lock held.
     fn note_granted(&self, asked: &str, granted: &str) {
@@ -606,7 +606,7 @@ impl AccountService {
                     if let Some(info) = &cached {
                         apply_info(s, info);
                         // What the last token was valid for decides whether a read-write
-                        // account's first refresh may ask for Files.ReadWrite again (`docs/design/writes.md` §2.1). No
+                        // account's first refresh may ask for Files.ReadWrite again (`docs/design/accounts.md` §10). No
                         // cache, or one from before it was kept: nothing granted, read-only.
                         s.granted_scopes = info.granted_scopes.clone();
                         // And the drive the token reached, which must be the one

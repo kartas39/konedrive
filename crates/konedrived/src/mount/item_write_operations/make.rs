@@ -1,8 +1,8 @@
-//! Make: mkdir, mknod and create. The disk first, the row second (design §8).
+//! Make: mkdir, mknod and create. The disk first, the row second (`docs/design/mount.md` §3.3).
 //!
 //! **Decides:** `decide_make`, a pure function of what the rows say at the place.
 //! **Writes:** `LocalVersionChange::Made`, with `replaced` when a file is made where a
-//! file was removed here whose removal is not sent (design §5: the made file takes the
+//! file was removed here whose removal is not sent (`docs/design/sync.md` §4: the made file takes the
 //! binding over, and OneDrive sees one item whose content changed); for a created file
 //! `ItemStore::apply_made_open_for_writing`, the making and the first writer's open in
 //! one transaction.
@@ -122,9 +122,9 @@ pub(super) struct MakeDecision {
     pub(super) replaced: Option<LocalItemId>,
 }
 
-/// Whether the make goes ahead, and what it writes; the errno otherwise, in today's order
-/// (`write_operations/make_check.rs:46-58`): `ENOENT` for no directory, `EPERM` for a name
-/// the mount hides or the trash, `EEXIST` for a taken name. Pure. A directory never
+/// Whether the make goes ahead, and what it writes; the errno otherwise, in this order:
+/// `ENOENT` for no directory, `EPERM` for a name the mount hides or the trash, `EEXIST`
+/// for a taken name. Pure. A directory never
 /// replaces anything; a file replaces a removed file only when its own name is not
 /// ignored and no step runs for that file.
 pub(super) fn decide_make(case: &MakeCase) -> Result<MakeDecision, Errno> {

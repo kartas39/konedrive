@@ -32,7 +32,7 @@ pub(crate) enum SourceError {
 pub(crate) struct Fetched {
     /// The offset this stream actually starts at.
     ///
-    /// `fill` asks for `from` and writes what comes back at `from`; a source
+    /// A download asks for `from` and writes what comes back at `from`; a source
     /// that silently serves something else corrupts the file and there is no
     /// way to notice after the fact. This is not a theoretical
     /// implementor: the Graph source issues HTTP `Range` requests, and a

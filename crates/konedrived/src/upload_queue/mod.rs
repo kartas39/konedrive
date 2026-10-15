@@ -1,6 +1,6 @@
 //! What the bus says of what waits and what was left out
 //! (`org.konedrive.UploadQueue`, `Transfers.Uploads`, the folder's `Skipped()`): pure
-//! functions of the three sources of design §7 — the plan's answer for each unsent item,
+//! functions of the three sources of `docs/design/writes.md` §7 — the plan's answer for each unsent item,
 //! what the steps remember, and the state of the sending as a whole.
 //!
 //! **State owned:** none. The functions below the line "thin" read the sources and call
@@ -18,8 +18,8 @@
 //! had, and the plan that the change woke publishes the next. Every list is by local item
 //! id, so no item is in one answer twice.
 //!
-//! **Answers for:** the map's MISSING-6.a, 6.c, 6.d, 2.e. The members of the bus, their XML, their row types
-//! (`konedrive_dbus::rows`) and every word they carry stay today's.
+//! **Answers for:** the members of `org.konedrive.UploadQueue` as `dbus/` defines them,
+//! their row types (`konedrive_dbus::rows`) and every word they carry.
 //!
 //! **Not here:** `Folder.Refresh()` is `SyncTasks::refresh` (`sync_tasks::stop_order`),
 //! which wakes the plan with `WakeCause::RefreshAsked` — the plan's task makes every
@@ -35,29 +35,28 @@
 //! **Called from below and from above.** The plan's task publishes the properties
 //! ([`publish_queue_status`]: this directory is before `sync_plan_task` in the layer
 //! order); the owner of the folder's state answers the methods of the bus. `org.konedrive.Conflicts`
-//! reads the conflict record, which stays as it is (design §11). The interface has no
-//! member that drops one unsent change or chooses a side of a conflict, today or here.
+//! reads the conflict record. The interface has no member that drops one unsent change
+//! or chooses a side of a conflict.
 //!
 //! **The counts** are over every unsent item, the plan's answers over the items the last
 //! plan was given. `PendingCount`/`Bytes` begin as one sum of the store (`count_unsent`);
 //! what the steps remember as refused for good or for space is counted from the memory's
 //! own lists, over every item; what the plan alone knows (a name OneDrive cannot hold, a
-//! file larger than OneDrive takes, the guard's hold, a wait for space while OneDrive is
-//! full, an item it leaves out) from the answers. An item is counted once: an answered
+//! wait for space while OneDrive is full, an item it leaves out) from the answers. An
+//! item is counted once: an answered
 //! item the memory lists too is the memory's. An item beyond the plan's reach counts as
 //! pending until the plan reaches it; the plan is given the unsent items oldest first, so
 //! what was refused is among the first it is given.
 //!
 //! **Cost.** `Changes(limit)`: `limit` rows by the index of what is unsent, with a keyed
-//! read of the memory and a path each; `Changes(0)` reads every unsent row, as today. The
+//! read of the memory and a path each; `Changes(0)` reads every unsent row. The
 //! counts: one sum over that index, the memory's two lists of refusals whole (an index
 //! each, as many rows as are refused), and a keyed read of the row and the memory per
 //! item the last plan was given — no path. They are read once per plan, not per call of
 //! the bus. The summaries: the same without the sum, and the paths of the files listed.
 //!
-//! **Tested without the rest**, a test per state and per word (today's
-//! `upload/kept_back/tests.rs` and `konedrivectl`'s `text/uploads/tests.rs` are the
-//! reference for the words):
+//! **Tested without the rest**, a test per state and per word (`konedrivectl`'s
+//! `text/uploads/tests.rs` hold the words too):
 // test: an_unbound_directory_is_mkdir_an_unbound_file_create
 // test: a_changed_content_is_update_also_when_the_item_was_moved_too
 // test: a_place_that_differs_alone_is_move_and_no_local_version_is_delete
@@ -95,7 +94,7 @@ use crate::status::snapshot::SyncStateHandle;
 use crate::sync_parts::onedrive_space::OneDriveSpace;
 use crate::sync_parts::sending_holds::{SendingHold, SendingHolds};
 
-/// What of an item is unsent, in the five words `Changes()` has today.
+/// What of an item is unsent, in the five words of `Changes()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnsentKind {
     Mkdir,
@@ -126,9 +125,9 @@ impl UnsentKind {
 /// What of `item` is unsent; the first that holds: no local version, `Delete`; no synced
 /// place (nothing was agreed on yet, with a binding or without) and a directory, `Mkdir`;
 /// no synced place and a file, `Create`; a file whose local content is not the synced one,
-/// `Update` (also when the place differs too: one entry, as today); a local place that is
+/// `Update` (also when the place differs too: one entry); a local place that is
 /// not the synced one, `Move`. `None` for an item with no stamp `unsent_since`, and for
-/// one none of these holds for. Pure. MISSING-6.c.
+/// one none of these holds for. Pure.
 ///
 /// An item with a stamp for which this answers `None` is no entry, for every function
 /// below: it is in no list, no summary and none of the counts made from the answers, and
@@ -180,8 +179,7 @@ pub struct QueueConditions {
     /// The hold that is shown (`SendingHolds::find`): the first that holds. The entries
     /// read `paused` while it is `SendingHold::Paused`, and under no other hold: while
     /// the account is signed out, may not write, is throttled or has not ended its first
-    /// listing, each entry keeps its own word and the folder's state says the hold, as
-    /// today.
+    /// listing, each entry keeps its own word and the folder's state says the hold.
     pub(crate) hold: Option<SendingHold>,
     pub(crate) is_onedrive_full: bool,
     /// Whether a sync runs. False: `hold` and `is_onedrive_full` are not known (`None`
@@ -223,14 +221,14 @@ pub struct UnsentEntry {
 ///   folder's wait, which the memory alone tells apart; or the answer is
 ///   `WaitReason::User(reason)` with a reason that neither waits for space
 ///   (`Reason::waits_for_space`) nor is of the group `waiting` (`Reason::group`);
-/// - `waiting`, by the owner's decision never `blocked`: `WaitReason::StartUpCheck` (the
+/// - `waiting`, never `blocked`: `WaitReason::StartUpCheck` (the
 ///   reason says "could not be read on disk") and `ItemAnswer::Fault` ("being checked");
 /// - `waiting`, with the reason that the folder is read-only: `sending.hold` is
 ///   `SendingHold::FolderReadOnly` — what was unsent at a forced switch stays here and
 ///   is neither blocked nor lost; and every entry while `sending.is_sync_running` is
 ///   false;
 /// - `paused`: `sending.hold` is `SendingHold::Paused`, whatever else the entry would say,
-///   a running step among it — as today;
+///   a running step among it;
 /// - `running`: a step runs for it (`entry.running`);
 /// - `retry`: the answer is `WaitReason::Time` and the memory keeps failed tries
 ///   (`ItemMemory::failed_tries`);
@@ -240,8 +238,8 @@ pub struct UnsentEntry {
 ///   folder); `AnotherItem`, `ItemNotGiven`, `RunningStep` with no step found, `Listing`,
 ///   `ItemsInDirectoryNotGiven`;
 /// - `ready`: a planned step of any class; a wait for the user whose reason waits for
-///   space (`WaitingForSpace`, `TooBig`), which is kept back and stays in its place, as
-///   today; and an item the last plan was not given.
+///   space (`WaitingForSpace`, `TooBig`), which is kept back and stays in its place;
+///   and an item the last plan was not given.
 pub(crate) fn decide_queue_state(entry: &UnsentEntry, sending: &QueueConditions) -> Option<QueueState> {
     let answer = entry.answer.as_ref();
     if matches!(answer, Some(ItemAnswer::Excluded(_))) {
@@ -289,7 +287,7 @@ pub(crate) fn decide_queue_state(entry: &UnsentEntry, sending: &QueueConditions)
 /// - and where none of these gave a reason, while OneDrive is full
 ///   (`sending.is_onedrive_full`) and `kind` sends content: `Reason::WaitingForSpace`.
 ///
-/// The owner decided what the window says of two of them, and neither is called blocked:
+/// What the window says of two of them, neither called blocked:
 /// an item the check at start left reads "could not be read on disk", an item the plan is
 /// at fault about "being checked" (the daemon asks a full listing by itself): the two
 /// reasons above, whose state reads `waiting`, not `blocked`.
@@ -398,7 +396,7 @@ pub struct QueueTotals {
 ///   entries that are blocked or left out. An item the memory refuses for good that
 ///   the last plan was not given is off `pending` and its bytes stay in `pending_bytes`
 ///   until the plan is given it: the memory's list carries no size. What waits for space
-///   or is too big stays in both, as today (`status::totals` takes it off what is left to
+///   or is too big stays in both (`status::totals` takes it off what is left to
 ///   upload).
 ///
 /// Each saturates at 0 and at the type's largest. A pause changes none of them: the
@@ -455,8 +453,7 @@ pub fn count_queue(totals: &QueueTotals, sending: &QueueConditions) -> QueueCoun
 /// reason, and for a `ready` one whose reason waits for space; `Reason::Blocked` for a
 /// `blocked` one with none. `None` for one that goes up by itself or runs. A pause changes nothing of it: the summary and
 /// the two lists give this the state and the conditions as they are with no pause
-/// (`find_kept_back`), so `state` is never `paused` there. Pure. Today's `kept_reason`
-/// (`upload/kept_back.rs:60`).
+/// (`find_kept_back`), so `state` is never `paused` there. Pure.
 pub(crate) fn decide_kept_back_reason(kind: UnsentKind, state: QueueState, entry: &UnsentEntry, sending: &QueueConditions) -> Option<Reason> {
     let (reason, _) = decide_queue_reason(kind, state, entry, sending);
     match state {
@@ -503,8 +500,8 @@ pub(crate) fn list_entries_kept_back_for<'a>(entries: &'a [UnsentEntry], sending
 
 /// `NotUploaded()`: the files that need the user ([`list_blocked_entries`]), each with
 /// its full path (`paths`, under `folder`) and its reason as stored, by path. An entry
-/// `paths` has no path for is left out. Pure. As today, what is left here (an ignored
-/// name) is not among them.
+/// `paths` has no path for is left out. Pure. What is left here (an ignored name) is not
+/// among them.
 pub fn list_not_uploaded(entries: &[UnsentEntry], paths: &BTreeMap<LocalItemId, PathBuf>, sending: &QueueConditions, folder: &Path) -> Vec<KeptBack> {
     let mut files: Vec<KeptBack> = list_blocked_entries(entries, sending).into_iter().filter_map(|entry| describe_kept_back(entry, paths, sending, folder)).collect();
     files.sort_by(|a, b| (&a.path, &a.reason).cmp(&(&b.path, &b.reason)));
@@ -513,7 +510,7 @@ pub fn list_not_uploaded(entries: &[UnsentEntry], paths: &BTreeMap<LocalItemId, 
 
 /// `NotUploadedFiles(reason, limit)`: the files kept back for the reason of key `reason`
 /// ([`list_entries_kept_back_for`]): the first `limit` of them in that function's order,
-/// by local item id (all for 0) — those `paths` was read for, as today's read with a
+/// by local item id (all for 0) — those `paths` was read for, as a read with a
 /// `LIMIT` — each with its full path and its reason as stored, sorted by path among
 /// themselves; one `paths` has no path for is left out. `total` is how many entries are
 /// kept back for the reason, whatever `limit` and whatever `paths` holds. Pure.
@@ -546,9 +543,8 @@ pub fn describe_running_uploads(running: &[RunningStep], paths: &BTreeMap<LocalI
 /// for `WaitReason::Listing` and for `ItemAnswer::Planned`, `Excluded` and `Fault` (the
 /// step that takes the item out of the folder is planned, or no upload keeps it);
 /// `WaitsFor::Uploads(1)` for any other wait. Pure.
-/// MISSING-2.e.
 ///
-/// The owner decided: an item the folder cannot show is listed at the level of the item
+/// An item the folder cannot show is listed at the level of the item
 /// itself, one row, with no count of what waits below it (`WaitsFor::Uploads(1)` for a
 /// directory too). This list is also where the user finds why a directory cannot be
 /// removed here: the rows of what it holds that cannot be shown
@@ -676,7 +672,7 @@ pub(crate) fn read_unsent_entries(items: &ItemReader<'_>, answers: &BTreeMap<Loc
 
 /// The path of each of `entries`, relative to the root, by item: its local path
 /// (`ItemReader::find_path`), or for an item with no local version the path of its synced
-/// place (`ItemReader::find_synced_path`, MISSING-6.d). An entry that has neither has no
+/// place (`ItemReader::find_synced_path`). An entry that has neither has no
 /// path here, and neither has one whose synced path the store refuses to tell: any other
 /// error of the store fails the read. Called inside the `Store::read_items` that read the entries, for those of
 /// them a list of files names.

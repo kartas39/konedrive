@@ -108,9 +108,9 @@ pub enum DriveError {
     NotFound,
     #[error("the change feed has expired and the drive must be listed again")]
     ResyncRequired,
-    /// `410` with `resyncChangesUploadDifferences` (`docs/design/writes.md` §9): listed
-    /// again, and what the new listing leaves out is uploaded rather than
-    /// removed. Only a read-write folder tells it from [`Self::ResyncRequired`].
+    /// `410` with `resyncChangesUploadDifferences`, the resync code Microsoft names apart
+    /// from the plain one. The listing begins a full listing for either
+    /// (`docs/design/sync.md` §5.4).
     #[error("the change feed has expired and the drive must be listed again, keeping what it no longer has")]
     ResyncUpload,
     #[error("the download link has expired")]

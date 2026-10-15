@@ -1,7 +1,7 @@
 //! What the check of the backing directory finds at one place ([`DiskFinding`]), and the
 //! decision that finds it ([`decide_finding`]): a function of what the rows say of the place
 //! ([`PlaceRow`]) and of what the backing directory has there ([`PlaceEntry`]), with no disk
-//! and no store in it. It is design §10's table, a row of the table an arm.
+//! and no store in it. It is the table of `docs/design/mount.md` §7.2, a row of the table an arm.
 //!
 //! A file's content is compared by its size, its time and its cTag mark, with one
 //! exception: a row that still keeps the content of before a write ([`WriterAtStop::Open`])

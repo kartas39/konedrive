@@ -167,7 +167,7 @@ fn an_item_is_found_by_its_path_and_a_path_through_a_file_finds_nothing() {
     assert_eq!(find("/d"), None, "a path relative to the root of the folder");
 }
 
-/// S18: the marks line up with the names of the path, the outermost first, one for each
+/// The marks line up with the names of the path, the outermost first, one for each
 /// name — the item id of the binding of a directory that has one.
 #[test]
 fn the_marks_of_a_path_are_one_for_each_name_the_outermost_first() {

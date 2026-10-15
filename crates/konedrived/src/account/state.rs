@@ -49,7 +49,7 @@ pub struct AccountSnapshot {
     pub email: String,
     /// The account's one quota (`crate::account::quota`); 0 and empty until read.
     pub quota: QuotaFigures,
-    /// `Account.Mode`: the mode the account runs in (`docs/design/writes.md` §2) — read-write only
+    /// `Account.Mode`: the mode the account runs in (`docs/design/accounts.md` §10) — read-write only
     /// while `config.toml` says so, `granted_scopes` carries `Files.ReadWrite`, and
     /// `live_drive` is the drive recorded for it. The account's folder follows it
     /// (`crate::account_folder::mode::watch_account`).

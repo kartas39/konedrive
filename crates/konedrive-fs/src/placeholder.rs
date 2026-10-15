@@ -20,17 +20,17 @@ pub const XATTR_ROOT: &str = "user.konedrive.root";
 pub const XATTR_DRIVE: &str = "user.konedrive.drive";
 pub const XATTR_CTAG: &str = "user.konedrive.ctag";
 pub const XATTR_PROGRESS: &str = "user.konedrive.progress";
-/// "Always keep on this device": `"1"` on a pinned file or folder. A folder's
-/// pin covers everything under it. The attribute is the only record of a
-/// pin, so a pin survives a rebuild of the daemon's tree store, and the
-/// Dolphin plugin reads it directly.
+/// "Always keep on this device": `"1"` on every item a pin holds for, its own or a
+/// directory's above it. The mount answers it from the store's pins and writes nothing on
+/// disk; the Dolphin plugin reads it by name (`docs/design/pinning.md` §2.2).
 pub const XATTR_PIN: &str = "user.konedrive.pin";
-/// On a file with a change waiting to go up (`docs/design/writes.md` §5.4): `pending`,
-/// `uploading` or `blocked`. The daemon writes it and takes it off at the
-/// commit; Dolphin's emblem plugin reads it as it reads the state.
+/// On an item with a change waiting to go up: `pending`, `uploading` or `blocked`. The
+/// mount answers it from the row and the plan and writes nothing on disk; Dolphin's
+/// emblem plugin reads it as it reads the state (`docs/design/writes.md` §7).
 pub const XATTR_SYNC: &str = "user.konedrive.sync";
 
-/// A folder under the read phase's read-only lock, and one without.
+/// The modes of a folder's entries while no mount lies over it, without their write bits,
+/// and while one does (`docs/design/mount.md` §8.4).
 pub const LOCKED_FILE_MODE: u32 = 0o444;
 pub const LOCKED_DIR_MODE: u32 = 0o555;
 pub const OPEN_FILE_MODE: u32 = 0o644;
@@ -96,10 +96,10 @@ pub fn combine_op_and_restore_results<T>(
 ///
 /// A `user.*` attribute can only be written by someone with write permission
 /// on the inode — the owner included, however the descriptor was opened
-/// (measured: the owner's `setfattr` on a `0444` file fails `EACCES`). Under
-/// the lock every file is `0444`, so every attribute the daemon writes goes
-/// through here, and the window is that one call. A mode that cannot be put
-/// back is an error even when `op` succeeded: the lock would silently be off.
+/// (measured: the owner's `setfattr` on a `0444` file fails `EACCES`). While no
+/// mount lies over the folder every file is `0444`, so every attribute the daemon
+/// writes goes through here, and the window is that one call. A mode that cannot be
+/// put back is an error even when `op` succeeded: the write bit would silently stay.
 pub fn with_owner_write<T>(file: &File, op: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
     use std::os::unix::fs::PermissionsExt;
     let mode = file.metadata()?.permissions().mode() & 0o7777;
@@ -290,9 +290,8 @@ pub fn remove_progress(file: &File) -> io::Result<()> {
     remove_xattr(file, XATTR_PROGRESS)
 }
 
-/// Writes `stamp` rather than the file's own size and time: an upload's
-/// snapshot, the content that went up, so that an edit made while it went
-/// up still differs from the stamp (`docs/design/writes.md` §5).
+/// Writes `stamp` as the file's `user.konedrive.stamp`, rather than the file's own size
+/// and time.
 pub fn write_given_stamp(file: &File, stamp: Stamp) -> io::Result<()> {
     set_xattr(file, XATTR_STAMP, stamp.encode().as_bytes())
 }

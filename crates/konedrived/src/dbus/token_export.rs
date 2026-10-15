@@ -17,7 +17,7 @@ pub(crate) struct TokenExport {
 #[zbus::interface(name = "org.konedrive.TokenExport")]
 impl TokenExport {
     /// An access token of this account that can change nothing, whatever its mode (`docs/design/desktop.md`
-    /// §2.7) — never the refresh token.
+    /// §2.11) — never the refresh token.
     async fn read_only(&self) -> std::result::Result<String, Fault> {
         match self.service.read_only_token().await {
             Ok(token) => Ok(token),

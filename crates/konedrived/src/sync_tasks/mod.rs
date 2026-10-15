@@ -7,8 +7,7 @@
 //! and releases what the account holds through [`SyncTasks`].
 //! [`SyncTasks`] holds them and hands out the things others ask of a running sync (what
 //! holds sending, the poll, the wake, the stop's token); what each task does is its own.
-//! It takes the place of `RunningSync` and its `Parts` (`running_sync.rs`), in either
-//! access mode: a read-only folder has every task too.
+//! A folder has every task in either access mode: a read-only folder too.
 //!
 //! **Who owns a folder's start and stop:** the owner of the folder's state — `SyncService`,
 //! inside a change of the folder, which holds the folder's write lock. It calls
@@ -24,8 +23,7 @@
 //! the user's "sync now" tries at once; the count starts over after a start that stayed
 //! up): the timer and the count are the owner's state, and nothing here keeps either.
 //!
-//! **What the owner's change must do** — the owner's change of a folder is rewritten at
-//! the switch, and this layer does not bend to the one in the tree:
+//! **What the owner's change must do:**
 //!
 //! - it stops the sync only for what needs it: leaving the account, forgetting the
 //!   folder, a take-down, the daemon's end. The change of the access mode and the change

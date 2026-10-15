@@ -1,4 +1,4 @@
-//! The folders of every account of one daemon, and what they share (`docs/design/accounts.md` §3.1–§3.4).
+//! The folders of every account of one daemon, and what they share (`docs/design/accounts.md` §3.1).
 //!
 //! [`Registry`] is the list of the daemon's accounts as their folders see each other:
 //! whether a folder would overlap another account's, and what the

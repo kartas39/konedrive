@@ -1,5 +1,5 @@
-//! What downloads a file of OneDrive whole into the backing directory, by item: what
-//! `file_downloader` is today by a row of `onedrive_items` and a path.
+//! What downloads a file of OneDrive whole into the backing directory, by item
+//! (`docs/design/mount.md` §5.3).
 //!
 //! **State owned:** none; the states are `ItemDownloadStates`'. It holds what a download
 //! goes through.
@@ -11,7 +11,7 @@
 //! **One download:** asked for with the item, its binding and the content to download
 //! ([`ItemToDownload`]); joined or started (`ItemDownloadStates::start_or_join`); fetched
 //! on the runtime into a file that has no name, through the content source and the
-//! transfer pool, as today; checked against the content's size and hash; synced — by the
+//! transfer pool; checked against the content's size and hash; synced — by the
 //! downloader, with no lock held; then landed as ONE job of the write-operation thread
 //! (`ItemDownloadLanding::land`), which links it under the name the row has by then,
 //! syncs the directory and commits conditionally; then announced and its waiters
@@ -92,7 +92,7 @@
 //! hold them; `Transfers` shows it, as it shows every download.
 //!
 //! **Tested without the rest**, with a content source the test holds, a temporary backing
-//! directory and a store in memory (today's `file_downloader/tests.rs` is the reference):
+//! directory and a store in memory:
 // test: a_download_lands_at_the_place_the_row_has_when_it_ends
 // test: a_download_whose_content_the_row_no_longer_has_lands_nothing_and_answers_stale
 // test: a_download_asked_twice_runs_once_and_answers_both

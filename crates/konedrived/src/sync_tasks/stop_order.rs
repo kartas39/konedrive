@@ -3,7 +3,7 @@
 //!
 //! **State owned:** none.
 //!
-//! **Answers for:** the map's §7.2 and §7.3. Every function that ends something takes
+//! **Answers for:** the order of a stop (`docs/design/sync.md` §9.3). Every function that ends something takes
 //! what it ends by value from the owner of the folder's state, inside a change of the
 //! folder. The order of an end: the sync is stopped (`stop_folder_sync`), which answers
 //! the parts the folder keeps; these are then started again
@@ -73,7 +73,7 @@ impl SyncTasks {
 
     /// The account signed out: all sending is held (`SendingHolds::set_signed_out`, which
     /// wakes the plan) and uploads stop after their fragment; no task stops, and the
-    /// mount goes on taking changes, as today. Called by the owner's watcher of the
+    /// mount goes on taking changes. Called by the owner's watcher of the
     /// account (`SyncService::follow_account`) when the snapshot it applies says signed
     /// out; the same watcher ends the hold ([`release_after_sign_in`]). The plan's task
     /// sets the same hold itself when a step is answered that the account is signed out
@@ -149,7 +149,7 @@ pub(crate) enum TakeDownOutcome {
     /// Somebody still holds the store after the wait ran out. After a take-down nothing
     /// is started: the folder stays down with its trouble said, and the next start of the
     /// daemon runs the check. After a Forget the owner removes the files all the same,
-    /// with a warning, as today.
+    /// with a warning.
     StoreStillOpen,
 }
 
@@ -210,8 +210,8 @@ async fn end_kept_parts(kept: KeptFolderParts, mount_end: MountEnd) -> TakeDownO
 /// hourly), at once on the user's "sync now", and at the daemon's next start; the folder
 /// shows its trouble with its cause meanwhile. Each such start is
 /// `start_order::start_folder_sync` with nothing kept, which runs the check at start,
-/// which reads what the failed undo left as a change made while no daemon ran (design
-/// §8). `StoreStillOpen` is answered to that owner, which then does not start by itself.
+/// which settles what the failed undo left from its record (`docs/design/mount.md` §8.1).
+/// `StoreStillOpen` is answered to that owner, which then does not start by itself.
 pub(crate) async fn take_folder_down(kept: KeptFolderParts) -> TakeDownOutcome {
     end_kept_parts(kept, MountEnd::Stopped).await
 }

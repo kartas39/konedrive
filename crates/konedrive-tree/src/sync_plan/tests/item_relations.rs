@@ -1,9 +1,6 @@
-//! What the plan decides between items: a test per case of the design's list
-//! (`docs/tasks/item-versions-design.md`, §6, "what it decides between items"), the
-//! closed set, the order of the steps and the rule that a plan
-//! in which nothing can run says why. A test's comment names the row of the map of today's
-//! code (`docs/tasks/item-versions-plan-map.txt`, §2: B1a–B8), or says "new" or "differs
-//! from today".
+//! What the plan decides between items: a test per case of `docs/design/sync.md` §6.4,
+//! the closed set, the order of the steps and the rule that a plan in which nothing can
+//! run says why.
 
 use konedrive_reason::Reason;
 
@@ -20,7 +17,7 @@ fn waits_for(number: i64) -> Answer {
 
 // -- names
 
-/// B1a: a taker waits for every freer of its name, as OneDrive compares names.
+/// A taker waits for every freer of its name, as OneDrive compares names.
 #[test]
 fn what_frees_a_name_in_onedrive_goes_before_what_takes_it() {
     let given = input(vec![
@@ -35,8 +32,7 @@ fn what_frees_a_name_in_onedrive_goes_before_what_takes_it() {
     assert_eq!(answer(&given, 5), waits_for(4), "the removal frees the name, as OneDrive compares names");
 }
 
-/// B1b: no rule today, where it is safe only by the marks on disk
-/// (`a_file_moved_onto_a_marked_copy_is_not_moved`, `fuse/cycle_step/cycle_actions/tests.rs`).
+/// What frees a name goes before what takes it, also towards the folder.
 #[test]
 fn what_frees_a_name_in_the_folder_goes_before_what_takes_it() {
     let given = input(vec![moved_in_onedrive(synced_file(2, ROOT, "a.txt"), ROOT, "b.txt"), listed(3, ItemKind::File, ROOT, "a.txt"), removed_in_onedrive(synced_file(4, ROOT, "c.txt")), moved_in_onedrive(synced_file(5, ROOT, "d.txt"), ROOT, "c.txt")]);
@@ -46,10 +42,8 @@ fn what_frees_a_name_in_the_folder_goes_before_what_takes_it() {
     assert_eq!(answer(&given, 5), waits_for(4));
 }
 
-/// B2a: differs from today, which sends the taker, is answered 409 and only then goes
-/// through `.konedrive-swap-<id>` (`two_files_exchange_names_through_a_temporary_name`,
-/// `upload/tests/temporary_names.rs`). The plan foresees it: of the items that wait for
-/// each other, the one with the lowest id is sent to a temporary name.
+/// Names exchanged in OneDrive's direction: the plan foresees it, and of the items that
+/// wait for each other, the one with the lowest id is sent to a temporary name.
 #[test]
 fn items_that_exchange_names_here_go_through_a_temporary_name_in_onedrive() {
     let given = input(vec![moved_here(synced_file(2, ROOT, "x"), ROOT, "y"), moved_here(synced_file(3, ROOT, "y"), ROOT, "x")]);
@@ -71,8 +65,7 @@ fn items_that_exchange_names_here_go_through_a_temporary_name_in_onedrive() {
     assert_eq!((answer(&given, 3), answer(&given, 4)), (waits_for(4), waits_for(2)));
 }
 
-/// B2b: no rule today (each move finds the other's marked copy at its new path and is
-/// skipped: both copies stay at the old names). New: through a temporary name here.
+/// Names exchanged in OneDrive: through a temporary name here.
 #[test]
 fn items_onedrive_exchanged_the_names_of_go_through_a_temporary_name_in_the_folder() {
     let given = input(vec![moved_in_onedrive(synced_file(2, ROOT, "x"), ROOT, "y"), moved_in_onedrive(synced_directory(3, ROOT, "y"), ROOT, "x")]);
@@ -89,7 +82,7 @@ fn items_onedrive_exchanged_the_names_of_go_through_a_temporary_name_in_the_fold
     assert_eq!(answer(&given, 2), waits_for(3));
 }
 
-/// New: an item OneDrive moved that is in the way of another, and cannot go to its place
+/// An item OneDrive moved that is in the way of another, and cannot go to its place
 /// yet, goes through a temporary name too — in the directory OneDrive has it in where the
 /// folder can bring it there, and where it is otherwise.
 #[test]
@@ -124,8 +117,8 @@ fn an_item_onedrive_moved_that_is_in_the_way_of_another_goes_through_a_temporary
     assert_eq!(answer(&given, 2), Answer::OtherFault(PlanFault::WaitWithoutEnd(id(2))));
 }
 
-/// New (today: 409 and then a temporary name, as B2a): a directory made at the name of an
-/// item that was moved into it. The item waits for the directory to be in OneDrive, and
+/// A directory made at the name of an item that was moved into it. The item waits for
+/// the directory to be in OneDrive, and
 /// the directory for its name.
 #[test]
 fn a_directory_made_at_the_name_of_an_item_moved_into_it_is_made_under_a_temporary_name() {
@@ -134,9 +127,8 @@ fn a_directory_made_at_the_name_of_an_item_moved_into_it_is_made_under_a_tempora
     assert_eq!(answer(&given, 2), waits_for(3));
 }
 
-/// B5: differs from today, which foresees nothing: the second is sent, answered 409,
-/// renamed to a copy's name and sent (`upload/steps/shared.rs`, untested for two local
-/// items), its names compared by lower case alone.
+/// Two local items that want one name: the later unsent steps aside
+/// (`docs/design/sync.md` §6.5).
 #[test]
 fn of_two_items_of_the_folder_with_one_name_for_onedrive_the_later_is_renamed_to_a_conflict_copys_name() {
     let given = input(vec![made_file(2, ROOT, "a.txt"), made_file(3, ROOT, "A.txt"), synced_file(4, ROOT, "b.txt"), made_directory(5, ROOT, "B.txt"), made_file(7, ROOT, "É"), moved_here(synced_file(6, ROOT, "was"), ROOT, "e\u{301}")]);
@@ -149,9 +141,7 @@ fn of_two_items_of_the_folder_with_one_name_for_onedrive_the_later_is_renamed_to
     assert_eq!(answer(&given, 7), folder_step(FolderStep::RenameToConflictCopy { item: versions(&given, 7), name: "É-pc".into() }), "a composed letter and its two parts are one name");
 }
 
-/// B6a: differs from today, where the outcome depends on which is seen first (the worker
-/// adopts, `upload/steps/meta.rs`; the cycle moves the local one aside,
-/// `fuse/cycle_step/cycle_actions.rs`). One rule now.
+/// Two new directories of one name, one on each side, are one item.
 #[test]
 fn a_new_directory_here_and_a_new_one_in_onedrive_of_one_name_are_merged() {
     for name_here in ["d", "D"] {
@@ -162,11 +152,8 @@ fn a_new_directory_here_and_a_new_one_in_onedrive_of_one_name_are_merged() {
     }
 }
 
-/// B6b and B6c. Today: `a_new_file_whose_name_is_taken_by_the_same_content_is_adopted` and
-/// its other half (`upload/tests/conflicts.rs`), when the worker comes first; when the
-/// cycle does, a conflict copy with no hash compared
-/// (`an_item_that_appears_where_the_users_own_is_moves_it_aside`,
-/// `fuse/cycle_step/cycle_actions/tests.rs`). One rule now, and the hash is a step.
+/// Two new files of one name, one on each side: one item when their content is one,
+/// otherwise the local one steps aside; where only a hash can say, hashing it is a step.
 #[test]
 fn a_new_file_here_and_a_new_one_in_onedrive_of_one_name_are_merged_when_their_hash_is_one() {
     // The content of `listed(3, …)` is of the hash `h3`.
@@ -185,9 +172,8 @@ fn a_new_file_here_and_a_new_one_in_onedrive_of_one_name_are_merged_when_their_h
     assert_eq!(onedrive, waits_for(2));
 }
 
-/// New: the design's "a conflict copy's name is chosen free on both sides, as OneDrive
-/// compares names". Today the name is checked against the disk alone (`pick_copy_name`,
-/// `upload/local.rs`), and a 409 makes a copy of the copy.
+/// A conflict copy's name is chosen free on both sides, as OneDrive compares names
+/// (`docs/design/sync.md` §6.5).
 #[test]
 fn a_conflict_copys_name_is_free_on_both_sides_as_onedrive_compares_names() {
     let given = input(vec![
@@ -207,10 +193,9 @@ fn a_conflict_copys_name_is_free_on_both_sides_as_onedrive_compares_names() {
 }
 
 /// Open: an item that is left here (its name is ignored) at the name an item of OneDrive
-/// comes to. The design has no case.
+/// comes to.
 ///
-/// - Reading 1 (implemented; today's, `a_local_only_entry_in_the_way_is_moved_aside`,
-///   `fuse/conflict_copies/tests.rs`): the item that is left here is renamed to a conflict
+/// - Reading 1 (implemented): the item that is left here is renamed to a conflict
 ///   copy's name, and OneDrive's appears. It is never merged with OneDrive's: an ignored
 ///   directory that became one with a directory of OneDrive would have all in it sent.
 /// - Reading 2: OneDrive's item is not shown while the other has its name: it waits for
@@ -240,12 +225,11 @@ fn an_item_that_is_left_here_stays_beside_an_item_of_onedrive_whose_name_only_fo
     assert_eq!(answer(&given, 5), folder_step(FolderStep::ShowItem { item: versions(&given, 5) }), "the folder holds the two names apart");
 }
 
-/// Decided after stage B (the brief's §6, 1; the design's §6): no removal is ever sent
-/// because a name is ignored. An item OneDrive has is never left here, whatever its row says
-/// of its name: one that got its binding while its sending was running and whose name is
-/// ignored now stays in OneDrive under that name, and one renamed here to an ignored name
-/// has its move sent like any other. Differs from today, where nothing of an ignored name
-/// is recorded (`mount/upload_rules.rs`).
+/// No removal is ever sent because a name is ignored (`docs/design/sync.md` §6.8). An item
+/// OneDrive has is never left here, whatever its row says of its name: one that got its
+/// binding while its sending was running and whose name is ignored now stays in OneDrive
+/// under that name, and one renamed here to an ignored name has its move sent like any
+/// other.
 #[test]
 fn a_bound_item_whose_name_is_ignored_is_planned_as_any_bound_item() {
     let ignored = |mut item: Item| {
@@ -266,10 +250,9 @@ fn a_bound_item_whose_name_is_ignored_is_planned_as_any_bound_item() {
     assert_eq!(answer(&given, 6), folder_step(FolderStep::RemoveItem { item: versions(&given, 6) }));
 }
 
-/// The design's "OneDrive is the judge" (§6, "Names"; §7, what a step remembers): new. The
-/// plan's own rule says two names are two, OneDrive answered the sending that the name is
-/// taken, and that answer is given: the item steps aside as from any name another item
-/// holds for good. Today the worker makes the copy on the spot (`upload/steps/shared.rs`).
+/// OneDrive is the judge (`docs/design/sync.md` §6.5, §7.5). The plan's own rule says two
+/// names are two, OneDrive answered the sending that the name is taken, and that answer is
+/// given: the item steps aside as from any name another item holds for good.
 #[test]
 fn an_item_whose_name_onedrive_answered_is_taken_is_renamed_to_a_conflict_copys_name() {
     let mut given = input(vec![made_file(2, ROOT, "Straße.txt"), moved_here(synced_file(3, ROOT, "b.txt"), ROOT, "c.txt"), made_directory(4, ROOT, "d")]);
@@ -283,10 +266,10 @@ fn an_item_whose_name_onedrive_answered_is_taken_is_renamed_to_a_conflict_copys_
     assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::Listing));
 }
 
-/// The design's §3: "while [a listing] is being written, page by page, two rows may say one
-/// name on the OneDrive side, and the plan then lets the second wait". Found by the
-/// convergence test (a listing of two pages, the first with half of an exchange of two
-/// names): both items were brought to the one place here in one plan. New.
+/// While a listing is written page by page, two rows may say one name on the OneDrive
+/// side, and the plan then lets the second wait (`docs/design/sync.md` §2.3, §6.4). Found
+/// by the convergence test (a listing of two pages, the first with half of an exchange of
+/// two names): both items were brought to the one place here in one plan.
 #[test]
 fn of_two_items_the_rows_say_onedrive_has_under_one_name_the_second_waits_for_the_listing() {
     let mut given = input(vec![moved_in_onedrive(synced_file(2, ROOT, "a.txt"), ROOT, "d"), moved_in_onedrive(synced_file(3, ROOT, "b.txt"), ROOT, "D"), listed(4, ItemKind::File, ROOT, "d")]);
@@ -296,7 +279,7 @@ fn of_two_items_the_rows_say_onedrive_has_under_one_name_the_second_waits_for_th
     assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::Listing));
 
     // With no listing under way OneDrive has judged of the two names that fold to one:
-    // they are two items (the brief's §7, M3). The very name on two rows is what OneDrive
+    // they are two items. The very name on two rows is what OneDrive
     // cannot have: a full listing mends the rows.
     given.is_listing_under_way = false;
     assert_eq!(answer(&given, 2), folder_step(FolderStep::MoveItem { item: versions(&given, 2) }));
@@ -310,7 +293,7 @@ fn of_two_items_the_rows_say_onedrive_has_under_one_name_the_second_waits_for_th
 /// gives up its binding takes what the two sides agreed is in it, and what OneDrive has in
 /// it, to the row that takes the binding — the rows of those items change under their own
 /// steps. So an item whose place agreed on is in such a directory, and that the folder
-/// shows elsewhere or not at all, waits for the directory. New.
+/// shows elsewhere or not at all, waits for the directory.
 #[test]
 fn what_was_agreed_to_be_in_a_directory_that_gives_up_its_binding_waits_for_it() {
     let given = input(vec![
@@ -351,8 +334,8 @@ fn what_onedrive_has_in_a_directory_that_is_merged_waits_for_the_merge() {
     assert_eq!(answer(&given, 4), waits_for(2), "its removal is sent once its row says where OneDrive has it");
 }
 
-/// B3: no rule today (Graph's answer to such a move is not measured). The design: OneDrive's
-/// move stands and the local one is taken back.
+/// A directory moved here into what OneDrive has in it: OneDrive's move stands and the
+/// local one is taken back.
 #[test]
 fn a_directory_moved_here_into_one_that_onedrive_moved_into_it_is_taken_back() {
     let given = input(vec![moved_here(synced_directory(2, ROOT, "a"), id(3), "a"), moved_in_onedrive(synced_directory(3, ROOT, "b"), id(2), "b")]);
@@ -365,7 +348,7 @@ fn a_directory_moved_here_into_one_that_onedrive_moved_into_it_is_taken_back() {
     assert_eq!(answer(&given, 3), waits_for(2));
 }
 
-/// New: "a directory before what is in it", for two moves made here. A directory moved here
+/// "A directory before what is in it", for two moves made here. A directory moved here
 /// into one that OneDrive still has in it closes no cycle when that one was moved out of it
 /// here; its move is sent after the other's.
 #[test]
@@ -375,7 +358,7 @@ fn a_directory_moved_here_into_one_onedrive_still_has_in_it_is_sent_after_that_o
     assert_eq!(answer(&given, 3), waits_for(2));
 }
 
-/// New: the name a directory comes back to when its move is taken back. OneDrive has the
+/// The name a directory comes back to when its move is taken back. OneDrive has the
 /// directory under that name, and it stays there, so the user's own item at that name here
 /// steps aside; it does not wait for a move that is never sent.
 #[test]
@@ -386,8 +369,7 @@ fn the_users_own_at_the_name_a_move_is_taken_back_to_steps_aside() {
     assert_eq!(answer(&given, 2), waits_for(3));
 }
 
-/// B7: differs from today, where a removal is sent for each entry, deepest first
-/// (`a_removed_directory_tree_is_removed_entry_by_entry`, `upload/tests/row_kinds.rs`).
+/// A directory removed here with all in it is one removal, not one for each entry.
 #[test]
 fn a_directory_removed_here_with_all_in_it_is_one_removal_in_onedrive() {
     let given = input(vec![
@@ -402,7 +384,7 @@ fn a_directory_removed_here_with_all_in_it_is_one_removal_in_onedrive() {
     }
 }
 
-/// The map's rule beside B8: a directory's removal waits for every unsent change of what
+/// A directory's removal waits for every unsent change of what
 /// OneDrive has below it, so that an item moved out of it is not removed with it.
 #[test]
 fn the_removal_of_a_directory_waits_for_what_was_moved_out_of_it() {
@@ -412,15 +394,13 @@ fn the_removal_of_a_directory_waits_for_what_was_moved_out_of_it() {
     assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendMove { item: versions(&given, 4), parent: reference("root"), name: "kept.txt".into() }));
 }
 
-// B4c, "the removal of a directory stands whatever OneDrive changed in it", is in
-// `directory_removal`, beside the rules that replaced it but for a rename or a move.
+// What OneDrive changed in a directory removed here is in `directory_removal`.
 
 /// Open: an item the folder shows that OneDrive moved into a directory that was removed
-/// here. The design says the removal "is sent and stands" whatever OneDrive changed below
-/// the directory, and that the folder follows OneDrive's move; it cannot do both.
+/// here. The folder cannot both follow OneDrive's move and have the removal stand.
 ///
 /// - Reading 1 (implemented): the folder cannot follow, so the item's place here stands
-///   and is sent, as where OneDrive's place cannot be taken (the map's P10); the removal
+///   and is sent, as where OneDrive's place cannot be taken; the removal
 ///   waits for it, as for an item moved out of the directory here. Nothing the folder
 ///   shows is removed by a removal of something else.
 /// - Reading 2: the item goes with the removal, in OneDrive and then here.
@@ -439,10 +419,10 @@ fn open_an_item_onedrive_moved_into_a_directory_removed_here_keeps_its_place_her
     assert_eq!(answer(&given, 5), waits_for(2));
 }
 
-/// B4a and B4b, and the brief's §5, 4. Today:
-/// `a_removed_directory_that_holds_a_local_only_entry_stays_and_is_made_again`
-/// (`fuse/conflict_copies/tests.rs`); B4b has no test of the whole. Stage A left the
-/// directory and the user's own item in it waiting for each other.
+/// A directory OneDrive removed that holds the user's own: the clean items go, the
+/// directory gives up its binding and is sent again, then what is in it
+/// (`docs/design/sync.md` §6.4). The directory and the user's own item in it never wait
+/// for each other.
 #[test]
 fn a_directory_onedrive_removed_that_holds_something_of_the_users_own_stays_and_is_sent_again() {
     // An item OneDrive never had.
@@ -450,7 +430,7 @@ fn a_directory_onedrive_removed_that_holds_something_of_the_users_own_stays_and_
     assert_eq!(answer(&given, 2), row_step(RowStep::GiveUpBinding { item: versions(&given, 2) }));
     assert_eq!(answer(&given, 3), waits_for(2));
 
-    // Content changed here: the file gives up its binding first (the map's E7), and is then
+    // Content changed here: the file gives up its binding first, and is then
     // an item OneDrive never had.
     let given = input(vec![removed_in_onedrive(synced_directory(2, ROOT, "d")), removed_in_onedrive(with_content_here(synced_file(3, id(2), "a.txt"), written_here()))]);
     assert_eq!(answer(&given, 2), waits_for(3));
@@ -469,7 +449,7 @@ fn a_directory_onedrive_removed_that_holds_something_of_the_users_own_stays_and_
     assert_eq!(answer(&given, 3), row_step(RowStep::GiveUpBinding { item: versions(&given, 3) }));
 }
 
-/// The design: "the clean items in it go first". A directory that gave up its binding
+/// The clean items in it go first. A directory that gave up its binding
 /// while the folder still showed a clean file in it would have that file read as moved
 /// here, and sent again.
 #[test]
@@ -480,12 +460,12 @@ fn the_clean_items_of_a_directory_onedrive_removed_go_before_it_gives_up_its_bin
     assert_eq!(answer(&given, 4), folder_step(FolderStep::RemoveItem { item: versions(&given, 4) }));
 }
 
-/// New: which items stay in a directory OneDrive does not have, when it gives up its
+/// Which items stay in a directory OneDrive does not have, when it gives up its
 /// binding, is read off their rows: one the two sides agreed on in it goes first, unless
 /// its place here is to be sent into the directory again.
 #[test]
 fn a_directory_gives_up_its_binding_once_nothing_in_it_was_agreed_on_there() {
-    // A directory no listing told of (the map's E-rows have none; stage A's open case 1).
+    // A directory no listing told of.
     let never_listed = |number: i64, name: &str| {
         let mut directory = made_directory(number, ROOT, name);
         directory.onedrive_item = Some(reference(&format!("I{number}")));
@@ -505,8 +485,8 @@ fn a_directory_gives_up_its_binding_once_nothing_in_it_was_agreed_on_there() {
     assert_eq!((answer(&given, 4), answer(&given, 2)), (waits_for(3), waits_for(4)));
 }
 
-/// Open: an item OneDrive has that was moved here into a directory that is left here. The
-/// design has no case; the directory is never in OneDrive.
+/// Open: an item OneDrive has that was moved here into a directory that is left here; the
+/// directory is never in OneDrive.
 ///
 /// - Reading 1 (implemented): the move waits for the user, as for a directory that is not
 ///   in OneDrive (`Reason::Parent`).
@@ -520,7 +500,7 @@ fn open_an_item_moved_here_into_a_directory_that_is_left_here_waits_for_the_user
     assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::User(Reason::Parent)));
 }
 
-/// New: a name of OneDrive is asked whether it can be a directory entry before the folder
+/// A name of OneDrive is asked whether it can be a directory entry before the folder
 /// takes it, and so is every directory above an item (`placement` does not say it).
 #[test]
 fn an_item_of_onedrive_in_a_directory_whose_name_the_folder_cannot_hold_is_not_shown() {
@@ -531,8 +511,8 @@ fn an_item_of_onedrive_in_a_directory_whose_name_the_folder_cannot_hold_is_not_s
 
 // -- the answer
 
-/// The design's "for an item it needs and was not given, the function answers 'waits for
-/// that item', and the caller widens the set".
+/// For an item it needs and was not given, the plan answers that it waits for that item,
+/// and the caller widens the set (`docs/design/sync.md` §6.1).
 #[test]
 fn an_item_that_waits_for_an_item_that_was_not_given_says_which() {
     let given = input(vec![made_file(2, id(9), "a.txt"), listed(3, ItemKind::File, id(8), "b.txt"), synced_directory(4, ROOT, "d"), made_file(5, id(4), "c.txt")]);
@@ -553,7 +533,7 @@ fn an_item_in_the_root_whose_row_was_not_given_waits_for_the_root() {
     assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::ItemNotGiven(ROOT)));
 }
 
-/// The brief: the next steps that can run now, oldest `unsent_since` first. What OneDrive
+/// The next steps that can run now, oldest `unsent_since` first. What OneDrive
 /// changed has no stamp, and goes after what is unsent, in the order it was given.
 #[test]
 fn the_steps_are_in_the_order_the_items_came_to_be_unsent() {
@@ -579,7 +559,7 @@ fn a_wait_that_nothing_ends_is_a_fault_the_plan_says() {
     assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::Listing));
 }
 
-/// The brief's §5, 6: what cannot be judged while no listing is under way is a fault of
+/// What cannot be judged while no listing is under way is a fault of
 /// the rows that a full listing mends, not a wait.
 #[test]
 fn an_item_that_cannot_be_judged_while_no_listing_is_under_way_needs_a_full_listing() {
@@ -612,9 +592,9 @@ fn a_plan_in_which_nothing_can_run_says_why() {
     });
 }
 
-// -- the findings of the review of part 3
+// -- directory removals and names, against what a step is running for
 
-/// The second review's S1: between two items OneDrive lists, OneDrive has judged — also
+/// Between two items OneDrive lists, OneDrive has judged — also
 /// where one of them is renamed here. Two files OneDrive has in one directory under names
 /// that fold to one; one is renamed here within that fold, to the other's name in another
 /// letter case, or only to another case of its own. Its move is sent: it has a name of
@@ -635,7 +615,7 @@ fn an_item_renamed_within_the_names_onedrive_keeps_apart_is_sent() {
     assert_eq!(answer(&given, 2), folder_step(FolderStep::RenameToConflictCopy { item: versions(&given, 2), name: "\u{c9}CLAIR-pc".into() }));
 }
 
-/// The review's M1, new: a directory removed here that OneDrive has in a directory removed
+/// A directory removed here that OneDrive has in a directory removed
 /// here sends no removal of its own, whatever is answered for the outer one; what was
 /// moved out of it is sent first, and the outer one's removal is the one removal.
 #[test]
@@ -667,7 +647,7 @@ fn a_directory_removed_here_in_a_removed_directory_sends_no_removal_of_its_own()
     assert_eq!(answer(&given, 3), waits_for(2));
 }
 
-/// M1's condition, new: a directory's removal is not sent while a step is running for
+/// A directory's removal is not sent while a step is running for
 /// anything OneDrive has below it, at any depth, though the folder does not show it.
 #[test]
 fn the_removal_of_a_directory_waits_for_a_step_running_for_what_onedrive_has_below_it() {
@@ -678,7 +658,7 @@ fn the_removal_of_a_directory_waits_for_a_step_running_for_what_onedrive_has_bel
     assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::RunningStep));
 }
 
-/// The review's S2, new: while a listing is under way the rows are behind OneDrive, and no
+/// While a listing is under way the rows are behind OneDrive, and no
 /// directory's removal is sent.
 #[test]
 fn the_removal_of_a_directory_waits_for_a_listing_under_way_to_end() {
@@ -694,7 +674,7 @@ fn cannot_be_shown(mut given: SyncPlanInput, numbers: &[i64]) -> SyncPlanInput {
     given
 }
 
-/// The review's M2, the brief's §7: a new item here at the name of an item of OneDrive the
+/// A new item here at the name of an item of OneDrive the
 /// folder cannot show is not merged with it; OneDrive holds the name, so the local one is
 /// renamed to a conflict copy's name, and then sent as new.
 #[test]
@@ -707,7 +687,7 @@ fn a_new_item_at_the_name_of_an_item_the_folder_cannot_show_is_renamed_to_a_conf
     assert_eq!(answer(&given, 3), folder_step(FolderStep::RenameToConflictCopy { item: versions(&given, 3), name: "a-pc.txt".into() }));
 }
 
-/// M2, the brief's §7: what the user made, or moved here, in a directory OneDrive has
+/// What the user made, or moved here, in a directory OneDrive has
 /// where the folder cannot show it is not sent into it and waits for the user; and that
 /// directory does not leave the folder while the folder shows in it something unsent. An
 /// item both sides agreed on there, changed here, has its content sent where OneDrive has
@@ -733,7 +713,7 @@ fn what_the_user_made_in_a_directory_the_folder_cannot_show_waits_for_the_user_a
     assert_eq!(answer(&listing, 4), Answer::Wait(WaitReason::Listing));
 }
 
-/// The review's M3, the brief's §7: two items OneDrive lists in one directory under names
+/// Two items OneDrive lists in one directory under names
 /// that fold to one and are not the same bytes are two items once no listing is under
 /// way, and both are shown, each under its own name. The same bytes on two rows stay a
 /// fault that a full listing mends.
@@ -750,7 +730,7 @@ fn two_items_onedrive_lists_under_names_that_fold_to_one_are_both_shown() {
     assert_eq!(answer(&given, 3), Answer::OtherFault(PlanFault::FullListingNeeded(id(3))));
 }
 
-/// The review's S7, new: a directory whose answer is made from what is in it, given
+/// A directory whose answer is made from what is in it, given
 /// without all of it, says so, and is not planned from what was given.
 #[test]
 fn a_directory_given_without_all_that_is_in_it_says_so() {
@@ -776,7 +756,7 @@ fn a_directory_given_without_all_that_is_in_it_says_so() {
     assert_eq!(answer(&given, 3), onedrive_step(OneDriveStep::SendNewFile { item: versions(&given, 3), parent: reference("I2"), name: "new.txt".into() }));
 }
 
-/// The review's S8 (stage C's 0.3, reading 2), new: when an item's place waits for the
+/// When an item's place waits for the
 /// user, its content is still decided by the content table.
 #[test]
 fn the_content_of_an_item_whose_place_waits_for_the_user_is_still_decided() {
@@ -808,7 +788,7 @@ fn the_content_of_an_item_whose_place_waits_for_the_user_is_still_decided() {
     assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::User(Reason::OpenForWriting)));
 }
 
-/// The class behind M1 (the review's S9), new: a new item here is not merged with a new
+/// A new item here is not merged with a new
 /// item of OneDrive a step is running for; it waits for that step.
 #[test]
 fn a_new_item_is_not_merged_with_an_item_a_step_is_running_for() {
@@ -820,7 +800,7 @@ fn a_new_item_is_not_merged_with_an_item_a_step_is_running_for() {
 
 // -- what the steps remember, and what the check at start left
 
-/// New, from the review of the callers: what the steps remember of an item is told to the
+/// What the steps remember of an item is told to the
 /// plan, so that an item held by it answers a wait, and what is behind it waits for it. An
 /// item whose next try is later waits until then, with the reason of its last failure, in
 /// place of any step towards OneDrive; once that time has come it is sent.
@@ -838,7 +818,7 @@ fn an_item_whose_next_try_is_later_waits_until_then() {
     assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 4) }));
 }
 
-/// New, as above: an item OneDrive refuses for good, or that is too big for the space
+/// An item OneDrive refuses for good, or that is too big for the space
 /// OneDrive has, waits for the user with that reason in place of any step towards OneDrive.
 #[test]
 fn an_item_whose_sending_onedrive_refused_waits_for_the_user() {
@@ -850,7 +830,7 @@ fn an_item_whose_sending_onedrive_refused_waits_for_the_user() {
     assert_eq!(answer(&given, 5), folder_step(FolderStep::MoveItem { item: versions(&given, 5) }));
 }
 
-/// New, as above: nothing of an item the check of the backing directory at start could not
+/// Nothing of an item the check of the backing directory at start could not
 /// decide is sent or taken: it waits for a check that decides, and so does what is behind
 /// it. The removal of a directory does not take such an item with it.
 #[test]
@@ -874,7 +854,7 @@ fn an_item_the_check_at_start_left_is_not_planned() {
 /// Found by the larger convergence run (seed 310, the caller's facts drawn): a file both
 /// sides agreed on, changed here and moved here within a directory the folder cannot show,
 /// which OneDrive moved too. Its place waits for the user; its content is sent where
-/// OneDrive has it, as for any item the folder cannot show (the brief's §7, M2).
+/// OneDrive has it, as for any item the folder cannot show.
 #[test]
 fn the_content_of_a_file_the_folder_cannot_show_whose_place_waits_for_the_user_is_sent() {
     let file = with_content_here(moved_in_onedrive(moved_here(synced_file(4, id(2), "c.txt"), id(3), "A"), id(2), "d"), written_here());
@@ -886,8 +866,8 @@ fn the_content_of_a_file_the_folder_cannot_show_whose_place_waits_for_the_user_i
     assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::User(Reason::Parent)));
 }
 
-/// Found by the larger convergence run (seed 12, the caller's facts drawn), the class of
-/// the review's M1: a step that is running sends an item into a directory — a move, a new
+/// Found by the larger convergence run (seed 12, the caller's facts drawn): a step that
+/// is running sends an item into a directory — a move, a new
 /// file, a new directory. The rows do not say so until its commit, and the removal of that
 /// directory, or of one above it, would take the item with it: it waits for that step.
 #[test]
@@ -905,7 +885,7 @@ fn the_removal_of_a_directory_waits_for_a_running_step_that_sends_an_item_into_i
     assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendDirectoryRemoval { item: versions(&given, 2), below: vec![versions(&given, 3)] }));
 }
 
-/// New, with the tries of the steps towards the folder kept by the caller: such a step
+/// With the tries of the steps towards the folder kept by the caller, such a step
 /// whose own next try is later waits until then, with the reason of its last failure, and
 /// what is behind it waits for it; once that time has come it is planned again. A try of
 /// another step of the item holds nothing: the try of a move does not hold the taking of

@@ -88,7 +88,7 @@ fn each_case_of_a_reading_is_enough_or_reads_more() {
     assert_eq!(decide_window(4, wider, WindowReading { unsent_read: 6, is_unsent_read_whole: true, unsent_waiting_for_user: 5, ..reading }), WindowDecision::Enough, "no more unsent items are there");
 }
 
-/// The review's S9: a window full of unsent items that cannot be sent, a step of another
+/// A window full of unsent items that cannot be sent, a step of another
 /// kind planned, and a newer unsent item beyond the window.
 #[test]
 fn unsent_items_that_wait_for_the_user_do_not_hold_the_window_while_another_step_is_planned() {

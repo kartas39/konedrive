@@ -129,7 +129,8 @@ pub enum OneDriveStep {
     /// the name as for a directory.
     SendNewFile { item: ItemVersions, parent: OneDriveItemReference, name: OsString },
     /// The content of a file OneDrive has, changed here, is sent into that item where
-    /// OneDrive has it, guarded by the eTag. No name and no directory is sent.
+    /// OneDrive has it, guarded by the cTag of the content OneDrive has as the row knows it
+    /// (`docs/design/writes.md` §4.2). No name and no directory is sent.
     SendContent { item: ItemVersions },
     /// A move or a rename made here is sent, guarded by the eTag: the item goes into the
     /// directory `parent` under `name`. The name is the local one, or a temporary name items

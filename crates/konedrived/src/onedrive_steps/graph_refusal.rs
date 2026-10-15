@@ -2,9 +2,8 @@
 //!
 //! **State owned:** none: one pure function.
 //!
-//! **Answers for:** design §7, "a step that OneDrive refuses decides nothing". Today's
-//! `outcome_of` (`upload/engine/outcome.rs:133`) and `Sent::refused`
-//! (`upload/content.rs:110`), with the outcome typed and nothing written.
+//! **Answers for:** a step that OneDrive refuses decides nothing (`docs/design/sync.md`
+//! §7.3): the outcome typed, and nothing written.
 //!
 //! **Tested without the rest**, a test per case of `WriteError`:
 // test: a_409_a_412_a_404_and_a_gone_session_are_the_steps_to_look_at
@@ -54,8 +53,7 @@ pub(crate) enum RefusedRequest {
 /// account `SignedOut`, and a `Transient` or `Failed` whose status is any other 4xx but
 /// 408 (a token Graph rejects, a 405…) `Transient { detail }` — each a certain
 /// answer that the request changed nothing. The
-/// text of a lost answer is kept without any address in it (`engine/outcome.rs:158`,
-/// `without_urls`).
+/// text of a lost answer is kept without any address in it (`without_urls`).
 pub(crate) fn decide_refusal(error: &WriteError) -> RefusedRequest {
     match error {
         WriteError::Changed => RefusedRequest::Changed,

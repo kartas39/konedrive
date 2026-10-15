@@ -11,7 +11,7 @@ fn a_name_nothing_else_has_or_wants_is_free() {
     assert_eq!(decide_name_contest(&claim(&made_file(2, ROOT, "a.txt"), None)), NameContestOutcome::NameIsFree);
 }
 
-/// The design's "what frees a name goes before what takes it", towards OneDrive.
+/// What frees a name goes before what takes it, towards OneDrive (`docs/design/sync.md` §6.4).
 #[test]
 fn an_item_waits_for_the_holder_that_leaves_the_name() {
     let new = made_file(2, ROOT, "a.txt");
@@ -20,7 +20,7 @@ fn an_item_waits_for_the_holder_that_leaves_the_name() {
     assert_eq!(decide_name_contest(&NameClaim { is_left_here: true, ..claim(&new, Some(NameHolder::Leaves(id(3)))) }), NameContestOutcome::NameIsFree);
 }
 
-/// The design's "two local items, one name for OneDrive".
+/// Two local items, one name for OneDrive (`docs/design/sync.md` §6.5).
 #[test]
 fn the_later_of_two_items_of_the_folder_steps_aside() {
     let new = made_file(3, ROOT, "A.txt");
@@ -28,7 +28,7 @@ fn the_later_of_two_items_of_the_folder_steps_aside() {
     assert_eq!(decide_name_contest(&NameClaim { has_earlier_rival: true, ..claim(&new, Some(NameHolder::Leaves(id(4)))) }), NameContestOutcome::StepsAside);
 }
 
-/// The design's "a new item here and a new one in OneDrive of one name".
+/// A new item here and a new one in OneDrive of one name (`docs/design/sync.md` §6.5).
 #[test]
 fn two_new_directories_and_two_new_files_of_one_hash_are_one_item() {
     let onedrive_directory = listed(3, ItemKind::Directory, ROOT, "d");
@@ -62,7 +62,7 @@ fn an_item_steps_aside_for_a_holder_that_stays_and_is_not_one_item_with_it() {
     assert_eq!(decide_name_contest(&NameClaim { is_left_here: true, ..claim(&left_here, Some(NameHolder::Stays(&onedrive_directory))) }), NameContestOutcome::StepsAside);
 }
 
-/// The design's "while a listing is being written": two rows may say one name on the
+/// While a listing is being written, two rows may say one name on the
 /// OneDrive side, and a later page may move the holder away.
 #[test]
 fn nothing_is_decided_against_a_holder_that_stays_while_a_listing_is_under_way() {
@@ -71,7 +71,7 @@ fn nothing_is_decided_against_a_holder_that_stays_while_a_listing_is_under_way()
     assert_eq!(decide_name_contest(&NameClaim { is_listing_under_way: true, ..claim(&new, Some(NameHolder::Stays(&onedrive_directory))) }), NameContestOutcome::WaitsForListing);
 }
 
-/// The design's "OneDrive is the judge": the plan's rule finds nothing under the name, and
+/// OneDrive is the judge (`docs/design/sync.md` §6.5): the plan's rule finds nothing under the name, and
 /// OneDrive answered that the name is taken.
 #[test]
 fn an_item_steps_aside_from_a_name_onedrive_answered_is_taken() {
@@ -86,7 +86,7 @@ fn an_item_steps_aside_from_a_name_onedrive_answered_is_taken() {
     assert_eq!(decide_name_contest(&NameClaim { is_answered_taken: true, ..claim(&new_directory, Some(NameHolder::Stays(&onedrive_directory))) }), NameContestOutcome::MergesWith(id(3)));
 }
 
-/// The review's M2, the brief's §7: nothing of the user's is one with an item the folder
+/// Nothing of the user's is one with an item the folder
 /// cannot show; OneDrive holds the name, so the local item steps aside.
 #[test]
 fn a_new_item_is_not_merged_with_an_item_the_folder_cannot_show() {
@@ -97,7 +97,7 @@ fn a_new_item_is_not_merged_with_an_item_the_folder_cannot_show() {
     assert_eq!(decide_name_contest(&NameClaim { is_listing_under_way: true, ..cannot_be_shown }), NameContestOutcome::WaitsForListing, "a page to come may say the folder can show it");
 }
 
-/// The class behind the review's M1: a holder a step is running for is waited for, not
+/// A holder a step is running for is waited for, not
 /// merged with and not stepped aside from; the plan made after that step decides.
 #[test]
 fn an_item_waits_for_a_holder_that_is_held_back() {
@@ -106,7 +106,7 @@ fn an_item_waits_for_a_holder_that_is_held_back() {
     assert_eq!(decide_name_contest(&NameClaim { is_left_here: true, ..claim(&new, Some(NameHolder::IsHeldBack(id(3)))) }), NameContestOutcome::NameIsFree);
 }
 
-/// The second review's S1: OneDrive has the claimant under a name of this fold already,
+/// OneDrive has the claimant under a name of this fold already,
 /// beside the holder. It has judged: the two are kept apart, whatever the plan's rule for
 /// comparing names says, once no listing is under way. An answer of OneDrive that the name
 /// is taken overrules that, as it overrules the rule.

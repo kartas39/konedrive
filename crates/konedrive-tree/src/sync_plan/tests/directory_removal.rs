@@ -1,6 +1,6 @@
 //! A directory that was removed here: its removal is sent on a positive condition — all the
-//! rows say OneDrive has below it was shown here and removed here by the user (the design's
-//! §6, the cell "removed here, is there in OneDrive"; the brief's §8). Otherwise the removal
+//! rows say OneDrive has below it was shown here and removed here by the user
+//! (`docs/design/sync.md` §6.4). Otherwise the removal
 //! is of the folder alone. And a directory the folder cannot show, which is in the folder
 //! only because it holds the user's own: nothing of its place is sent.
 
@@ -39,7 +39,7 @@ fn the_removal_of_a_directory_is_of_the_folder_alone_when_onedrive_has_in_it_wha
     assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 4) }));
 }
 
-/// The second review's M1, as rows: `d` cannot be shown and was kept in the folder for the
+/// `d` cannot be shown and was kept in the folder for the
 /// user's own; the plan itself took `f` off the folder (its row is that of an item the
 /// folder never showed); the user removed their own and `d`. Nothing is removed from
 /// OneDrive: the directory forgets, and both are items OneDrive has that the folder cannot
@@ -89,8 +89,8 @@ fn a_directory_removed_with_all_in_it_inside_one_that_is_of_the_folder_alone_is_
     assert_eq!(answer(&given, 5), waits_for(4));
 }
 
-/// The design's "a directory removed here, something changed below it in OneDrive: the
-/// removal is sent and stands" (stage B's B4c), beside the rule: what was shown here and
+/// A directory removed here, something changed below it in OneDrive: the removal is sent
+/// and stands, beside the rule: what was shown here and
 /// removed here stays removed where OneDrive renamed it or moved it within the directory
 /// since. A file's own removal is sent then too.
 #[test]
@@ -105,7 +105,7 @@ fn the_removal_of_a_directory_stands_for_what_was_shown_and_removed_here_and_one
     assert_eq!((answer(&given, 3), answer(&given, 4), answer(&given, 5)), (waits_for(2), waits_for(2), waits_for(2)), "none comes back, none has a removal of its own");
 }
 
-/// The third review's S3: a content OneDrive changed is never removed with a directory. A
+/// A content OneDrive changed is never removed with a directory. A
 /// file that was removed here and whose content OneDrive changed since comes back by the
 /// file's own cell; below a directory that was removed here — it was in it, or OneDrive
 /// moved it there — it makes that removal one of the folder alone, as what the folder
@@ -156,7 +156,7 @@ fn a_removed_directory_waits_for_what_is_held_back_below_it_before_it_forgets() 
     assert_eq!(answer(&given, 2), waits_for(3));
 }
 
-/// The second review's M1, the rename: a directory the folder cannot show is in the folder
+/// A directory the folder cannot show is in the folder
 /// only because it holds the user's own. Renamed here, its move is not sent: it waits for
 /// what the folder shows in it, which waits for the user, and goes once that is out of it.
 #[test]

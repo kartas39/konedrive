@@ -281,8 +281,8 @@ impl SyncService {
         Ok(())
     }
 
-    /// A cycle now, if a OneDrive folder is syncing (the network came back). A read-write
-    /// folder's upload queue waits for that cycle (`docs/design/writes.md` §9).
+    /// A cycle now, if a OneDrive folder is syncing (the network came back); the plan's
+    /// task is woken too.
     pub(crate) fn refresh_now(&self) {
         if self.nudge() {
             if let Some(parts) = self.view().parts {

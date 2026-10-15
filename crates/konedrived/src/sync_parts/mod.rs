@@ -4,17 +4,10 @@
 //! ([`sending_holds`]), whether OneDrive has space ([`onedrive_space`]) and the folder's lease
 //! ([`lease`]).
 
-// No caller until the owner of a folder's state starts a sync through `sync_tasks`.
 pub(crate) mod lease;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod onedrive_space;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod published_plan;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod running_steps;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod sending_holds;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod step_outcome;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod sync_plan_wake;

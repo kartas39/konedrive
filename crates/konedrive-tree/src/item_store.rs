@@ -547,7 +547,7 @@ fn move_item(tx: &Transaction<'_>, item: LocalItemId, place: &ItemPlace, is_name
 }
 
 /// `replacing` has the place of `replaced`, which leaves the folder. What becomes of the
-/// two bindings is a case of what the two items are, as today's rename records it:
+/// two bindings is a case of what the two items are, as a rename records it:
 ///
 /// - *The replaced item is not in OneDrive*: its row goes, and nothing of it is left.
 /// - *A file that is not in OneDrive over a file that is*: a program saved the file by a

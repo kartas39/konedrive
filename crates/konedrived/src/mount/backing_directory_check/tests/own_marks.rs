@@ -55,7 +55,7 @@ fn the_entry_of_an_item_onedrive_never_had_keeps_whatever_marks_it_has() {
     assert_eq!(f.rows(), before);
 }
 
-/// Review 3, M2: the marks are the file's, not the name's.
+/// The marks are the file's, not the name's.
 #[test]
 fn the_marks_of_a_file_with_a_second_name_are_left_and_a_second_check_writes_nothing() {
     let mut f = folder_of_each();

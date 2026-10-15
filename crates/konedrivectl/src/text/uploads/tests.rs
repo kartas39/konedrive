@@ -75,7 +75,7 @@ fn waiting_for_space_is_one_line_and_too_big_says_what_it_needs() {
     assert_eq!(quota_text("", 0, false), "");
 }
 
-/// Quality finding `UP3`: every reason the worker's table gained has its sentence, and one
+/// Every reason of the settlement's table has its sentence, and one
 /// with a detail behind it keeps the detail.
 #[test]
 fn the_reasons_the_worker_writes_have_sentences() {
@@ -139,7 +139,7 @@ fn spelled(reason: &Reason) -> (&'static str, bool) {
     }
 }
 
-/// Quality finding `X1`: the spellings stored in the upload queue and sent over
+/// The spellings stored in the store and sent over
 /// D-Bus are the contract with the database and with the window's and
 /// Dolphin's tables. Each one, written out here, is its variant's key and
 /// reads back as the variant; and `konedrivectl` words it, or shows it as

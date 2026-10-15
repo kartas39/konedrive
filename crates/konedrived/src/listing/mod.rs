@@ -3,9 +3,8 @@
 //! beside it ([`live`]), and what a listed item is in the store ([`classify`]).
 
 pub(crate) mod classify;
-// No caller until the owner of a folder's state starts a sync through `sync_tasks`.
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod listing_cycle;
+// Some of what it holds is called by its tests alone.
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod listing_poller;
 pub(crate) mod live;

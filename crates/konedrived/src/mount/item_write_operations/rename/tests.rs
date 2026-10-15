@@ -43,11 +43,11 @@ fn each_case_of_a_rename_is_decided() {
         assert_eq!(decide_rename(&RenameCase { displaced: Some(moved.clone()), ..case(moved.clone()) }), Ok(RenameDecision::Nothing), "the same place");
         assert_eq!(decide_rename(&RenameCase { displaced: Some(moved.clone()), mode: RenameMode::NoReplace, ..case(moved.clone()) }), Ok(RenameDecision::Nothing));
         // An item of OneDrive is moved as one that is not: also into a directory that is
-        // left here, where today it is `EXDEV`.
+        // left here, not refused `EXDEV`.
         assert_eq!(decide_rename(&RenameCase { is_new_name_ignored: true, ..case(bind(moved.clone())) }), Ok(RenameDecision::Move { item, is_name_ignored: true }));
     }
     assert_eq!(decide_rename(&RenameCase { moved: None, moved_path: None, ..case(file.clone()) }), Err(Errno::ENOENT), "nothing at the old place");
-    // Today's order: the new directory, the new name, then what moves.
+    // The order: the new directory, the new name, then what moves.
     assert_eq!(decide_rename(&RenameCase { moved: None, is_new_name_hidden: true, ..case(file.clone()) }), Err(Errno::EPERM));
     assert_eq!(decide_rename(&RenameCase { moved: None, new_directory: None, is_new_name_hidden: true, ..case(file.clone()) }), Err(Errno::ENOENT));
     // A directory into itself or below.
@@ -332,7 +332,7 @@ fn an_item_of_onedrive_moved_into_a_directory_that_is_left_here_is_taken() {
     operations.make("cache", MadeKind::Directory).unwrap();
     let copy = operations.fixture.show_onedrive_file("doc.txt", b"the copy").local_item_id;
     operations.fixture.land_copy(copy, b"the copy");
-    assert_eq!(operations.rename("doc.txt", "cache/doc.txt"), Ok(()), "today: EXDEV");
+    assert_eq!(operations.rename("doc.txt", "cache/doc.txt"), Ok(()));
     let row = operations.fixture.find_item(copy).unwrap();
     assert_eq!(operations.id("cache/doc.txt"), copy);
     assert_eq!(row.onedrive_item, Some(ItemFixture::onedrive_reference_of("doc.txt")), "it stays an item of OneDrive");

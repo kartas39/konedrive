@@ -1,10 +1,10 @@
-//! A fake OneDrive for the daemon's tests (`remote/`, `local/`, `account_folder/`, `upload/`) and the VM
+//! A fake OneDrive for the daemon's tests (`listing/`, `mount/`, `onedrive_steps/`, `account_folder/`) and the VM
 //! suite (built with `fault-injection`): an in-memory drive behind a
 //! wiremock server, answering the requests `DriveClient` makes as Graph
 //! documents them — `If-Match` on eTag or cTag, `409` on a name taken
 //! (without case), a folder's cTag changing with anything below it, deletes
 //! to a recycle bin, upload sessions with `Content-Range` — a new file's
-//! session holding its name with an empty placeholder until it completes or
+//! session holding its name with an empty file until it completes or
 //! is cancelled, as OneDrive's does. It serves the drive's notification
 //! endpoint and a local Engine.IO / Socket.IO websocket that sends a `notification` event
 //! whenever the drive changes. Never a real network.
@@ -118,7 +118,7 @@ pub struct Cloud {
     /// The `If-Match` of every request that had one: path, tag.
     pub(crate) guards: Vec<(String, String)>,
     /// Every item that changed, in order: the delta feed's cursor is a
-    /// position in it (the read-write reconcile), as Graph's is.
+    /// position in it, as Graph's is.
     changes: Vec<String>,
     /// Each delta answers the whole drive again, whatever its token: a feed
     /// that repeats what did not change (an opt-in; Graph may do it).
@@ -131,11 +131,11 @@ pub struct Cloud {
     /// requests are in flight together without changing what either answers.
     delays: Vec<(String, String, Duration, u32)>,
     /// When items were made (`createdDateTime`, Unix seconds): every
-    /// placeholder and every file a request made, at the wall clock; others
+    /// session's empty file and every file a request made, at the wall clock; others
     /// as a test sets them. None for an item not in it.
     pub(crate) created: HashMap<String, i64>,
-    /// A delete of a session's placeholder (`DELETE /items/{its id}`) is
-    /// refused `403` while set; otherwise it deletes the placeholder and ends
+    /// A delete of a session's empty file (`DELETE /items/{its id}`) is
+    /// refused `403` while set; otherwise it deletes the empty file and ends
     /// its session. What OneDrive does is unmeasured: both are
     /// modelled.
     pub(crate) refuse_placeholder_delete: bool,
@@ -284,7 +284,7 @@ impl Cloud {
         self.throttles.push((method.into(), fragment.into(), pass, seconds, times, 429));
     }
 
-    /// The names the open sessions' empty placeholders hold, `a/b/c` below
+    /// The names the open sessions' empty files hold, `a/b/c` below
     /// the root, sorted.
     #[cfg(test)]
     pub(crate) fn placeholders(&self) -> Vec<String> {
@@ -328,7 +328,7 @@ impl Cloud {
     }
 
     /// An upload session for a new file at (`parent`, `name`) opened by
-    /// another device (or abandoned by an older version): its placeholder
+    /// another device (or abandoned by an older version): its empty file
     /// holds the name, and nothing of this folder knows it — made `age`
     /// seconds ago. Its id.
     #[cfg(test)]
@@ -363,7 +363,7 @@ impl Cloud {
         self.log.iter().filter(|(m, p)| m == method && p.contains(fragment)).count()
     }
 
-    /// The delta feed as the drive is now (the read-write reconcile's cycles): every item, and
+    /// The delta feed as the drive is now (the listing's cycles): every item, and
     /// what went to the recycle bin as deleted — a feed may repeat what did
     /// not change, and the store takes an entry for what it holds already as
     /// no change. One page, ending with a delta link.
@@ -510,7 +510,7 @@ impl Cloud {
                 self.placeholders.remove(*sid);
                 ResponseTemplate::new(204)
             }
-            // the read-write reconcile's cycles: the account's drive, the delta feed, the bytes.
+            // the listing's cycles: the account's drive, the delta feed, the bytes.
             ("GET", ["me", "drive"]) => match self.free {
                 Some(free) => ResponseTemplate::new(200).set_body_json(json!({
                     "id": "D",
@@ -769,7 +769,7 @@ impl Cloud {
                 return error(404, "itemNotFound");
             }
         }
-        // The session's own placeholder becomes the file.
+        // The session's own empty file becomes the file.
         self.placeholders.remove(sid);
         match self.land(&session.target, session.data, session.mtime) {
             Ok((status, id)) => self.answer(status, &id),

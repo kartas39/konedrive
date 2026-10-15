@@ -78,7 +78,7 @@ fn a_confirmation_that_cannot_be_is_refused_and_raises_no_count() {
     assert_eq!(every_row(&mut store), rows);
 }
 
-/// N8 of the second review. A confirmation says nothing of the MIME type OneDrive gives
+/// A confirmation says nothing of the MIME type OneDrive gives
 /// for the content, which follows the name and the content: the one the row had is taken
 /// away, and the next listing writes the one OneDrive has.
 #[test]

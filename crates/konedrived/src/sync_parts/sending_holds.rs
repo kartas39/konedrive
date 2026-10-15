@@ -5,17 +5,17 @@
 //! the account not being allowed to write, the folder being read-only, the pause, OneDrive's throttle with its end,
 //! the first listing of this run not having ended. Each is set and cleared by its own
 //! cause, through the functions here, and every change wakes the plan
-//! (`WakeCause::SendingHoldChanged`); none is stored (as today: `engine/state.rs`,
-//! `Throttle`, `Trouble`, `Cycle`). It is here, below the plan's task, because an upload
+//! (`WakeCause::SendingHoldChanged`); none is stored. It is here, below the plan's task, because an upload
 //! reads it between two fragments and must not know the task. Whether OneDrive is full
 //! is NOT here: that is `OneDriveSpace`'s, and holds content alone.
 //!
-//! **Answers for:** design §7's third source of what the window shows — "paused, signed
-//! out, held back by OneDrive" — and that no step towards OneDrive, and no download of a
+//! **Answers for:** the third source of what the bus shows of what waits — paused, signed
+//! out, held back by OneDrive (`docs/design/writes.md` §6.1, §7) — and that no step
+//! towards OneDrive, and no download of a
 //! pinned file, starts or goes on meanwhile. Steps towards the folder and of the rows are
 //! never held by it.
 //!
-//! **Tested without the rest** (today's `engine/state/tests.rs` are the reference):
+//! **Tested without the rest:**
 // test: a_time_onedrive_named_beats_one_that_was_chosen_and_the_later_of_two_stands
 // test: with_no_time_named_the_wait_doubles_from_ten_seconds_to_an_hour
 // test: a_step_that_went_through_ends_the_chosen_wait
@@ -54,7 +54,7 @@ pub(crate) enum SendingHold {
     /// OneDrive asked to wait, until this time.
     Throttled { until: i64 },
     /// No listing of this run of the sync has ended yet: nothing is sent on rows a
-    /// stopped daemon left behind OneDrive (as today: `engine.rs`, `Cycle`).
+    /// stopped daemon left behind OneDrive.
     FirstListingNotEnded,
 }
 
@@ -220,8 +220,8 @@ impl SendingHolds {
         self.change(|holds| holds.is_folder_read_only = is_read_only);
     }
 
-    /// OneDrive throttled a step, naming `retry_after` or nothing: today's rules
-    /// (`engine/state.rs:42`, `Throttle::refused`).
+    /// OneDrive throttled a step, naming `retry_after` or nothing (`docs/design/writes.md`
+    /// §6.2).
     pub fn throttle(&self, retry_after: Option<Duration>, now: i64) {
         self.change(|holds| holds.throttle(retry_after, now));
     }

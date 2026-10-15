@@ -1,6 +1,6 @@
 //! The task of a folder's sync plan: the loop that reads what differs, makes the plan,
-//! runs its steps and settles what came of each. One per folder, in either access mode,
-//! in place of the plan's task and of the reconcile.
+//! runs its steps and settles what came of each. One per folder, in either access mode
+//! (`docs/design/sync.md` §8).
 //!
 //! **State owned:** the loop, with the steps of the last plan that are not started yet,
 //! the count of events logged since the last listing ended, and the failed tries of the
@@ -338,8 +338,7 @@ pub(crate) fn decide_progress_tick(running: &[RunningStep], now: i64) -> Option<
 /// clean in OneDrive (`next_cleaning_try`: a cancel, a removal, a request record that
 /// could not be read) while it is still to come — one that is due is asked by the round
 /// that is being made; `None` when nothing is due.
-/// Never sooner than a second from `now`. Pure. Today's `Engine::next_due`
-/// (`upload/engine.rs:480`).
+/// Never sooner than a second from `now`. Pure.
 pub(crate) fn decide_next_wake(plan: &SyncPlan, hold_end: Option<i64>, next_quota_read: Option<i64>, next_cleaning_try: Option<i64>, now: i64) -> Option<i64> {
     let waits = plan.waits.iter().filter_map(|wait| if let WaitReason::Time { until, .. } = wait.reason { Some(until) } else { None });
     waits.chain(hold_end).chain(next_quota_read).chain(next_cleaning_try.filter(|at| *at > now)).min().map(|soonest| soonest.max(now.saturating_add(1)))
@@ -836,8 +835,8 @@ impl SyncPlanTask {
 
     /// Starts the `ShowItem` steps of one plan as ONE task: every item marked running,
     /// `StepRunners::run_show_steps`, each outcome handed to the loop. (Whose a listed
-    /// file at a place of this folder's own opening is, is not asked here: nobody calls
-    /// the owner decided that no layer asks: a file uploaded and then removed here whose
+    /// file at a place of this folder's own opening is, is not asked here: no layer asks:
+    /// a file uploaded and then removed here whose
     /// confirmation was lost is shown again as any item of OneDrive's.)
     fn start_show_steps(self: &Arc<Self>, steps: Vec<SyncStep>) {
         let mut started = Vec::new();

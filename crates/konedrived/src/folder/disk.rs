@@ -8,7 +8,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
-/// Where misplaced items wait during a reconcile.
+/// The holding directory of an older konedrive: a folder that holds one is not mounted,
+/// and the mount hides the name (`docs/design/mount.md` §3.1).
 pub(crate) const HOLDING: &str = ".konedrive-holding";
 /// A new folder's name until it is labelled and marked.
 pub const NEW_PREFIX: &str = ".konedrive-new-";
@@ -63,7 +64,7 @@ impl Modes {
 #[cfg(test)]
 mod tests;
 
-// ---- The names of the mount over the rows: no caller until the mount reads the rows. ----
+// ---- The names of the mount over the rows. ----
 //
 // Two rules, with two questions, because the two kinds of name need OPPOSITE answers from
 // the check of the backing directory at start. Tested without the rest:
@@ -75,13 +76,11 @@ mod tests;
 /// How the name begins that an entry of the backing directory is set aside to, in the root,
 /// before it is removed for good (`mount::place_changes`, `PlaceChange::set_aside`): an
 /// entry NO row says. After it comes the local item id of the item the entry was of.
-#[allow(dead_code)]
 pub(crate) const ASIDE_ENTRY_PREFIX: &str = ".konedrive-aside-";
 
 /// How the temporary name of an exchange of names begins
 /// (`konedrive_tree::make_temporary_name`): the place of a ROW, with its file or directory
 /// on disk under that name.
-#[allow(dead_code)]
 pub(crate) const TEMPORARY_NAME_PREFIX: &str = ".konedrive-swap-";
 
 /// The name the entry of `item` is set aside to: made of the local item id, which is never
@@ -89,7 +88,6 @@ pub(crate) const TEMPORARY_NAME_PREFIX: &str = ".konedrive-swap-";
 /// has one entry set aside at most (one step per item, under the tree lock); a leftover
 /// of a death is put back by the check at start from the record of the change, and what
 /// is still set aside after it removed (`PlaceChanges::remove_aside_entries`).
-#[allow(dead_code, unused_variables)]
 pub(crate) fn make_aside_entry_name(item: konedrive_tree::LocalItemId) -> std::ffi::OsString {
     format!("{ASIDE_ENTRY_PREFIX}{item}").into()
 }
@@ -100,7 +98,6 @@ pub(crate) fn make_aside_entry_name(item: konedrive_tree::LocalItemId) -> std::f
 /// `PlaceChanges::remove_aside_entries` cleans of the last kind once the check has put
 /// back what a death left. A temporary name is NOT among them: it is a row's place, and
 /// skipping it would make the check find the row's file gone.
-#[allow(dead_code, unused_variables)]
 pub(crate) fn is_rowless_entry_name(name: &OsStr) -> bool {
     daemon_owned(name) || name.as_bytes().starts_with(ASIDE_ENTRY_PREFIX.as_bytes())
 }
@@ -109,7 +106,6 @@ pub(crate) fn is_rowless_entry_name(name: &OsStr) -> bool {
 /// rename `EPERM`): every entry no row says ([`is_rowless_entry_name`]), and a temporary
 /// name of an exchange. Asked by the mount's lookup, directory readings, make and rename,
 /// and by the queue's answers, which show no such row.
-#[allow(dead_code, unused_variables)]
 pub(crate) fn is_hidden_name(name: &OsStr) -> bool {
     is_rowless_entry_name(name) || name.as_bytes().starts_with(TEMPORARY_NAME_PREFIX.as_bytes())
 }

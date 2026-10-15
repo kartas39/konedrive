@@ -1,6 +1,6 @@
 //! A folder served as a FUSE mount over the rows: the holder of the mount's parts, what
-//! it is made with, and the parts it hands to the folder's sync. What `mount` is today
-//! over the directory contents and the upload queue.
+//! it is made with, and the parts it hands to the folder's sync (`docs/design/mount.md`
+//! §2.1).
 //!
 //! **State owned:** the session and its connection, whether the mount was stopped, and
 //! the parts, each of which owns its own state. [`ItemMount`] holds them, calls them in
@@ -159,7 +159,7 @@ struct ServedSession {
     interruptible_reads: Arc<InterruptibleReads>,
 }
 
-/// How many threads answer the kernel's requests of one mount, as today.
+/// How many threads answer the kernel's requests of one mount (`docs/design/mount.md` §2.1).
 const SESSION_THREADS: usize = 4;
 
 /// Takes a served mount off `folder` and waits for its session; from then on the daemon
@@ -308,7 +308,7 @@ impl ItemMount {
     /// (`ItemStore::rewrite_ignored_names` with `UploadRules::is_name_ignored`), as one
     /// job of the write-operation thread, so under the tree lock: no write operation
     /// gives a name its flag by the old list after it. The mount takes no change for the
-    /// one scan (reading 100 000 rows whole was measured at 0.02 s: design §13; only the
+    /// one scan (reading 100 000 rows whole was measured at 0.02 s; only the
     /// rows whose flag changes are written). How many rows changed. A mount that is
     /// stopped answers an error: its thread runs no job.
     pub(crate) async fn rewrite_ignored_names(&self) -> Result<u64, TreeError> {

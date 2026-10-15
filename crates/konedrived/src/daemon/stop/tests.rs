@@ -24,7 +24,7 @@ async fn a_stop_ends_as_soon_as_what_is_in_flight_finished() {
     assert_eq!(started.elapsed(), Duration::from_secs(2));
 }
 
-/// Quality finding `SY11`: a task the daemon needs for its whole life is seen to go,
+/// A task the daemon needs for its whole life is seen to go,
 /// whether it panicked or returned; one that may end by itself is passed over when it
 /// returns, and seen when it panics.
 #[tokio::test(start_paused = true)]

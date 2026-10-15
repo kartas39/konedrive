@@ -8,7 +8,7 @@
 //! lock, the local contents and the clock. What a step keeps between tries is the step
 //! memory's (`konedrive_tree::StepMemory`); which steps run is `RunningSteps`'.
 //!
-//! **Every step, in this order** (design §7):
+//! **Every step, in this order** (`docs/design/sync.md` §7, `docs/design/writes.md` §4):
 //!
 //! 1. takes what it sends from the versions it was planned from, never from the row as it
 //!    is when the request leaves: the place sent is the step's `parent` and `name`, the
@@ -27,7 +27,7 @@
 //!    and a temporary name — for `MakeDirectory`, `SendNewFile` and `SendMove` alike, whenever
 //!    `name` is not the name of the place of `item.local`:
 //!    `remember_temporary_name(item, TemporaryName { name, toward })`, `toward` that
-//!    local place (today `temporary`, `upload/steps/shared.rs:333`);
+//!    local place;
 //! 3. sends the request, with no lock held, and with a slot of the account's pool
 //!    (`DriveClient::pool`): `Class::Metadata` taken here for a step that sends no
 //!    content, held for its requests and let go before any wait; the upload's by
@@ -75,14 +75,13 @@
 //! by the plan's task from the answer (`sync_plan_task::step_settlement`), not
 //! here: one place counts tries.
 //!
-//! The requests are the upload worker's (design §11): each function names the function
-//! of today's worker it takes the request and its handling from, and the call of the
-//! Graph client under it (`crates/konedrive-graph/src/drive/`, here `G/`).
+//! Each function names the call of the Graph client it sends its request with
+//! (`crates/konedrive-graph/src/drive/`).
 //!
 //! **Tested without the rest**, over the fixture (`mount::item_fixture`: its store, its
-//! backing directory, its fake OneDrive) with `ItemContentFiles` made over it; today's
-//! upload tests are the reference for every scenario (`upload/tests/`), and the races'
-//! test of design §12 puts a death at every point between a request and its commit:
+//! backing directory, its fake OneDrive) with `ItemContentFiles` made over it, and the
+//! races' test (`docs/design/sync.md` §10) puts a death at every point between a request
+//! and its commit:
 // test: each_case_sends_the_request_of_its_planned_versions_and_commits_the_answer
 // test: a_request_is_guarded_by_the_etag_planned_from_else_the_synced_ctag_and_a_content_by_its_ctag
 // test: a_temporary_name_is_remembered_before_the_request_of_a_new_item_and_of_a_move
@@ -148,7 +147,7 @@ pub(crate) struct GraphAccess {
     pub(crate) drive: konedrive_graph::drive::DriveClient,
     /// The folder's drive: what an answer's item and parent are referenced in. The Graph
     /// client asks by item id in the account's own drive, and nothing of another drive is
-    /// ever shown (a shared folder; the map's RISK-1.r), so every reference a step meets
+    /// ever shown (a shared folder), so every reference a step meets
     /// is of this drive; a step whose reference names another is answered
     /// `StepFailure::AnswerUnreadable`, and nothing is sent.
     pub(crate) drive_id: konedrive_tree::DriveId,
@@ -205,8 +204,8 @@ fn describe_name_taken(item: &ItemVersions, name: &OsStr, holder_name: std::ffi:
 /// The runner of the steps towards OneDrive, for one folder.
 pub(crate) struct OneDriveSteps {
     graph: GraphAccess,
-    /// Held across each commit and nothing else (design §7: "its commit, under the
-    /// lock"): never across a request, a hash or a sync of a file.
+    /// Held across each commit and nothing else (`docs/design/sync.md` §7.1): never across
+    /// a request, a hash or a sync of a file.
     tree_lock: Arc<tokio::sync::Mutex<()>>,
     content_files: Arc<ItemContentFiles>,
     content_upload: ContentUpload,
@@ -398,10 +397,9 @@ impl OneDriveSteps {
     /// `MakeDirectory`: a directory made here is made in OneDrive in `parent` under
     /// `name`.
     ///
-    /// Request: today's `mkdir` (`upload/steps/meta.rs:19`), which calls `create_folder`
-    /// (`G/write.rs:120`). Answer: the made `driveItem` as a `ConfirmedItem`. 409: one
+    /// Request: `create_folder`. Answer: the made `driveItem` as a `ConfirmedItem`. 409: one
     /// read of the place (`LostAnswers::read_request_outcome` with
-    /// `SentRequest::MakeDirectory`; `meta.rs:33-36`): an EMPTY directory there that no
+    /// `SentRequest::MakeDirectory`): an EMPTY directory there that no
     /// row is bound to is this step's own earlier request, and is adopted (`WentThrough`);
     /// another item — a directory with something in it too: another client's, whose
     /// content no row knows — is `StepRefusal::NameTaken` with the name it has there
@@ -493,9 +491,7 @@ impl OneDriveSteps {
     /// First the content is opened (`ItemContentFiles::open_to_send`, off the runtime; a
     /// trouble of it is the outcome). Then an item an earlier upload of this item left
     /// with other content is removed, or adopted and committed as the upload
-    /// (`ContentUpload::remove_mismatched_item`; today `Job::clear_bad_item`,
-    /// `upload/content.rs:165`). Request: today's `Job::create`
-    /// (`upload/content.rs:200`) over `Job::send` (`upload/content/session.rs:127`):
+    /// (`ContentUpload::remove_mismatched_item`). Request:
     /// `ContentUpload::send_content` with `ContentTarget::NewFile`. Answer: a
     /// `SentContent`, its hash asked already. 409 (`SendContentError::NameExists`): the
     /// hash of the file is read (`LocalContentFile::hash`) and
@@ -586,16 +582,13 @@ impl OneDriveSteps {
     ///
     /// The content is opened as for a new file. Guarded by the cTag of the content OneDrive
     /// has (`confirmed_item::decide_content_guard`); an item with no guard is
-    /// `StepFailure::AnswerUnreadable`. Request: the
-    /// content half of today's `Job::update` (`upload/content.rs:326`, from
-    /// `:354`) over `Job::send`: `ContentUpload::send_content` with
-    /// `ContentTarget::ExistingItem { guard }` (`G/upload.rs:56`). The commit writes to
+    /// `StepFailure::AnswerUnreadable`. Request: `ContentUpload::send_content` with
+    /// `ContentTarget::ExistingItem { guard }`. The commit writes to
     /// the row that has the binding at the commit, which after a save-over is another
     /// local item id than the step's. Answer: a `SentContent`. What the upload decides
     /// itself and answers as the outcome: 412 — the hash sent, there already, is this
     /// step's own earlier upload and is answered as sent; anything else is
-    /// `ItemChanged`, and the next plan has the case as rows (today's `changed`,
-    /// `content.rs:388`, decided it in place) —, 404 `ItemGone`, 507 `NoSpace`.
+    /// `ItemChanged`, and the next plan has the case as rows —, 404 `ItemGone`, 507 `NoSpace`.
     /// Commit: `commit_send_content(item, sent, ended_session)`, which forgets the session
     /// it is told ended and the tries; then `mark_sent_file` and
     /// `OneDriveSpace::count_uploaded`. `RowsChanged` — the versions changed, no row has the
@@ -634,15 +627,13 @@ impl OneDriveSteps {
     /// `parent` under `name`, the local name or a temporary one.
     ///
     /// Step memory before the request: the record of the request, and, when `name` is a
-    /// temporary name, `remember_temporary_name` (today `temporary`,
-    /// `upload/steps/shared.rs:333`).
-    /// Request: today's `moved` (`upload/steps/meta.rs:61`), which calls `update_item`
-    /// (`G/write.rs:129`) with only what differs from where the row says OneDrive has the
+    /// temporary name, `remember_temporary_name`.
+    /// Request: `update_item` with only what differs from where the row says OneDrive has the
     /// item (`item.onedrive`'s place): the name when it is not `name`, the directory when
     /// the row bound to `parent` (`ItemReader::find_bound_item`, in the read before the
     /// request) is not that place's directory. When neither differs nothing is sent —
     /// the item is there already, an answer lost and the rows merged since
-    /// (`meta.rs:73`) —: the item is read (`item`, `G/mod.rs:217`) and committed as it
+    /// —: the item is read (`item`) and committed as it
     /// is. An item with no guard is `StepFailure::AnswerUnreadable`. Answer: the
     /// `driveItem` as a `ConfirmedItem`: the name Graph stored. 409: `NameTaken` with the
     /// holder's name as OneDrive spells it (`NameHolders::find_holder_name`) and the
@@ -650,7 +641,7 @@ impl OneDriveSteps {
     /// `name`); `Transient` when nothing holds the name by now. 412: the
     /// item is read once (`LostAnswers::read_request_outcome` with
     /// `SentRequest::SendMove`): there already under the place
-    /// sent is this step's own earlier request and is adopted (`meta.rs:100-104`);
+    /// sent is this step's own earlier request and is adopted;
     /// anything else is `ItemChanged`. 404: `ItemGone`, also when it is the directory
     /// sent into that is gone, which Graph answers alike: both ask for a cycle.
     /// Commit: `commit_send_move(item, parent, name, moved)`, which forgets the tries and
@@ -763,14 +754,11 @@ impl OneDriveSteps {
 
     /// `SendFileRemoval`: the removal of a file that was removed here is sent, guarded.
     ///
-    /// Request: today's `delete` (`upload/steps/meta.rs:196`), which calls `delete_item`
-    /// (`G/write.rs:140`), on record before it leaves. An item with no guard is
+    /// Request: `delete_item`, on record before it leaves. An item with no guard is
     /// `StepFailure::AnswerUnreadable`.
-    /// Answer: nothing. 404 is a confirmation: the item is gone
-    /// (`meta.rs:217`). 412: `ItemChanged`; the next plan has "OneDrive changed its
-    /// content: the item comes back" or "only moved it: the removal is sent" as rows,
-    /// with the eTag a listing wrote (today `file_changed`, `meta.rs:251`, read the item
-    /// and tried three times in place).
+    /// Answer: nothing. 404 is a confirmation: the item is gone. 412: `ItemChanged`; the
+    /// next plan has "OneDrive changed its content: the item comes back" or "only moved
+    /// it: the removal is sent" as rows, with the eTag a listing wrote.
     /// Commit: `commit_send_file_removal(item)`, which forgets what was kept for the
     /// request. `RowsChanged`: a listing cycle is asked for.
     async fn run_send_file_removal(&self, item: &ItemVersions) -> StepOutcome {
@@ -802,8 +790,7 @@ impl OneDriveSteps {
     /// `SendDirectoryRemoval`: the removal of a directory is sent, with no guard, as one
     /// removal of all OneDrive has in it.
     ///
-    /// Request: today's `delete_folder` (`upload/steps/meta.rs:275`), which calls
-    /// `delete_folder` (`G/write.rs:153`). 404 is a confirmation. BEFORE the request
+    /// Request: `delete_folder`. 404 is a confirmation. BEFORE the request
     /// leaves, under the tree lock, in one job of the store:
     /// `ItemStore::can_directory_removal_be_sent(item,
     /// below, items_with_running_step, destinations_of_running_steps)`, the two sets as

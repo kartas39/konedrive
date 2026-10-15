@@ -1,7 +1,7 @@
 //! The check of the backing directory at start ([`BackingDirectoryCheck`]): before the mount
 //! goes over the folder, the backing directory is compared with the rows of `items`, once,
 //! and the rows are made to say what the disk has. It is the one place where the disk is
-//! read to learn what the folder contains (`docs/tasks/item-versions-design.md`, §10).
+//! read to learn what the folder contains (`docs/design/mount.md` §7).
 //!
 //! **The check does not guess what a person did while no daemon ran.** It looks at one
 //! place at a time: what the rows say of a place, and what the disk has at that place. A
@@ -40,7 +40,7 @@
 //! below it is changed, and they are held ([`DiskFindings::list_held_items`]) and said.
 //! The folder is not held for it, and no other row is.
 //!
-//! It knows nothing of the upload queue, of `onedrive_items`, of the node table or of the mount.
+//! It knows nothing of the plan, of the steps or of the mount's requests.
 
 use std::path::PathBuf;
 

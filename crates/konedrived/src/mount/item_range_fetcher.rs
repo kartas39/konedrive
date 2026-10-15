@@ -1,13 +1,13 @@
 //! The bytes of a file that is not on disk, asked of OneDrive as a range, by the item's
-//! binding and the content the reader opened: what `range_fetcher` is today by a row of
-//! `onedrive_items`.
+//! binding and the content the reader opened.
 //!
 //! **State owned:** none of its own: the files being read as ranges are `range_readers`',
-//! keyed by the binding's item id as today (`RangeSource::onedrive_item`), which is what
-//! the content source is asked by: nothing of it changes; what the content source
-//! remembers between two reads is the source's.
+//! keyed by the binding's item id (`RangeSource::onedrive_item`), which is what the
+//! content source is asked by; what the content source remembers between two reads is
+//! the source's.
 //!
-//! **Answers for:** design §9, "a read: not on disk: the ranges come from OneDrive"; the
+//! **Answers for:** a read of a file not on disk: the ranges come from OneDrive
+//! (`docs/design/mount.md` §5.1); the
 //! range is of the content the handle was opened as, never of whatever OneDrive has by
 //! then at the size the mount shows.
 //!
@@ -120,9 +120,8 @@ impl ItemRangeFetcher {
     /// step changes the row (`decide_not_on_disk_read_origin` then says `ESTALE`). And
     /// where a source says a size and a time and no cTag, a content of the same size and
     /// time reads as the same content.
-    // OPEN: whether Graph takes a condition on a content download (the review's verdict
-    // on OPEN 14: to be measured). Until then another content is told after the answer
-    // and not by a refused request.
+    // Graph's answer to a range names no version: another content is told after the
+    // answer, not by a refused request (`docs/limitations/F297.md`).
     pub(super) async fn fetch_range(&self, item: LocalItemId, source: &RangeSource, from: u64, end: u64) -> Result<Vec<u8>, RangeRefusal> {
         use tokio::io::AsyncReadExt;
         let onedrive_item_id = source.onedrive_item.item_id.as_str();
@@ -178,8 +177,7 @@ impl ItemRangeFetcher {
 
     /// `item` shows another content, or is gone: what the source remembered of its
     /// binding between range reads is dropped. Called by the steps towards the folder
-    /// that take OneDrive's content or remove an item (today the cycle step, for every
-    /// cycle: `cycle_step.rs:126`).
+    /// that take OneDrive's content or remove an item.
     pub(crate) fn forget_ranges(&self, source: &RangeSource) {
         self.source.forget(source.onedrive_item.item_id.as_str());
     }

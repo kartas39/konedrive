@@ -6,7 +6,7 @@
 //! that wakes the plan — the mount, the steps, the listing — because each of them is built
 //! before the task is, and none of them knows the task.
 //!
-//! **Answers for:** the map's MISSING-2.i: the one wake of the plan, given by whoever
+//! **Answers for:** the one wake of the plan, given by whoever
 //! wrote something a plan is made from.
 //!
 //! **Tested without the rest:**
@@ -28,7 +28,7 @@ pub(crate) enum WakeCause {
     ListingEnded,
     /// A step finished, whatever came of it.
     StepFinished,
-    /// The user answered: removals confirmed or taken back, a pin set or taken off.
+    /// The user answered: a pin set or taken off.
     UserAnswered,
     /// A refresh was asked for, by the user or because the network is back: every next
     /// try is due.
@@ -58,8 +58,8 @@ pub(crate) struct SyncPlanWake {
 
 impl SyncPlanWake {
     /// A wake nobody was given yet. Made by the folder's start before the mount, so that
-    /// the mount's write operations hold it from their first job (design §9; the map's
-    /// 7.1, 4d).
+    /// the mount's write operations hold it from their first job (`docs/design/sync.md`
+    /// §8.4).
     pub fn new() -> Self {
         SyncPlanWake { given: std::sync::Mutex::new(BTreeSet::new()), signal: tokio::sync::Notify::new() }
     }

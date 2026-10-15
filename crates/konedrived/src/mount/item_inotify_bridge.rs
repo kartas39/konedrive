@@ -1,6 +1,5 @@
 //! The inotify bridge by item: what tells whoever watches the folder of a change a step
-//! or a landing made, through the mount. What `inotify_bridge` is today over the node
-//! table.
+//! or a landing made, through the mount (`docs/design/mount.md` §9).
 //!
 //! **State owned:** the queue of announcements, the one being announced now, and the
 //! bridge's thread. Queued by the steps towards the folder and the downloader
@@ -9,14 +8,14 @@
 //! tells its watchers; the request that causes comes back to the mount on that thread and
 //! is answered from [`ItemInotifyBridge::find_in_progress`] and the rows.
 //!
-//! **Answers for:** design §9, last paragraph. The former place travels in the
+//! **Answers for:** what a step, a landing, a free-up and a pin changed behind the
+//! kernel's back, told to its watchers. The former place travels in the
 //! announcement (`ItemAnnouncement::Vanished`); the path of a place is found by the
 //! bridge's thread through the rows (`ItemReader::find_path` of the directory, on a
 //! reading connection of its own) when it performs the announcement.
-// OPEN: what replaces the node table's "nobody watches a directory the kernel was never
-// told of" (the map's E13): with no table every announcement makes the kernel look up
-// each directory above it, and a first listing announces one name per item. Written as
-// announcing everything; a filter is a measurement first.
+// Every announcement is performed, whether anybody watches its directory or not: the
+// kernel looks up each directory above it, and a first listing announces one name per
+// item.
 //!
 //! **Tested without the rest**: the queue by itself (the last three); the thread with the
 //! mount replaced by a directory the test watches (the first):

@@ -1,5 +1,6 @@
 //! What became of a request whose answer was lost, or refused in a way its own earlier
-//! try explains: design §7's second exception. The step adopts what it finds.
+//! try explains: the second of the two causes no listing shows (`docs/design/sync.md`
+//! §7.3, `docs/design/writes.md` §4.5). The step adopts what it finds.
 //!
 //! **State owned:** none. The record of a request that changes OneDrive is the store's
 //! (`konedrive_tree::RequestRecord`, the table `request_records`): written by the step
@@ -33,9 +34,7 @@
 //! OneDrive, and a removal of the directory takes only the upload's own file.
 //!
 //! **Answers for:** a daemon that died, or was stopped, between a request and its commit,
-//! and an answer that never came while it runs (the map's F9, E2). Today:
-//! `upload/steps/meta.rs:33-36`, `:100-104`,
-//! `upload/content.rs:211-215`, `:374`, `:400-403`, `upload/content/session.rs:397`.
+//! and an answer that never came while it runs.
 //!
 //! **Tested without the rest**, a test per case of [`SentRequest`] and of
 //! [`LostAnswerFate`], then against the fixture's fake OneDrive:
@@ -318,8 +317,8 @@ impl LostAnswers {
         Ok(FoundItem { item: found, is_bound, is_held_by_upload_session })
     }
 
-    /// What became of `request`, by ONE read of OneDrive (`item`, `G/mod.rs:217`, or
-    /// `child`, `G/mod.rs:228`, as the case of [`SentRequest`] says), what the store says
+    /// What became of `request`, by ONE read of OneDrive (`item`, or `child`, as the case
+    /// of [`SentRequest`] says), what the store says
     /// of what was found (`ItemReader::find_bound_item`; the sessions and openings at the
     /// place of an empty file), and
     /// [`decide_lost_answer_fate`]. `DriveError::NotFound` is no failed read: it is
@@ -329,9 +328,8 @@ impl LostAnswers {
     /// `Class::Metadata` slot of the pool for itself and lets it go with its answer.
     ///
     /// Called for a request that was certainly refused and whose refusal an earlier try
-    /// of the same step may explain — a 409 of `MakeDirectory`
-    /// (`upload/steps/meta.rs:33-36`), a 412 of `SendMove` (`meta.rs:100-104`) and of
-    /// `SendContent` (`upload/content.rs:400-403`), an upload session found gone —, and
+    /// of the same step may explain — a 409 of `MakeDirectory`, a 412 of `SendMove` and of
+    /// `SendContent`, an upload session found gone —, and
     /// for a request whose answer said nothing certain.
     pub(crate) async fn read_request_outcome(&self, item: &ItemVersions, request: SentRequest<'_>) -> Result<LostAnswerFate, FailedRead> {
         let found = match self.read_requested_item(item, &request).await? {

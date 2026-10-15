@@ -4,8 +4,8 @@
 //! ([`ThrottleWait`]).
 //!
 //! [`Report`] bundles them, so that everything that downloads, frees up or
-//! reconciles — `SyncService`, the hydration loop, a OneDrive folder's
-//! listing and its replacements — reports into the same places, and
+//! changes the folder — `SyncService`, the mount, a OneDrive folder's
+//! listing and the plan's steps — reports into the same places, and
 //! `dbus::signals` publishes from there.
 
 use std::sync::Arc;
@@ -38,8 +38,7 @@ impl Report {
         }
     }
 
-    /// A report that goes nowhere: the plain `serve_hydrations`', which no
-    /// service reads. It records into a log nobody reads and starts no
+    /// A report that goes nowhere, which no service reads. It records into a log nobody reads and starts no
     /// walker.
     #[cfg(test)]
     pub(crate) fn nowhere() -> Self {
