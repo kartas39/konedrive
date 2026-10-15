@@ -3,13 +3,12 @@
 //! is a real second connection), a temporary backing directory under no mount, the leaf
 //! state, and the fake OneDrive holding what the rows say OneDrive has.
 //!
-//! Test code. Filled in with step 0, before any piece, so that no piece builds its own
-//! "store + backing directory + fake OneDrive": each piece's tests make this fixture and
-//! the ONE part they test, and reach every neighbour through the fixture's finished leaf
-//! state (`SyncPlanWake`, `PublishedPlan`, `RunningSteps`, `SendingHolds`,
-//! `OneDriveSpace`, `MountTakeDown`, `ItemHandles`, `ReadConnections`, `PlaceChanges`,
-//! `ItemDownloadStates`, the bridge's queue, the range fetcher), never through another
-//! piece's unfinished part. What a piece outside `fuse` cannot make itself the fixture
+//! Test code, so that no part's tests build their own "store + backing directory + fake
+//! OneDrive": each part's tests make this fixture and the ONE part they test, and reach
+//! every neighbour through the fixture's leaf state (`SyncPlanWake`, `PublishedPlan`,
+//! `RunningSteps`, `SendingHolds`, `OneDriveSpace`, `MountTakeDown`, `ItemHandles`,
+//! `ReadConnections`, `PlaceChanges`, `ItemDownloadStates`, the bridge's queue, the range
+//! fetcher). What a part outside `mount` cannot make itself the fixture
 //! makes for it: a mount that is built and not served (`build_mount`: its
 //! `ItemContentFiles`, `ItemFilesInterface` and the parts of the folder steps through the
 //! accessors), a content source and
@@ -37,8 +36,6 @@
 //! step that shows an item, the landing's commit, a local change — and the disk beside
 //! them is put as those operations' callers leave it, marks and times included: the check
 //! at start, which a mount's build runs, finds nothing to change in what a builder made.
-// The surface is for the pieces' tests: not every function has a caller yet.
-#![allow(dead_code, unused_imports)]
 
 use std::ffi::OsStr;
 use std::fs;
@@ -504,7 +501,7 @@ impl ItemFixture {
 
     /// A mount over the fixture's folder, built through `build_order::build` with
     /// [`mount_setup`](Self::mount_setup), and NOT served: its accessors give the parts a
-    /// piece outside `fuse` is tested with or over. The build runs the check at start
+    /// part outside `mount` is tested with or over. The build runs the check at start
     /// over the rows and the disk as they are now, and leaves the mount read-only. Its
     /// leaves are its own, not the fixture's (the module's doc). A mount that is stopped
     /// or dropped leaves the folder on disk without its write bits: a builder that puts

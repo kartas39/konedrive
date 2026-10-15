@@ -1,5 +1,4 @@
-//! The state of each file's download, by the item and the content being downloaded: what
-//! `download_states` is today by OneDrive id.
+//! The state of each file's download, by the item and the content being downloaded.
 //!
 //! **State owned:** per (item, content version): a running download with who waits for
 //! it, how far it was written, its file and whether that file is whole; or a failed one
@@ -11,7 +10,7 @@
 //! download a read started. Changed by the downloader and by read alone, through the
 //! functions here; no I/O.
 //!
-//! **Answers for:** the questions of the review's M4: who dedups (a download of the same
+//! **Answers for:** who dedups (a download of the same
 //! item and content that runs is joined, whoever asks: a read, an open for writing,
 //! `Files.Hydrate`, the plan's pin); who answers "is downloading" (the state attribute,
 //! free-up); from which file a read is answered while its download runs. A download of
@@ -34,7 +33,7 @@
 //! say are failures like any other ([`finish`](ItemDownloadStates::finish)). The latest
 //! [`ANOTHER_CONTENTS_REMEMBERED`] are kept.
 //!
-//! **Tested without the rest** (today's `download_states/tests.rs` is the reference):
+//! **Tested without the rest:**
 // test: a_second_asking_for_the_same_item_and_content_joins_the_running_download
 // test: an_asking_for_another_content_of_the_item_starts_another_download
 // test: every_waiter_is_answered_when_the_download_ends_however_it_ends
@@ -596,7 +595,7 @@ impl ItemDownloadStates {
     }
 
     /// `bytes` more of `item` were read as ranges; whether that reaches the threshold at
-    /// which the file is downloaded whole (`download_states::reaches_download_threshold`).
+    /// which the file is downloaded whole ([`reaches_download_threshold`]).
     /// The count starts over once it answered yes: a download that ends without landing
     /// is not started again by the next read, but by as many bytes read again.
     pub(super) fn count_bytes_read(&self, item: LocalItemId, bytes: u64, file_size: u64) -> bool {
@@ -612,7 +611,7 @@ impl ItemDownloadStates {
 
     /// Nothing is kept of `item` any more: its row is gone, or it shows another content.
     /// Called by the steps towards the folder that remove an item or take OneDrive's
-    /// content (what "the bytes-read count never forgetting a file" lacked: design §14).
+    /// content: no count of bytes read outlives its item.
     pub(crate) fn forget_item(&self, item: LocalItemId) {
         // The unfinished files of every content of it, and what was remembered of each; a
         // download of it that runs is left to its landing, which finds the row changed.

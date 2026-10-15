@@ -1,4 +1,4 @@
-//! The accounts of one daemon (`docs/design/accounts.md` §3, §7): the manager at `/org/konedrive/Accounts` —
+//! The accounts of one daemon (`docs/design/accounts.md` §3, §8): the manager at `/org/konedrive/Accounts` —
 //! `org.konedrive.Accounts`, `org.konedrive.Files` and the `ObjectManager` — and, for each
 //! account, its `Account`, its folder's interfaces (`Folder`, `Transfers`, `UploadQueue`,
 //! `Conflicts`, `LocalScan`, `ActivityLog`) and `TokenExport` at `/org/konedrive/Accounts/<id>`.

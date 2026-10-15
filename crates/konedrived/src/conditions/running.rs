@@ -1,8 +1,8 @@
-//! What background work an account runs now (`docs/design/writes.md` §11): the one place
+//! What background work an account runs now (`docs/design/writes.md` §6.3): the one place
 //! that decides it, from the user's pause, the automatic hold (a metered connection, the
 //! battery: [`Conditions`], told by `conditions`) and the settings. Every
-//! reader of the pause — the transfer pool (through `SyncService::show_pause`), the upload queue
-//! worker, the poll and the replacements it runs, the thumbnail filler — asks here.
+//! reader of the pause — the transfer pool (through `SyncService::show_pause`), the holds
+//! of sending, the poll, the thumbnail filler — asks here.
 //!
 //! The user's pause is one of the account's settings ([`Settings::paused_until`]), kept in
 //! its section of `config.toml`: it is there whether the account's sync runs or not.
@@ -61,7 +61,7 @@ impl Clock for SystemClock {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Settings {
     pub(crate) thumbnails: bool,
-    /// The user's pause (`docs/design/writes.md` §11): paused until then, unix seconds, 0
+    /// The user's pause (`docs/design/writes.md` §6.3): paused until then, unix seconds, 0
     /// for until resumed; `None` while not paused. A time that has passed is no pause
     /// ([`Running::user_pause`]).
     pub(crate) paused_until: Option<i64>,

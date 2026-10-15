@@ -1,4 +1,4 @@
-//! The guards, each shown to refuse (`docs/design/writes.md` §12): against wiremock standing in for Graph,
+//! The guards, each shown to refuse (`docs/design/writes.md` §8.1): against wiremock standing in for Graph,
 //! and on the guard itself. Nothing here reaches Microsoft.
 
 use std::sync::Arc;

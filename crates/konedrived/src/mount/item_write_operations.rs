@@ -1,10 +1,10 @@
 //! The changes a program makes to the folder, each made in the backing directory and
-//! written into the item's row in the order of design §8, on the write-operation thread
+//! written into the item's row in the order of `docs/design/mount.md` §3.3, on the write-operation thread
 //! under the folder's tree lock.
 //!
 //! **State owned:** none; [`ItemWriteOperations`] holds the parts an operation goes
 //! through and nothing else. Nothing is "recorded for upload": the difference from the
-//! synced version is the record (design §9).
+//! synced version is the record (`docs/design/sync.md` §2.5).
 //!
 //! **Every operation that changes a name**, in this order:
 //!
@@ -14,7 +14,7 @@
 //! 2. the decision, a pure function of the case, in the operation's module;
 //! 3. the record: what is about to be done to the disk's names is written to the store
 //!    (`ItemStore::record_place_change`, one job of the store, a transaction of its own),
-//!    before the disk is touched (design §8). An operation that changes no name on disk —
+//!    before the disk is touched (`docs/design/mount.md` §3.4). An operation that changes no name on disk —
 //!    an item with nothing there — writes none;
 //! 4. `PlaceChanges::begin`: from here a reader that opens by path waits or tries again;
 //! 5. the disk, through the place change, which keeps the undo; a place the rows say is
@@ -33,7 +33,7 @@
 //! `standing_place_changes`): a made entry gets its row, a moved or set-aside entry goes
 //! back where its row says it is.
 //!
-//! **A file's content** goes the other way (design §8): the row first — the first
+//! **A file's content** goes the other way (`docs/design/mount.md` §3.3): the row first — the first
 //! writer's open writes `OpenedForWriting`, and then bytes go to disk with no row touched
 //! per write; the last close writes the size and the times read from the backing file,
 //! and only then the writer leaves the handles.
@@ -95,7 +95,7 @@ pub(super) use rename::RenameMode;
 /// (`ESTALE`), the place is taken (`EEXIST`), the directory is not empty (`ENOTEMPTY`),
 /// there is no such directory (`ENOENT`). Any other rule (a place deeper than the walks
 /// of the rows go, a writer that holds the file) and a failure of SQLite or the disk are
-/// `EIO`, as today every failed record is (`write_operations.rs:110-115`).
+/// `EIO`.
 pub(super) fn decide_store_errno(error: &TreeError) -> Errno {
     match error {
         TreeError::Refused(refusal) => match refusal.reason {

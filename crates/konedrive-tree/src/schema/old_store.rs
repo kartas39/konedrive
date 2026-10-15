@@ -5,39 +5,30 @@
 //! itself; [`TreeStore::open_with_origin`] performs its answer, and `TreeStore::open` is
 //! that call with the origin left out.
 //!
-//! **Answers for:** the map's P7 and RISK-1.a, and design §13 (6). The owner's decisions:
-//! of 2026-10-11, for the switch to the mount, a store of an older version is rebuilt, as
-//! one of an unknown version is; of 2026-10-13, a store of the version before today's is
-//! brought to today's in place where the change between the two only adds — a rebuild
-//! loses the pins and the activity log, which an added column is no reason for.
+//! **Answers for:** `docs/design/decisions.md` §3.10: a store of any other version than
+//! this build's is rebuilt, as one that was lost is, but for the version just before,
+//! which is brought to this build's in place where the change between the two only adds —
+//! a rebuild loses the pins and the activity log, which an added column is no reason for.
 //! The cases, by what the file says of itself:
 //!
-//! - *today's version*: used as it is.
+//! - *this build's version*: used as it is.
 //! - *no file, or a database with no table*: the schema is made.
-//! - *the version before today's* (`MIGRATED_VERSION`): migrated in place, in one
+//! - *the version before* (`MIGRATED_VERSION`): migrated in place, in one
 //!   transaction with the new version's number; what it held is all there.
-//! - *any other version* — an older one (the trial folders of the branch `fuse-probe`, 14
-//!   to 19; 8 of the branch `dev`, whose folder is refused before that as one of legacy
-//!   placeholders, which is not this decision), a newer daemon's — *no version, not a
-//!   database*: rebuilt. What a rebuild loses is counted before the file goes
+//! - *any other version* — an older one (a folder of a version that kept placeholders
+//!   is refused before that, which is not this decision), a newer daemon's — *no
+//!   version, not a database*: rebuilt. What a rebuild loses is counted before the file goes
 //!   ([`RebuildLoss`]): the pins (kept in the store alone), the activity log, the
 //!   conflicts on record, what was unsent and is not on disk, and the open upload
 //!   sessions. What is on disk is found again by the check at start.
 //!
-//! The upload sessions the old tables hold are not this module's to cancel: the switch
-//! cancels the ones it can read before the tables go, so that their empty files do not
-//! hold names in OneDrive. Here they are only counted.
+//! The upload sessions the old tables hold are not this module's to cancel: the folder's
+//! start cancels the ones it can read before the tables go
+//! (`sync_tasks::start_order::cancel_upload_sessions_of_old_store`), so that their empty
+//! files do not hold names in OneDrive. Here they are only counted.
 //!
-//! **The raises of the schema's version**, each by one hand. The first, before any body
-//! of the daemon (step 0b, version 20), only ADDS: the tables `thumbnail_marks` and
-//! `own_upload_contents` with a trigger each, the indexes `items_not_placed` and
-//! `items_image_or_video`, and two keys of `meta`; no column for a directory's time.
-//! Version 21 changes what one index holds: `items_changed_in_onedrive` does not ask the
-//! time of a content any more. The last is the switch's: the tables that go, which
-//! today's code reads until then. None of these has a migration step: a store of the
-//! version before was rebuilt. Version 29 is the first that had one: it added the column
-//! `is_executable` of `items` to a store of version 28. Version 30 adds the column
-//! `is_kept` of `pins` to a store of version 29; a store of version 28 is rebuilt.
+//! **The migration step**: version 30 adds the column `is_kept` of `pins` to a store of
+//! version 29; a store of any older version is rebuilt.
 //!
 //! **Tested without the rest:**
 // test: a_store_of_todays_version_is_used
@@ -56,7 +47,7 @@ use rusqlite::{Connection, OptionalExtension};
 use super::{at_version, IS_KEPT_COLUMN, SCHEMA_VERSION};
 use crate::{meta, TreeError};
 
-/// The version before today's: the one a store is brought from in place ([`migrate`]).
+/// The version before this build's: the one a store is brought from in place ([`migrate`]).
 const MIGRATED_VERSION: &str = "29";
 
 /// What the file at the store's path says of itself, before anything is changed.
@@ -79,8 +70,8 @@ pub struct RebuildLoss {
     pub activity_events: u64,
     pub conflicts: u64,
     /// Unsent changes the check at start cannot find again: removals, and moves of files
-    /// with nothing on disk. Counted in the outbox while a store has one, and in the rows
-    /// of `items`.
+    /// with nothing on disk. Counted in the table `outbox` of a store that has one, and in
+    /// the rows of `items`.
     pub unsent_changes_not_on_disk: u64,
     /// The upload sessions that were opened and not ended, in the old tables and in what
     /// the steps remember.
@@ -90,16 +81,16 @@ pub struct RebuildLoss {
 /// What `TreeStore::open` does with the store it found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OldStoreDecision {
-    /// Today's version: nothing to do.
+    /// This build's version: nothing to do.
     Use,
     /// No store: the schema is made.
     Make,
-    /// The version before today's, which today's differs from only by what it adds: the
-    /// store is brought to today's in place ([`migrate`]) and then used, with everything
+    /// The version before this build's, which this build's differs from only by what it
+    /// adds: the store is brought to this build's in place ([`migrate`]) and then used, with everything
     /// it held.
     Migrate,
     /// The file is removed and the store made empty; the folder's start then goes the way
-    /// of a store that was lost (design §10). What that loses is [`RebuildLoss`], counted
+    /// of a store that was lost (`docs/design/mount.md` §7.4). What that loses is [`RebuildLoss`], counted
     /// by `TreeStore::open_with_origin` before the file goes.
     Rebuild,
 }
@@ -108,7 +99,7 @@ pub enum OldStoreDecision {
 /// on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreOrigin {
-    /// It was there, of today's version.
+    /// It was there, of this build's version.
     Kept,
     /// It was made empty: there was none (`loss` is `None`), or the one there was rebuilt,
     /// with what that lost — `None` too where nothing could be counted in it, as in a
@@ -128,7 +119,7 @@ pub fn decide_old_store(stored: &StoredVersion) -> OldStoreDecision {
     }
 }
 
-/// Brings the store behind `conn`, which is of [`MIGRATED_VERSION`], to today's version:
+/// Brings the store behind `conn`, which is of [`MIGRATED_VERSION`], to this build's version:
 /// the column `is_kept` of `pins`, every row a pin as it was. One transaction with the
 /// version's number: a crash or an error leaves the store at the version it had.
 fn migrate(conn: &Connection) -> Result<(), TreeError> {
@@ -203,7 +194,7 @@ pub(super) fn count_rebuild_loss(conn: &Connection) -> Option<RebuildLoss> {
 /// there is no file. An error is one that is no finding — permission denied, the disk —
 /// as [`read_stored_version`] answers it. Blocking.
 ///
-/// For whoever must tell a store of today's version from one a start would make or
+/// For whoever must tell a store of this build's version from one a start would make or
 /// rebuild ([`decide_old_store`] of the answer) without opening it as a store: the count
 /// of what is unsent in a folder that keeps no open store
 /// (`sync_tasks::stop_order::count_unsent_of_closed_store`).
@@ -223,18 +214,18 @@ pub fn find_stored_version(path: &Path) -> Result<StoredVersion, TreeError> {
 }
 
 /// The addresses of the upload sessions that the store at `path` holds, when it is a
-/// store of another version than today's: the `url` of each row of its `upload_sessions`
+/// store of another version than this build's: the `url` of each row of its `upload_sessions`
 /// table and the `session_address` of each row of its `step_memory`, whichever of the
 /// two tables it has. Read through a connection opened read-only for the question and
 /// closed before the answer: the file is not changed, and no journal is left beside it.
-/// Empty for no file, for a store of today's version (its sessions are gone on with, not
+/// Empty for no file, for a store of this build's version (its sessions are gone on with, not
 /// cancelled), for a file that is no database and for tables of a shape that cannot be
 /// read: what cannot be read cannot be cancelled, and expires in OneDrive.
 ///
 /// Blocking. Called by the folder's start
 /// (`sync_tasks::start_order::cancel_upload_sessions_of_old_store`) BEFORE
 /// [`TreeStore::open_with_origin`](crate::TreeStore::open_with_origin) removes such a
-/// store, which only counts them (design §13 (6)).
+/// store, which only counts them (`docs/design/sync.md` §9.2, stage 0).
 pub fn list_old_store_upload_sessions(path: &Path) -> Result<Vec<String>, TreeError> {
     use rusqlite::OpenFlags;
     if !path.try_exists()? {

@@ -86,8 +86,8 @@ pub enum SyncError {
     /// [`pins::refusal`]'s, naming the path refused and what pins it.
     #[error("{0}")]
     NotAllowed(String),
-    /// A free-up of a file with a change waiting to be uploaded (`docs/design/writes.md`
-    /// §11): the message names it.
+    /// A free-up of a file with a change waiting to be uploaded (`docs/design/pinning.md`
+    /// §4.1): the message names it.
     #[error("{0} is not uploaded yet, so freeing it up would lose the changes made here")]
     NotUploaded(String),
     /// `WebUrl` of a file or folder that carries no item id: OneDrive does not
@@ -171,7 +171,7 @@ pub struct SyncService {
     /// which folder is registered, how, in which mode, or whether the account takes one —
     /// for the whole of the change, with the folder's sync stopped. Taken for reading by
     /// what reads the tree store outside the sync (`skipped`, `count_unsent_to_send`), and by a
-    /// reconcile, through the lease its listing is given, while it changes the folder.
+    /// step towards the folder, through the lease the plan's task is given, while it changes the folder.
     ///
     /// zbus runs every method call in a task of its own, so without it two
     /// registrations both passed the "no root yet" check before either had
@@ -185,7 +185,7 @@ pub struct SyncService {
     /// the start that opens it (`sync_tasks::start_order`) and detached before a take-down or a Forget closes it
     /// (`let_go_of_activity`): it stays attached while a stopped sync keeps its parts.
     report: Report,
-    /// The account's ignore list (`docs/design/writes.md` §4.2 rule 3), from `config.toml`: the
+    /// The account's ignore list (`docs/design/writes.md` §3), from `config.toml`: the
     /// folder's mount reads it, `SetIgnorePatterns` changes it.
     ignore: local::SharedIgnore,
     /// The pause as it is shown, and the timer that ends a timed one (`pause`).
@@ -302,7 +302,7 @@ impl SyncService {
         &self.state
     }
 
-    /// Where every download, free-up and reconcile reports to.
+    /// Where every download, free-up and step reports to.
     pub fn report(&self) -> &Report {
         &self.report
     }

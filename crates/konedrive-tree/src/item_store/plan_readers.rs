@@ -1,11 +1,11 @@
-//! The readers a sync plan is made from, over the reader: what `ItemStore` alone has
-//! today, so that a plan need not be read through the writer.
+//! The readers a sync plan is made from, over the reader, so that a plan need not be read
+//! through the writer.
 //!
 //! **State owned:** none. Each calls the function of `item_row` (or of the module that
 //! owns what is read) that `ItemStore`'s reader of the same name calls, over the reader's
 //! connection and inside its one read transaction.
 //!
-//! **Answers for:** the review's S2 and S13: the plan's reads are of one moment and wait
+//! **Answers for:** the plan's reads are of one moment and wait
 //! for no listing page and no write operation.
 //!
 //! **What a caller reads beside these**, of the reader's other part

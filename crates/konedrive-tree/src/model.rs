@@ -159,9 +159,9 @@ impl Change {
     }
 }
 
-/// Whether an item id can be a name in a directory: the materializer keeps a
-/// misplaced item in the holding directory under its id, so an id
-/// that is empty, `.`, `..`, or holds a `/` or a NUL could name something else.
+/// Whether OneDrive's item id is one the folder takes: an id that is empty, `.`, `..`,
+/// or holds a `/` or a NUL could name something else, and the listing does not show its
+/// item (`SkipReason::Unsupported`).
 pub fn usable_id(id: &str) -> bool {
     !id.is_empty() && id != "." && id != ".." && !id.contains('/') && !id.contains('\0')
 }

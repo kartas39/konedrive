@@ -1,7 +1,7 @@
-//! The tree store: one row per file and folder of the
-//! drive, and the delta link. A map, not the truth — the extended attributes
-//! on the files are that — so it is rebuilt from a full listing whenever it
-//! cannot be used, and losing it costs one listing, never data.
+//! The store: one row per item, what the steps remember, the pins, the activity log, the
+//! conflicts, and the delta link. What the folder shows is written here alone; a store
+//! that is lost is rebuilt from OneDrive and the disk, which costs one listing and every
+//! unsent change that left nothing on disk (`docs/design/decisions.md` §3.9).
 //!
 //! `items` has one row per item the folder shows or OneDrive has, keyed by a local item id
 //! that is never given twice: the item's binding to OneDrive, what the folder shows of it,

@@ -4,9 +4,9 @@
 //!
 //! **State owned:** none. Each calls the `pub(crate)` function of `step_memory` that
 //! `StepMemory`'s reader of the same name calls. `StepMemory` (which borrows the store for
-//! writing) keeps its writes; its own readers go when their callers are re-pointed.
+//! writing) keeps its writes.
 //!
-//! **Answers for:** the review's S13: `Changes()`, polled by the window, does not queue
+//! **Answers for:** `Changes()`, polled by the window, does not queue
 //! behind a listing's page.
 //!
 //! **Tested without the rest:**

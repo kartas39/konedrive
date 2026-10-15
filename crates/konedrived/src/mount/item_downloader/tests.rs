@@ -764,7 +764,7 @@ fn a_download_whose_landing_removed_what_it_named_starts_the_next_with_a_new_fil
     fixture.assert_rows_and_disk_agree();
 }
 
-/// The second review's "premise 1": a "no such item" after a part of the file is down
+/// A "no such item" after a part of the file is down
 /// throws nothing away, and is not remembered as another content.
 #[test]
 fn a_download_of_an_item_onedrive_does_not_have_fails_and_keeps_its_unfinished_file() {

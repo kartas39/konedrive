@@ -2,15 +2,15 @@
 //! rename and move (`PATCH`), delete, and the typed answers the plan's task
 //! acts on. Uploads are in [`super::upload`].
 //!
-//! Every change is guarded (the write design's WR2): `If-Match` on anything
+//! Every change is guarded (`docs/design/writes.md` §4.2): `If-Match` on anything
 //! that exists, `conflictBehavior=fail` on anything new, so a guard that fails
 //! comes back as [`WriteError::Changed`] or [`WriteError::NameExists`] and is
 //! never retried unguarded here — except a folder's delete
 //! ([`DriveClient::delete_folder`]), sent with no guard at all: the whole
 //! folder goes, as on Windows, and the recycle bin is the safety net.
 //! Throttling (`429`, `503`) comes back as [`WriteError::Throttled`] with the
-//! wait Graph asked for: the worker pauses the whole account (`docs/design/writes.md` §6.2), so
-//! nothing here sleeps ([`Throttle::Return`]).
+//! wait Graph asked for: every step towards OneDrive of the folder waits it out
+//! (`docs/design/writes.md` §6.2), so nothing here sleeps ([`Throttle::Return`]).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -23,11 +23,11 @@ use super::send::{Auth, Throttle};
 use super::{DriveClient, DriveError, DriveItem};
 
 /// The longest wait a `Retry-After` is taken at: a sanity bound against a
-/// garbled or hostile header, not a policy (§6.2).
+/// garbled or hostile header, not a policy (`docs/design/writes.md` §6.2).
 pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(3600);
 
-/// What a write can come back with, typed by what the worker does next
-/// (§6.2's table of answers).
+/// What a write can come back with, typed by what the step does next
+/// (`docs/design/writes.md` §4.6's table of answers).
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
     /// `412`: the item changed in OneDrive since the eTag or cTag the change
@@ -51,7 +51,7 @@ pub enum WriteError {
     QuotaExceeded,
     /// `429` or `503`: wait, for the whole account, at least `retry_after`
     /// when the answer said how long (seconds or an HTTP date, bounded by
-    /// [`MAX_RETRY_AFTER`]), else by the worker's own backoff.
+    /// [`MAX_RETRY_AFTER`]), else by the plan's task's own backoff.
     #[error("OneDrive asked to wait before the next request")]
     Throttled { retry_after: Option<Duration> },
     /// `423`: locked, most likely open for co-authoring. Retry later.
@@ -151,8 +151,8 @@ impl DriveClient {
 
     /// Deletes folder `id`, whole, into OneDrive's recycle bin: no
     /// `If-Match`, whatever changed inside it in OneDrive since — as Windows
-    /// deletes a folder ([decisions.md](../../../../docs/design/decisions.md),
-    /// "A folder delete is the whole folder, as on Windows"). The recycle bin
+    /// deletes a folder ([decisions.md](../../../../docs/design/decisions.md)
+    /// §4.4). The recycle bin
     /// is the safety net. [`WriteError::NotFound`] means it is already gone.
     pub async fn delete_folder(&self, id: &str) -> Result<(), WriteError> {
         let url = self.item_url(id, None)?;
@@ -187,7 +187,7 @@ pub(super) async fn item_from(response: reqwest::Response) -> Result<DriveItem, 
         .map_err(|e| WriteError::Transient(format!("an unreadable answer from Graph: {}", e.without_url()).into()))
 }
 
-/// What an unsuccessful answer means (§6.2). Graph's error code decides where
+/// What an unsuccessful answer means (`docs/design/writes.md` §4.6). Graph's error code decides where
 /// it is specific; the status otherwise.
 pub(super) async fn error_from(response: reqwest::Response) -> WriteError {
     let status = Status::of(&response);

@@ -155,7 +155,7 @@ async fn the_hold_settings_are_global_keys() {
     assert_eq!(store.current().unwrap().on_battery(), OnBattery::PowerSaver, "an unknown value falls back");
 }
 
-/// `docs/design/accounts.md` §4.1: a hand-edited file whose accounts collide loads every account, holds each
+/// `docs/design/accounts.md` §4.2: a hand-edited file whose accounts collide loads every account, holds each
 /// later one that collides, and is not rewritten.
 #[tokio::test]
 async fn colliding_accounts_are_held_and_the_file_is_not_rewritten() {
@@ -412,7 +412,7 @@ async fn every_write_starts_from_the_file_and_never_overwrites_what_it_cannot_re
     assert_eq!(std::fs::read_to_string(&paths.config_file).unwrap(), "config_version = 3\n");
 }
 
-/// §8.2 step 1: a file that cannot be read — or that a newer version wrote — loads no
+/// `docs/design/accounts.md` §9, step 1: a file that cannot be read — or that a newer version wrote — loads no
 /// account, is neither migrated nor written, and `LastError` names it.
 #[tokio::test]
 async fn an_unreadable_or_newer_file_poisons_the_store() {

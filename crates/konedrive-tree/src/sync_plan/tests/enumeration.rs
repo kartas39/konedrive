@@ -443,7 +443,7 @@ impl Relation {
     }
 }
 
-/// Whether `items` are rows the rules of the rows allow (the design's §3): on each side an
+/// Whether `items` are rows the rules of the rows allow (`docs/design/sync.md` §2.3): on each side an
 /// item's directory exists there and is a directory, and no item is above itself; the
 /// folder shows one item per name in a directory; OneDrive has one item per name in a
 /// directory, the names compared as they were given: of two names that fold to one and are
@@ -917,8 +917,7 @@ pub(crate) fn visit_every_enumerated_input(mut visit: impl FnMut(&str, &SyncPlan
     }
 }
 
-/// The gate of the decisions between items. Written before them, it held 4529 sets of rows,
-/// of which 242 could not proceed then. Before the review's findings were mended it gained
+/// The gate of the decisions between items: every set of rows of the enumeration, with
 /// what the caller says as facts of any item and of the folder, a directory in a directory,
 /// and two items of OneDrive under names that fold to one.
 #[test]

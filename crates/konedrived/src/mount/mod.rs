@@ -38,10 +38,10 @@
 //!   each folder a plain directory without its write bits after the daemon's end.
 
 mod access_mode_switch;
-// Parts of it have no caller until the bodies of the mount over the rows are written.
+// Some of what it holds is called by its tests alone, or by nothing.
 #[allow(dead_code, unused_imports)]
 mod backing_directory;
-// No caller until the mount reads the rows: its tests are what runs it.
+// Some of what it holds is called by its tests alone.
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod backing_directory_check;
 mod errno;
@@ -54,51 +54,31 @@ mod tidy_step;
 #[allow(dead_code, unused_imports)]
 mod upload_rules;
 mod write_operation_thread;
-// The mount over the rows of `items`: no caller until the owner of a folder's state starts a
-// sync through `sync_tasks`.
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_announcements;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod fuse_connection;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_attributes;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_content_files;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_download_landing;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_download_states;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_downloader;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_files_interface;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_free_up;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_handles;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_inotify_bridge;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_kernel_requests;
+// Some of what it holds is called by its tests alone.
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_lookup;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_mount;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_range_fetcher;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_read_origin;
+// Some of what it holds is called by its tests alone.
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod item_write_operations;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod kernel_requests;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod mount_take_down;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod place_changes;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod read_connections;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod start_check;
 // The fixture the tests of the mount over the rows, the steps and the plan's task share.
 #[cfg(test)]

@@ -8,7 +8,7 @@
 //! (`upload_queue`) and by the mount's `user.konedrive.sync`. It is here,
 //! below the mount, because the mount reads it and must not know the task.
 //!
-//! **Answers for:** design §7, "what the window and `konedrivectl` show": the first of the
+//! **Answers for:** what the window and `konedrivectl` show (`docs/design/writes.md` §7): the first of the
 //! three sources — the plan's answer for each unsent item. An item the last plan was not
 //! given has no answer here.
 //!
@@ -48,7 +48,7 @@ pub enum ItemAnswer {
 /// (`Reason::waits_for_space`) nor is of the group `waiting` (`Reason::group`).
 /// False for everything else: a file open for writing, a wait for space, a read-only
 /// folder's wait, an item the check at start left and one the plan is at fault about
-/// (the owner's decision: neither is called blocked), every wait for a time, another
+/// (neither is called blocked), every wait for a time, another
 /// item or a listing, a planned step, and no answer. Both callers give the two values
 /// from one read: the queue from its entry (`UnsentEntry::answer`, `memory`), the mount
 /// in the read of the row for `user.konedrive.sync` (`ItemReader::find_item_memory` in
@@ -63,11 +63,11 @@ pub(crate) fn decide_is_shown_blocked(answer: Option<&ItemAnswer>, has_refusal_f
         Some(ItemAnswer::Excluded(ExclusionReason::NameIgnored | ExclusionReason::CannotBeShown)) => false,
         // An item an upload left in OneDrive is the daemon's own to remove: nothing for the user to do.
         Some(ItemAnswer::Excluded(ExclusionReason::LeftByUpload)) => false,
-        // The owner's decision: an item the plan is at fault about is being checked, not blocked.
+        // An item the plan is at fault about is being checked, not blocked.
         Some(ItemAnswer::Fault(_)) => false,
         Some(ItemAnswer::Waiting(wait)) => match wait {
             WaitReason::User(reason) => decide_is_reason_shown_blocked(reason),
-            // The owner's decision: an item the check at start left could not be read on disk, and is not called blocked.
+            // An item the check at start left could not be read on disk, and is not called blocked.
             WaitReason::StartUpCheck => false,
             WaitReason::AnotherItem(_) | WaitReason::ItemNotGiven(_) | WaitReason::Time { .. } | WaitReason::RunningStep | WaitReason::Listing | WaitReason::ItemsInDirectoryNotGiven(_) => false,
         },
@@ -76,11 +76,11 @@ pub(crate) fn decide_is_shown_blocked(answer: Option<&ItemAnswer>, has_refusal_f
 
 /// Whether a wait for the user with `reason` is shown as blocked: not the reason of an item the check at start left
 /// (`Reason::NotReadOnDisk`) nor of one the plan is at fault about
-/// (`Reason::BeingChecked`) — the owner's decision, which comes before the groups —, not
+/// (`Reason::BeingChecked`) — which comes before the groups —, not
 /// a wait for space, and not a reason of the group `waiting`. Pure.
 fn decide_is_reason_shown_blocked(reason: &Reason) -> bool {
     match reason {
-        // The owner's decision, before the rule of the groups: an item the check at start left reads "could not be read on disk" and one the plan is at fault about "being checked", and neither is ever shown blocked, whatever group its reason is of.
+        // Before the rule of the groups: an item the check at start left reads "could not be read on disk" and one the plan is at fault about "being checked", and neither is ever shown blocked, whatever group its reason is of.
         Reason::NotReadOnDisk | Reason::BeingChecked => return false,
         _ => {}
     }

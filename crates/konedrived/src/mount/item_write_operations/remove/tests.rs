@@ -30,7 +30,7 @@ fn each_case_of_a_removal_is_decided() {
     assert_eq!(decide_remove(&case(Some(directory.clone()), ItemKind::File)), Err(Errno::EISDIR), "unlink of a directory");
     assert_eq!(decide_remove(&case(Some(file), ItemKind::Directory)), Err(Errno::ENOTDIR), "rmdir of a file");
     assert_eq!(decide_remove(&RemoveCase { is_empty: false, ..case(Some(directory.clone()), ItemKind::Directory) }), Err(Errno::ENOTEMPTY));
-    // Today's order: the kind is asked before what the directory holds.
+    // The order: the kind is asked before what the directory holds.
     assert_eq!(decide_remove(&RemoveCase { is_empty: false, ..case(Some(directory), ItemKind::File) }), Err(Errno::EISDIR));
 }
 

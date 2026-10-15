@@ -22,7 +22,7 @@ fn taken_names(store: &mut TreeStore, directory: LocalItemId) -> Vec<LocalItemId
     store.step_memory().list_taken_names(directory).unwrap().into_iter().map(|taken| taken.item).collect()
 }
 
-/// The third review's sequence. A new file is answered that its name is taken; a listing
+/// A new file is answered that its name is taken; a listing
 /// brings the item that holds the name, while a program holds the file open for writing,
 /// so that no plan decides it; a listing takes the holder away. The name is taken no more:
 /// the file is sent under it, and is not renamed to a conflict copy.

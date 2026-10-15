@@ -6,15 +6,15 @@
 //! was settled) and by the upload's progress; read by the plan's input, by the mount (a
 //! made file does not take over the binding of a file whose removal is being sent; the
 //! sync mark) and by the bus. Nothing of it is stored: after a crash no step runs, and
-//! the replay rests on the step memory and on what a step finds in OneDrive (the map's
-//! F9). It is here, below the mount, because the mount reads it and must not know the
+//! the replay rests on the step memory and on what a step finds in OneDrive. It is here,
+//! below the mount, because the mount reads it and must not know the
 //! task.
 //!
 //! A step is of every row it carries the versions of: a directory's removal of the rows
 //! below it too, a merge of both rows. Each of them has a running step.
 //!
-//! **Answers for:** the plan's `items_with_running_step` (design §6: "one step per item
-//! at a time"); `Transfers.Uploads`; the stop of a folder's sync.
+//! **Answers for:** the plan's `items_with_running_step` (one step per item at a time:
+//! `docs/design/sync.md` §8.3); `Transfers.Uploads`; the stop of a folder's sync.
 //!
 //! **Tested without the rest:**
 // test: every_row_a_step_carries_has_a_running_step_until_it_ends

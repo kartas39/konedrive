@@ -114,7 +114,7 @@ fn the_tries_end_when_the_onedrive_version_the_step_works_from_changes() {
     assert!(!are_kept_for(&bound_to_another));
 }
 
-/// The third review's first sequence: the download of a pinned file fails, and a read
+/// The download of a pinned file fails, and a read
 /// downloads the content. No step was written, and the work is done.
 #[test]
 fn the_tries_end_when_the_content_comes_to_be_on_disk_by_another_way() {
@@ -177,7 +177,7 @@ fn an_etag_alone_that_changed_ends_no_tries() {
     assert_eq!(tries.remember_failed_try(&download(&with_another_etag), Reason::Network, Some(240)), 3, "counted on");
 }
 
-/// The third review's second sequence: an item both sides agreed on, removed in OneDrive.
+/// An item both sides agreed on, removed in OneDrive.
 /// Its row has no stamp and no eTag; the step that removes it here fails, and waits.
 #[test]
 fn the_step_for_an_item_onedrive_removed_waits_as_any_other() {

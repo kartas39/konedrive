@@ -10,7 +10,7 @@ use crate::mount::{DownloadKey, ItemDownloadLanding};
 use crate::mount::item_fixture::{DiskMarksRead, ItemFixture, ONEDRIVE_MTIME, ROOT_ONEDRIVE_ID};
 use crate::status::report::Report;
 
-/// The races' test of design §12: the steps against a program's writes and renames.
+/// The races' test (`docs/design/sync.md` §10): the steps against a program's writes and renames.
 mod races;
 
 pub(super) fn make_steps(fixture: &ItemFixture) -> Arc<FolderSteps> {

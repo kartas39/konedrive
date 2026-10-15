@@ -3,10 +3,11 @@
 //!
 //! **State owned:** none.
 //!
-//! **Answers for:** design §4: names, places and attributes are the local version's, with
-//! two exceptions that are the backing file's — the blocks a file takes on disk, always,
-//! and the size and the times of a file a program holds open for writing. And design §3:
-//! the kernel's node id is the local item id.
+//! **Answers for:** names, places and attributes are the local version's, with three
+//! exceptions (`docs/design/sync.md` §3): the sync state is a function of the row, and two
+//! are the backing file's — the blocks a file takes on disk, always, and the size and the
+//! times of a file a program holds open for writing. And the kernel's node id is the local
+//! item id (`docs/design/sync.md` §2.4).
 //!
 //! **Tested without the rest**, a test per case of [`SizeAndTimes`] and per kind:
 // test: a_files_size_and_times_are_its_local_contents
@@ -102,7 +103,7 @@ fn to_shown_mode(kind: EntryKind, write_bits: WriteBits, is_executable: bool) ->
 /// The attributes of the node `item` of `kind`, with this size, these blocks and this
 /// time. A read-only folder shows no write bit anywhere: a file manager reads that from
 /// the modes before anything is tried. `is_executable` is the row's executable bit, of a
-/// file alone. The link count is a constant: an item has one place (design §3).
+/// file alone. The link count is a constant: an item has one place (`docs/design/decisions.md` §2.1).
 fn make_attributes(item: LocalItemId, kind: ItemKind, access_mode: AccessMode, is_executable: bool, size: u64, blocks: u64, modified: SystemTime) -> FileAttr {
     let write_bits = match access_mode {
         AccessMode::ReadWrite => WriteBits::Present,
@@ -135,7 +136,7 @@ fn make_attributes(item: LocalItemId, kind: ItemKind, access_mode: AccessMode, i
 
 /// The attributes of the file a handle holds, under the node id `node` the request asked
 /// by: what a getattr with an `fh` is answered once the row of `node` is gone or shows
-/// nothing (design §3) — the file was removed or saved over while a program held it. Its
+/// nothing (`docs/design/mount.md` §4.1) — the file was removed or saved over while a program held it. Its
 /// executable bit went with its row: it is shown with none. Pure.
 pub(super) fn to_open_file_attributes(node: LocalItemId, access_mode: AccessMode, facts: &OpenFileFacts) -> FileAttr {
     make_attributes(node, ItemKind::File, access_mode, false, facts.size, facts.blocks, to_time(facts.mtime, facts.mtime_nsec))
@@ -160,7 +161,7 @@ pub(super) fn decide_directory_mtime(facts: &BackingFileFacts, mount_started_at:
 /// The attributes of what the folder shows as `item`; `None` for a row with no local
 /// version. Pure. Called by lookup, getattr, readdirplus, mkdir, mknod, create and
 /// setattr's answer, each with the facts `ItemLookup::read_backing_file_facts` read for
-/// the item. The generation is always 0, the link count a constant (design §3).
+/// the item. The generation is always 0, the link count a constant (`docs/design/sync.md` §2.4).
 pub(super) fn to_item_attributes(item: &Item, access_mode: AccessMode, facts: &BackingFileFacts, mount_started_at: i64) -> Option<FileAttr> {
     let local = item.local.as_ref()?;
     let (size, blocks, (mtime, mtime_nsec)) = match (item.kind, facts.size_and_times, &local.content) {

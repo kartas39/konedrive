@@ -59,9 +59,9 @@ impl Group {
 /// has one, and as the bare key when not.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Reason {
-    /// A writer has the file open (`docs/design/writes.md` §4.3).
+    /// A writer has the file open (`docs/design/writes.md` §3).
     OpenForWriting,
-    /// The name holds one of `" * : < > ? \ |` (§4.4).
+    /// The name holds one of `" * : < > ? \ |` (`docs/design/writes.md` §3).
     NameCharacters,
     /// The name starts or ends with a space.
     NameSpaces,
@@ -71,20 +71,20 @@ pub enum Reason {
     NameNotUtf8,
     /// Larger than OneDrive takes.
     TooLarge,
-    /// OneDrive is full (`507`, `quotaLimitReached`): what earlier versions
-    /// blocked a row with. Such rows wait for space now.
+    /// OneDrive is full (`507`, `quotaLimitReached`), answered to a step that sends no
+    /// content: a failed try, tried again (`docs/design/writes.md` §4.7).
     Quota,
-    /// `403`: OneDrive does not allow this change. Blocked until a worker
-    /// begins anew, as it does after a sign-in.
+    /// `403`: OneDrive does not allow this change. Kept as a refusal for good until the
+    /// item changes or the account signs in again (`docs/design/sync.md` §7.5).
     Forbidden,
     /// `400`: `refused: <the service's message>`. Blocked.
     Refused(Option<String>),
     /// `423`: locked, most likely open for co-authoring.
     Locked,
-    /// The local object is not where the row saw it: the examination
-    /// catches up.
+    /// OneDrive answered that the item is gone (`404`): a listing is asked for.
     NotFound,
-    /// Its size or time moved while it was being sent (§6.3).
+    /// Its size or time moved between the plan and the read: not sent
+    /// (`docs/design/writes.md` §3).
     Changed,
     /// The folder it goes into is not in OneDrive (yet, or any more).
     Parent,
@@ -93,11 +93,11 @@ pub enum Reason {
     /// The account is paused: an upload in fragments stopped after the
     /// fragment it was sending, its session kept. Waiting, never a failure.
     Paused,
-    /// A new file's name is held in OneDrive by the empty placeholder of an
+    /// A new file's name is held in OneDrive by the empty file of an
     /// upload session of this folder. Tried again later.
     SessionOpen,
-    /// The row's name in OneDrive is held by an empty file the delta feed
-    /// never listed: an upload session's placeholder. Tried
+    /// The item's name in OneDrive is held: by an upload session's empty file that no
+    /// listing told of, or by another item (`docs/design/writes.md` §4.4). Tried
     /// again later.
     NameHeld,
     /// The item changed in OneDrive each time its removal was sent: in
@@ -268,16 +268,15 @@ impl Reason {
 
     /// The group of a row kept back for this reason, by the reason alone
     /// (a blocked row is never [`Group::Waiting`]: the daemon's
-    /// `kept_back::group_of`). `None` for a string in no table.
+    /// `upload_queue::decide_group`). `None` for a string in no table.
     pub fn group(&self) -> Option<Group> {
         Some(match self {
-            // `quota-exceeded` only until a start converts it to `waiting-for-space`.
             Self::Quota | Self::WaitingForSpace | Self::TooBig(_) | Self::Forbidden => Group::OneAction,
             Self::NameCharacters | Self::NameSpaces | Self::NameReserved | Self::NameNotUtf8 | Self::TooLarge | Self::Refused(_) => {
                 Group::PerFile
             }
-            // What the worker blocks a row with beside those: the row itself, or the
-            // file's state, is not what a step can work with. `Blocked`: no reason at all.
+            // Beside those, what no step can work with: an item the start-up check could not
+            // read on disk, and `Blocked`, no reason at all.
             Self::NotReadOnDisk
             | Self::Blocked => Group::PerFile,
             Self::OpenForWriting

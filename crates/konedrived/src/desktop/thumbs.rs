@@ -230,7 +230,7 @@ impl ThumbnailFiller {
                     () = tokio::time::sleep(Duration::from_secs(600)) => {}
                     () = cancel.cancelled() => return,
                 }
-                // Turned off, or paused (`docs/design/writes.md` §11): no request; the
+                // Turned off, or paused (`docs/design/writes.md` §6.3): no request; the
                 // next kick after the pause ends, or turning them on, drains what waits.
                 if !self.running.thumbnails_go() {
                     continue;

@@ -1,9 +1,6 @@
 //! The plan for one item: the rows are written here as values, each as an operation of the
-//! store leaves it. `existence`, `place` and `content` hold a test per cell of the design's
-//! three tables (`docs/tasks/item-versions-design.md`, §6) and per sub-case the map of
-//! today's code splits a cell into (`docs/tasks/item-versions-plan-map.txt`, §1: E1–E24,
-//! P1–P11, C1–C11). A test's comment names the map's row and the test of today's code that
-//! pins the same behaviour, or says "new" or "differs from today".
+//! store leaves it. `existence`, `place` and `content` hold a test per cell of the three
+//! tables of `docs/design/sync.md` §6.3.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -267,7 +264,6 @@ pub(crate) fn row_step(step: RowStep) -> Answer {
     Answer::Step(SyncStep::Row(step))
 }
 
-/// New.
 #[test]
 fn the_root_of_the_folder_is_never_planned() {
     // Also a root no listing bound yet, and one a program is said to write.
@@ -279,17 +275,14 @@ fn the_root_of_the_folder_is_never_planned() {
     assert_eq!(make_sync_plan(&given), SyncPlan::default());
 }
 
-/// New.
 #[test]
 fn items_the_two_sides_agree_on_are_in_no_part_of_the_answer() {
     let given = input(vec![synced_directory(2, ROOT, "d"), synced_file(3, id(2), "a.txt"), on_disk(synced_file(4, ROOT, "b.txt"))]);
     assert_eq!(make_sync_plan(&given), SyncPlan::default());
 }
 
-/// The map's E12 (a partial file at the path, today `not-downloaded` for 30 s, no test):
-/// differs from today. The rows have no "being filled": a download is a step that is
-/// running, and whatever the rows say of the item, it waits for that step. Also the map's
-/// "one step per item at a time".
+/// The rows have no "being filled": a download is a step that is running, and whatever
+/// the rows say of the item, it waits for that step. One step per item at a time.
 #[test]
 fn an_item_with_a_step_running_waits_for_it() {
     let mut given = input(vec![removed_in_onedrive(moved_here(synced_file(2, ROOT, "a.txt"), ROOT, "b.txt")), made_file(3, ROOT, "new.txt")]);
@@ -298,10 +291,6 @@ fn an_item_with_a_step_running_waits_for_it() {
     assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::RunningStep));
 }
 
-/// Today: `a_fresh_file_held_open_waits_for_its_last_writer`
-/// (`fuse/detections/entry_created/tests.rs`) and
-/// `a_onedrive_file_opened_for_writing_is_its_new_content_and_waits`
-/// (`fuse/detections/file_written/tests.rs`).
 #[test]
 fn a_file_a_program_holds_open_for_writing_is_not_planned() {
     let mut given = input(vec![made_file(2, ROOT, "new.txt"), with_content_here(synced_file(3, ROOT, "a.txt"), written_here())]);
@@ -310,17 +299,16 @@ fn a_file_a_program_holds_open_for_writing_is_not_planned() {
     assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::User(Reason::OpenForWriting)));
 }
 
-/// New: the step of an item that is both moved and changed here is its move, and its
-/// content is sent by the plan made after it. Today one unsent change does both, the move
-/// first (`edits_and_renames_go_up_guarded`, `upload/tests/row_kinds.rs`).
+/// The step of an item that is both moved and changed here is its move, and its
+/// content is sent by the plan made after it.
 #[test]
 fn an_item_has_one_step_and_its_place_goes_before_its_content() {
     let given = input(vec![with_content_here(moved_here(synced_file(2, ROOT, "a.txt"), ROOT, "b.txt"), written_here())]);
     assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendMove { item: versions(&given, 2), parent: reference("root"), name: "b.txt".into() }));
 }
 
-/// The design's "what is not sent: an ignored item". Today nothing is recorded for an
-/// ignored name (`mount/upload_rules.rs`); here the plan says it leaves the item out.
+/// What is not sent: an ignored item (`docs/design/sync.md` §6.6). The plan says it leaves
+/// the item out.
 #[test]
 fn an_ignored_item_is_left_out_and_waits_for_nothing() {
     let mut given = input(vec![made_directory(2, ROOT, "node_modules"), made_file(3, id(2), "a.js")]);
@@ -329,8 +317,6 @@ fn an_ignored_item_is_left_out_and_waits_for_nothing() {
     assert_eq!(answer(&given, 3), Answer::Exclusion(ExclusionReason::NameIgnored));
 }
 
-/// Today: `a_name_onedrive_refuses_or_a_file_too_large_waits_for_the_user`
-/// (`fuse/detections/entry_created/tests.rs`).
 #[test]
 fn a_name_onedrive_cannot_hold_waits_for_the_user() {
     let mut given = input(vec![made_file(2, ROOT, "a:b"), made_directory(4, ROOT, "CON"), moved_here(synced_file(5, ROOT, "a.txt"), ROOT, " a.txt")]);
@@ -340,8 +326,6 @@ fn a_name_onedrive_cannot_hold_waits_for_the_user() {
     assert_eq!(answer(&given, 5), Answer::Wait(WaitReason::User(Reason::NameSpaces)), "a move sends the name too");
 }
 
-/// Today: `a_fresh_file_is_created_a_moment_after_it_is_closed`
-/// (`fuse/detections/entry_created/tests.rs`): the reason is `changed-while-sending`.
 #[test]
 fn content_changed_within_the_quiet_time_waits_until_it_ends() {
     let mut given = input(vec![made_file(2, ROOT, "new.txt"), with_content_here(synced_file(3, ROOT, "a.txt"), written_here()), made_directory(4, ROOT, "d")]);
@@ -351,8 +335,6 @@ fn content_changed_within_the_quiet_time_waits_until_it_ends() {
     assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::MakeDirectory { item: versions(&given, 4), parent: reference("root"), name: "d".into() }), "a directory has no content");
 }
 
-/// Today: `a_full_onedrive_sends_no_content_but_moves_and_deletes_go`
-/// (`upload/tests/space_left.rs`).
 #[test]
 fn while_onedrive_is_full_no_content_is_sent_and_moves_and_removals_go_on() {
     let mut given = input(vec![
@@ -370,7 +352,7 @@ fn while_onedrive_is_full_no_content_is_sent_and_moves_and_removals_go_on() {
     assert_eq!(answer(&given, 6), onedrive_step(OneDriveStep::MakeDirectory { item: versions(&given, 6), parent: reference("root"), name: "d".into() }));
 }
 
-/// New: a row the schema refuses (something of OneDrive's, or something agreed on, with no
+/// A row the schema refuses (something of OneDrive's, or something agreed on, with no
 /// binding) is a fault of the rows, said by the plan.
 #[test]
 fn a_row_the_rules_of_the_rows_refuse_is_a_fault() {

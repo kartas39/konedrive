@@ -254,8 +254,8 @@ pub(crate) async fn forget_drive(path: &Path) {
 
 /// Writes `drive` on the registered root as the drive it shows
 /// (`user.konedrive.drive`, §6.3), when it carries none yet — through a
-/// window in the read-only lock, like every attribute the daemon writes in a
-/// locked folder. Whether it was written. Blocking.
+/// window in the folder's missing write bits (`with_owner_write`), like every attribute
+/// the daemon writes in a folder without them. Whether it was written. Blocking.
 ///
 /// A folder remembers its account's drive so that another account cannot adopt
 /// it once it is forgotten: a registration of a folder that carries another

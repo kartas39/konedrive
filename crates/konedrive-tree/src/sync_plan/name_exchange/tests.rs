@@ -1,6 +1,6 @@
 use super::*;
 
-/// The review's M1b: a new item of the folder and a new row of OneDrive of its kind under its
+/// A new item of the folder and a new row of OneDrive of its kind under its
 /// temporary name are one item, once no listing is under way. A case per answer, and per
 /// thing that says the listed row is another item.
 #[test]

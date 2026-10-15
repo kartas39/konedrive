@@ -39,7 +39,7 @@ impl Account {
         Ok(self.service.set_label(label)?)
     }
 
-    /// Switches the account's mode (`docs/design/writes.md` §2); the URL of the sign-in the switch
+    /// Switches the account's mode (`docs/design/accounts.md` §10); the URL of the sign-in the switch
     /// needs, empty when it needs none.
     #[zbus(out_args("sign_in_url"))]
     async fn set_mode(&self, mode: &str, force: bool) -> Result<String> {
@@ -56,7 +56,7 @@ impl Account {
         self.service.state().get().label
     }
 
-    /// The mode the account runs in (`docs/design/writes.md` §2), not only the one `config.toml` asks
+    /// The mode the account runs in (`docs/design/accounts.md` §10), not only the one `config.toml` asks
     /// for: `LastError` says why the two differ.
     #[zbus(property)]
     async fn mode(&self) -> String {

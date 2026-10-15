@@ -10,11 +10,12 @@
 //! answered while the row's OneDrive content is `onedrive_content`; the row of the fact
 //! stays until it is forgotten or the item's row goes.
 //!
-//! **Answers for:** the review's S19: without it, an upload into an existing item that
+//! **Answers for:** without it, an upload into an existing item that
 //! ended with another hash reads at the next plan as "changed on both sides", and the
 //! user gets a conflict copy of his own file against this folder's failed upload — once
 //! per upload if OneDrive rewrites what it is sent. With it the plan can tell the case;
-//! the content is then sent again (the owner's decision, `onedrive_steps::content_upload`).
+//! the content is then sent again (`onedrive_steps::content_upload`,
+//! `docs/design/writes.md` §4.3).
 //!
 //! **Tested without the rest:**
 // test: the_fact_is_answered_while_onedrives_content_is_the_one_the_upload_left

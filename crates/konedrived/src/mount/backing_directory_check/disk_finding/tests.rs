@@ -58,7 +58,7 @@ fn a_file_at_the_row_of_a_file_on_disk_is_that_item_clean_or_changed_by_the_comp
     }
 }
 
-/// The review's M1: bytes written through a handle that was never closed may keep the
+/// Bytes written through a handle that was never closed may keep the
 /// file's size and its time. A row that still keeps the content of before the write is
 /// never made clean by the comparison.
 #[test]
@@ -212,14 +212,14 @@ fn compare_content_of_one_name(row: &ContentVersion, file: &DiskContent) -> Cont
     compare_content(row, file, EntryLinks::One)
 }
 
-/// Review S4: the cTag mark is the file's, and says nothing of the item of another name.
+/// The cTag mark is the file's, and says nothing of the item of another name.
 #[test]
 fn the_ctag_mark_is_not_asked_of_a_file_that_has_several_names() {
     assert_eq!(compare_content(&hashed(3, 100, Some("c-1")), &on_disk(3, 100, 0, Some("c-0")), EntryLinks::Several), Same);
     assert_eq!(compare_content(&hashed(3, 100, Some("c-1")), &on_disk(4, 100, 0, Some("c-1")), EntryLinks::Several), Different);
 }
 
-/// Review S1: an id that more than one entry carries binds none of them.
+/// An id that more than one entry carries binds none of them.
 #[test]
 fn an_entry_whose_id_no_row_has_and_several_entries_carry_is_a_new_item_of_the_users_own() {
     assert_eq!(decide_finding(PlaceRow::Nothing, file(OfSeveralEntries, Whole, Same)), DiskFinding::Made);

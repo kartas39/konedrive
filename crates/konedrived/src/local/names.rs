@@ -1,4 +1,4 @@
-//! The name pre-check (`docs/design/writes.md` §4.4): names OneDrive refuses, found
+//! The name pre-check (`docs/design/writes.md` §3): names OneDrive refuses, found
 //! before a request is spent on them.
 //!
 //! A refused name is `blocked` and listed for the user to rename, as Windows
@@ -64,7 +64,7 @@ pub(crate) fn refused(name: &OsStr) -> Option<Refused> {
     None
 }
 
-/// The machine's name for conflict copies (`docs/design/writes.md` §7): the host name
+/// The machine's name for conflict copies (`docs/design/writes.md` §5): the host name
 /// up to its first dot, with any character OneDrive refuses replaced by
 /// `-`, at most 32 characters; `linux` when there is none.
 pub(crate) fn machine_name(host: &str) -> String {

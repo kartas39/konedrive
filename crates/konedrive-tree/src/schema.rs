@@ -1,6 +1,7 @@
 //! The store's schema: its version, what a new store is created with, and
-//! when a store is rebuilt ([`old_store`]): one of another version always is,
-//! and none is brought to this one in place.
+//! when a store is rebuilt ([`old_store`]): one of the version before, where the
+//! change between the two only adds, is brought to this one in place, and one of any
+//! other version is rebuilt.
 
 use std::path::Path;
 

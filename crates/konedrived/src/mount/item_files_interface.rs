@@ -1,10 +1,10 @@
 //! What the daemon's bus interface `Files` asks of a mounted folder, by path, over the
-//! rows: what `files_interface` is today over the directory contents.
+//! rows.
 //!
 //! **State owned:** none; it holds the parts it asks. A path is turned into an item by
-//! ONE reader (`ItemReader::find_item_by_path`), here and nowhere else in `fuse`.
+//! ONE reader (`ItemReader::find_item_by_path`), here and nowhere else in `mount`.
 //!
-//! **Answers for:** `org.konedrive.Files` (the map's 6.3) and `Folder.FreeUpSpace`,
+//! **Answers for:** `org.konedrive.Files` (`docs/design/desktop.md` §2.9) and `Folder.FreeUpSpace`,
 //! `PinnedCount`: download now, free up, pin and unpin, the status of a path.
 //!
 //! **Tested without the rest**, over a store in memory and a temporary backing directory:

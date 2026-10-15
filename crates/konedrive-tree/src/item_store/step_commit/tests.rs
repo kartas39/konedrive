@@ -428,7 +428,7 @@ fn an_item_that_gives_up_its_binding_is_the_users_own_and_another_row_has_what_i
     assert_eq!((of_onedrive.local, of_onedrive.onedrive.unwrap().content, of_onedrive.onedrive_etag.as_deref()), (None, Some(listed_content(8, "h-new")), Some("e-A-2")));
 }
 
-/// The third review's S4: a merge is something the two sides agree on. The two items were
+/// A merge is something the two sides agree on. The two items were
 /// in one directory under one name as OneDrive compares names, and two files had one
 /// content: the commit writes that as agreed on, the place and the content as the folder
 /// has them. The binding of the row is then no guess to any later plan, and what either
@@ -562,9 +562,9 @@ fn a_step_no_plan_asks_for_is_refused() {
     assert!(is_refused(items.commit_agree_on_place(&ItemVersions::of(&items.find_item(ROOT).unwrap().unwrap()))));
 }
 
-// -- the findings of the review of part 3
+// -- a file saved over, or written, while its step runs
 
-/// The review's S1, new: a file saved by a rename over the file whose content is being
+/// A file saved by a rename over the file whose content is being
 /// sent takes that file's binding, and what OneDrive confirmed of the upload is written to
 /// the row that has the binding now. The client's own upload is then not "OneDrive changed
 /// the content": the content agreed on is the one that was sent, and the content saved
@@ -600,7 +600,7 @@ fn content_sent_is_confirmed_of_the_row_that_has_the_binding_now() {
     assert!(is_left_unwritten(&mut store, |items| items.commit_send_content(&planned_from, &sent, None)));
 }
 
-/// S1, for a move: the place OneDrive confirmed is written to the row that has the binding
+/// As above, for a move: the place OneDrive confirmed is written to the row that has the binding
 /// now.
 #[test]
 fn a_move_sent_is_confirmed_of_the_row_that_has_the_binding_now() {
@@ -617,7 +617,7 @@ fn a_move_sent_is_confirmed_of_the_row_that_has_the_binding_now() {
     assert_eq!(now.local.as_ref().and_then(|local| local.place.clone()), Some(place(ROOT, "g2")));
 }
 
-/// The review's S4, new: a step is conditional on whether the content is on disk too. A
+/// A step is conditional on whether the content is on disk too. A
 /// file moved here whose content is on disk gives up its binding when OneDrive removed it,
 /// and is sent again; freed meanwhile, its bytes are nowhere, and the step's commit answers
 /// that the rows changed.
@@ -634,7 +634,7 @@ fn a_step_is_not_written_when_the_content_is_not_on_disk_as_it_was_planned_from(
     assert!(row(&mut store, file).onedrive_item.is_some());
 }
 
-/// The review's S5, new: a file opened for writing while its content is sent, and closed
+/// A file opened for writing while its content is sent, and closed
 /// unchanged, agrees with what was confirmed: the content kept from before the first writer
 /// is the one that was sent, and the confirmation is written there too.
 #[test]

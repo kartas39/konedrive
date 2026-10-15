@@ -13,8 +13,7 @@ pub(crate) fn reserved(name: &std::ffi::OsStr) -> bool {
 /// Every regular file under `root` with its `lstat` metadata: `.konedrive-*`
 /// entries skipped, symbolic links below the root never followed, no mount point
 /// below the root's own filesystem crossed, and nothing deeper than
-/// `konedrive_fs::MAX_DEPTH`. No file is opened — opening a placeholder
-/// would download it — only directories are.
+/// `konedrive_fs::MAX_DEPTH`. No file is opened, only directories are.
 ///
 /// `root` itself is taken as the directory it names, also when it is a link to it — the
 /// link the kernel keeps for a descriptor, by which the backing directory is walked

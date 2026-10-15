@@ -516,7 +516,7 @@ fn a_made_file_replaces_only_a_bound_file_the_folder_does_not_show() {
     assert_eq!(store.item_store().find_bound_item(&reference("F")).unwrap().map(|i| i.local_item_id), Some(removed_file));
 }
 
-/// S2 of the second review. A made file replaces a file removed here whose removal OneDrive
+/// A made file replaces a file removed here whose removal OneDrive
 /// does not know of: a row with something agreed on. Two other rows are bound files the
 /// folder does not show, and are refused, with nothing made: the row of a removal OneDrive
 /// confirmed, whose id OneDrive does not have any more, and an item a listing brought that
@@ -590,7 +590,7 @@ fn an_item_renamed_over_one_that_is_not_in_onedrive_takes_its_place_and_its_row_
     assert_eq!(store.item_store().find_item(empty).unwrap(), None);
 }
 
-/// A file of OneDrive renamed over another file of OneDrive, as today's rename records it
+/// A file of OneDrive renamed over another file of OneDrive, as a rename records it
 /// (the one is moved in OneDrive, the other removed there): each keeps its binding. The
 /// replacing file is at the new place with its synced place where OneDrive still has it;
 /// the replaced one is a row the folder does not show, with what was agreed on. The same

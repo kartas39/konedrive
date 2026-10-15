@@ -151,7 +151,7 @@ fn what_is_free_is_what_the_last_quota_applied_said_less_what_went_up_since() {
     assert_eq!(space.find_free_space(), Some(2 * GIBIBYTE));
 }
 
-/// The review's sequence: a read with a state and no `remaining` after one that said 5 GiB.
+/// A read with a state and no `remaining` after one that said 5 GiB.
 #[test]
 fn a_quota_with_a_state_and_no_remaining_leaves_nothing_free_to_fit_into() {
     let space = space();

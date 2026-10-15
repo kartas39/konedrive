@@ -3,8 +3,8 @@
 //! reads or writes the store: every decision is a function of a fact and a row.
 //!
 //! **A fact of a local change that is not sent** — the upload session, the failed tries of
-//! a step towards OneDrive for that change, the refusal for lack of space, the refusal for good, the taken name, the confirmation of a
-//! removal — is learnt under the stamp the item's row has while its local version is not
+//! a step towards OneDrive for that change, the refusal for lack of space, the refusal for
+//! good, the taken name — is learnt under the stamp the item's row has while its local version is not
 //! the synced one ([`Item::unsent_since`]). The stamp is given when the two first differ,
 //! stays while they differ, and is taken when they agree; the next difference gets another.
 //! All such facts of one item are of one stamp, which the memory holds
@@ -269,8 +269,8 @@ pub enum SpaceFit {
 }
 
 impl SpaceRefusal {
-    /// The file fits when its size is no more than the free space, as today's upload worker
-    /// lets a waiting file go after a quota read.
+    /// The file fits when its size is no more than the free space: a quota read lets a
+    /// waiting file go (`docs/design/writes.md` §4.7).
     pub fn decide_fit(&self, free_space: u64) -> SpaceFit {
         if self.content.size() <= free_space {
             SpaceFit::Fits
@@ -303,7 +303,7 @@ pub enum RefusedVersion {
 /// ([`ItemMemory::drop_facts_of_binding`], [`ItemMemory::drop_answers_of_directory`]);
 /// and, for what was not allowed, a new sign-in (`forget_refusals_for`). Nothing asks
 /// OneDrive again while the item is as it was refused, and no listing says that OneDrive
-/// would take it now: that is the design's "until it changes", and the one fact here
+/// would take it now: that is "until the item changes" (`docs/design/sync.md` §7.5), and the one fact here
 /// that an answer of OneDrive does not void.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {

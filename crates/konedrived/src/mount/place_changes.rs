@@ -9,13 +9,13 @@
 //! Odd while one is under way. Raised by [`PlaceChange`], which only
 //! [`PlaceChanges::begin`] hands out and which is the only thing that renames, makes,
 //! links or sets aside an entry: a change of the disk's names that does not raise the
-//! count cannot be written. Nothing else of `fuse` calls `BackingDirectory`'s `rename`,
-//! `make_*`, `land` or `remove_*` once the switch is made.
+//! count cannot be written. Nothing else of `mount` calls `BackingDirectory`'s `rename`,
+//! `make_*`, `land` or `remove_*`.
 //!
 //! **Answers for:**
 //!
 //! - *An open by path never gives a node another item's file.* The disk changes BEFORE
-//!   the row (design §8), so a reader that reads a row, takes its path and opens it could
+//!   the row (`docs/design/mount.md` §3.2), so a reader that reads a row, takes its path and opens it could
 //!   meet one rename (a missing file) or two (another item's file). Every such reader
 //!   goes through [`PlaceChanges::open_at_row_path`]: the count is read (and waited for
 //!   while odd), then the row and its path in ONE read transaction, then the file is
@@ -34,7 +34,7 @@
 //! - *One shape of "change a place, keep the undo, set aside"* for the mount's write
 //!   operations, the steps towards the folder and the landing of a download: the name a
 //!   set-aside entry gets, the directories made above a place and their marks, and
-//!   nothing replaced that the rows do not say (the map's E2, E21).
+//!   nothing replaced that the rows do not say.
 //!
 //! **The names of entries set aside.** An entry is set aside under
 //! `folder::disk::make_aside_entry_name` of its item, in the root: an entry no row says
@@ -180,7 +180,7 @@ pub(super) enum OpenAtRowError {
     /// The store failed under the read closure.
     Store(TreeError),
     /// The row says the path, and at a moment no change crossed the disk has nothing
-    /// there: a row that says on disk over a missing file (the map's E1).
+    /// there: a row that says on disk over a missing file.
     NoFile { path: PathBuf },
     /// Any other error of the disk, at the path the row says.
     Disk { error: std::io::Error, path: PathBuf },

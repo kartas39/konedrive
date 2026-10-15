@@ -116,7 +116,7 @@ pub struct FolderStatus {
     pub(crate) writable: bool,
 }
 
-/// What the cycles with OneDrive say (`remote::listing`, `listing::live`).
+/// What the cycles with OneDrive say (`listing::listing_cycle`, `listing::live`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CycleStatus {
     /// An initial or `410` listing of the drive is running.

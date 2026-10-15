@@ -23,7 +23,7 @@
 //! 6. `ItemFreeUp::new`; `ItemContentFiles::new`; `ItemLookup::new`;
 //!    `ItemWriteOperations::new`; the parts of the folder steps (`FolderStepParts`);
 //!    `ItemFilesInterface::new`;
-//! 7. `ItemKernelRequests::new`, which the switch's `Filesystem` is made over.
+//! 7. `ItemKernelRequests::new`, which the `Filesystem` of `kernel_requests` is made over.
 //!
 //! Nothing here mounts: what is built answers a step, the `Files` interface and a write
 //! operation without a mount over the folder.

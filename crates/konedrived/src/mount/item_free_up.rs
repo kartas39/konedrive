@@ -2,11 +2,10 @@
 //!
 //! **State owned:** none.
 //!
-//! **Answers for:** design §9, last row — refused while the local content is not the
-//! synced one or a program holds the file open for writing — and design §8's order: "the
-//! row says `NotOnDisk` first, then the file goes". Today the file is removed with no row
-//! touched (`files_interface.rs:230`). And the mending of a row that says on disk over a
-//! file that is not there (the map's E1).
+//! **Answers for:** `docs/design/mount.md` §6 — refused while the local content is not the
+//! synced one or a program holds the file open for writing; the row says `NotOnDisk`
+//! first, then the file goes — and the mending of a row that says on disk over a file
+//! that is not there.
 //!
 //! **Tested without the rest**, a test per case of the decision, over the fixture:
 // test: a_clean_copy_is_freed
@@ -128,7 +127,7 @@ impl ItemFreeUp {
     /// content it decided on; and only then the backing file removed, as a place change
     /// (`PlaceChange::set_aside`, its end, `PlaceChanges::discard`), and the change
     /// announced. A daemon that dies between the two leaves a file the row says is not on
-    /// disk: the check at start reads it as the copy, landed before its row (design §10).
+    /// disk: the check at start reads it as the copy, landed before its row (`docs/design/mount.md` §7.2).
     ///
     /// Called by `ItemFilesInterface::free_up`, as a job of the write-operation thread,
     /// under the tree lock, once per file.

@@ -1,9 +1,9 @@
-//! Rename. The disk first, the row second (design §8).
+//! Rename. The disk first, the row second (`docs/design/mount.md` §3.3).
 //!
 //! **Decides:** `decide_rename`, a pure function of the two places as the rows say
 //! them. **Writes:** `LocalVersionChange::Moved` where nothing is at the new place,
-//! `SavedOver` over an entry (a file saved over a file takes its binding over: design
-//! §5). What is below a renamed directory needs no write: its rows name their parent by
+//! `SavedOver` over an entry (a file saved over a file takes its binding over:
+//! `docs/design/sync.md` §4). What is below a renamed directory needs no write: its rows name their parent by
 //! id.
 //!
 //! **On record before the disk:** `PlaceChangeRecord::MoveEntry { item, from, to }` for a
@@ -103,18 +103,18 @@ pub(super) enum RenameDecision {
     SaveOver { replacing: LocalItemId, replaced: LocalItemId },
 }
 
-/// Whether the rename goes ahead and as what; the errno otherwise, in today's order
-/// (`write_operations/rename_plan.rs:137-171`): `EINVAL` for an exchange; `ENOENT` for no
+/// Whether the rename goes ahead and as what; the errno otherwise, in this order:
+/// `EINVAL` for an exchange; `ENOENT` for no
 /// directory at the new place; `EPERM` for a new name the mount hides; `ENOENT` for
 /// nothing at the old place; the same place is nothing to do; `EINVAL` for a directory
 /// into itself or below; over an entry `EEXIST` when the mode keeps it, `EISDIR` for a
 /// file over a directory, `ENOTDIR` for a directory over a file, `ENOTEMPTY` for a
-/// directory the folder shows something in. Pure. Two things differ from today:
+/// directory the folder shows something in. Pure.
 ///
-/// - `RENAME_EXCHANGE` is refused (`EINVAL`), as today, though the store could exchange.
-/// - An item OneDrive has, moved into a directory that is left here, is TAKEN: today it
-///   is `EXDEV` (`rename_plan.rs:168-170`), which makes `mv` copy and remove. The plan
-///   then plans it as any item OneDrive has (design §6); its move cannot be sent into a
+/// - `RENAME_EXCHANGE` is refused (`EINVAL`), though the store could exchange.
+/// - An item OneDrive has, moved into a directory that is left here, is TAKEN, not
+///   refused `EXDEV`, which would make `mv` copy and remove. The plan
+///   then plans it as any item OneDrive has (`docs/design/sync.md` §6); its move cannot be sent into a
 ///   directory OneDrive does not have, so it waits for the user (`Reason::Parent`, by the plan's `wait_chain`) and
 ///   stays in OneDrive where it was until the directory is sent or the item moved out.
 pub(super) fn decide_rename(case: &RenameCase) -> Result<RenameDecision, Errno> {
@@ -239,7 +239,7 @@ impl ItemWriteOperations {
     /// `forget_place_change_record`); the change ended; what was set aside removed for
     /// good; then a file that
     /// took a binding over marked as the copy of that item. From the begin of the place
-    /// change to its end no reader opens by a path of either place (the map's E3).
+    /// change to its end no reader opens by a path of either place (`docs/design/mount.md` §3.2).
     ///
     /// Called by the kernel's rename, on the write-operation thread.
     pub(in crate::mount) fn rename(&self, directory: LocalItemId, name: &OsStr, new_directory: LocalItemId, new_name: &OsStr, mode: RenameMode) -> Result<(), Errno> {

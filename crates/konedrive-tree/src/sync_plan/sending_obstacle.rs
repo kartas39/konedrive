@@ -78,9 +78,11 @@ pub(crate) enum SendingObstacle {
 /// - an ignored item is never sent, whatever is sent of it;
 /// - a name OneDrive cannot hold, where the name is sent;
 /// - what OneDrive refused of the item, as the steps remember it, whatever is sent;
-/// - a file larger than OneDrive takes, OneDrive being full, and the quiet time, where
-///   content is sent;
+/// - OneDrive being full, and the quiet time, where content is sent;
 /// - a next try that is not before a time still to come, whatever is sent.
+///
+/// A file larger than OneDrive takes is not foreseen: OneDrive's `413` is kept as a
+/// refusal for good (`docs/design/sync.md` §6.6).
 pub(crate) fn find_sending_obstacle(sent_part: SentPart, conditions: &SendingConditions) -> Option<SendingObstacle> {
     if conditions.is_ignored {
         return Some(SendingObstacle::Ignored);

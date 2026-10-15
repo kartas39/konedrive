@@ -1,6 +1,6 @@
 //! The content source of a folder that shows OneDrive: each fetch asks Graph
 //! for the item's metadata afresh — the cTag
-//! and quickXorHash the fill checks the bytes against, and a download URL that
+//! and quickXorHash the download checks the bytes against, and a download URL that
 //! has not expired — and streams from the offset asked for, to the end of
 //! the file or to the end of the piece asked for.
 
@@ -76,7 +76,7 @@ impl ContentSource for GraphSource {
             if item.deleted.is_some() || item.file.is_none() {
                 return Err(SourceError::NotFound(format!("{item_id} is not a file in OneDrive any more")));
             }
-            // When cTag is missing, version is None entirely — the fill checks cTag and hash together.
+            // When cTag is missing, version is None entirely — the download checks cTag and hash together.
             let version = item.c_tag.clone().map(|ctag| Version {
                 ctag,
                 quick_xor: item.quick_xor_hash().and_then(decode_base64),
@@ -105,7 +105,7 @@ impl ContentSource for GraphSource {
 }
 
 /// A missing item — and a signed-out account, which no retry can fix — ends
-/// the fill at once; everything else is worth another try. A throttle (429, 503) is told
+/// the download at once; everything else is worth another try. A throttle (429, 503) is told
 /// apart from the rest of what passes: the drive has waited it out already as far as it
 /// does, and told the pool the time OneDrive named, so none is given here.
 fn source_error(error: DriveError) -> SourceError {

@@ -1,15 +1,14 @@
 //! What the kernel's reading requests are answered from: the rows, read on the asking
 //! thread's own connection.
 //!
-//! **State owned:** none; it holds the parts it reads through. It replaces, for reading,
-//! the node table, the node resolver, the unsent changes and the directory contents
-//! (design §11): a node is a row, and the row's place is the only place.
+//! **State owned:** none; it holds the parts it reads through. A node is a row, and the
+//! row's place is the only place.
 //!
 //! **Answers for:** lookup, getattr, the directory readings and the extended attributes
-//! (design §9, first row): one row by parent and name, or by local item id; the local
-//! version alone says what the folder contains, with §4's three named exceptions. A
-//! request that carries an open handle whose row is gone is answered from the handle's
-//! file (design §3): getattr takes the `fh`.
+//! (`docs/design/mount.md` §4.1): one row by parent and name, or by local item id; the
+//! local version alone says what the folder contains, with the three named exceptions of
+//! `docs/design/sync.md` §3. A request that carries an open handle whose row is gone is
+//! answered from the handle's file: getattr takes the `fh`.
 //!
 //! The rows of an answer are read in ONE read closure (`ReadConnections::read`), so one
 //! read transaction; what it then stats in the backing directory it stats through
@@ -86,8 +85,8 @@ pub(super) enum NodeRow {
 }
 
 /// The errno of a request by a node id whose row is `row`; `None` for a shown item. Pure.
-/// `ESTALE` for a row that is gone (design §3) and for one with no local version: to the
-/// kernel the node is gone either way. (Today such a node is `ENOENT`: the map's E9.)
+/// `ESTALE` for a row that is gone and for one with no local version
+/// (`docs/design/sync.md` §2.4): to the kernel the node is gone either way.
 pub(super) fn decide_node_errno(row: &NodeRow) -> Option<Errno> {
     match row {
         NodeRow::Shown(_) => None,
@@ -248,7 +247,7 @@ impl ItemLookup {
     /// `ENOENT` for no such name and for a name the mount hides
     /// (`folder::disk::is_hidden_name`: an entry no row says, a row the check at start set
     /// aside, a temporary name of an exchange); the directory's own errno when its row
-    /// is not a shown directory. Design §9.
+    /// is not a shown directory (`docs/design/mount.md` §4.2).
     ///
     /// The directory's row and the name's are read in one read closure: of one moment.
     pub(super) fn find_entry(&self, directory: LocalItemId, name: &OsStr) -> Result<ShownEntry, Errno> {
@@ -306,8 +305,7 @@ impl ItemLookup {
 
     /// Readdir and readdirplus: what the folder shows in `directory`, by name, the
     /// names the mount hides left out. Calls `ItemReader::list_children`; the backing
-    /// directory is not read (design §4). A node that is no directory lists nothing, as
-    /// today.
+    /// directory is not read (`docs/design/sync.md` §3). A node that is no directory lists nothing.
     /// The directory's row and its entries are read in one read closure. A node whose
     /// row is gone or shows nothing has the node's errno.
     pub(super) fn list_entries(&self, directory: LocalItemId) -> Result<Vec<Item>, Errno> {
@@ -333,7 +331,7 @@ impl ItemLookup {
     /// writer's file for size and times when `ItemHandles::find_writer_file` has one (an
     /// `fstat` of the handle, no path); the blocks of a file whose content is on disk and
     /// the time of a directory, by one `stat` through `PlaceChanges::stat_at_row_path`
-    /// with `ItemReader::find_path` (design §4, §15). Nothing is read for a file that is
+    /// with `ItemReader::find_path` (`docs/design/mount.md` §3.2). Nothing is read for a file that is
     /// not on disk. Each answer of the stat is told apart (`place_changes::RowPathStat`):
     /// `Crossed` and `NoRow` answer no blocks; so does `NothingOnDisk` — a file the row
     /// says is on disk and the disk has not: the open says so, not the attributes.
@@ -491,8 +489,6 @@ pub(super) enum SyncMark {
 
 impl SyncMark {
     /// The attribute's value, as Dolphin's emblem plugin and `konedrivectl` read it.
-    // The three words are also `upload::local::SYNC_*`, which today's worker writes on
-    // the backing file and which `fuse` may not name (the layer order): they go with it.
     pub(super) fn as_str(self) -> &'static str {
         match self {
             SyncMark::Pending => "pending",
@@ -509,10 +505,10 @@ impl SyncMark {
 /// (`sync_parts::published_plan::decide_is_shown_blocked`: a refusal for good the step
 /// memory keeps, or a wait for the user that neither is held, nor waits for space, nor
 /// goes up by itself); else `Pending` — a wait for a time, another item or a listing
-/// among it, an item the check at start left, one the plan is at fault about (the
-/// owner's decision: neither is called blocked), and an item the last plan was not given.
-/// Pure. The mount answers the attribute; nothing is written on disk, and design §8's
-/// marks stay two (the map's MISSING-2.j). Since nothing is written, a change of the
+/// among it, an item the check at start left, one the plan is at fault about (neither is
+/// called blocked), and an item the last plan was not given.
+/// Pure. The mount answers the attribute; nothing is written on disk
+/// (`docs/design/mount.md` §3.5). Since nothing is written, a change of the
 /// mark reaches whoever watches the folder only when it is announced
 /// (`FolderSteps::announce_marks_changed`, by the plan's task).
 ///

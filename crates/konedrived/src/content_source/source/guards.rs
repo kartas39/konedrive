@@ -14,7 +14,7 @@ use konedrive_graph::quickxor::QuickXor;
 use super::target::Target;
 use super::{ContentSource, Fetched, SourceError, Version};
 
-/// How often a fill makes its progress durable.
+/// How often a download makes its progress durable.
 const CHECKPOINT_EVERY: u64 = 16 * 1024 * 1024;
 
 /// The pause after a download's first break; the second is twice as long.
@@ -154,10 +154,10 @@ pub(super) async fn open(
 ///   answers a resume by restarting the body at 0 (an HTTP `200` to a `Range` request)
 ///   would otherwise have the file's beginning written over its middle, and the result
 ///   reported as a success.
-/// - A declared size of 0 against a placeholder that carries a real size (`original_size`)
-///   is refused, not obeyed: obeying it truncates live content on the strength of one
-///   unconfirmed answer. A file emptied in the cloud is a change of metadata, and belongs
-///   to the sync, not to a fill started by an open. Every other resize, in either
+/// - A declared size of 0 against a content that has bytes (`original_size`) is refused,
+///   not obeyed: obeying it truncates live content on the strength of one unconfirmed
+///   answer. A file emptied in OneDrive is a change a listing brings, not one a download
+///   takes (`docs/design/mount.md` §5.3). Every other resize, in either
 ///   direction, goes through.
 /// - An answer that tells no size is refused, whatever the size asked for: a download
 ///   cannot tell the end of the file from a stream that broke, nor hold what it wrote
@@ -260,7 +260,7 @@ pub(super) fn verify(item_id: &str, version: &Option<Version>, hash: &QuickXor) 
 ///   `EIO`.
 /// - A checkpoint goes whenever its bytes are no prefix of what the next attempt downloads
 ///   — and after a mismatch even when no attempt follows: it counts bytes of content that
-///   failed the hash, and the roll-back would keep them for the next fill.
+///   failed the hash, and the roll-back would keep them for the next download.
 /// - The source is told that what is on disk counts no more
 ///   (`ContentSource::reject_written`) as the first thing after either of the two and
 ///   after [`End::DropCheckpoint`], whether an attempt follows or not. A failure takes

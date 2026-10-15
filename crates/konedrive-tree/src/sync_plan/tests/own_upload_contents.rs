@@ -99,7 +99,7 @@ fn a_file_removed_here_does_not_come_back_for_the_content_its_own_upload_left() 
     assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 2) }));
 }
 
-/// The review's M4: `rm -r` of a directory (2) with such a file in it (3). The file is
+/// `rm -r` of a directory (2) with such a file in it (3). The file is
 /// removed with the directory; not told, the removal is of the folder alone, and the
 /// directory the user removed is shown again.
 #[test]

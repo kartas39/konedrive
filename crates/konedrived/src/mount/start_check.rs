@@ -4,8 +4,8 @@
 //! **State owned:** none. It calls `BackingDirectoryCheck::new(..).run(..)` and nothing
 //! else of the check, and turns its answer into what the start and the plan's task need.
 //!
-//! **Answers for:** the map's 7.1 (where the check goes), 7.b (what is done with its
-//! answer): design §10's second rule — sending is held back for the rows the check left
+//! **Answers for:** where the check runs, and what is done with its answer
+//! (`docs/design/mount.md` §7.3): sending is held back for the rows the check left
 //! (`DiskFindings::list_held_items`) and what is below each, not for the folder. The
 //! paths the check left, with their reasons, are said in the journal here. On the bus the
 //! rows it left are entries of the queue's answers, each said as "could not be read on
@@ -51,8 +51,8 @@ pub(crate) struct StartCheckFindings {
 ///
 /// Called by the mount's build (`item_mount::build_order`, after `BackingDirectory::open`
 /// and the upload rules, before the mount goes over the folder): nothing else reads or
-/// writes the rows or the backing directory meanwhile. The mount waits for it (design
-/// §13: 0.07 to 1.4 s per 100 000 files), and hands the findings out
+/// writes the rows or the backing directory meanwhile. The mount waits for it
+/// (`docs/design/decisions.md` §2.10), and hands the findings out
 /// (`ItemMount::start_check_findings`).
 pub(super) fn check_backing_directory_at_start(backing_directory: Arc<BackingDirectory>, upload_rules: Arc<UploadRules>, drive_id: DriveId, store: &Store) -> Result<StartCheckFindings, TreeError> {
     let findings = store.call_blocking(move |tree_store| BackingDirectoryCheck::new(&backing_directory, &upload_rules, &drive_id).run(&mut tree_store.item_store()))?;

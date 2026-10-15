@@ -130,7 +130,7 @@ impl RowSteps {
 
     /// `MergeItems`: `commit_merge_items(local, onedrive)`; then what the item has on disk
     /// marked as the whole copy of what the two sides agree on
-    /// (`ItemContentFiles::mark_agreed_content`). Design §5.
+    /// (`ItemContentFiles::mark_agreed_content`; `docs/design/sync.md` §4).
     async fn run_merge_items(&self, local: &ItemVersions, onedrive: &ItemVersions) -> StepOutcome {
         let (local_versions, onedrive_versions) = (local.clone(), onedrive.clone());
         if let Err(outcome) = self.commit(local.local_item_id, move |items| items.commit_merge_items(&local_versions, &onedrive_versions)).await {
@@ -156,7 +156,7 @@ impl RowSteps {
     /// (`ItemContentFiles::open_to_send`) and hashes it off the runtime
     /// (`LocalContentFile::hash`); then, under the tree lock,
     /// `commit_hash_local_content(item, hash)`: the plan made after it can ask whether the
-    /// two sides have the same content (design §6). The commit writes the content as
+    /// two sides have the same content (`docs/design/sync.md` §6.3). The commit writes the content as
     /// hashed; the check at start tells a clean copy by the local content against the
     /// synced one, not by that.
     async fn run_hash_local_content(&self, item: &ItemVersions) -> StepOutcome {

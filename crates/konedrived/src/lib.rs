@@ -11,17 +11,13 @@ pub(crate) mod sync_parts;
 pub mod mount;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod folder_steps;
-// The four below have no caller until the owner of a folder's state starts a sync through
-// `sync_tasks`.
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod onedrive_steps;
 pub(crate) mod listing;
 pub mod desktop;
+// Some of what it holds is called by its tests alone.
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod sync_plan_task;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod sync_tasks;
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub mod upload_queue;
 pub mod account_folder;
 pub mod daemon;

@@ -43,7 +43,7 @@ fn lock_config(config_file: &Path) -> anyhow::Result<nix::fcntl::Flock<std::fs::
 
 /// Starts the daemon's accounts on `builder`'s bus (`docs/design/accounts.md` §3.2):
 ///
-/// 1. `config.toml` loaded, a version-1 file migrated (§8) — refused while another
+/// 1. `config.toml` loaded, a version-1 file migrated (§9) — refused while another
 ///    konedrived holds the bus name, since it could write version 1 over the result, or
 ///    holds `config.toml.lock`, which is taken before the file is read and kept for the
 ///    life of the process;

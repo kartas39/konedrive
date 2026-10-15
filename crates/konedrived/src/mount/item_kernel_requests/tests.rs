@@ -189,7 +189,7 @@ impl Requests {
         self.ask(move |requests| requests.answer_open_to_read(node))
     }
 
-    /// An open for writing as the switch makes it: decided on the mount's thread, then
+    /// An open for writing as `kernel_requests` makes it: decided on the mount's thread, then
     /// queued at once or after the download.
     fn open_to_write(&self, node: LocalItemId) -> Result<OpenedFile, Errno> {
         match self.ask(move |requests| requests.decide_open_to_write(node))? {
@@ -198,7 +198,7 @@ impl Requests {
         }
     }
 
-    /// A truncation as the switch makes it.
+    /// A truncation as `kernel_requests` makes it.
     fn truncate(&self, node: LocalItemId, fh: Option<Fh>, size: u64) -> Result<FileAttr, Errno> {
         match self.ask(move |requests| requests.decide_truncate(node, size))? {
             FileToFill::Nothing => self.queue(move |requests, reply| requests.queue_truncate(node, fh, size, reply)),
@@ -224,7 +224,7 @@ impl Requests {
         self.wait_for_queued_jobs();
     }
 
-    /// A part of a directory reading as the switch makes it: the items of the listing
+    /// A part of a directory reading as `kernel_requests` makes it: the items of the listing
     /// from `offset` on.
     fn readdir(&self, node: LocalItemId, fh: Fh, offset: usize) -> Result<Vec<Item>, Errno> {
         let listed = self.ask(move |requests| requests.answer_readdir(node, fh, offset))?;
@@ -249,7 +249,7 @@ impl Requests {
         self.fixture.runtime().block_on(async move { requests.fetch_read_range(range).await })
     }
 
-    /// A read as the switch makes it: decided on the mount's thread, the range fetched
+    /// A read as `kernel_requests` makes it: decided on the mount's thread, the range fetched
     /// on the runtime.
     fn read(&self, fh: Fh, offset: u64, size: u32) -> Result<Vec<u8>, Errno> {
         match self.decide_read(fh, offset, size)? {
@@ -420,7 +420,7 @@ fn assert_every_change_is_refused(mount: &Requests, file: LocalItemId, not_on_di
     assert_eq!(mount.make("new.txt", MadeKind::FileOpenedForWriting).err(), read_only);
     assert_eq!(mount.remove("a.txt", ItemKind::File).err(), read_only);
     assert_eq!(mount.rename("a.txt", "b.txt").err(), read_only);
-    assert_eq!(mount.rename_as("a.txt", "b.txt", RenameMode::Exchange).err(), read_only, "as today: read-only before the mode is looked at");
+    assert_eq!(mount.rename_as("a.txt", "b.txt", RenameMode::Exchange).err(), read_only, "read-only before the mode is looked at");
     assert_eq!(mount.ask(move |requests| requests.decide_open_to_write(not_on_disk)).err(), read_only);
     assert_eq!(mount.queue(move |requests, reply| requests.queue_open_to_write(file, reply)).err(), read_only);
     assert_eq!(mount.queue(move |requests, reply| requests.queue_open_to_overwrite(file, reply)).err(), read_only);
@@ -1025,7 +1025,7 @@ fn a_part_of_a_directory_reading_hands_out_the_kept_listing_and_copies_nothing()
     let fh = mount.ask(|requests| requests.answer_opendir(ROOT)).unwrap();
     let first = mount.ask(move |requests| requests.answer_readdir(ROOT, fh, 0)).unwrap();
     assert_eq!(first.iter().map(local_name).collect::<Vec<_>>(), ["a", "b", "c"]);
-    // Each later part is the listing that was kept, whole: the switch skips to its offset.
+    // Each later part is the listing that was kept, whole: `kernel_requests` skips to its offset.
     for offset in [1, 2, 3] {
         let part = mount.ask(move |requests| requests.answer_readdir(ROOT, fh, offset)).unwrap();
         assert!(Arc::ptr_eq(&part, &first), "the part at {offset} is the kept listing itself");
@@ -1081,7 +1081,7 @@ impl crate::content_source::source::ContentSource for AnotherContentSource {
     }
 }
 
-/// The review's sequence: a handle opened as one content, OneDrive with another content
+/// A handle opened as one content, OneDrive with another content
 /// of the same size by now, which no listing said, and the download a read started.
 #[test]
 fn a_read_through_a_handle_is_never_answered_from_a_download_of_another_content() {
@@ -1105,7 +1105,7 @@ fn a_read_through_a_handle_is_never_answered_from_a_download_of_another_content(
         std::thread::sleep(Duration::from_millis(2));
     }
 
-    // A read as the switch makes it; what it would fetch as a range is only named.
+    // A read as `kernel_requests` makes it; what it would fetch as a range is only named.
     let read = |offset: u64| match mount.decide_read(fh, offset, 16) {
         Ok(ReadAnswer::Bytes(bytes)) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
         Ok(ReadAnswer::Range(range)) => Ok(format!("a range from {}", range.from)),
@@ -1234,7 +1234,7 @@ impl crate::content_source::source::ContentSource for ScriptedDownloadSource {
     }
 }
 
-/// The second review's sequence, with an answer that states another version: one answer
+/// With an answer that states another version: one answer
 /// of OneDrive disagrees with the row, every later one agrees, and no listing changes
 /// the row.
 #[test]
@@ -1314,7 +1314,7 @@ fn every_read_is_stale_and_costs_one_asking_while_onedrive_states_another_conten
     assert_eq!(mount.fixture.read_disk_file("big.bin"), None);
 }
 
-/// The second review's own sequence: one "no such item" to the download a read started,
+/// One "no such item" to the download a read started,
 /// everything after it answered truly.
 #[test]
 fn a_read_of_an_item_onedrive_did_not_have_once_goes_on_as_ranges() {
@@ -1339,7 +1339,7 @@ fn a_read_of_an_item_onedrive_did_not_have_once_goes_on_as_ranges() {
     assert_eq!(mount.read(new_fh, 0, 4096).map(|bytes| bytes.len()), Ok(4096), "a new open");
 }
 
-/// The second review's S-a: the answer states the asked version and its bytes are
+/// The answer states the asked version and its bytes are
 /// another content's; the download finds that by the hash and starts over, and its
 /// second fetch is not answered.
 #[test]
@@ -1373,7 +1373,7 @@ fn a_read_is_not_answered_from_a_downloads_file_once_its_bytes_failed_the_hash()
     assert_eq!(mount.fixture.download_states.find_running_download(&key).map(|running| running.written_up_to), Some(0), "the mark is 0 from the moment the mismatch was found");
 }
 
-/// The third review's sequence W: a content is remembered as another one, read A asks for
+/// A content is remembered as another one, read A asks for
 /// the whole download, and OneDrive has not answered it when reads B and C come.
 fn read_a_remembered_content_while_its_download_has_no_answer(agrees: bool) {
     const SIZE: usize = 2 << 20;

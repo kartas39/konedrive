@@ -25,14 +25,14 @@ pub struct Config {
     #[serde(default)]
     pub client_id: String,
     /// The drives the development build may hand a read-write token out for
-    /// (`TokenExport.ReadWrite`; `docs/design/writes.md` §2.3, §12.1): the test accounts'. It decides
+    /// (`TokenExport.ReadWrite`; `docs/design/desktop.md` §2.11, `docs/design/writes.md` §8.1): the test accounts'. It decides
     /// nothing else — an account's mode is the user's choice, whatever its drive. Empty, the
     /// default, hands none out: the developer install sets it to the test account's drive by
     /// hand, and nothing in the daemon writes it.
     #[serde(default, deserialize_with = "drives", skip_serializing_if = "Vec::is_empty")]
     pub write_test_drive_ids: Vec<DriveId>,
     /// Whether every account holds its background work back on a metered connection
-    /// (`docs/design/writes.md` §11); `None` for yes. One setting for the
+    /// (`docs/design/writes.md` §6.3); `None` for yes. One setting for the
     /// machine, not per account.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_on_metered: Option<bool>,
@@ -164,21 +164,21 @@ pub struct AccountConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub login_hint: String,
     /// Set only until the refresh token of version 1 is moved to this account's own
-    /// Secret Service item (`docs/design/accounts.md` §8.4).
+    /// Secret Service item (`docs/design/accounts.md` §9).
     #[serde(default, skip_serializing_if = "is_false")]
     pub(crate) legacy_token: bool,
-    /// Set only until `account.json` and `tree.sqlite` of version 1 are moved into this
+    /// Set only until `account.json` and the store of version 1 are moved into this
     /// account's directory ([`crate::config::migrate::finish_file_moves`]).
     #[serde(default, skip_serializing_if = "is_false")]
     pub(crate) migrate_files: bool,
     /// The account's registered folder; `None` when it has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) root: Option<RootConfig>,
-    /// Names of local files that are never uploaded (`docs/design/writes.md` §4.2 rule 3), shell globs;
-    /// `None` for the defaults (`local::DEFAULT_PATTERNS`).
+    /// Names of local files that are never uploaded (`docs/design/writes.md` §3), shell globs;
+    /// `None` for the defaults (`local::ignore::DEFAULT_PATTERNS`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) ignore: Option<Vec<String>>,
-    /// The name a conflict copy carries (`docs/design/writes.md` §7); empty for the host's
+    /// The name a conflict copy carries (`docs/design/writes.md` §5); empty for the host's
     /// (`local::names::default_machine_name`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) machine_name: String,
@@ -186,7 +186,7 @@ pub struct AccountConfig {
     /// `None` for yes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) thumbnails: Option<bool>,
-    /// The user's pause of the account (`Folder.Pause`, `docs/design/writes.md` §11):
+    /// The user's pause of the account (`Folder.Pause`, `docs/design/writes.md` §6.3):
     /// paused until then, unix seconds, 0 for until resumed; absent while not paused. A
     /// time that has passed is no pause, and stays here until the section is written again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -256,7 +256,7 @@ pub struct HoldSettings {
     pub on_battery: OnBattery,
 }
 
-/// What every account does on battery (`docs/design/writes.md` §11).
+/// What every account does on battery (`docs/design/writes.md` §6.3).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OnBattery {
     /// The battery changes nothing.
@@ -337,7 +337,7 @@ fn local_source() -> String {
     "local".into()
 }
 
-/// An account's mode (`docs/design/writes.md` §2): read-only, the default, or read-write. The mode in
+/// An account's mode (`docs/design/writes.md` §2.1): read-only, the default, or read-write. The mode in
 /// `config.toml` is the one the user chose; the account runs read-write only while its token
 /// carries `Files.ReadWrite` and reaches the drive recorded for it (`AccountService::mode`).
 /// A value this version does not know loads as
@@ -483,15 +483,15 @@ impl Config {
         self.accounts.iter_mut().find(|a| a.id == *id)
     }
 
-    /// Whether `TokenExport.ReadWrite` may hand out a token for `drive` (`docs/design/writes.md`
-    /// §2.3): only for a drive listed in `write_test_drive_ids`, and for none while the list
+    /// Whether `TokenExport.ReadWrite` may hand out a token for `drive` (`docs/design/desktop.md`
+    /// §2.11): only for a drive listed in `write_test_drive_ids`, and for none while the list
     /// is empty, as it is by default. It is asked for nothing else: the list does not decide
     /// an account's mode.
     pub fn read_write_export_allowed(&self, drive: &DriveId) -> bool {
         self.write_test_drive_ids.contains(drive)
     }
 
-    /// The validation at load (`docs/design/accounts.md` §4.1): one entry per account, in file order, `Some`
+    /// The validation at load (`docs/design/accounts.md` §4.2): one entry per account, in file order, `Some`
     /// with the reason when the account is *held*. An account is held when its id is not
     /// an account id (it would not fit an object path or a file path), or when it repeats
     /// an earlier account's id, label (whatever the case) or drive, or its folder has an

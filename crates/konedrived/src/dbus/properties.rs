@@ -1,5 +1,5 @@
-//! The properties of one account's folder that the daemon announces by itself, in one table
-//! (quality finding `SY10`): under which interface and name each goes out, and how it is read
+//! The properties of one account's folder that the daemon announces by itself, in one table:
+//! under which interface and name each goes out, and how it is read
 //! from the published state. The getter of a property answers through its row
 //! ([`Property::of`]), and `signals` compares and sends by the same rows, so a property
 //! cannot be read one way and announced another.

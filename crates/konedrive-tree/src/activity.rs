@@ -41,10 +41,10 @@ activity_kinds! {
     /// A file's space was freed up: `Dehydrate`, or `FreeUpSpace` for the
     /// whole folder at once. Detail: how much.
     Freed => "freed",
-    /// Added in OneDrive, placed here by an incremental cycle.
+    /// Added in OneDrive, and shown here.
     Added => "added",
-    /// Changed in OneDrive: a placeholder took the new version, or a
-    /// downloaded file was replaced by it.
+    /// Changed in OneDrive: the file here takes the new content, and a downloaded copy
+    /// goes (`docs/design/decisions.md` §2.8).
     Updated => "updated",
     /// Removed from OneDrive, and so from here.
     Removed => "removed",
@@ -67,12 +67,13 @@ activity_kinds! {
     /// uploads under way. Once, at the start that made it anew. The path is the folder;
     /// the detail says what was lost.
     StoreRebuilt => "store-rebuilt",
-    /// A download that failed: a fill on open, or `Hydrate`. Detail: why —
+    /// A download that failed: one a program's read or open asked for, or `Hydrate`. Detail: why —
     /// exactly "not enough disk space" when the disk is full.
     Failed => "failed",
-    /// A file changed in OneDrive that could not be replaced here (`docs/design/sync.md`
-    /// §9); the old version stays. Detail: why — exactly "not enough disk
-    /// space" when the disk cannot hold both versions.
+    /// A file changed in OneDrive that could not be replaced here; the old version stays.
+    /// Detail: why — exactly "not enough disk space" when the disk cannot hold both
+    /// versions. No step records it: a downloaded copy that OneDrive changed is dropped,
+    /// not replaced (`docs/design/decisions.md` §2.8).
     UpdateFailed => "update-failed",
     /// Content made or changed here went up to OneDrive (a folder made
     /// here too). Detail: its size, or "folder".
@@ -86,10 +87,10 @@ activity_kinds! {
     /// once per change and reason. Detail: the reason.
     UploadFailed => "upload-failed",
     /// OneDrive's version was kept, or put back, where both sides changed
-    /// one item (`docs/design/writes.md` §7). Detail: why.
+    /// one item (`docs/design/sync.md` §6.4). Detail: why.
     Restored => "restored",
     /// Made here, then removed here before its upload finished: it never
-    /// goes up, and its rows leave the upload queue. Detail: why.
+    /// goes up. Detail: why.
     NotUploaded => "not-uploaded",
 }
 

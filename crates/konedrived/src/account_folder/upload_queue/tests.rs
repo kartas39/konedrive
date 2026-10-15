@@ -56,7 +56,7 @@ fn the_sources_of_a_running_sync_are_the_plans_answers_the_running_steps_and_the
 }
 
 /// With no running sync the store is read all the same, with no answer, no step and the
-/// conditions of a stopped sync: what the last plan published is not taken for today's.
+/// conditions of a stopped sync: what the last plan published is not taken for what holds now.
 #[test]
 fn the_sources_of_a_stopped_sync_are_its_store_alone() {
     let fixture = ItemFixture::new();

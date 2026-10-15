@@ -3,7 +3,7 @@
 //! daemon was about to do, of what the rows say now of the items it names, and of what the
 //! disk has at the places it names ([`RecordFacts`]), with no disk and no store in it.
 //!
-//! The record is the daemon's own knowledge of its own change (design §8): the entry is at
+//! The record is the daemon's own knowledge of its own change (`docs/design/mount.md` §3.4): the entry is at
 //! one of the places the record names, and no mark is asked. The rules:
 //!
 //! - *A row that was written is not undone.* Where the rows say what the change was for —

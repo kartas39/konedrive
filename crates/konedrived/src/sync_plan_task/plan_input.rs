@@ -9,8 +9,8 @@
 //! memory and the listing's state a plan is made from are of one moment, and no job of
 //! the writer waits for it.
 //!
-//! **Answers for:** the map's MISSING-2.h (the closing of the set) and the gathering of
-//! `SyncPlanInput` (P5): design §6, "what it is given" — among it what the steps remember
+//! **Answers for:** the closing of the set and the gathering of `SyncPlanInput`
+//! (`docs/design/sync.md` §6.1) — among it what the steps remember
 //! (`next_tries`, `sending_refusals`), what the task itself remembers of the steps towards
 //! the folder and of the rows that failed (`next_tries` too) and what the check at start left
 //! (`items_left_by_start_up_check`), which the plan is TOLD and answers as its own waits.
@@ -65,8 +65,7 @@ pub(crate) struct PlanSettings {
 }
 
 /// How long after its last change a file's content is not sent, in seconds: a program
-/// that saves in several writes is not sent half-way. Today's value (`local::QUIET` of the
-/// watcher that went: 2 s).
+/// that saves in several writes is not sent half-way (`docs/design/writes.md` §3).
 pub(crate) const QUIET_TIME: i64 = 2;
 
 /// How many unsent items, and how many OneDrive changed, a plan reads at first.
@@ -722,8 +721,8 @@ pub(crate) fn decide_quiet_until(content: &ContentVersion, quiet_time: i64, now:
     (until > now).then_some(until)
 }
 
-/// Why OneDrive cannot hold `name`, when it cannot: today's rule
-/// (`local/names.rs:51`, `refused`), unchanged. Design §6, "Names".
+/// Why OneDrive cannot hold `name`, when it cannot: `local::names::refused`
+/// (`docs/design/sync.md` §6.5).
 pub(crate) fn find_name_refusal(name: &OsStr) -> Option<Reason> {
     crate::local::names::refused(name).map(|refused| refused.reason())
 }

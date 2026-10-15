@@ -1,9 +1,7 @@
 //! A full listing that was asked for and has not begun, kept across a stop of the daemon.
 //!
 //! **State owned:** one key of `meta`. Set by [`ItemStore::request_full_listing`]; taken
-//! away by `begin_full_listing`, in its transaction (the one line that module gains when
-//! this is filled in). Today the request is a flag in memory (`remote/listing.rs:207-218`)
-//! and a cycle that failed asks again at the next start because every start does.
+//! away by `begin_full_listing`, in its transaction.
 //!
 //! **Answers for:** the plan's `PlanFault::FullListingNeeded` and a listing cycle that
 //! failed part-way reaching the next cycle, also after a restart.
@@ -25,7 +23,7 @@ pub enum FullListingCause {
     /// way that would say it (`PlanFault::FullListingNeeded`): which item.
     PlanFault(LocalItemId),
     /// The check at start bound an entry by a mark no row had: OneDrive's version of it
-    /// is not known (design §10, "a store that was lost").
+    /// is not known (`docs/design/mount.md` §7.4).
     BoundByMarkAtStart,
 }
 
@@ -55,7 +53,7 @@ impl ItemStore<'_> {
     /// the plan, and by the start of a folder whose check bound
     /// entries by their marks. One transaction; asking twice is asking once, and the
     /// first cause is the one kept. The cause is for the journal. Asked for while a full
-    /// listing is under way, it is the next one that is asked for. MISSING-1.d.
+    /// listing is under way, it is the next one that is asked for.
     pub fn request_full_listing(&mut self, cause: FullListingCause) -> Result<(), TreeError> {
         self.write(|tx| {
             if is_full_listing_requested(tx)? {

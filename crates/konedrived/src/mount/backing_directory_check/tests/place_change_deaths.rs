@@ -376,7 +376,7 @@ fn a_record_whose_place_cannot_be_looked_at_stands_and_its_item_is_held_until_it
 
 // ---- An undo that cannot be done: the record goes, and the walk decides the places. ----
 
-/// Review S2 a): `mv mine/own.txt moved.txt` through the mount, a death after the disk, and
+/// `mv mine/own.txt moved.txt` through the mount, a death after the disk, and
 /// then `rmdir mine` by hand. The record stood at every start and `moved.txt` had no row.
 #[test]
 fn a_move_whose_old_directory_is_gone_is_not_undone_and_the_moved_file_is_a_new_item() {
@@ -394,7 +394,7 @@ fn a_move_whose_old_directory_is_gone_is_not_undone_and_the_moved_file_is_a_new_
     f.assert_settled();
 }
 
-/// Review S2 b): `rm docs/a.txt` through the mount, a death after the set-aside, and then
+/// `rm docs/a.txt` through the mount, a death after the set-aside, and then
 /// `rm -r docs` by hand.
 #[test]
 fn a_set_aside_whose_directory_is_gone_is_not_undone_and_the_item_is_not_shown_any_more() {
@@ -416,7 +416,7 @@ fn a_set_aside_whose_directory_is_gone_is_not_undone_and_the_item_is_not_shown_a
     }
 }
 
-/// Review S3: an editor's save over `docs/a.txt`, a death after both renames, and then the
+/// An editor's save over `docs/a.txt`, a death after both renames, and then the
 /// person saves that name again by hand. The person's file was moved under the editor's
 /// temporary name, and the document showed the content from before the save.
 #[test]
@@ -439,7 +439,7 @@ fn a_save_over_is_not_undone_over_what_the_person_saved_at_the_name_since() {
     f.assert_settled();
 }
 
-/// Review NOTE 3: a move that died before the disk; the person moved the entry elsewhere
+/// A move that died before the disk; the person moved the entry elsewhere
 /// and made a file at the record's new place. That file is not the moved entry.
 #[test]
 fn a_file_the_person_made_at_the_new_place_of_a_move_that_never_reached_the_disk_is_not_moved_back() {
@@ -454,7 +454,7 @@ fn a_file_the_person_made_at_the_new_place_of_a_move_that_never_reached_the_disk
     assert_eq!((f.read("docs/b.txt").as_deref(), f.read("docs/a.txt"), f.records()), (Some(&b"the person's own b"[..]), None, vec![]));
 }
 
-/// Review NOTE 1: a file of the size and the second of the download that was to land, which
+/// A file of the size and the second of the download that was to land, which
 /// the person put there: it does not carry the marks of the landed copy, and stays.
 #[test]
 fn a_file_of_the_recorded_size_and_time_that_is_not_marked_as_the_landed_copy_is_not_removed() {

@@ -287,7 +287,7 @@ impl KernelPageCache for RecordedPageCache {
     }
 }
 
-/// The review's S5: after a step took OneDrive's content, no read through the mount may
+/// After a step took OneDrive's content, no read through the mount may
 /// be answered pages of the old one.
 #[test]
 fn the_kernels_pages_of_a_changed_content_are_dropped_before_the_file_is_touched() {

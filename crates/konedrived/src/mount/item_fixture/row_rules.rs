@@ -1,4 +1,4 @@
-//! The rules that hold of the rows at all times (`docs/tasks/item-versions-design.md`, §3),
+//! The rules that hold of the rows at all times (`docs/design/sync.md` §2.3),
 //! asked of rows read whole: what a test over the fixture checks after it changed the rows.
 //! The store's own tests ask the same rules (`konedrive-tree`,
 //! `item_store/tests/row_rules.rs`, test code of that crate): these are written again

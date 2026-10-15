@@ -31,8 +31,6 @@
 //! All the steps of one plan can run now, in any order and at once: where one must go
 //! before another, the other waits for its item, and the plan made after the step sees it
 //! done. One step per item.
-//!
-//! Nothing in the daemon calls it yet.
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -14,7 +14,7 @@ fn a_conflict_is_listed_with_the_copy_kept_beside_the_file() {
 }
 
 /// The path refused travels inside the daemon's sentences (issue #232):
-/// what the daemon writes today is read back here, so a sentence reworded on
+/// what the daemon writes is read back here, so a sentence reworded on
 /// one side fails this test.
 #[test]
 fn the_daemons_sentences_are_read_back() {

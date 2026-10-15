@@ -98,7 +98,7 @@ fn failed() -> TreeError {
 }
 
 /// The store, shared by the tasks of one folder: the listing, the
-/// materializer, the plan's task and the D-Bus queries. One thread owns
+/// mount, the plan's task and the D-Bus queries. One thread owns
 /// its connection, and everyone else sends it jobs: `call` from
 /// async code, `call_blocking` from plain threads. Only that thread holds a
 /// read-write connection to the store; the bus's reads go to a second,
@@ -153,8 +153,8 @@ impl Store {
         self.owner.call(f).await
     }
 
-    /// [`call`](Self::call) for plain threads (the examiner, the
-    /// materializer, the body of a `spawn_blocking`): waits for the answer.
+    /// [`call`](Self::call) for plain threads (the mount's write-operation thread, the
+    /// body of a `spawn_blocking`): waits for the answer.
     /// On an async runtime's thread it panics (tokio refuses to block there).
     pub fn call_blocking<T: Send + 'static>(
         &self,

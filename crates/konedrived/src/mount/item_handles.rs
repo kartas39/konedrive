@@ -1,13 +1,12 @@
-//! What programs hold open, by the kernel's `fh`, each file by the item it is: what
-//! `open_handles` is today by node id, when the node id is the local item id.
+//! What programs hold open, by the kernel's `fh`, each file by the item it is.
 //!
 //! **State owned:** the open files and directories by `fh`; which items are open for
 //! writing and whether anything was written through a handle. Changed by the kernel's
 //! open, create, release, opendir and releasedir alone, through the functions here.
 //!
-//! **Answers for:** what is open for writing (the map's §3 B): the backing file of an
-//! item's writer, for the size and the times of a file open for writing (design §4, a
-//! rule of correctness: §13's measurement), and yes or no for one item (free-up, the
+//! **Answers for:** what is open for writing: the backing file of an item's writer, for
+//! the size and the times of a file open for writing (a rule of correctness:
+//! `docs/design/decisions.md` §2.2), and yes or no for one item (free-up, the
 //! steps). The plan's `items_open_for_writing` is NOT read here: it is read from the rows
 //! of the plan's own moment (`content_before_write`, which the row-first order keeps set
 //! from before the first writer is added until after the last one left).
@@ -113,7 +112,7 @@ impl ItemHandles {
     /// A writer of `item` over `backing_file`, and whether it is the first: the first
     /// writer's open is what writes `LocalVersionChange::OpenedForWriting`. Called by the
     /// write operations on the write-operation thread, under the tree lock, after the row
-    /// was written (design §8: the row first).
+    /// was written (`docs/design/mount.md` §3.3: the row first).
     pub(crate) fn add_writer(&self, item: LocalItemId, backing_file: Arc<File>) -> (Fh, WriterRank) {
         let mut handles = crate::panic::lock(&self.handles);
         let rank = match handles.has_writer(item) {
@@ -132,7 +131,7 @@ impl ItemHandles {
     }
 
     /// The item and the backing file a writer's `fh` writes. Called by write and fsync, on
-    /// the mount's own threads: no row is touched per write (design §8).
+    /// the mount's own threads: no row is touched per write (`docs/design/mount.md` §3.3).
     pub(super) fn find_file_to_write(&self, fh: Fh) -> Option<(LocalItemId, Arc<File>)> {
         match self.find_file(fh)? {
             OpenItemFile::Writing { item, backing_file } => Some((item, backing_file)),
@@ -142,7 +141,7 @@ impl ItemHandles {
 
     /// The backing file of a writer of `item`, any of them: what getattr, lookup and a
     /// directory reading stat for the size and the times of a file open for writing, and
-    /// what the last close reads them from (design §4). `None` when no program writes it.
+    /// what the last close reads them from (`docs/design/sync.md` §3). `None` when no program writes it.
     pub(super) fn find_writer_file(&self, item: LocalItemId) -> Option<Arc<File>> {
         crate::panic::lock(&self.handles).list_writer_files(item, None).next().cloned()
     }
@@ -214,8 +213,8 @@ impl ItemHandles {
     }
 
     /// The items the directory `fh` holds listed at its first reading.
-    /// Kept, as today: a directory read in parts reads one listing, whatever is made or
-    /// removed in between (the map's E4).
+    /// Kept: a directory read in parts reads one listing, whatever is made or removed in
+    /// between.
     pub(super) fn find_listed_items(&self, fh: Fh) -> Option<Arc<Vec<Item>>> {
         match crate::panic::lock(&self.handles).by_fh.get(&fh) {
             Some(OpenItemHandle::Directory(listed)) => listed.clone(),

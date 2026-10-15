@@ -156,7 +156,7 @@ pub(crate) struct StandingSendingHolds {
     /// `None`: not paused. `Some(None)`: paused until resumed. `Some(Some(t))`: paused
     /// until `t`, Unix seconds. As `SendingHolds::set_paused` takes it. The account's
     /// background work is stopped by the user's pause and by the automatic hold alike
-    /// (metered connection, battery: `Running::stop`), as today: the user's pause is
+    /// (metered connection, battery: `Running::stop`): the user's pause is
     /// given with its end, a hold as `Some(None)` — it ends when the owner says so
     /// (`show_pause`), by no time. Both read `SendingHold::Paused`.
     pub(crate) paused_until: Option<Option<i64>>,
@@ -512,8 +512,8 @@ pub(crate) enum CheckDrive {
 /// Cancels in OneDrive the upload sessions a store of an older version holds
 /// (`konedrive_tree::list_old_store_upload_sessions`, off the runtime's threads; then
 /// `DriveClient::cancel_upload` for each), so that their empty files do not hold names
-/// there once the store that knew them is removed (design §13 (6)). Before
-/// [`open_folder_store`], which removes that store. Nothing for a store of today's
+/// there once the store that knew them is removed (`docs/design/sync.md` §9.2, stage 0).
+/// Before [`open_folder_store`], which removes that store. Nothing for a store of this build's
 /// version, for no store, and for one whose sessions cannot be read. A session that
 /// cannot be cancelled now — no network, signed out — is logged and left to expire in
 /// OneDrive, and the start is not refused for it. All are asked at once and awaited

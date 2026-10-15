@@ -3,8 +3,9 @@
 //!
 //! Reads wait here and ask again ([`Throttle::Wait`]). Writes get the answer back
 //! ([`Throttle::Return`]) and come back as
-//! [`WriteError::Throttled`](super::WriteError::Throttled): the worker pauses the whole
-//! account. A fragment of an upload session is sent with [`Throttle::Return`] too, and
+//! [`WriteError::Throttled`](super::WriteError::Throttled): every step towards OneDrive
+//! of the folder waits (`docs/design/writes.md` §6.2). A fragment of an upload session is
+//! sent with [`Throttle::Return`] too, and
 //! [`DriveClient::upload_chunk`] does the rest: it waits, asks the session where it stands,
 //! and sends the fragment again only if the session still expects it. The account page's
 //! two calls get the answer back and tell nobody ([`Throttle::Pass`]).

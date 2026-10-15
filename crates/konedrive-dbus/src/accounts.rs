@@ -404,7 +404,7 @@ pub trait Conflicts {
     fn machine_name(&self) -> zbus::Result<String>;
 }
 
-/// `/org/konedrive/Accounts/<id>`: the Full local scan of that account's folder.
+/// `/org/konedrive/Accounts/<id>`: the start-up check of that account's folder.
 #[zbus::proxy(
     interface = "org.konedrive.LocalScan",
     default_service = "org.konedrive.Daemon",

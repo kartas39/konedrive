@@ -1,4 +1,4 @@
-//! The rules that hold of the rows at all times (`docs/tasks/item-versions-design.md`, §3),
+//! The rules that hold of the rows at all times (`docs/design/sync.md` §2.3),
 //! asked of rows read whole: what a test of the plan and of the commits of its steps checks
 //! after every change.
 

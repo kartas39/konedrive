@@ -262,7 +262,7 @@ fn a_record_whose_place_could_not_be_looked_at_stands_while_its_row_was_not_writ
 
 // An undo that cannot be done: the record goes, and the entries are the check's to decide.
 
-/// Review S2 a): `mv mine/own.txt moved.txt`, a death after the disk, and then `rmdir mine`
+/// `mv mine/own.txt moved.txt`, a death after the disk, and then `rmdir mine`
 /// by hand. The record stood at every start, and the moved file had no row for good.
 #[test]
 fn a_move_is_not_moved_back_into_a_directory_that_is_gone_and_its_record_does_not_stand() {
@@ -271,7 +271,7 @@ fn a_move_is_not_moved_back_into_a_directory_that_is_gone_and_its_record_does_no
     assert_eq!(decide_settlement(moved_over(NoDirectory, OwnEntry, Aside::Nothing)), NothingLeft);
 }
 
-/// Review S2 b): `rm docs/a.txt`, a death after the set-aside, and then `rm -r docs` by hand.
+/// `rm docs/a.txt`, a death after the set-aside, and then `rm -r docs` by hand.
 #[test]
 fn an_entry_set_aside_is_not_put_back_into_a_directory_that_is_gone_and_its_record_does_not_stand() {
     assert_eq!(decide_settlement(RecordFacts::SetAside { row: AsideRow::AtPlaceWithEntry, place: NoDirectory, aside: Aside::Entry }), NothingLeft);
@@ -280,7 +280,7 @@ fn an_entry_set_aside_is_not_put_back_into_a_directory_that_is_gone_and_its_reco
     }
 }
 
-/// Review S3: an editor's save over a file, a death after the disk, and the name saved
+/// An editor's save over a file, a death after the disk, and the name saved
 /// again by hand. What is at the new place is the person's file, not the moved entry.
 #[test]
 fn a_move_is_not_moved_back_when_what_is_at_the_new_place_is_not_the_moved_entry() {

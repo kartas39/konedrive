@@ -8,8 +8,8 @@ fn removed_with_the_directory(number: i64) -> ItemVersions {
 use DirectoryRemovalOutcome::{IsOfFolderAlone, IsSent, WaitsFor, WaitsForListing};
 use ItemBelowRemovedDirectory::{ContentChangedInOneDrive, IsHeldBack, LeftByUpload, NeverShownHere, RemovedHere, ShownHere};
 
-/// The design's "a directory removed here with everything below it removed here too is one
-/// removal": the positive condition. An empty directory is the same.
+/// A directory removed here with everything below it removed here too is one removal
+/// (`docs/design/sync.md` §6.4): the positive condition. An empty directory is the same.
 #[test]
 fn a_removal_is_sent_when_all_onedrive_has_below_the_directory_was_removed_here() {
     assert_eq!(decide_directory_removal(false, &[]), IsSent { removed_with_it: Vec::new() });
@@ -17,7 +17,7 @@ fn a_removal_is_sent_when_all_onedrive_has_below_the_directory_was_removed_here(
     assert_eq!(decide_directory_removal(false, &below), IsSent { removed_with_it: vec![removed_with_the_directory(3), removed_with_the_directory(5)] });
 }
 
-/// The brief's §8: what the folder never showed is not removed with a directory. One such
+/// What the folder never showed is not removed with a directory. One such
 /// item anywhere below makes the removal one of the folder alone.
 #[test]
 fn a_removal_is_of_the_folder_alone_when_onedrive_has_below_the_directory_what_the_folder_never_showed() {
@@ -26,7 +26,7 @@ fn a_removal_is_of_the_folder_alone_when_onedrive_has_below_the_directory_what_t
     }
 }
 
-/// The third review's S3: a file that was removed here and whose content OneDrive changed
+/// A file that was removed here and whose content OneDrive changed
 /// since comes back by itself, and so it is not removed with a directory either. One such
 /// file anywhere below makes the removal one of the folder alone, as what was never shown
 /// does.
@@ -39,9 +39,9 @@ fn a_removal_is_of_the_folder_alone_when_onedrive_changed_the_content_of_a_file_
     assert_eq!(decide_directory_removal(true, &[ContentChangedInOneDrive(id(3))]), WaitsForListing);
 }
 
-/// The design's "a directory's removal waits for every unsent change of what OneDrive has
-/// below it, so that an item moved out of it is not removed with it"; and the review's M1:
-/// one step per item, also when the item would go with another's removal. What holds comes
+/// A directory's removal waits for every unsent change of what OneDrive has below it, so
+/// that an item moved out of it is not removed with it; and one step per item, also when
+/// the item would go with another's removal. What holds comes
 /// before what makes the removal one of the folder alone.
 #[test]
 fn a_removal_waits_for_the_first_item_the_folder_shows_or_that_is_held_back() {

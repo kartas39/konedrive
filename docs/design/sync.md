@@ -1,594 +1,582 @@
 # Sync
 
-How the folder comes to show the user's OneDrive and stays in step with it: listing the drive,
-following its changes, the tree store, reconciling the folder, replacing files that changed in the
-cloud, rescuing local changes, the read-only lock, and the account. How a placeholder is filled when
-opened is in [hydration.md](hydration.md).
+How a folder's two sides are kept in step: the item and its three versions, who writes what, the
+listing, the sync plan, a step and what it remembers, the plan's task, and a folder's start and
+stop. The kernel's requests and the backing directory are in [mount.md](mount.md); what an upload
+sends and how OneDrive answers it, in [writes.md](writes.md).
 
 ## 1. Scope
 
-This document describes a **read-only** account's sync, which every account's is unless it is
-switched to read-write. It reads from OneDrive and never writes to it:
+Everything here runs in the daemon, once for each account's folder.
 
-- the OAuth scope is `Files.Read User.Read offline_access`, so Microsoft refuses any write made with
-  the token;
-- nothing calls the Graph client's writes for a read-only account: its requests to Graph are `GET`s;
-- the folder is read-only, so nothing local can diverge (§11), and a local change forced past the
-  lock is rescued, never overwritten (§10).
-
-A **read-write** account's folder is unlocked, and what is changed in it goes up:
-[writes.md](writes.md) has the watcher, the outbox, conflicts on write, and what its cycle does
-differently. The mode is the user's choice, per account ([writes.md](writes.md) §2.2). Pinning is in
-[pinning.md](pinning.md).
-
-Everything here is per account: each has its own folder, tree store, poller, activity log and
-conflicts. How several accounts share one daemon and one link to the helper is in
-[accounts.md](accounts.md).
-
-## 2. Components
-
-All of this runs in the daemon, as the user, once for each account.
-
-| Component | Where | Responsibility |
+| Part | Where | Answers for |
 |---|---|---|
-| Graph client | `konedrive-graph/src/drive/` | `/me/drive/root/delta` with its pages, item metadata, content, thumbnails; `Retry-After`; for a read-write account, the guarded writes ([writes.md](writes.md) §6) |
-| Tree store | `konedrive-tree/src/` | SQLite: one row per file and folder, the delta link, the activity log, the conflicts (§5) |
-| Listing and poller | `remote/listing.rs`, `remote/listing/` | One folder's sync cycles: when to run, what to fetch, which scope to reconcile, when to commit (§4, §6) |
-| Live changes | `remote/live.rs`, `konedrive-graph/src/drive/socket.rs` | Graph's notification socket: a cycle as soon as the drive changes (§4.2) |
-| Materializer | `remote/materialize.rs`, `remote/materialize/`, `folder/disk.rs` | Makes the folder match a tree (§7), rescues local work (§10), keeps the lock (§11) |
-| Graph content source | `hydration/graph_source.rs` | Serves fills from Graph ([hydration.md](hydration.md) §7) |
-| Replacements | `remote/materialize/replace.rs`, `remote/listing/replacements.rs` | Brings a downloaded file up to a new version (§9) |
-| Thumbnail filler | `desktop/thumbs.rs` | Puts OneDrive's thumbnails into KDE's cache ([desktop.md](desktop.md) §8) |
-| Baloo exclusion | `desktop/baloo.rs` | Keeps the file indexer out of the folder ([desktop.md](desktop.md) §9) |
-| Account | `account/`, `konedrive-graph/src/oauth.rs`, `konedrive-graph/src/token.rs` | Sign-in, tokens, the account's name and quota (§12) |
-| Configuration | `config/` | `config.toml`: the client id, and each account with its folder ([accounts.md](accounts.md) §4.1) |
-| Watcher, examination, outbox worker | `local/watcher/`, `local/`, `upload/` | a read-write folder's local changes, found and sent ([writes.md](writes.md) §3–§8) |
-| Read-write reconcile | `remote/listing/rw.rs`, `remote/listing/reconcile.rs`, `remote/materialize/rw.rs`, `remote/materialize/rw/` | what a read-write folder's cycle adds, keeping local work ([writes.md](writes.md) §9) |
+| The store | `crates/konedrive-tree/src/` (`ItemStore` writes, `ItemReader` reads) | the rows: what the folder shows, what OneDrive has, what the two sides agreed on (§2) |
+| The listing | `crates/konedrived/src/listing/` (`ListingCycle`, `ListingPoller`) | OneDrive's delta listing written into the rows' OneDrive versions (§5) |
+| The sync plan | `crates/konedrive-tree/src/sync_plan.rs`, `sync_plan/` (`make_sync_plan`) | a pure function: the steps that make the two sides agree, and why the rest waits (§6) |
+| The step runners | `crates/konedrived/src/folder_steps/`, `onedrive_steps/`, `sync_plan_task/row_steps.rs` | one step each, towards the folder, towards OneDrive or of the rows, and its commit (§7) |
+| The step memory | `crates/konedrive-tree/src/step_memory.rs`, `step_memory/` | what a step keeps of an item between tries and across a stop (§7.5) |
+| The plan's task | `crates/konedrived/src/sync_plan_task/` (`SyncPlanTask`) | reading the rows, making a plan, starting and settling its steps (§8) |
+| What the tasks share | `crates/konedrived/src/sync_parts/` | `RunningSteps`, `SyncPlanWake`, `PublishedPlan`, `SendingHolds`, `OneDriveSpace`: each one piece of state several tasks read (§8) |
+| Start and stop | `crates/konedrived/src/sync_tasks/` (`SyncTasks`) | the order of a start, a stop and a switch of the access mode (§9) |
+| The owner of a folder | `crates/konedrived/src/account_folder/` (`SyncService`) | when a folder starts and stops (§9) |
 
-## 3. Which folders sync
+Three writers write rows: the mount's write operations write local versions, the listing writes
+OneDrive versions, and a step's commit writes what the step did. Each wakes the plan's task. The
+task reads what differs in one read transaction, makes a plan and starts its steps. A step runs
+outside every lock and commits under the folder's tree lock, only if the rows are still those it
+was planned from.
 
-An account has at most one registered folder. It has a **source**, recorded in `config.toml` as
-`source` in the account's `[accounts.root]`:
-
-- **`onedrive`** — made by `Folder.Register`, which needs the account signed in (`NotSignedIn`
-  otherwise) and the helper connected (`NoHelper` otherwise). It shows the drive and is kept in step
-  with it.
-- **`local`** — made by `RegisterWithoutInterception`, always: a developer's folder, filled from a
-  local directory with `PopulateFromDirectory`, that never talks to Graph
-  ([hydration.md](hydration.md) §14.3).
-
-The source is decided at registration and kept: a local folder stays local after a sign-in, and a
-OneDrive folder stays OneDrive after a sign-out (it then reports that it is signed out). Changing it
-takes a Forget and a new registration. `Folder.Source` publishes it, so clients need not infer it.
-
-**No OneDrive sync without the helper.** A OneDrive folder's cycle runs only while the folder is
-intercepted and the daemon holds a link to the helper; otherwise it is refused `NoHelper` before
-Graph is asked, and nothing is placed or updated: placeholders nobody intercepts would hand zeros to
-whatever opens them. A folder that was up and lost the helper reads `error` in `Folder.State` at
-once, and `LastError` begins with what to do. A folder restored at a start, before the helper has
-connected, reads `waiting`, and `error` only once the helper is known to be down
-([hydration.md](hydration.md) §14.1; [desktop.md](desktop.md) §2.5).
-
-## 4. Listing and changes
-
-### 4.1 The delta feed
-
-The daemon reads `GET /me/drive/root/delta` and follows `@odata.nextLink` pages until Graph hands
-out an `@odata.deltaLink`. Without a stored link that is a full listing of the drive; with one it is
-the changes since. The final link is stored in the tree store and advanced only when the folder
-matches what it describes (§6). Graph can only list a drive from its root, so there is no
-folder-scoped listing.
-
-Each `DriveItem` is classified: a folder or a file to place, a deletion, or an item to skip, with a
-reason (§7.5). Graph does not promise a parent before its children, so a tree is assembled by
-`parentReference.id` before it is placed.
-
-### 4.2 When a cycle runs
-
-The poller runs a cycle at once when the folder's sync starts, then every **60 s** — every **5
-minutes** while the notification socket is up (below); at once on `Refresh()`; at once when
-NetworkManager reports global connectivity again; at once when the socket says the drive changed;
-and when the account becomes signed in. After a failed cycle it retries after 5, 15 and 30 s, then
-every 60 s. Cycles of one folder never overlap.
-
-No cycle runs while the account is paused (`Folder.Pause`) or holds back by itself (`HeldBack`),
-whatever asks for one; the pause is kept in the account's section of `config.toml` and outlasts a
-restart ([writes.md](writes.md) §11). Nor does one run in a read-only folder whose outbox still
-holds rows ([writes.md](writes.md) §2.2).
-
-**Changes as they happen.** Next to the poller, and started and stopped with it, one task per
-account (`remote/live.rs`) keeps Graph's Socket.IO endpoint for the drive open
-(`GET /me/drive/root/subscriptions/socketIo`). An event only says that something changed — its
-content is not read — and the task asks the poller for a cycle 2 s after the first event of a burst,
-so a burst gives one cycle. Webhooks are not used: they need a public HTTPS address.
-
-- The socket is always on; there is no setting. While it is up the poll is only the safety net,
-  every 5 minutes. When it goes down the poller is told at once, and the next cycle is due at most
-  60 s after the last one.
-- While the account is paused or held back no connection is kept; a stop closes it at once, and its
-  end opens it again. Changes in OneDrive are not heard of meanwhile.
-- The endpoint is fetched again 2 minutes before its `expirationDateTime` (an hour when Graph leaves
-  it out; after a suspend, at the first wake-up past it), but kept for at least 60 s. The new
-  connection is opened before the old one is closed, and the renewal asks for one cycle, since the
-  old socket was not read meanwhile.
-- A connection counts as up — `connected`, the poller told, the backoff reset — only after the
-  server's first ping or 30 s of life, whichever comes first. One that ends sooner is a failure like
-  one that cannot open: no reconnect storm when the service accepts and drops at once.
-- A connection that ends or cannot open is tried again after 1, 2, 4 … 60 s, or at the next nudge.
-  The first connection up after a drop asks for one cycle: events during the gap are lost. The
-  socket goes directly to Microsoft's notification host, never through a proxy (issue #209): without
-  a direct route the poll carries on alone.
-
-`Folder.LiveChanges` says which way changes arrive: `connected`, `connecting` (trying, or waiting
-before the next try; the poll runs every 60 s), or `off` (paused, held back, or not a OneDrive
-folder). `konedrivectl sync status` prints "Changes from OneDrive: live" or "every minute
-(connecting)", and nothing while it is `off`.
-
-### 4.3 Throttling and errors
-
-A `429` or `503` to a read is waited out in place: its `Retry-After` (10 s when none is given, at
-most 300 s), and the request fails at the fifth such answer. Each wait is told to the account's
-transfer pool ([hydration.md](hydration.md) §6.4). A `401` refreshes the access token once. A cycle
-that fails for any other reason — no network, Graph unreachable, the store unusable — is logged,
-published in `LastError`, and retried on the schedule above; downloads on open keep working.
-
-### 4.4 An expired delta link
-
-When Graph answers `410 Gone`, the daemon lists the drive afresh and reconciles Full: anything not
-in the new listing is a deletion. Without this, files deleted in the cloud while the machine was off
-would stay forever. Graph's `410` has two variants; a read-write folder follows the one that asks to
-keep what the new listing left out, and uploads those downloaded files again ([writes.md](writes.md)
-§9).
-
-## 5. The tree store
-
-### 5.1 Schema
-
-```sql
-CREATE TABLE items (                -- the tree the folder was last made to match
-  id TEXT PRIMARY KEY, parent_id TEXT, name TEXT NOT NULL,
-  kind TEXT NOT NULL,               -- 'file' | 'folder'
-  size INTEGER NOT NULL DEFAULT 0,
-  mtime INTEGER NOT NULL DEFAULT 0, -- fileSystemInfo.lastModifiedDateTime, Unix seconds
-  etag TEXT, ctag TEXT,
-  quickxor TEXT,                    -- hashes.quickXorHash, base64
-  mime TEXT,                        -- thumbnails are fetched for images and videos only
-  placement TEXT NOT NULL,          -- 'placed' | 'skipped:<reason>'
-  thumb_key TEXT,                   -- the cTag, path and time a cached thumbnail was made for
-  local_handle BLOB,                -- the file handle of the inode the item was placed as
-  local_seq INTEGER NOT NULL DEFAULT 0);  -- the upload that last wrote the row
-CREATE INDEX items_parent ON items(parent_id);   CREATE INDEX items_handle ON items(local_handle);
-CREATE INDEX items_seq ON items(local_seq);                                   -- recent upload commits
-CREATE INDEX items_unplaced ON items(id) WHERE local_handle IS NULL AND <placed>;
-CREATE INDEX items_skipped ON items(id) WHERE <skipped>;   -- placement begins with 'skipped:'
-CREATE TABLE staging (…same columns, and the parent and handle indexes…);  -- a cycle's new tree (§6.1)
-CREATE TABLE staging_gone (id TEXT PRIMARY KEY);                              -- what it removes
-CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
-  -- schema_version, drive_id, root_item_id, delta_link, listing_next, staging_whole, last_checked, …
-CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
-                       path TEXT NOT NULL, detail TEXT NOT NULL);   -- the newest 200 events
-CREATE TABLE conflicts (rescued TEXT PRIMARY KEY, at INTEGER NOT NULL, original TEXT NOT NULL,
-                        kind TEXT NOT NULL DEFAULT 'rescued');       -- 'rescued' | 'copy'
--- and a read-write folder's tables, the outbox's and its reconcile's: writes.md §5.1
+```text
+ kernel ──▶ mount's write operations ──┐
+                                       ├─▶ rows ──read──▶ plan's task ──▶ make_sync_plan
+ Graph delta ──▶ listing cycle ────────┘   ▲                                   │
+                                           └── commit ◀── step runners ◀── steps
 ```
 
-A local path is the chain of names from the root; it is computed, never stored, so renaming a folder
-changes one row. The schema is created in one transaction. The file handle is recorded for what the
-daemon places, so that a read-write folder can tell an item's own inode from a copy of it
-([writes.md](writes.md) §4.1).
+## 2. The item
 
-### 5.2 Where it lives
+### 2.1 The row
 
-`$XDG_STATE_HOME/konedrive/accounts/<account id>/tree.sqlite`, one for each account, mode `0600`, in
-WAL mode with `synchronous=NORMAL`. One thread per store owns its read-write connection and runs the
-daemon's store calls one at a time; the bus's lists are read through a second, read-only connection
-([writes.md](writes.md) §11). A single-account installation's store,
-`$XDG_STATE_HOME/konedrive/tree.sqlite`, is moved there once ([accounts.md](accounts.md) §8.3).
+An item is one row of `items` (`Item`, `crates/konedrive-tree/src/model.rs`):
 
-### 5.3 A map, and rebuildable
-
-The extended attributes on the files are the truth about each local file; the store is a map of the
-drive. A store of schema 3 or later (the versions with an outbox) is brought to today's (8) in place
-when it is opened, one numbered step at a time, each in a transaction
-(`konedrive-tree/src/schema/migrations.rs`). If the store is missing, is not a database SQLite can
-read, or is of a version no step starts from (1, 2, or a newer daemon's), it is rebuilt: a full
-listing fills it and the folder is reconciled Full against it, finding what is already there by item
-id. A store that only cannot be opened now (permissions, a disk error) is left untouched. Losing the
-store costs one listing, never data — though the activity log and the conflict list go with it, and
-for a read-write folder the outbox: local changes are found again on disk, but a delete not sent yet
-is forgotten, and that item comes back ([writes.md](writes.md) §5.1).
-
-## 6. A sync cycle
-
-### 6.1 Stage, reconcile, swap
-
-1. **Check the helper and the account**: `NoHelper` without interception and a link (§3), then the
-   account check (§12.3).
-2. **Fetch.** Changes since the stored delta link, or a full listing when there is none. The Graph
-   phase writes only `staging` and `meta`.
-3. **Stage.** The changes are laid over `items`: `staging` takes each row the delta writes, whole
-   (copied from `items` first, local columns and all, then changed), and `staging_gone` each id it
-   removes, a removed folder's contents included. The new tree is `staging`, then `items` for every
-   id neither table names. A full listing, which may leave anything out, is staged whole instead:
-   `staging` is then the new tree by itself.
-4. **Reconcile** the folder against the new tree (§7). While it places, it records the file handle
-   of each object it placed, in `items` and `staging`; no other column of `items` is written before
-   the swap.
-5. **Swap.** In one transaction, the rows in `staging` are written into `items`, the ids in
-   `staging_gone` removed from it, both tables emptied, and the new delta link stored. A staged row
-   keeps the thumbnail key `items` has where it has none and the local handle of a row `items` had
-   placed; a row the new tree does not place, and everything below it, loses its handle. A delta's
-   swap writes only what it changed; a full listing's replaces every row.
-
-A crash before the swap leaves the tree in `items` and the delta link as they were, and the next
-cycle, which is Full, empties the two staging tables, asks for the same changes and reconciles
-again. The swap is one transaction, so a crash in it leaves the old tree or the new one, never a
-mix. The reconcile is idempotent: an item already where the tree wants it is left alone.
-
-After the swap the cycle records its activity and conflicts, publishes the counts if the tree may
-have changed (§7.5), records `last_checked`, and starts the replacements the reconcile queued (§9) —
-unless the account was paused meanwhile: the next cycle is then Full and finds them again.
-
-A read-write folder's cycle holds the tree lock its uploads commit under from staging to the swap,
-reads again what an upload committed while the delta was fetched, and keeps OneDrive's change to an
-item with local work waiting until the disk takes it ([writes.md](writes.md) §9).
-
-### 6.2 Full and Changed
-
-A reconcile has one of two scopes:
-
-- **Full** walks the whole folder and makes all of it match the tree.
-- **Changed** looks only at the items the delta named, and turns into Full the moment the folder
-  disagrees with the stored tree: an item outside the scope is in the way, an item's folder is not
-  where the tree has it, a holding directory is left from an earlier run (§7.2), or an I/O error.
-
-Full is the first cycle every time the folder's sync starts (a daemon start, a helper reconnect, a
-bring-up, a switch of the mode). It also runs after a first or `410` listing, after a failed or
-cancelled cycle, when a delta has more than **5000** changes (above that one scan is assumed cheaper
-than item by item), after a cycle that left files for later (`deferred`: files being filled or freed
-up at that moment), after a replacement that found nothing left to do (§9), and after a cycle that
-could not start its replacements because the account was paused. A cycle with no changes, and no
-Full asked for, stores the new link and reconciles nothing. A *failed replacement* does not force
-Full (§9).
-
-### 6.3 Locking and stopping
-
-A cycle asks Graph without the lifecycle lock that guards the folder's registration, and takes it
-(as a reader) from the reconcile to what follows the swap — in a first listing, once per page. So a
-helper reconnect, which takes the lock to re-register and recover, never waits behind a listing, and
-a Forget racing a cycle's staging writes is safe: stopping the poller cancels the Graph request
-first.
-
-Whatever changes the folder's registration stops its sync first: it cancels every part at once — a
-Graph request and a wait for a lock end there — then takes the lifecycle lock as a writer and waits
-for the parts to end. So a stop never waits for Graph, only for a reconcile already changing the
-folder, which checks for the stop between steps, and for a replacement's file operation under way.
-
-## 7. Reconcile
-
-### 7.1 What a change in the cloud does locally
-
-Because the folder is read-only, a local file cannot normally have changed, so every change from the
-cloud can be applied. The one guard — "is this still what we put here?" — catches the case where the
-lock was bypassed (§10). In a read-write folder local changes are the normal case, and the reconcile
-leaves alone whatever has one waiting to upload ([writes.md](writes.md) §9).
-
-| In the cloud | Locally |
+| Field | Holds |
 |---|---|
-| New folder | a directory with its item id, marked by the helper before anything is placed in it (§7.3) |
-| New file | a placeholder with its true size and time, item id, cTag, `online-only` ([hydration.md](hydration.md) §2.4); an empty file is `hydrated` at once, with a stamp |
-| Rename or move, file or folder | two renames, through the holding directory (§7.2); attributes travel with the inode, and a folder's contents move with it |
-| Delete | the file or folder is removed; a program holding a file open keeps reading its copy, and a download into it is stopped. In a read-only folder anything holding local work is rescued first; in a read-write folder what OneDrive had goes and what only this computer has stays and is uploaded as new ([writes.md](writes.md) §9) |
-| New content, file `online-only` | the placeholder takes the new size, time and cTag, in place (§7.4) |
-| New content, file downloaded | the new version is downloaded in the background and swapped in atomically (§9) |
-| New content, file changed locally | the local file is rescued and a placeholder of the new version takes its place (§10) |
+| `local_item_id` | the key: never reused, never changed |
+| `onedrive_item` | the binding, an `OneDriveItemReference`; unique when set |
+| `kind` | a file or a directory, set when the row is made and never changed: a file replaced by a directory is another item |
+| `local`, `onedrive` | the local and the OneDrive version; `None` while that side does not have the item |
+| `onedrive_etag`, `onedrive_mime` | what a request about the item is guarded with; the MIME type a listing gave, for thumbnails |
+| `synced_place`, `synced_content` | what the two sides last agreed on, the place and the content apart |
+| `content_presence` | `OnDisk` or `NotOnDisk`: a stable state, not a download in progress |
+| `content_before_write` | a file's content before its first writer opened it, kept until the last writer closes |
+| `placement` | whether the folder can show the item at all, as the listing said of the item itself ([P7](../limitations/P7.md)) |
+| `is_name_ignored` | the upload rules ignore the item's own name |
+| `confirmed_at_count` | the stamp of the guard against an outdated listing (§5.3) |
+| `is_executable` | the owner's executable bit, this computer's alone ([F303](../limitations/F303.md)) |
+| `unsent_since` | a stamp of one counter while the local version is not the synced one |
 
-Every change goes through a directory descriptor opened beneath the root (`openat2` with
-`RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS`), never through a path string a
-rename could redirect. Before anything is removed, the store forgets the recorded local objects of
-what goes ([writes.md](writes.md) §9). A file being filled or freed up at that moment (its per-inode
-lock is held, or its state is `hydrating` or `dehydrating`) is left for the next cycle and counted
-`deferred`.
+The row also keeps each name folded as OneDrive compares names (`FoldedName`: lower case and
+Unicode's composed form), and whether a directory above it in the folder has an ignored name and no
+binding.
 
-### 7.2 The holding directory
+### 2.2 The three versions
 
-Every move, and with it every name collision — two items swapping names, a cycle of three renames, a
-file replaced by a folder of the same name — is resolved with a **holding directory**,
-`<root>/.konedrive-holding`, in three phases:
+`ItemVersion` holds a place (`ItemPlace`: the parent's local item id and a name) and, for a file, a
+`ContentVersion`. One type serves the three sides; the field says whose. A parent is named by its
+local item id on every side, so that places of the two sides compare. A name is kept as it was
+given. The root has no place.
 
-1. Every item of ours that is not where the new tree wants it is moved to
-   `.konedrive-holding/<item id>`, deepest items first, so that a move never changes the path of
-   something still to be moved.
-2. The new tree is placed top down: each item is found in place, taken back from the holding
-   directory by its id, or created.
-3. Whatever is left in the holding directory once the whole tree is placed is genuinely gone from
-   the drive, and is removed — after rescuing any of it that holds local work. (A read-write folder
-   puts back what is left: [writes.md](writes.md) §9.)
+A content version has a size, a time, and one of two cases: `Hashed { hash, ctag }`, given by
+OneDrive or computed here (either may be missing); or `ChangedHere { change_count }`, changed by a
+program with no hash known, the count raised at each first open for writing.
 
-Everything in the holding directory is keyed by item id, so a crash at any point is resolved the
-same way: a Changed cycle that finds a holding directory left by an earlier run does not touch it,
-it forces a Full reconcile, which resolves the whole tree from the ids. The holding directory is
-marked (M1) the first time anything is sent to it in a run.
+What a side did is read off the row against the synced version (`sync_plan/side_change.rs`): it
+never had the item, removed it, or has it, moved or not, its content the same, changed, or, here,
+not known without a hash. A time alone is no change of a content.
 
-### 7.3 New folders
+### 2.3 What holds of the rows at all times
 
-A new folder is created as `.konedrive-new-<item id>`, labelled with its item id, marked by the
-helper, and only then renamed to its real name. So nothing can be placed in an unmarked directory
-(M1). A crash leaves a temporary directory the next attempt recognises: one that carries this
-folder's id is used as it is, an empty one with no id is removed, and anything else is rescued. A
-marking that fails fails the pass and leaves the directory under its temporary name; it is marked
-before its real name shows it.
+The module doc of `crates/konedrive-tree/src/item_store.rs` names who holds each, the schema or the
+code:
 
-### 7.4 A placeholder's content
+- in the folder, an item's parent exists and is a directory, no item is above itself, the depth is
+  bounded, and a directory holds one item per name;
+- a binding belongs to one item, and moves only between items of one kind;
+- nothing is agreed on for an item with no binding;
+- the root is row 1, a directory with no place, and stays;
+- an item has `unsent_since` exactly while its local version is not the synced one: three triggers
+  keep it, whoever writes.
 
-A placeholder's content is judged by its **cTag and size**, never by its time. Every write of a fill
-moves the file's time to now, and a fill that stopped part-way leaves a checkpoint worth keeping
-([hydration.md](hydration.md) §7.4); taking the time for a new version would punch that partial
-download away at every Full reconcile. So a placeholder of the tree's own version whose time differs
-only gets the cloud's time back, under its per-inode lock. A checkpoint goes only with a new cTag:
-the partial content is then punched, under the same lock and without asking the helper
-([hydration.md](hydration.md) §3).
+On the OneDrive side the schema holds only that a parent is a directory's row and no row is its own
+parent: while a listing is written page by page, two rows may say one name there (§6.4).
 
-### 7.5 What is skipped, visibly
+### 2.4 The node id is the local item id
 
-Nothing is skipped silently. Each of these is stored with `placement = 'skipped:<reason>'` and
-listed by `Skipped()`, `konedrivectl sync skipped` and the window's "Not in the Folder" page:
+The kernel's node id is the local item id; the root is 1, the number FUSE gives the root. Ids are
+never reused, so the generation is always 0 and no table of node ids is kept. A request by an id
+whose row is gone, or that the folder does not show, is answered `ESTALE` ([mount.md](mount.md) §4).
 
-- **A name longer than 255 bytes.** Linux allows 255 bytes per name, OneDrive 255 characters: 127
-  Cyrillic characters fit, 128 fail with `ENAMETOOLONG`. Such an item is never created under a
-  truncated name.
-- **The Personal Vault** (`specialFolder.name == "vault"`), which needs a separate unlock. It is
-  recognised by that facet, not by its name, which any folder could have.
-- **A shared folder added with "Add to my OneDrive"** (`remoteItem`), which lives on another drive
-  (issue #51).
-- **A OneNote notebook** (any item with a `package` facet), which is not a file.
-- **A reserved name**: anything named with the `.konedrive-` prefix would collide with the daemon's
-  own working names (the holding directory, new folders, rescues).
-- **Unsupported**: an item that is neither a file nor a folder, or whose id or name cannot be a name
-  in a directory (empty, `.`, `..`, containing `/` or NUL).
+### 2.5 What is derived and never stored
 
-In a folder that uploads changes, such an item may still be in the folder for a while: its change
-waits until the disk can let it go ([writes.md](writes.md) §9). It is listed from the cycle that
-learnt of it, and its line says that it is still here and what keeps it.
+- **The sync state of a file** (`Item::file_sync_state`): the first that holds of `LocalOnly` (no
+  binding), `RemoteOnly` (not on disk), `ModifiedHere` (the local content is not the synced one) and
+  `Synced`.
+- **The path**: the names of the local places up to the root.
+- **What is unsent** and **what OneDrive changed**: found by the indexes `items_unsent` and
+  `items_changed_in_onedrive`, bounded; no reader walks every row.
+- **Whether an item is left here**, never to be sent: no binding, and its own name ignored or that of
+  a directory above it with no binding. An item OneDrive has is never left here.
+- **Whether the folder can show an item as OneDrive has it** (`FolderVisibility`): its placement and
+  that of every directory above it in OneDrive; not known while one above was never listed.
 
-Only the top of a skipped subtree is listed. `ItemsListed` counts every item in the drive, while
-`ItemsPlaced` and `SkippedCount` count only what the tree reaches from the root through placed
-folders, so the contents of a skipped folder make `ItemsPlaced + SkippedCount` smaller than
-`ItemsListed` by design. `LastChecked` moving is the signal that a cycle has finished.
+### 2.6 The store
 
-The three counts are walked from the tree once per cycle that may have changed it — one with changes
-in its delta, a Full reconcile, a listing. `Skipped()` returns every entry, read through the store's
-read-only connection; the window's page shows the first 200.
+`$XDG_STATE_HOME/konedrive/accounts/<account id>/fuse.sqlite`, in WAL mode. One thread owns the
+writing connection (`Store`); readers use `ItemReader`, one read transaction per closure, and never
+wait for the writer. Beside `items`: the step memory (§7.5), the records of place changes
+([mount.md](mount.md) §3), the pins, the thumbnail marks, the activity log, the conflicts, and in
+`meta` the delta link and the listing under way. A store of another layout is rebuilt, but for the
+one just before when the change only added ([D36](../limitations/D36.md)).
 
-## 8. The first listing, page by page
+## 3. Who writes what
 
-A full listing of a large drive takes minutes. Staged whole, the folder would stay empty until one
-reconcile at the end. So a folder's **first** listing — no delta link, an empty `items` table, and
-nothing in the folder carrying an item id — is placed as it arrives:
+Everything in a row is written through `ItemStore`, each change one transaction.
 
-- each delta page is reconciled as soon as it comes, by the same rules as every other reconcile (M1,
-  the lock, skips, reserved names, rescues);
-- after each page, one transaction commits the page's items into `items` and stores the page's
-  `@odata.nextLink` as `listing_next`; the last page is the ordinary swap, with the delta link;
-- an item whose parent has not arrived yet is committed as a row with no place, and placed when its
-  folder comes — across a stop too;
-- `ItemsListed` and `ItemsPlaced` rise page by page — by what each page listed and created, walked
-  from the tree only at the listing's start and end — and the lifecycle lock is taken per page,
-  never across a Graph request.
+| What | Written by |
+|---|---|
+| local version | the mount's write operations (`ItemStore::apply`), when a program makes, renames, removes, opens for writing, truncates or closes ([mount.md](mount.md) §4); the start-up check ([mount.md](mount.md) §7); a step towards the folder's commit |
+| OneDrive version, eTag, MIME type, `placement` | the listing (`write_listed_changes`, §5) |
+| OneDrive version, eTag, synced place or content, `confirmed_at_count` | a step towards OneDrive's commit, when OneDrive confirmed (§7.2) |
+| synced place or content | the commits of steps towards the folder and of the rows |
+| `content_presence` | a download's landing, a free-up, the write operation that makes a file, the start-up check ([mount.md](mount.md) §5, §6) |
+| `is_name_ignored` | every write of a local place, and `give_up_binding`; all rows once when the ignored names change |
+| `is_executable` | `set_executable_bit` alone |
+| `unsent_since` | the schema's triggers alone |
+| the binding | given to an item OneDrive confirmed as new (`bind_item`), to a row made for an item a listing brought (`make_onedrive_item`, also at a parent's first mention) and to the root; moved by the operations of §4 alone |
 
-A listing stopped part-way (a crash, a stop, a failure) resumes from `listing_next` and asks for no
-committed page again; the first page each cycle reconciles is reconciled Full, finding by id
-whatever the interrupted page had placed. If Graph refuses the stored resume link for good (`410`,
-`404`, another client error), the listing starts again from the beginning the ordinary way: what is
-placed stays and is found by its id, and the rest appears at the end. The account check (§12.3)
-still runs before the first page is placed.
+The listing writes OneDrive versions only, so it takes no tree lock: a `mkdir` never waits behind a
+listing. The mount's write operations and the commits of steps take the tree lock
+([mount.md](mount.md) §2).
 
-Every later cycle, and a listing into a folder that already shows the drive (a lost store, a Forget
-and a new registration), keeps the staged path: part-way through a listing, an item of ours not
-listed yet cannot be told from one that is gone. The page-by-page path has a cost: a folder deleted
-on a later page takes with it children a still-later page moves out, so a download of such a child
-is repeated.
+**The mount reads the local version alone** for names, places and attributes: never the OneDrive
+version, the plan or the disk. Three exceptions: the sync state is §2.5's function of the row; the
+blocks a file takes are the backing file's; and the size and times of a file a program holds open
+for writing are the backing file's, written into the row at the last close. The last is a rule of
+correctness: the kernel puts an append where the answered size says ([mount.md](mount.md) §4).
 
-## 9. Replacing a downloaded file that changed in the cloud
+## 4. When one item takes another's place
 
-A new version is never written over the old one in place: a program reading it would see a mix.
-Instead:
+The local item id follows the file the kernel holds; the binding follows what OneDrive must see as
+one item. Where the two part, the binding moves, by one of three operations
+(`crates/konedrive-tree/src/item_store/bindings.rs`), each inside one transaction:
 
-1. check that the old file is still the one queued, and that the disk can hold both versions at once
-   (the new size plus a 64 MiB margin);
-2. download into an `O_TMPFILE` in the same directory, carrying the item id, through the Graph
-   source, with the same verification as a fill ([hydration.md](hydration.md) §7.2) — without
-   checkpoints, since an `O_TMPFILE` does not survive a crash;
-3. give it the file's length, time, cTag, stamp, `state=hydrated` and mode;
-4. under the old file's per-inode lock, check that the old file is still the one at its name and
-   still unchanged, link the new one in as `.konedrive-new-<item id>`, and rename it over the old
-   name.
-
-A program already reading the old version keeps it to the end; the next open gets the new one. The
-old file is not held open during the download, so freeing it up meanwhile still works; step 4 then
-finds it changed and gives up. Replacements wait in one queue, worked by 8 tasks at most, each
-download in a background slot of the account's transfer pool and reported in `Transfers.Downloads`.
-In a read-write folder, where a program may be writing the old file, steps 1 and 4 take a write
-lease on it, granted only while nobody has it open; a refusal leaves the replacement for a later
-cycle ([writes.md](writes.md) §9).
-
-A replacement that finds nothing left to do — the file moved, was freed up, changed locally, or is
-already this version — ends quietly and makes the next cycle Full. One that fails (not enough disk
-space to hold both versions, a network error) leaves the old version in place, is recorded as
-`update-failed` once per version and reason, says why in `NotUpdated` and `LastError`, and is tried
-again after every cycle that succeeds, without forcing a Full reconcile: a disk too full to hold
-both would otherwise make every cycle scan the whole folder. A leftover `.konedrive-new-<id>` link
-from a crash is cleared by the next swap of the same file or by the next Full reconcile, which
-rescues it instead if it holds local work.
-
-## 10. Rescues and conflicts
-
-### 10.1 What holds local work
-
-Before the reconcile removes, replaces or overwrites a file, it asks whether doing so would lose
-something only this machine has:
-
-- a `hydrated` file that is not empty and whose stamp no longer matches its size and time (it was
-  changed locally);
-- a file of ours in a state nobody can vouch for (no state, or an unreadable one) that holds data
-  blocks;
-- anything without an item id that stands where the tree wants one of its items, or inside a folder
-  of ours that is removed — a file the user created, or one that got into the folder past the lock;
-- an item's id on an object of the wrong kind.
-
-Such a file is **rescued**; anything else of ours is simply replaced or removed. An `online-only`
-placeholder, or one mid-fill or mid-free-up, holds nothing only this machine has, and is never
-rescued.
-
-A read-write folder moves nothing it could upload out of the folder: where this section rescues for
-a change, it renames the file to a conflict copy beside the original and uploads it
-([writes.md](writes.md) §7); of what OneDrive removed, it keeps in place what only this computer has
-([writes.md](writes.md) §9). Only a leftover `.konedrive-new-<id>` that holds local work is still
-rescued as §10.2 says.
-
-### 10.2 How a rescue works
-
-A rescue is **exactly one `renameat2(…, RENAME_NOREPLACE)`** into
-`$XDG_DATA_HOME/konedrive/rescued/<account id>/<time>/<path in the folder>`: never a copy, never a
-delete. (A single-account installation rescued into `rescued/<time>/`; those files stay there.) A
-rename cannot lose bytes; a copy followed by a delete could delete something other than what was
-copied, and would need its own crash protocol. A name already taken there sends the file on to
-`<name>.1`, `<name>.2`, …
-
-A rename works only within one filesystem, so the rescue directory is the XDG one when it is on the
-folder's device, and otherwise `.konedrive-rescued-<folder name>` beside the folder. When neither is
-possible (the folder is itself a mount point, or its parent is not writable) the rescue fails, the
-file is left exactly where it was, the cycle fails and says why, and nothing is lost (limitations
-log F16).
-
-Once out of the folder, the rescued file becomes the user's own: konedrive's attributes are removed
-and it gets ordinary modes (`0644`, directories `0755`). A rescued directory keeps the user's files
-inside it, while placeholders of ours inside it that hold no content are removed rather than left as
-files of zeros — the cloud still has them. An object that carries another account's item id is set
-aside the same way, alive and with its attributes kept ([writes.md](writes.md) §8.3).
-
-### 10.3 Conflicts
-
-Each rescue is recorded as a **conflict** — time, original path, rescued path, kind — in the tree
-store, and announced as a `conflict` activity event. `Conflicts.List()` lists them,
-`Conflicts.Dismiss()` takes one off the list without touching the file, and a conflict whose rescued
-file no longer exists drops off by itself: `List()` looks at every one, and each cycle's end looks
-over the next 200, round the list. `Conflicts.Count` feeds the tray's "needs attention" state. The
-rescues of a reconcile that then fails are recorded too.
-
-## 11. The read-only lock
-
-A read-only account's OneDrive folder is locked: files `r--r--r--` (`0444`), directories `r-xr-xr-x`
-(`0555`). Directories are locked too, because editors save by writing a new file and renaming it
-over the old one, which needs write permission on the directory, not the file. The window and the
-user guide say the folder is read-only.
-
-The daemon lifts write permission only for the moment of its own operation. File content needs no
-window: it is written through a descriptor already open, which works on a `0444` file. But a
-`user.*` attribute write needs write permission on the inode even for its owner (measured on Btrfs),
-and so does creating an entry in a `0555` directory. So `konedrive-fs` lifts the owner's write bit
-around each attribute write and puts it back; a file that must be opened writable (dehydration,
-recovery, a placeholder's update in place) is opened read-only and reopened through
-`/proc/self/fd/<n>` — the same inode, whatever its name leads to by then — with the bit lifted for
-that one open; and each directory gets the same window around each change. A Full reconcile puts the
-lock's mode back on anything of ours found with another.
-
-**What data safety rests on.** A program that opens a file for writing inside such a window keeps a
-writable descriptor. The lock is therefore the rule a person sees, **not** the guarantee. The
-guarantee is the check at the point of danger: before any change from the cloud is applied to a
-file, the daemon verifies the file is still the one it placed or downloaded (§10.1), and rescues it
-if not. No local byte is discarded.
-
-A Forget takes the lock off the whole folder (files `0644`, directories `0755`); what the unlock
-walk cannot reach is logged, and the root then stays `0555`. A local folder is never locked, nor is
-a read-write account's: the switch to read-write takes the lock off with the same walk, once the
-watcher's walk has ended, and the switch back puts it on again ([writes.md](writes.md) §2.2).
-
-## 12. The account
-
-Each account signs in, holds its tokens and checks its drive on its own, as described here; what
-keeps several accounts apart is in [accounts.md](accounts.md) §6.
-
-### 12.1 Sign-in
-
-Sign-in is OAuth 2.0 authorization code with PKCE in the **system browser**, redirected to a
-loopback listener (`http://localhost:<ephemeral port>`), as recommended for desktop applications
-(RFC 8252). Password and second factor stay in the browser. The authority is
-`login.microsoftonline.com/consumers`: personal accounts only (issue #12). The listener accepts only
-`GET /` carrying the expected `state` with a `code` or an `error`, answers any other `GET` with 404,
-is single use, and closes after five minutes or when the attempt is cancelled. konedrive signs in
-with its own application registration; `Accounts.SetClientId` puts another in its place
-([accounts.md](accounts.md) §7.1).
-
-The scope follows the mode ([accounts.md](accounts.md) §10): `Files.Read User.Read offline_access`
-for read-only, `Files.ReadWrite User.Read offline_access` for read-write. A new account's sign-in
-asks for read-only; a later sign-in asks by the mode `config.toml` records, and a refresh by the
-mode the account runs in. So a read-write account whose token lost `Files.ReadWrite`, or whose drive
-is not the one its token was last seen to reach, asks for `Files.Read` and runs read-only until it
-signs in with that permission again.
-
-Before the refresh token is stored, the daemon asks `GET /me/drive` with the new access token, and
-refuses the sign-in if that drive is not this account's, or is already another account's
-([accounts.md](accounts.md) §6.2). A sign-in that cannot make that check, or that brings no refresh
-token, is refused too.
-
-### 12.2 Tokens
-
-- **The refresh token** is stored only in the Secret Service (KWallet), one item per account
-  ([accounts.md](accounts.md) §4.3, §8.4). There is no plaintext fallback: without a Secret Service,
-  sign-in fails with a clear error. It never crosses D-Bus and is never logged.
-- **The access token** lives in the daemon's memory only, one per account. It is refreshed when less
-  than 5 minutes remain, or when it was asked for under another scope than the one in force, by one
-  refresh shared by all callers; a `401` invalidates it once. `invalid_grant` (consent revoked,
-  session expired) deletes the account's refresh token and signs it out: `LastError` says to sign in
-  again, a download on open in its folder fails `EIO`, and the folder reports that it is signed out.
-- **For test runs only**, in a development build (the `dev-tools` feature; a release has none of
-  it), each account's `org.konedrive.TokenExport.ReadOnly()` hands out an access token of that
-  account — about an hour of `Files.Read`, whatever its mode, never the refresh token — and
-  `konedrivectl dev export-access-token` writes it to a `0600` file. Any process of the same user on
-  the session bus can obtain that hour of read access, which is no more than it has by opening files
-  in the folder. `TokenExport.ReadWrite()` hands out a token that can write, for the test-account
-  harness only ([writes.md](writes.md) §12.1).
-
-At startup, a refresh token found by attribute search (which does not unlock the wallet) means
-signed in; the cached name and quota are shown at once and refreshed in the background.
-
-### 12.3 The same account
-
-Every cycle that gets past the helper check begins with `GET /me/drive` and compares the drive id
-with the one the folder was built from, kept both in the tree store and in `config.toml` — as the
-account's `drive_id`, which is also its identity ([accounts.md](accounts.md) §2) — so that a store
-rebuilt empty still has something to compare against. A mismatch is a blocking error, never a
-re-listing of another account's files over this folder, and it turns a read-write account read-only.
-The check costs one request per cycle; a sign-out followed by a different sign-in between two polls
-would defeat a check made only at sign-in. A OneDrive folder also carries its drive, so that no
-other account can register it ([accounts.md](accounts.md) §6.3).
-
-### 12.4 What a signed-out folder does
-
-A OneDrive folder whose account is signed out keeps its files. Its cycles fail at the account check
-without changing anything, `Folder.State` reads `error`, and `LastError` holds "signed out: sign in
-again to keep this folder in step with OneDrive". Downloaded files keep working; placeholders fail
-`EIO` on open. Signing in again nudges a cycle at once, which brings the folder up to date.
-
-## 13. Crash safety of the cycle, in one place
-
-| Interrupted during | What the next run finds | What it does |
+| Operation | When | What it does |
 |---|---|---|
-| Fetching or staging | the old `items` and delta link; `staging` part-filled | empties `staging` and `staging_gone` and asks for the same changes again |
-| Reconcile | a folder part-way between two trees, perhaps a holding directory | a Full reconcile at the next start places everything by item id |
-| The swap | either the old tree and link, or the new ones — one transaction | continues from whichever it is |
-| A page of the first listing | `items` and `listing_next` up to the last committed page | resumes from `listing_next`, reconciling the first page Full |
-| Creating a folder | a `.konedrive-new-<id>` directory | uses it if it carries the folder's id; otherwise removes it if empty, rescues it if not |
-| A replacement | at most a leftover `.konedrive-new-<id>` link; the old version in place | clears the link; the next cycle queues the replacement again |
-| A rescue | the file in the folder or in the rescue directory — one rename | nothing to finish |
-| A fill or free-up | a file in `hydrating` or `dehydrating` | recovery ([hydration.md](hydration.md) §9) |
-| An upload, in a read-write folder | the outbox row, perhaps a session | a replay that settles by content hash ([writes.md](writes.md) §10) |
+| `take_over_binding` | a file not in OneDrive is renamed over one that is (an editor's save, `LocalVersionChange::SavedOver`), or made where a file was removed here whose removal is not sent (`Made { replaced }`). The write operation names the item; the store checks it | the replacing file takes the binding, the OneDrive version and what was agreed on; the replaced row goes. OneDrive sees one item whose content changed: its id, history and sharing links stay |
+| `give_up_binding` | the step `GiveUpBinding` (§6.3) | the item keeps its id, place and content and is an item OneDrive does not have; a new row takes the binding and what OneDrive has |
+| `merge_items` | the step `MergeItems`: two new directories of one name, or two new files of one name and content, one on each side | the local row takes the binding and the OneDrive version of the other, and what they were merged for is agreed on; the other row goes |
 
-## 14. Known limits
+What is OneDrive's goes with the binding: its version, eTag, placement and stamp, and what the two
+sides agreed is in a directory. What the step memory learnt of an unsent change of the items is
+dropped, an upload session to be cancelled (§7.5). A pin follows the binding
+([pinning.md](pinning.md)).
 
-[`../limitations/`](../limitations/) holds the limits that cannot simply be removed. Specific to
-this document: the whole drive is listed even when only part of it matters, since Graph lists from
-the root; the activity log keeps 200 events and summarises large changes; a delta of changes is held
-in memory whole before it is staged; and the numbers here — the poll's intervals and retry steps,
-the socket's debounce and backoff, 5000 changes, 8 replacement workers — are chosen, not measured.
+## 5. The listing
+
+### 5.1 A cycle
+
+`ListingCycle::run` (`crates/konedrived/src/listing/listing_cycle.rs`):
+
+1. the drive the token reaches is checked against the folder's; another stops the cycle
+   ([accounts.md](accounts.md) §6);
+2. how to begin is decided (`decide_listing_start`): a full listing under way goes on from the link
+   the store kept; a full listing asked for, or no delta link, begins a full listing; otherwise the
+   changes since the delta link. A request from the start is always a listing begun anew;
+3. per page: the count of confirmations read, the page fetched, each item classified
+   (`listing/classify.rs`) and the page written in one transaction. Items the store answers are to be
+   read again (§5.3) are read one by one and the page given again with the same link, five rounds at
+   most. The plan is woken;
+4. the page with the delta link ends the listing: the plan is woken with `ListingEnded`, the
+   thumbnail filler nudged, `last_checked` written.
+
+A page is written root first, then what is there (a parent's row made at its first mention, with
+the binding alone), then what is gone with what the rows say is below it. Cycles never overlap,
+and one is cancelled between requests, never in a page.
+
+### 5.2 The poller and the notification socket
+
+`ListingPoller` runs a cycle at once, then 60 s after the last ended (300 s while the notification
+socket is up), after a failure after 5, 15 and 30 s and then every 60 s, and at once on a refresh;
+refreshes given during a cycle are one. While the account's work is stopped no cycle runs, and
+whoever ends the stop asks for one ([writes.md](writes.md) §6.3).
+
+`listing/live.rs` keeps Graph's notification socket open: events within 2 s give one cycle, a
+failed connection is tried again after 1, 2, 4 … 60 s, and the first connection after a drop, and
+every renewal, ask for one cycle, since events in the gap are lost.
+
+### 5.3 The guard against an outdated listing
+
+A page fetched before a step's confirmation may say an older truth than the confirmation wrote. A
+confirmation stamps its row with the next count of confirmations. A page is given with the count
+read before its fetch, and what it says of a row stamped later is taken only when it is what was
+confirmed; otherwise the row is left and the item answered, to be read again.
+
+- A row whose removal was confirmed keeps its binding alone until a listing ends that began at its
+  stamp or after: no older page finds the binding free and makes the item again, nor puts an item
+  into a directory whose removal was confirmed since.
+- Nothing is taken through a row left to be read again: a removal is written whole or not at all,
+  and a full listing's end spares such a row, and what is below it, until it was read.
+
+### 5.4 A full listing and its sweep
+
+A full listing is begun for the first listing, after OneDrive answers 410, when OneDrive refuses the
+kept link of a stopped full listing, when the start-up check bound entries by their marks
+([mount.md](mount.md) §7), and when the plan finds rows no listing will mend
+(`PlanFault::FullListingNeeded`). A request for one is kept in the store across a stop. Its pages
+mark each row they write with the listing's id; at its end every row OneDrive had without the mark
+is taken as gone, bounded by the count the listing began at. A refused link begins a full listing
+once in a cycle; a second fails the cycle.
+
+### 5.5 The delta link
+
+The store keeps the listing under way: its id, its kind, the count it began at and the link to its
+next page. A page of another listing is refused whole and dropped. The link is written last: a call
+that leaves items to read again writes no link and ends nothing, so a stop in between loses
+nothing, and the delta link is written only once nothing of its listing is left to read again. A
+delta link refused otherwise than with 410 fails the cycle and is kept.
+
+## 6. The sync plan
+
+`make_sync_plan` is one pure function: no disk, no network, no clock, no store. Its module doc lists
+the pieces and the order they decide in; one item by itself is decided in
+`sync_plan/item_decision.rs`, each kind of case between items in its own module.
+
+### 6.1 What it is given
+
+`SyncPlanInput`, all values, gathered by `sync_plan_task/plan_input.rs`:
+
+- a bounded set of rows — the unsent items by their stamps, what OneDrive changed, the pinned files
+  to download, the shown items whose placement says no — closed with each one's directories up to
+  the root, the items that have or could take its name, and for a directory that leaves or was
+  removed, what is in it with their count;
+- what only the daemon knows: the items left here, names OneDrive cannot hold, the files open for
+  writing, the quiet time (2 s after a file's last change), the items a step runs for and the
+  directories they send into, the pins, whether a listing is under way, whether OneDrive is full,
+  this computer's name, the items the start-up check could not decide;
+- what the steps remember (§7.5), and the time now.
+
+What it can tell it was not given, it answers (`ItemNotGiven`, `ItemsInDirectoryNotGiven`), and the
+task widens the set (§8.2).
+
+### 6.2 What it answers
+
+`SyncPlan`: the steps that can run now, one per item, the unsent first by their stamps; for every
+other item a wait (for another item, a time, the user, a running step, the start-up check, a
+listing, or what was not given), an exclusion (left here, cannot be shown, left by an upload), or a
+fault. All steps of one plan can run at once in any order: where one must go first, the other waits
+for its item. A wait never ends at nothing (`PlanFault::WaitWithoutEnd`).
+
+Nothing is planned of an item held back: a step runs for it or its request is on record (§7.4), a
+program holds it open for writing, or the start-up check could not decide it or a directory above
+it. A file is planned as it stands once its last writer closed.
+
+### 6.3 The tables
+
+One item by itself, a test per cell (`sync_plan/tests/existence.rs`, `place.rs`, `content.rs`).
+"Here" is the local version against the synced one, "in OneDrive" the OneDrive version against it.
+
+**Whether the item exists:**
+
+| here \ in OneDrive | is there | removed | never was |
+|---|---|---|---|
+| **is there** | the two tables below | a file not moved or changed here goes, its copy with it. Changed here, or moved here and on disk: `GiveUpBinding`, then sent as a new file. Moved here, not on disk: it goes. A directory goes once it shows nothing; one holding the user's own: §6.4 | new here: `MakeDirectory` or `SendNewFile`. Bound, but no listing ever told of it: waits for a listing, then `GiveUpBinding` |
+| **removed** | a file: `SendFileRemoval`, guarded by the eTag, also when OneDrive moved it; when OneDrive changed its content it comes back (`ShowItem`), or where the folder cannot show it what was agreed on is forgotten. A directory: §6.4 | `AgreeOnRemoval`; the row keeps its binding until §5.3 lets it go | — |
+| **never was** | `ShowItem`, not on disk; excluded where the folder cannot show it | — | — |
+
+**Its place**, for an item both sides have:
+
+| here \ in OneDrive | same | moved |
+|---|---|---|
+| **same** | — | `MoveItem`, the copy with it. Where the folder cannot show it: it goes here as if removed, unless its content was changed here, which is sent into it. Into a directory removed here, or to its own temporary name: the place here is sent |
+| **moved** | `SendMove`, guarded by the eTag, before new content | one place: `AgreeOnPlace`. Two: OneDrive's stands and the folder follows; where it cannot (the name is taken or unusable here, OneDrive's directory was removed here, the item cannot be shown there) the local place is sent |
+
+A directory the folder cannot show is never moved in OneDrive: it goes once it shows nothing.
+
+**Its content**, for a file both sides have, once nothing of its place is to do:
+
+| here \ in OneDrive | same | changed |
+|---|---|---|
+| **same** | — (versions one but for a cTag or hash: `AgreeOnContent`) | `TakeOneDriveContent`: the copy goes; a pinned file is then downloaded again |
+| **changed** | `SendContent`, guarded by OneDrive's cTag | the same hash: `AgreeOnContent`; another: `GiveUpBinding`, and the local file becomes a conflict copy (§6.5); no hash here: `HashLocalContent` first |
+
+A content OneDrive has that an upload of this folder left in place of what it sent is no change of
+OneDrive's: the local content is sent again ([writes.md](writes.md) §4).
+An item both sides have with nothing agreed on, at two places — a binding the start-up check guessed
+from a mark on a copy — gives its binding up. A pinned file that agrees and is not on disk gets
+`DownloadContent`. What the rows say OneDrive removed, or cannot be shown, waits while a listing is
+under way; with none, rows that cannot be judged are a fault a full listing mends.
+
+### 6.4 Between items
+
+Each decision between items reads the answers so far and overrules what it must; a held item's answer
+stands. Each case has a test (`sync_plan/tests/item_relations.rs`); an enumeration of every kind of row
+against every relation checks that the plan always has a way on (`sync_plan/tests/enumeration.rs`).
+
+- **One step per item**; a later change waits behind the step that runs.
+- **What frees a name goes before what takes it**, on both sides (`name_contest`).
+- **Names exchanged, or moved in a circle**: one item goes through a temporary name, on the side the
+  names changed on (`name_exchange`). Here the move is on record before the disk
+  ([mount.md](mount.md) §3); towards OneDrive the name is in the step memory before the request.
+- **A directory moved here into what OneDrive has in it**: OneDrive's move stands and the local one is
+  taken back (`TakeMoveBack`, `move_cycle`).
+- **A directory before what is in it; a removal the other way.**
+- **A directory removed here** (`removed_directory`): its removal is sent only when everything the rows
+  say OneDrive has below it was shown here and removed here, and OneDrive changed none of its content
+  since. It is then one unguarded `SendDirectoryRemoval`, whose confirmation takes the rows below.
+  Otherwise the removal is of the folder alone: what was agreed on of the directory is forgotten, and
+  what the user removed below it is decided item by item ([F299](../limitations/F299.md)). The plan,
+  the step before its request (`ItemStore::can_directory_removal_be_sent`) and the commit ask one
+  function. While it waits, nothing below it has a step, and it waits for every running request that
+  sends into it.
+- **A directory OneDrive removed that holds the user's own**: the clean items go, the directory gives
+  up its binding and is sent again, then what is in it ([F255](../limitations/F255.md)).
+- **A directory whose binding moves**: what is agreed to be in it waits (`directory_binding`).
+- **Two rows that say OneDrive has one name** (`onedrive_name_holders`): the second waits for a
+  listing under way; with none, one name twice is a fault, and two names that only fold to one are
+  two items.
+- **What the folder cannot show**: a new item at the name of such an item steps aside; nothing is sent
+  into a directory the folder cannot show or that is left here.
+- **A wait is followed to its end** (`wait_chain`).
+
+### 6.5 Names
+
+OneDrive takes two names that differ by case for one, and says neither by which rule nor what it does
+with Unicode's forms of one letter. The plan does not depend on knowing:
+
+- **OneDrive is the judge.** The plan foresees a clash by its own cautious rule (`FoldedName`). Where
+  OneDrive answers that a name is taken, that is kept (§7.5) and the next plan treats the two names as
+  one. A wrong rule costs one refused request, never a loop or a loss.
+- **A new item of one name on each side**: two directories, or two files of one content, are one
+  (`MergeItems`); where only a hash says, the local content is hashed first; otherwise the user's item
+  steps aside.
+- **Stepping aside** is `RenameToConflictCopy`: renamed here to `<stem>-<computer>.<ext>` (from the
+  second try with a number, `make_conflict_copy_name`), free on both sides as OneDrive compares
+  names, and sent under it by the next plan. Of two local items that want one name, the later unsent
+  steps aside. A file changed on both sides comes here too: its binding given up, OneDrive's item is
+  shown at the name and the local file steps aside ([writes.md](writes.md) §5).
+- **A name OneDrive stores otherwise than sent** is OneDrive's change of the place; the folder follows.
+- **A name OneDrive cannot hold** (`local/names.rs`: certain characters, a space at either end, not
+  UTF-8, reserved names) is not sent and not altered: the item waits for the user.
+
+### 6.6 What is not sent
+
+Asked before any step towards OneDrive (`sync_plan/sending_obstacle.rs`), the first that holds: an
+item left here; a name OneDrive cannot hold, where a name is sent; what OneDrive refused of the item,
+until the user acts; content while OneDrive is full, and within the quiet time; a next try still to
+come. Moves and removals go on while OneDrive is full. A file too large for OneDrive is not foreseen:
+the refusal is kept and the file waits for the user (§7.3).
+
+### 6.7 The access mode's part
+
+The plan knows no access mode. A read-only folder refuses every change and sends nothing: a hold of
+all sending (`SendingHold::FolderReadOnly`), set before any plan of a folder started read-only and
+before the mount's switch. What is unsent stays and is sent when the folder is read-write again.
+Steps towards the folder, of the rows and the downloads of pinned files run in either mode
+([writes.md](writes.md) §2).
+
+### 6.8 What a removal takes
+
+There is none. A removal is planned and sent as any other change, however many files it takes
+([F302](../limitations/F302.md)). What the plan bounds is what a removal takes with it: a directory's
+removal only what the user saw and removed (§6.4); nothing because a file is missing from the disk
+at start ([F298](../limitations/F298.md)), and nothing because a name is ignored.
+
+## 7. A step
+
+A step is one case of `SyncStep`: `OneDriveStep` (one request to Graph; an upload is one request in
+fragments), `FolderStep` (the backing directory and the local version), or `RowStep` (the rows
+alone). Each runner's module doc gives the order of its steps.
+
+### 7.1 Every step is conditional
+
+A step carries the versions it was planned from (`ItemVersions`). It runs outside the lock, for
+seconds or minutes; its commit (`item_store/step_commit.rs`), under the tree lock in one
+transaction, writes what the step did only if those are still the row's, and otherwise nothing
+(`RowsChanged`, no error): the next plan decides. So do a download's landing and a free-up.
+
+A step towards the folder or of the rows asks all the versions. A step that made, moved or filled an
+item in OneDrive asks only the OneDrive version and what was agreed on: a program may rename or
+change the item meanwhile, or save a file over it, and what OneDrive confirmed is written to the row
+that has the binding then. A step towards the folder runs on the mount's write-operation thread, its
+name change on record first, and is undone on disk when its commit answers `RowsChanged`
+([mount.md](mount.md) §3).
+
+### 7.2 What OneDrive confirms
+
+Written in parts, through one confirmation that writes the version, the eTag and the stamp of §5.3 in
+one statement:
+
+- a move: OneDrive's place as answered, and the place sent as agreed on;
+- an upload: OneDrive's content, the content sent as agreed on, and as the local content only while it
+  is still the one sent; a file changed meanwhile stays unsent;
+- a new item: the binding (`bind_item`), merging a row a listing made of it meanwhile;
+- a removal: the row keeps its binding alone.
+
+Where the commit finds a new item's row gone (removed here while it was sent), the step removes what
+it made (`onedrive_steps/made_items.rs`). After a restart it does not: such a file comes back.
+
+### 7.3 Refusals
+
+A step OneDrive refuses decides nothing. A name taken (409) or an item changed (412) asks for a cycle,
+and the next plan has the case as rows. Two causes no listing shows are the step's own
+([writes.md](writes.md) §4): an upload session's empty file that holds the
+name ([F172](../limitations/F172.md)), and its own earlier request whose answer was lost, which it
+adopts. What came of a step is settled in one place, the table of `sync_plan_task/step_settlement.rs`:
+a failed try and its wait; a taken name; a refusal for good (403, 413, a final 400) kept until the item
+changes; a refusal for lack of space kept until the quota says it fits; a throttle or a sign-out,
+which hold all sending and count no try.
+
+### 7.4 Requests on record
+
+A request that changes OneDrive with one answer — a directory made, a move, a removal, an empty file
+— is on record before it leaves (`request_records`): the item, the directory, the name, the content.
+An upload through a session has its opening and session in the step memory instead. The record goes
+with the commit, with a certain refusal, or once what became of it was read
+(`onedrive_steps/lost_answers.rs`). While it stands the plan holds the item as running and sends no
+removal of its directory, also across a stop; one a stop left is settled by reading the item once
+sending is not held, after the first listing of the run. A lost answer is never a state the plan
+cannot see.
+
+### 7.5 The step memory
+
+What a step keeps beyond the versions is kept by local item id and is no source of truth: a fact is
+answered only while the row says what it was learnt for (`ItemMemory::split_by_standing`), and every
+fact names what voids it. A fact of an unsent change is learnt under the row's stamp and answered only
+while the row has it, so a commit that makes the sides agree forgets it by that alone; a fact of what
+OneDrive has is void once OneDrive answers again, by the step's next answer or by a listing, in the
+page's transaction.
+
+| Kept | For | Void when |
+|---|---|---|
+| the upload session: address, expiry, progress, content sent | going on after a stop | the stamp or the bytes are others (the address is then to cancel); the binding moves; the commit |
+| a session about to open, by place and time | telling this folder's empty file from another's | its address is known; the place resolved; a day after its last try |
+| a session to cancel | no empty file left holding a name | cancelled |
+| the failed tries | waiting, and saying why | the stamp; a confirmed request; the binding moves; the time, or a refresh |
+| a refusal for lack of space | not sending until there is room | a quota read says it fits; the stamp or bytes; the binding moves |
+| a refusal for good, of a version or a removal | not sending until the item changes | the stamp, place or bytes; the binding moves; a sign-in, for "not allowed" |
+| a name answered taken, at the place sent | treating two names as one (§6.5) | OneDrive answers again about the name; the binding moves |
+| a temporary name, and where it leads | finishing an exchange after a crash | the item confirmed or listed elsewhere, or gone; the step done with it |
+| an item an upload left with other content | removing it before sending again | the folder has the item; a listing names it otherwise or gone |
+| a content that is this folder's own upload (`own_upload_contents`) | not reading it as OneDrive's change | a listing writes another content; it was sent again, or OneDrive's taken |
+| a request on record | settling a lost answer (§7.4) | the commit; a certain refusal; its outcome read |
+
+Every fact goes with its item's row. The failed tries of a step towards the folder, of the rows, or
+towards OneDrive from a row that is not unsent are kept by the plan's task for its run, with the
+versions the step was planned from (`sync_plan_task/local_step_tries.rs`): nothing of a row tells one
+piece of such work from the next.
+
+## 8. The plan's task
+
+### 8.1 A round
+
+`SyncPlanTask`, one loop per folder in either access mode. A round (`decide_round`) makes a plan —
+in one read closure (`plan_input::plan_next_steps`), its answers published in `PublishedPlan` for the
+bus and the mount's sync mark ([writes.md](writes.md) §7) —; or goes
+on with the last plan, when only steps finished and none changed anything; or sleeps. The steps that
+can start are chosen (`step_choice`) and started; outcomes ready together are settled in one job.
+
+### 8.2 What bounds the plans
+
+A plan reads 1000 items of each kind that differs, and twice as many while no step can run and more
+is there, or while the unsent items that wait for the user crowd out those that could be sent. A
+plan is made for any cause but a finished step, for a time reached, or for steps that changed
+something — once for all settled together. The new plan's steps replace those the last one left:
+every step is conditional, so a step a few plans old is safe. A plan's `ShowItem` steps run as one
+job, so a first listing of N items is a few plans per page, not N. The pinned files to download, the
+one reader that scans, are read only while one may be missing its content.
+
+### 8.3 How many steps run at once
+
+One per item, counting every row a step carries. Of the rows, all at once. Towards the folder, as
+they come: each is one job of the write-operation thread. Uploads of content and downloads of pinned
+files: the transfer pool's slots and 4 more waiting at the pool, so that it can grow; every other
+request to OneDrive, one at a time. A download starts only where it leaves the free space the
+account keeps (`sync_plan_task/disk_space.rs`).
+
+What holds sending (`SendingHolds`): the stop, the sign-out, an account that may not write, a
+read-only folder, the pause, OneDrive's throttle, and no listing of this run ended yet. Each holds the
+steps towards OneDrive; the stop, the sign-out and the pause hold downloads too; none holds a step
+towards the folder or of the rows. While OneDrive is full no content starts (`OneDriveSpace`).
+
+### 8.4 What wakes it
+
+`WakeCause`: a local version written; a listing's page written or a listing ended; a step finished;
+a pin set or taken off; a refresh; a quota read; a hold changed; a request record settled; the next
+try of what is left to clean in OneDrive. And the soonest time: a plan's wait, the end of a throttle
+or a timed pause, the next quota read.
+
+### 8.5 The stop
+
+At the stop's token the loop ends its own steps and returns: sending is held; requests and hashes in
+flight are aborted, none having written anything; a step whose commit has begun, and every step
+towards the folder, is let finish and settled. Nobody else ends a step.
+
+## 9. A folder's start and stop
+
+### 9.1 Who owns them
+
+`SyncService` (`crates/konedrived/src/account_folder/`), one per account, starts and stops a folder
+only inside a change of the folder, which holds the folder's write lock. `sync_tasks/` holds the
+order of each; `SyncTasks` holds the poller, the plan's task, the thumbnail filler and the stop's
+token. No task of the sync starts or takes down a folder, and none watches the account: the owner's
+watcher sets and ends the holds of a sign-out and of an account that may not write. The sync is
+stopped only to leave the account, forget the folder, take it down, or end the daemon; a switch of
+the access mode and a change of the ignored names run beside the tasks.
+
+### 9.2 The start
+
+`start_order::start_folder_sync`, run in a task of its own and never cut between stages:
+
+0. the upload sessions a store of an older version holds are cancelled before that store goes;
+1. the store opened, made or rebuilt; the activity log attached;
+2. the drive for the check decided; a folder whose drive is not known is not mounted;
+3. the leaf state made, then the mount built — the start-up check runs in it — and served
+   ([mount.md](mount.md) §7);
+4. a full listing asked for where the check bound entries by their marks;
+5. the holds that stand set, and the access mode applied with its hold, before any plan;
+6. the quota read once;
+7. the runners, the listing's poller (a first cycle at once), the thumbnail filler and the plan's
+   task started. Nothing is sent until the first listing of this start ended.
+
+A folder that keeps its parts from an earlier sync skips stages 0 to 4.
+
+### 9.3 The stop
+
+The owner cancels the stop's token, then takes the folder's write lock, then awaits the stop
+(`stop_order::stop_folder_sync`). In that order because a step towards the folder waits for the
+folder's lease, a read of that lock: cancelled first, it ends as not run. The poller ends, then the
+plan's task (§8.5), then the thumbnail filler, and the parts the folder keeps — the store and the
+mount, still served — are started again, taken down (`take_folder_down`) or forgotten
+(`forget_folder`, which gives the backing directory its write bits back).
+
+### 9.4 The take-down and its growing pause
+
+When the mount asks to be taken down for a fault ([mount.md](mount.md) §8) it tells the owner, which
+takes the folder down inside one change, says why on the folder, and starts it again by itself with
+nothing kept, so that the start-up check runs: after 1 minute, then 5, 30, then every hour. A start
+that stays up 10 minutes starts the count over; "sync now" tries at once.
+
+## 10. How it is tested
+
+- **A test per case** of every decision: each cell of §6.3, each case between items, each line of the
+  settlement's table, each voider of the step memory.
+- **Enumeration**: every kind of row against every relation to another item, with every fact only the
+  caller knows; the plan must always answer something that proceeds (`sync_plan/tests/enumeration.rs`,
+  and `step_memory/tests/enumeration.rs` for the facts).
+- **Convergence**: rows changed at random on both sides, each by a real operation of the store,
+  planned and run in random orders until no step is left; within a bound of rounds, the rules holding
+  after every step, the three versions equal, nothing lost (`sync_plan/tests/convergence.rs`). The
+  plan's task does the same through its loop.
+- **Races**: the steps towards the folder against a program's changes, a listing's pages and deaths at
+  every point between a disk change and its commit, in orders from a seed
+  (`folder_steps/tests/races.rs`).
+- **The fixture** (`crates/konedrived/src/mount/item_fixture.rs`): a store in a file, a backing
+  directory under no mount, the fake OneDrive, a clock the test holds, a mount built and not served.
+  Each test makes it and the one part it tests.
+- **The VM suite**, `tests/fuse-probe/run.sh`: a folder mounted for real over the fake OneDrive; the
+  groups `mounted_folder`, `file_writes`, `file_reads` and `daemon_restarts` run the sync end to end.
+
+## 11. Known limits
+
+From [`../limitations/`](../limitations/README.md): some OneDrive items are never shown
+([P7](../limitations/P7.md)); a removal is sent with no confirmation ([F302](../limitations/F302.md));
+a directory that holds what the folder cannot show cannot be removed here
+([F299](../limitations/F299.md)); a file never uploaded keeps a directory OneDrive removed
+([F255](../limitations/F255.md)); a change on disk while no daemon runs is no move or removal in
+OneDrive ([F298](../limitations/F298.md)); an unfinished upload holds its name
+([F172](../limitations/F172.md)); a store of another version is rebuilt ([D36](../limitations/D36.md)).
+
+Beside them: Graph lists a drive only from its root, so the whole drive is listed; a guessed binding
+and a real one renamed while no store was there read the same and are both given up (§6.3); and the
+numbers here are chosen, not measured.

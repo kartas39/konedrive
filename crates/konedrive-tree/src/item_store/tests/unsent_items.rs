@@ -11,7 +11,7 @@ fn rename(store: &mut TreeStore, item: LocalItemId, parent: LocalItemId, name: &
     apply(store, LocalVersionChange::Moved { item, place: place(parent, name), is_name_ignored });
 }
 
-/// S3 of the second review, for an item's own name. A file whose name the upload rules
+/// A file whose name the upload rules
 /// ignore, with no binding, keeps the stamp that says its local version differs, and is
 /// not read among the unsent: a read of one item reaches the file that can be sent. When
 /// it stops being left here — its name changes, or it gets a binding — it is read, where
@@ -33,7 +33,7 @@ fn an_item_left_here_by_its_own_name_is_not_read_among_the_unsent() {
     assert_eq!(unsent(&mut store, 10), [left, sent], "an item OneDrive has is never left here");
 }
 
-/// S3 of the second review, its own case. A directory whose name is ignored, with no
+/// A directory whose name is ignored, with no
 /// binding, holds many files: none of them is read among the unsent, nor read at all to
 /// reach the file that can be sent. An item of OneDrive below such a directory is not left
 /// here, and is read. When the directory stops being left here — its name changes, or it

@@ -2,11 +2,10 @@
 //! confirmed step leaves on what it sent.
 //!
 //! **State owned:** none; it reaches the backing directory by the path of the item's
-//! local version (design §8: "a row finds its file by the path of its local version"; no
-//! file handle is stored), through `PlaceChanges::open_at_row_path`: the file it opens is
-//! the file of the row it read, whatever is renamed meanwhile. It is the one way a part
-//! outside the mount gets at a backing file: the upload worker's own finding of entries
-//! on disk goes (design §11).
+//! local version (`docs/design/mount.md` §3.2: a row finds its file by the path of its
+//! local version; no file handle is stored), through `PlaceChanges::open_at_row_path`: the
+//! file it opens is the file of the row it read, whatever is renamed meanwhile. It is the
+//! one way a part outside the mount gets at a backing file.
 //!
 //! **The rows are read on a connection of the call's own**, opened for reading alone
 //! before `open_at_row_path` is asked and closed with the call: the read closure that
@@ -17,9 +16,9 @@
 //! planned from, the commit a mark follows.
 //!
 //! **Answers for:** the bytes a step sends and hashes being those of the version it was
-//! planned from; and design §8's marks after an upload: the OneDrive item id, the
-//! whole-copy state and the cTag the content was confirmed as (whatever agrees a content
-//! writes all three: the notes of the check at start).
+//! planned from; and the marks after an upload (`docs/design/mount.md` §3.5): the
+//! OneDrive item id, the whole-copy state and the cTag the content was confirmed as
+//! (whatever agrees a content writes all three).
 //!
 //! **Tested without the rest**, over the fixture (`item_fixture`):
 // test: the_content_is_opened_at_the_path_of_the_local_version
@@ -104,7 +103,7 @@ impl LocalContentFile {
     }
 
     /// `len` bytes from `offset`, after asking that the file's size and time are still the
-    /// planned content's (`upload/local.rs:301`, `read`), and asking it again after them:
+    /// planned content's, and asking it again after them:
     /// bytes read while the file changed are not answered. A free-up of the same file
     /// cannot come in between: free-up leaves a file a step runs for. Blocking: called
     /// off the runtime.
@@ -121,8 +120,8 @@ impl LocalContentFile {
         Ok(bytes)
     }
 
-    /// The QuickXorHash of the whole content, base64 (`upload/content/session.rs:171`,
-    /// `Job::hash`). Blocking; no lock is held. Called by `RowStep::HashLocalContent` and
+    /// The QuickXorHash of the whole content, base64. Blocking; no lock is held. Called by
+    /// `RowStep::HashLocalContent` and
     /// by a step that asks whether what OneDrive has is what it sent.
     pub(crate) fn hash(&self) -> Result<String, StepTrouble> {
         self.check_content()?;
@@ -205,9 +204,7 @@ impl ItemContentFiles {
     ///
     /// Called by a step towards OneDrive that sends content and by
     /// `RowStep::HashLocalContent`, before any request and with no lock; never on the
-    /// write-operation thread and never on a thread of a runtime. Replaces
-    /// `upload/local.rs:109` (`find`), `:216` (`open_for_upload`) and
-    /// `steps/shared.rs:133` (`locate`).
+    /// write-operation thread and never on a thread of a runtime.
     pub(crate) fn open_to_send(&self, item: &ItemVersions) -> Result<LocalContentFile, StepTrouble> {
         let id = item.local_item_id;
         let Some(content) = item.local.as_ref().and_then(|local| local.content.clone()) else { return Err(StepTrouble::Obstacle(StepObstacle::ContentChanged)) };
@@ -237,12 +234,11 @@ impl ItemContentFiles {
     }
 
     /// Marks the file that was sent with what OneDrive confirmed: the item id, the
-    /// whole-copy state and the cTag, synced (`upload/local.rs:323`, `commit_attributes`;
-    /// `:336`, `commit_id`), through the descriptor it was read through, wherever the
+    /// whole-copy state and the cTag, synced, through the descriptor it was read through, wherever the
     /// file is by now. Blocking, with NO lock: it goes through the descriptor, and one
     /// step per item keeps `remove_onedrive_marks` away. Called by a step towards
     /// OneDrive after its commit was written; a failure is logged: the marks serve the
-    /// check at start and a lost store, not the running daemon (design §8).
+    /// check at start and a lost store, not the running daemon (`docs/design/mount.md` §3.5).
     ///
     /// The file is given the time of the confirmed content too: the commit wrote that
     /// content as the row's local one, and the check at start reads a copy as clean by its
@@ -285,7 +281,7 @@ impl ItemContentFiles {
     }
 
     /// Marks the directory of `item` with the item id OneDrive gave it, when the directory
-    /// is in the backing directory (`upload/local.rs:346`, `commit_dir`): opened through
+    /// is in the backing directory: opened through
     /// `PlaceChanges::open_at_row_path`. Called by the runner of `MakeDirectory` after its
     /// commit. Blocking, with no lock, as [`mark_sent_file`](Self::mark_sent_file).
     pub(crate) fn mark_made_directory(&self, item: &ItemVersions, made: &ConfirmedItem) -> std::io::Result<()> {
@@ -328,7 +324,7 @@ impl ItemContentFiles {
     }
 
     /// Takes the OneDrive marks off what is on disk of `item`: it gave its binding up and
-    /// is an item OneDrive does not have (`upload/local.rs:360`, `strip_found`). Called by
+    /// is an item OneDrive does not have. Called by
     /// the runner of `GiveUpBinding` after its commit. The item id first, then the
     /// whole-copy state and the cTag; what else konedrive keeps on the entry stays.
     /// Nothing for an item that has a binding by now. Blocking, with no lock.

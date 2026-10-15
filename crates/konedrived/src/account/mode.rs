@@ -2,7 +2,7 @@ use super::*;
 use crate::account::attempt::Unconfirmed;
 
 impl AccountService {
-    /// `Account.SetMode` (`docs/design/writes.md` §2): switches the account to `mode` — `read-only` or
+    /// `Account.SetMode` (`docs/design/accounts.md` §10): switches the account to `mode` — `read-only` or
     /// `read-write` — and answers the URL of the sign-in the switch needs, empty when it
     /// needs none.
     ///
@@ -19,7 +19,7 @@ impl AccountService {
     ///   - nothing unsent, or `force`: the switch is made at once, in ONE order, forced
     ///     or not: `mode = "read-only"` written to `config.toml` and the wish forgotten;
     ///     the mode worked out again (`recompute_mode`: the snapshot says read-only from
-    ///     here on, so the folder's watcher cannot turn the folder back); the folder told
+    ///     here on, so the folder's watch of the mode cannot turn the folder back); the folder told
     ///     to hold what is unsent and to take no change, and awaited
     ///     (`AccountFolder::hold_unsent_changes`); THEN the token that could write
     ///     dropped, and the next refresh
@@ -337,7 +337,7 @@ impl AccountService {
 
     /// The rest of a switch to read-only once `config.toml` says so, in the one order of a switch, forced or not:
     /// the mode is worked out again, so that the snapshot says read-only before the folder is told and its
-    /// watcher cannot turn it back; the folder holds what is unsent and takes no change, awaited; and only then
+    /// watch of the mode cannot turn it back; the folder holds what is unsent and takes no change, awaited; and only then
     /// the token goes — at once, or when no request that changes OneDrive is in flight any more.
     async fn end_switch_to_read_only(&self, uploads: Option<Arc<dyn AccountFolder>>) {
         self.recompute_mode();
@@ -360,7 +360,7 @@ impl AccountService {
     }
 
     /// The token that could write goes; the next one comes from a refresh that asks for
-    /// `Files.Read` (§2.2). The last step of a switch to read-only.
+    /// `Files.Read` (`docs/design/writes.md` §2.3). The last step of a switch to read-only.
     async fn give_write_token_up(&self) {
         self.tokens.invalidate().await;
         self.recompute_mode();
@@ -401,14 +401,15 @@ impl AccountService {
         config.read_write_export_allowed(&drive).then_some(drive)
     }
 
-    /// `TokenExport.ReadOnly` (`docs/design/desktop.md` §2.7; SECURITY.md): a token that can change nothing, whatever the
+    /// `TokenExport.ReadOnly` (`docs/design/desktop.md` §2.11; SECURITY.md): a token that can change nothing, whatever the
     /// account's mode.
     #[cfg(any(test, feature = "dev-tools"))]
     pub(crate) async fn read_only_token(&self) -> Result<String, AuthError> {
         self.tokens.read_only_token().await
     }
 
-    /// `TokenExport.ReadWrite`, for the test-account harness only (`docs/design/writes.md` §2.3, §12.1; SECURITY.md):
+    /// `TokenExport.ReadWrite`, for the test-account harness only (`docs/design/desktop.md` §2.11,
+    /// `docs/design/writes.md` §8.1; SECURITY.md):
     /// refused `WritesNotAllowed` unless `write_test_drive_ids` lists the account's drive, and
     /// `ModeNotGranted` unless the account is read-write and its token carries
     /// `Files.ReadWrite`. The token itself is then asked which drive it reaches

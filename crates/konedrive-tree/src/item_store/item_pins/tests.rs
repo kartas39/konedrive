@@ -121,7 +121,7 @@ fn the_count_of_pins_is_of_bindings_that_rows_still_have() {
     let mut store = store_with_listed_root();
     let file = show_listed_file(&mut store, "F", "R", "f", "h1");
     pin(&mut store, file);
-    // A pin of an item id no row has: one today's mount set, by the id alone.
+    // A pin of an item id no row has, set by the id alone.
     store.set_pin("no-row-has-this", true).unwrap();
     assert_eq!(count_pins(&mut store), 1);
     assert_eq!(count_pins(&mut TreeStore::in_memory().unwrap()), 0);

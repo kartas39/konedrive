@@ -55,8 +55,8 @@ fn the_255_byte_name_is_the_exact_boundary() {
     assert_eq!(over.placement, Placement::Skipped(SkipReason::NameTooLong), "256 bytes is one over");
 }
 
-/// An item id becomes a name in the holding directory: an id that cannot
-/// be one keeps the item out of the folder.
+/// An item id that could name something else (`usable_id`) keeps the item
+/// out of the folder.
 #[test]
 fn an_id_that_cannot_be_a_file_name_is_not_placed() {
     for id in ["", ".", "..", "a/b", "a\0b"] {
@@ -72,7 +72,7 @@ mod listed_into_items {
     //! entry that writes a listing into the rows of `items`
     //! (`ItemStore::write_listed_changes`): the rows then say what the fake OneDrive has.
     //! The pages are asked for as a cycle asks for them, one after the other until the one
-    //! with the delta link; nothing of today's staging is in between.
+    //! with the delta link; nothing is staged in between.
 
     use konedrive_graph::drive::{DeltaFrom, DeltaNext};
     use konedrive_tree::{Change, ContentVersion, DriveId, FolderVisibility, ItemKind, ListedChangeOutcome, ListingLink, ListingUnderWay, OneDriveItemId, OneDriveItemReference, TreeStore};

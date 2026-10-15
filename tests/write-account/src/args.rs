@@ -17,8 +17,7 @@ use crate::harness::{Options, GRAPH};
 /// 1 GiB in use and fewer than 1000 items, unless --large-test-drive says it is a test account
 /// that holds more; every write stays in /konedrive-write-test/<run id>/,
 /// which the run makes and puts into the recycle bin at the end; at most 64 MiB per file,
-/// 200 MiB and 500 requests per run. See docs/design/writes.md, "Running against the test
-/// account".
+/// 200 MiB and 500 requests per run. See docs/design/writes.md §8.1.
 #[derive(Debug, Parser)]
 #[command(name = "konedrive-write-test")]
 pub struct Args {
@@ -50,7 +49,7 @@ pub struct Args {
 /// A group of checks `--only` can pick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Only {
-    /// What an upload session's placeholder looks like, what holds it, and what frees it.
+    /// What an upload session's empty file looks like, what holds it, and what frees it.
     Placeholders,
     /// A write in the drive sends a notification on its Socket.IO endpoint (issue #54).
     Notifications,

@@ -29,7 +29,7 @@ fn rows(path: &Path) -> i64 {
     rusqlite::Connection::open(path).unwrap().query_row("SELECT count(*) FROM items", [], |r| r.get(0)).unwrap()
 }
 
-/// `docs/design/accounts.md` §8.2: today's file, with its folder, becomes account #1; version 1 is kept, private
+/// `docs/design/accounts.md` §9: a version-1 file, with its folder, becomes account #1; version 1 is kept, private
 /// and byte for byte, in `config.toml.v1`; a restart does not migrate again.
 #[tokio::test]
 async fn a_version_1_folder_becomes_account_1() {
@@ -72,7 +72,7 @@ async fn a_version_1_folder_becomes_account_1() {
     assert_eq!(open(&paths, None).await.snapshot(), config, "a restart loads version 2 as it is");
 }
 
-/// §8.2 step 2: what makes version 1 carry an account over, and what it carries.
+/// `docs/design/accounts.md` §9, step 2: what makes version 1 carry an account over, and what it carries.
 #[tokio::test]
 async fn what_version_1_carries_over() {
     let client = format!("client_id = \"{CLIENT}\"\n");
@@ -113,7 +113,7 @@ async fn what_version_1_carries_over() {
     assert!(!paths.config_file.exists() && !v1_copy(&paths.config_file).exists());
 }
 
-/// §8.3's crash table: the moves are finished by whichever start comes next — after a
+/// `docs/design/accounts.md` §9: the moves are finished by whichever start comes next — after a
 /// crash right after the commit, between the two moves, or before the flag was cleared.
 #[tokio::test]
 async fn the_file_moves_finish_whatever_step_a_crash_stopped_them_at() {

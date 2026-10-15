@@ -120,7 +120,7 @@ pub(super) fn write_config(file: &Path, config: &Config) -> Result<(), ConfigErr
 
 impl ConfigStore {
     /// Loads `paths.config_file` — first step of the daemon's start (`docs/design/accounts.md` §3.2). A
-    /// version-1 file is migrated (§8.2): `legacy_token` is the wallet's presence check for
+    /// version-1 file is migrated (§9): `legacy_token` is the wallet's presence check for
     /// the version-1 refresh token (no unlock; a Secret Service that does not answer counts
     /// as present), and is awaited only when nothing else says there is an account to carry
     /// over. A missing file is an empty configuration and is not written.

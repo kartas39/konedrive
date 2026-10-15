@@ -6,7 +6,6 @@ fn name_of(name: &str, attempt: u32) -> String {
     make_conflict_copy_name(OsStr::new(name), "pc", attempt).into_string().unwrap()
 }
 
-/// Today: `copy_name` of the daemon (`local/names.rs`), its scheme kept.
 #[test]
 fn the_computers_name_goes_before_the_extension_and_a_later_attempt_adds_its_number() {
     assert_eq!(name_of("Report.docx", 1), "Report-pc.docx");

@@ -18,7 +18,7 @@ pub struct AccountInfo {
     pub quota: QuotaFigures,
     /// Unix time in seconds.
     pub fetched_at: u64,
-    /// The last token response's `scope` (`docs/design/writes.md` §2): what decides, at the next start,
+    /// The last token response's `scope` (`docs/design/accounts.md` §10): what decides, at the next start,
     /// whether a read-write account's refresh may ask for `Files.ReadWrite` again. Missing
     /// in a file written before it existed, which reads as nothing granted: read-only.
     #[serde(default)]

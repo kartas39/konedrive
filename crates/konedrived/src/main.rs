@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     let registry = Arc::clone(daemon.manager.registry());
-    // Kept, each of them: one that is gone ends the daemon (quality finding `SY11`).
+    // Kept, each of them: one that is gone ends the daemon.
     let mut tasks = stop::Tasks::default();
     // Every account holds back by itself on a metered connection or on battery, as its
     // settings say (`conditions`). With no system bus it has nothing to follow, and ends.

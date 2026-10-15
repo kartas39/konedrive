@@ -105,7 +105,7 @@ fn a_row_left_by_a_page_that_says_nothing_else() {
     assert_eq!(give(&mut after_call(), &page, 1, &delta_link("link-2")), left(&[], AT_ROOT, Some("link-2")), "the page asked again");
 }
 
-/// M1 of the second review. The same page says the directory `X` was in is gone. A removal
+/// The same page says the directory `X` was in is gone. A removal
 /// is written whole or not at all: its walk meets `X`, so nothing of it is written, the
 /// directory keeps its version, and both are answered. Given back — where `X` is, and the
 /// directory as gone — the removal is written and the directory's row goes; and the page
@@ -389,7 +389,7 @@ fn the_row_of_the_removed_directory_stays_while_a_place_agreed_on_names_it() {
     assert_eq!(give(&mut store, &[], 1, &delta_link("link-3")), left(&[], "C=X/c F=S/f G=R/G K=X/kept S=X/s X=R/x2", Some("link-3")));
 }
 
-/// M3 of the second review of the plan. The removal of the directory `S`, with the file in
+/// The removal of the directory `S`, with the file in
 /// it, was confirmed to a step after the fetch began; the page, fetched before, names a file
 /// OneDrive made in `S` and says the file `C` was moved into it. Each is outdated for that
 /// change: no row is made in, or moved into, a directory OneDrive was confirmed not to

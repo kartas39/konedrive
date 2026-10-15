@@ -14,7 +14,6 @@
 //! **Answers for:** an abandoned session's empty file not holding a name for days; and
 //! a session that cannot be cancelled now neither being asked with every plan nor keeping
 //! those behind it from being asked.
-//! Today: `cancel_given_up` (`upload/mod.rs:153`), `cancel_session` (`:136`).
 //!
 //! **Tested without the rest**, against the fixture's fake OneDrive:
 // test: a_session_to_cancel_is_cancelled_and_forgotten
@@ -184,7 +183,7 @@ impl SessionCancellations {
         }
     }
 
-    /// Cancels the session at `address` (`cancel_upload`, `G/upload.rs:270`) and, when it
+    /// Cancels the session at `address` (`cancel_upload`) and, when it
     /// was cancelled or found gone, forgets it
     /// (`StepMemory::forget_upload_session_cancellation`). Whether it is gone now. Asked
     /// whatever its next try: called by `NameHolders` for a session whose empty file
@@ -281,8 +280,8 @@ impl SessionCancellations {
     /// Removes up to `limit` items of `ItemReader::list_mismatched_item_removals` in
     /// OneDrive, each in the drive it is listed with (`MismatchedItem::item`), and each
     /// only while it is unchanged since the upload that left it
-    /// (`MismatchedItem::is_unchanged_since_upload`, read by `item`, `G/mod.rs:217`;
-    /// `delete_item`, `G/write.rs:140`, guarded by the eTag just read), and forgets each
+    /// (`MismatchedItem::is_unchanged_since_upload`, read by `item`;
+    /// `delete_item`, guarded by the eTag just read), and forgets each
     /// that was removed or found gone (`StepMemory::forget_removed_mismatched_item`: the
     /// row a listing made of it loses its OneDrive version with it) or found changed by
     /// another (`StepMemory::forget_mismatched_item`). The list never holds an item the folder

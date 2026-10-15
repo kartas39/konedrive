@@ -59,7 +59,7 @@ async fn sync_status(daemon: &Daemon, option: Option<&str>) -> anyhow::Result<()
 }
 
 /// `sync anyway --all`: the hold of every account that holds back by itself and is not paused
-/// by the user is lifted — the tray's Sync Anyway (`docs/design/writes.md` §11).
+/// by the user is lifted — the tray's Sync Anyway (`docs/design/writes.md` §6.3).
 async fn sync_anyway_all(daemon: &Daemon) -> anyhow::Result<()> {
     let accounts = daemon.accounts().await?;
     let several = accounts.len() > 1;

@@ -269,7 +269,7 @@ fn a_place_held_on_disk_is_eexist_and_any_other_refusal_the_disks_own_errno() {
     assert_eq!(decide_place_errno(&PlaceRefusal::NotPutBack { errno: libc::ENOSPC, path: "a/b".into() }), Errno::EIO);
 }
 
-/// The review's S1: an entry that was set aside for a move and could not be put back
+/// An entry that was set aside for a move and could not be put back
 /// when the move failed is at its aside name, with a row that says it is at its place.
 /// Its record must stand — the check at start puts the entry back from it, and what is
 /// still set aside with no record is removed at the next start — and the mount go down.
@@ -388,7 +388,7 @@ fn a_read_only_folder_refuses_every_operation_before_anything_is_read() {
 #[test]
 fn a_reader_that_opens_by_path_during_an_operation_gets_the_file_of_its_row() {
     let operations = OperationsFixture::new();
-    // The review's M5: X moves from f to g, and a reader of X that read its row before
+    // X moves from f to g, and a reader of X that read its row before
     // must get X's file, whichever name it has by the time it opens.
     let moved = operations.fixture.make_own_file("f", b"the file of X").local_item_id;
     let reader: Arc<Mutex<Option<std::thread::JoinHandle<String>>>> = Arc::default();
@@ -531,7 +531,6 @@ const DEATH_CASES: &[DeathCase] = &[
         is_done: |operations| is_on_disk(operations, "remote.txt"),
         done_at: &[OperationPoint::DiskChanged],
     },
-    // The review's S6: the cases it ran by hand.
     // Nothing of the moved file is on disk: the displaced entry is set aside by itself.
     DeathCase {
         name: "rename of a file not on disk over a file on disk",

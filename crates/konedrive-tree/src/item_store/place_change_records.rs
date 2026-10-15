@@ -1,8 +1,7 @@
 //! The records of place changes: the table `place_change_records`, one row for each change
 //! of the backing directory's names that the daemon is about to make, written before the
 //! disk is touched and gone in the transaction that writes the row of the change, or when
-//! the change was undone (design §8, "A name's change is on record before the disk is
-//! touched").
+//! the change was undone (`docs/design/mount.md` §3.4).
 //!
 //! **State owned:** the table, and nothing of `items`. A record says what the daemon was
 //! about to do ([`PlaceChangeRecord`], a case for each way the mount's `PlaceChange`

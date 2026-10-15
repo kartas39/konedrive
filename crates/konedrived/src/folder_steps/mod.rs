@@ -1,10 +1,10 @@
 //! The runner of the sync plan's steps towards the folder: one function per case of
 //! `FolderStep`, each a change of the backing directory and its commit, in the order of
-//! design §8, with its undo.
+//! `docs/design/mount.md` §3.3, with its undo.
 //!
 //! **State owned:** none; [`FolderSteps`] holds the parts a step goes through. Every step
 //! but a download's fetching runs as one job of the write-operation thread, under the
-//! folder's tree lock, as a write operation of the mount does (design §4): no program
+//! folder's tree lock, as a write operation of the mount does (`docs/design/mount.md` §2.3): no program
 //! changes the folder between a step's change of the disk and its row. So steps towards
 //! the folder need no limit of their own: the thread runs one job at a time.
 //!
@@ -63,7 +63,7 @@
 //! (`AsideRow::Otherwise`) and goes with the cleaning of what was set aside.
 //!
 //! **Tested without the rest**, over the fixture (`item_fixture`), with no mount and no
-//! OneDrive; and by the races' test of design §12, which puts a failure and a death at
+//! OneDrive; and by the races' test (`docs/design/sync.md` §10), which puts a failure and a death at
 //! every point between a disk change and its commit:
 // test: each_case_changes_the_disk_and_the_rows_as_its_line_of_the_table_says
 // test: a_step_planned_from_other_versions_than_the_rows_touches_nothing
@@ -324,7 +324,7 @@ impl FolderSteps {
     /// (`ItemStore::commit_show_items`, each item with whether its name is ignored, a
     /// directory before what is in it — the items are put in that order here,
     /// [`order_shown_items`]); each answered by itself, in the order given;
-    /// `Appeared` announced for those written. Design §6, "new in OneDrive". A first
+    /// `Appeared` announced for those written (`docs/design/sync.md` §6.3, never was here). A first
     /// listing of N items is a few jobs, not N.
     pub(crate) async fn run_show_items(self: &Arc<Self>, items: Vec<ItemVersions>) -> Vec<StepOutcome> {
         let (steps, count) = (Arc::clone(self), items.len());
@@ -395,7 +395,7 @@ impl FolderSteps {
     /// When this future is dropped (the step's task aborted), a guard cancels the
     /// download (`ItemDownloader::cancel`: aborted when the plan alone asked for it). The plan's task runs it as its own class of step
     /// (`StepClass::Download`), held by the pause and the sign-out, never holding back
-    /// the other steps towards the folder. Replaces `pinned_file_downloader.rs`.
+    /// the other steps towards the folder.
     pub(crate) async fn run_download_content(self: &Arc<Self>, item: ItemVersions) -> StepOutcome {
         if self.mount_take_down.is_asked() {
             return StepOutcome::NotRun(StepObstacle::SendingStopped);
@@ -411,8 +411,7 @@ impl FolderSteps {
 
     /// `MoveItem`: the item is moved here to OneDrive's place. `move_on_disk`, then
     /// `commit_move_item(item, is_name_ignored, record)`. Announces the former name vanishing and
-    /// the new one appearing. Replaces the cycle step's rename (`cycle_step.rs:210`) and
-    /// the upload worker's `follow_cloud` (`upload/steps/shared.rs:547`).
+    /// the new one appearing.
     fn run_move_item(&self, item: &ItemVersions) -> StepOutcome {
         let Some(place) = item.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone()) else { return rows_changed() };
         let (versions, is_name_ignored) = (item.clone(), self.upload_rules.is_name_ignored(&place.name));
@@ -420,8 +419,8 @@ impl FolderSteps {
     }
 
     /// `TakeMoveBack`: a move made here is taken back to OneDrive's place. As
-    /// [`run_move_item`](Self::run_move_item), with `commit_take_move_back`. Design §6, "a
-    /// cycle of moves".
+    /// [`run_move_item`](Self::run_move_item), with `commit_take_move_back`
+    /// (`docs/design/sync.md` §6.4).
     fn run_take_move_back(&self, item: &ItemVersions) -> StepOutcome {
         let Some(place) = item.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone()) else { return rows_changed() };
         let (versions, is_name_ignored) = (item.clone(), self.upload_rules.is_name_ignored(&place.name));
@@ -442,8 +441,7 @@ impl FolderSteps {
     /// `RenameToConflictCopy`: the user's own item is renamed here to `name` in the
     /// directory it is in. `move_on_disk`, then
     /// `commit_rename_to_conflict_copy_on_record(item, name, is_name_ignored, conflict, record)`
-    /// with the two full paths. Replaces `upload/steps/shared.rs:389` (`copy`), `:454`
-    /// (`move_to_copy_name`) and `conflict_copies.rs:106` (`move_aside`). The name was
+    /// with the two full paths. The name was
     /// chosen free on both sides by the plan; one that is held on disk by what no row
     /// says is `StepObstacle::PlaceHeldOnDisk`. The conflict's time is the clock's
     /// (`clock::unix_now`): this part is given none.
@@ -530,8 +528,7 @@ impl FolderSteps {
     /// (`PlaceChange::set_aside`), then `commit_take_onedrive_content`, which takes the
     /// record; undo: restore, and the record taken by itself; after the change ended,
     /// `PlaceChanges::discard` (see the module's doc for why not the commit first). Announces the content changed; the ranges the
-    /// content source remembers of the item (`ItemRangeFetcher::forget_ranges`; today the
-    /// cycle step, for every cycle: `cycle_step.rs:126`) and its download states are
+    /// content source remembers of the item (`ItemRangeFetcher::forget_ranges`) and its download states are
     /// forgotten.
     fn run_take_onedrive_content(&self, item: &ItemVersions) -> StepOutcome {
         let (change, set_aside) = match self.prepare_set_aside(item, false) {

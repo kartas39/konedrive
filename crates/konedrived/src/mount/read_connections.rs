@@ -2,11 +2,10 @@
 //!
 //! **State owned:** the connections, each opened for reading alone the first time its
 //! thread asks, and the store's path. Nothing else opens or closes them; they go when the
-//! mount stops, and no thread is given one after that. Today one connection behind one
-//! lock serves the four threads (`directory_contents.rs:47`).
+//! mount stops, and no thread is given one after that.
 //!
-//! **Answers for:** design §9, "a connection to the store per thread of the mount"; the
-//! map's MISSING-1.q on the mount's side. A read closure runs in ONE read transaction
+//! **Answers for:** a connection to the store per thread of the mount
+//! (`docs/design/mount.md` §2.2). A read closure runs in ONE read transaction
 //! (`TreeStore::read_items`): a row and its path, or a directory and its entries, are of
 //! one moment. A lookup never waits for a listing's page or a step's commit.
 //!
@@ -25,8 +24,6 @@
 // test: a_closure_reads_one_moment_though_the_writer_commits_while_it_runs
 // test: a_store_that_cannot_be_opened_for_reading_is_an_error_of_the_question_not_a_panic
 // test: after_the_close_a_question_is_an_error_and_no_connection_is_opened
-// No part asks through it before the pieces over it are filled.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::path::PathBuf;

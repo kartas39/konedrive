@@ -99,7 +99,7 @@ and RPM orders the builds as they were made:
 
 A newer build upgrades an older one with a plain `dnf upgrade`, and the release `X.Y.Z` upgrades
 every `X.Y.Z~dev.N`. Packages are built only from `dev` (a branch's `N` can pass a later `dev`
-build's: limitations log R8).
+build's).
 
 **What is shown**, as `Version 0.1.1-dev.57 · commit 5254595`: `konedrivectl --version` (its own
 build, then the running daemon's, and a line asking to restart the daemon when the two differ),
@@ -120,8 +120,7 @@ copies of `Cargo.toml`, `Cargo.lock` and the spec (`Version:`, the `commit` and 
 globals, and a `%changelog` entry naming the commit). The user agent sent to Microsoft Graph
 carries Cargo's version of that copy.
 
-`--dev-tools` makes a local development package whose daemon serves the token export (limitations
-log W11), for the developer's own machine; it is refused together with `--version`, and CI never
+`--dev-tools` makes a local development package whose daemon serves the token export, for the developer's own machine; it is refused together with `--version`, and CI never
 passes it.
 
 ## A dry run

@@ -180,7 +180,7 @@ fn a_lookup_in_a_node_that_is_no_shown_directory_has_the_directorys_errno() {
     let lookup = lookup(&fixture);
     let file = fixture.show_onedrive_file("a.txt", b"hello");
     assert_eq!(errno_of(find_entry(&fixture, &lookup, file.local_item_id, "name")), Some(Errno::ENOTDIR));
-    assert_eq!(list_names(&fixture, &lookup, file.local_item_id), Ok(Vec::new()), "a node that is no directory lists nothing, as today");
+    assert_eq!(list_names(&fixture, &lookup, file.local_item_id), Ok(Vec::new()), "a node that is no directory lists nothing");
     // The directory's errno comes before the name's: a hidden name in a node that is gone.
     assert_eq!(errno_of(find_entry(&fixture, &lookup, LocalItemId::new(987_654), ".konedrive-aside-7")), Some(Errno::ESTALE));
 }

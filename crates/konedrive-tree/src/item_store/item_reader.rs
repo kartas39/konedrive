@@ -18,12 +18,9 @@
 //!
 //! **Answers for:** every question about the rows and about what the steps remember that
 //! needs no write: it is the ONE reading surface. [`ItemStore`](super::ItemStore) writes;
-//! what it reads, it reads through [`ItemStore::reader`](super::ItemStore::reader). The
-//! readers `ItemStore` has today call the same functions of `item_row` and go when the
-//! switch has re-pointed their callers. Here are also the readers nothing answered before
-//! the mount and the bus read the rows (the map's MISSING-1.q, 2.a, 2.b, 2.d, 2.e, 2.g,
-//! 6.d, an item by its path, and the items left here), the plan's readers
-//! (`plan_readers` below), and the step memory's (`memory_reader`).
+//! what it reads, it reads through [`ItemStore::reader`](super::ItemStore::reader). Here
+//! are also an item by its path, the items left here, the plan's readers (`plan_readers`
+//! below), and the step memory's (`memory_reader`).
 //!
 //! **Tested without the rest**, against a store in memory filled through `ItemStore`:
 // test: a_reader_of_a_store_opened_for_reading_alone_sees_what_the_writer_committed
@@ -215,14 +212,14 @@ impl Store {
 impl ItemReader<'_> {
     /// The item with this local item id, which is the kernel's node id; `None` when its
     /// row is gone. Called for getattr, open, the xattrs and every request by a node id.
-    /// One read by the key (design §9, §15).
+    /// One read by the key (`docs/design/mount.md` §4.1).
     pub fn find_item(&self, item: LocalItemId) -> Result<Option<Item>, TreeError> {
         item_row::find_item(self.conn(), item)
     }
 
     /// The item the folder shows under `name` in `directory`: a lookup. One read of the
     /// index `items_local_place`; the name is compared as it was given, bytes that are not
-    /// UTF-8 included (design §3, §9).
+    /// UTF-8 included (`docs/design/sync.md` §2.2).
     pub fn find_item_at(&self, directory: LocalItemId, name: &OsStr) -> Result<Option<Item>, TreeError> {
         item_row::find_item_at(self.conn(), directory, name)
     }
@@ -234,15 +231,15 @@ impl ItemReader<'_> {
     }
 
     /// What the folder shows in `directory`, by name: a directory reading. One read of the
-    /// index by parent; nothing of the backing directory is read (design §4, §9).
+    /// index by parent; nothing of the backing directory is read (`docs/design/sync.md` §3).
     pub fn list_children(&self, directory: LocalItemId) -> Result<Vec<Item>, TreeError> {
         item_row::list_children(self.conn(), directory)
     }
 
     /// The path of what the folder shows as `item`, relative to the root: the names from
     /// its local place up. `None` for an item the folder does not show. One read per
-    /// directory above it; called only where the backing directory is touched (design §8,
-    /// §15).
+    /// directory above it; called only where the backing directory is touched
+    /// (`docs/design/mount.md` §3.2).
     pub fn find_path(&self, item: LocalItemId) -> Result<Option<PathBuf>, TreeError> {
         find_path(self.conn(), item)
     }
@@ -298,9 +295,9 @@ impl ItemReader<'_> {
     ///
     /// Called by the write operation that makes a file (mknod, create), under the tree
     /// lock, before it writes `LocalVersionChange::Made { replaced }`: the store checks
-    /// that statement and does not find the item by itself (design §5). One read of the
-    /// index `items_synced_place`. Of several such files, the one removed last. The
-    /// caller leaves out an item a step is running for. MISSING-2.a.
+    /// that statement and does not find the item by itself (`docs/design/sync.md` §4). One
+    /// read of the index `items_synced_place`. Of several such files, the one removed last.
+    /// The caller leaves out an item a step is running for.
     pub fn find_removed_file_at_synced_place(&self, directory: LocalItemId, name: &OsStr) -> Result<Option<Item>, TreeError> {
         let sql = format!(
             "SELECT {ITEM_COLUMNS} FROM items INDEXED BY items_synced_place
@@ -393,7 +390,7 @@ impl ItemReader<'_> {
     /// the item `after`, at most `limit`. Called by free-up of a directory, by a pin's
     /// download of what it holds and by the count of what is downloaded below a path. It
     /// follows the local places, never OneDrive's. Each call walks all that is below the
-    /// directory: one that reads it in pages walks it once a page. MISSING-2.b.
+    /// directory: one that reads it in pages walks it once a page.
     pub fn list_shown_files_below(&self, directory: LocalItemId, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
         let sql = format!(
             "WITH RECURSIVE below(id) AS (
@@ -410,7 +407,7 @@ impl ItemReader<'_> {
     /// How many items OneDrive has, the folder shows, and the folder cannot show. Called
     /// after a listing's page is written and after a step's commit, for the folder's
     /// counts on the bus. Three counts, each over an index; `cannot_be_shown` walks the
-    /// rows below each item whose own placement says so, each item once. MISSING-2.d, 2.e.
+    /// rows below each item whose own placement says so, each item once.
     pub fn count_items(&self) -> Result<ItemCounts, TreeError> {
         let count = |sql: &str| -> Result<u64, TreeError> { Ok(self.conn().prepare_cached(sql)?.query_row([], |row| row.get::<_, i64>(0))?.max(0) as u64) };
         let cannot_be_shown = format!(
@@ -434,7 +431,7 @@ impl ItemReader<'_> {
     /// Whether one of them is still on this computer, and what keeps it, is the plan's
     /// answer for the item, which the caller adds. An item is a top one when no directory
     /// above it in OneDrive, as far as the rows go, cannot be shown by itself; its path is
-    /// as far as the rows go too, while a listing has not said the rest. MISSING-2.e.
+    /// as far as the rows go too, while a listing has not said the rest.
     pub fn list_items_not_shown(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<ItemNotShown>, TreeError> {
         let sql = format!("SELECT {ITEM_COLUMNS} FROM items INDEXED BY items_not_placed WHERE {NOT_PLACED} AND onedrive_parent_id IS NOT NULL AND local_item_id > ?1 ORDER BY local_item_id LIMIT ?2");
         let mut not_shown = Vec::new();
@@ -463,7 +460,6 @@ impl ItemReader<'_> {
     /// have: one sum over the partial index `items_unsent`, no row read whole. Called for
     /// `PendingCount`/`PendingBytes`, for the text of a switch to read-only, and by Forget
     /// from a store that is closed (through a reader opened for the question).
-    /// MISSING-2.g.
     pub fn count_unsent(&self) -> Result<UnsentTotal, TreeError> {
         let is_content_changed = CONTENT_COLUMNS.map(|column| format!("local_{column} IS NOT synced_{column}")).join(" OR ");
         let sql = format!(
@@ -476,9 +472,8 @@ impl ItemReader<'_> {
 
     /// The items that are left here — no binding, and an ignored name of their own or of a
     /// directory above — by local item id, after `after`, at most `limit`.
-    /// No member of the bus calls it: `NotUploaded()` lists what is kept back, as today,
-    /// and what is left here is listed nowhere (the map's UNSURE-6.f). It is for
-    /// `konedrivectl`'s diagnosis.
+    /// No member of the bus calls it: `NotUploaded()` lists what is kept back, and what is
+    /// left here is listed nowhere. Nothing outside the tests calls it.
     pub fn list_items_left_here(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
         let sql = format!("SELECT {ITEM_COLUMNS} FROM items WHERE {LEFT_HERE} AND local_item_id > ?1 ORDER BY local_item_id LIMIT ?2");
         self.list_items(&sql, params![after.map_or(0, LocalItemId::as_i64), limit as i64])
@@ -490,7 +485,7 @@ impl ItemReader<'_> {
     /// agreed on, for the root, and when a directory it was agreed to be in is neither
     /// shown nor agreed to be anywhere. Called for the path of a removal in `UploadQueue.Changes()` and in the
     /// activity log: [`find_path`](Self::find_path) walks local places, and a removed item
-    /// has none. MISSING-6.d.
+    /// has none.
     pub fn find_synced_path(&self, item: LocalItemId) -> Result<Option<PathBuf>, TreeError> {
         let mut names = Vec::new();
         let mut at = item;
@@ -508,7 +503,7 @@ impl ItemReader<'_> {
 
     /// Whether a full listing was asked for and has not begun
     /// ([`ItemStore::request_full_listing`](super::ItemStore::request_full_listing)).
-    /// Called by the listing cycle when it decides how to begin. MISSING-1.d.
+    /// Called by the listing cycle when it decides how to begin.
     pub fn is_full_listing_requested(&self) -> Result<bool, TreeError> {
         super::full_listing_request::is_full_listing_requested(self.conn())
     }
@@ -520,7 +515,7 @@ impl ItemReader<'_> {
     /// parent and name per name of the path, in this reader's one transaction. `None` for
     /// a path the folder does not show, for one that goes through a file, and for one
     /// that is not relative to the root or names `..`; the empty path is the root. Called by
-    /// `fuse::ItemFilesInterface` and by the queue's answers; nothing else walks a path.
+    /// `mount::ItemFilesInterface` and by the queue's answers; nothing else walks a path.
     pub fn find_item_by_path(&self, path: &Path) -> Result<Option<Item>, TreeError> {
         let Some(mut found) = item_row::find_item(self.conn(), LocalItemId::ROOT)? else { return Ok(None) };
         for component in path.components() {

@@ -1,7 +1,8 @@
 //! The requests that change OneDrive and are not settled yet: the table `request_records`,
 //! one row for each item a step sent a request about, written BEFORE the request leaves
 //! and kept until its answer was committed or what became of it was read from OneDrive
-//! (the design's §7: "every request that changes OneDrive is on record before it leaves").
+//! (`docs/design/sync.md` §7.4: every request that changes OneDrive with one answer is on
+//! record before it leaves).
 //!
 //! A record says what the request asked — which item, into which directory, under which
 //! name, which content by its hash —: enough to tell from OneDrive whether it went through

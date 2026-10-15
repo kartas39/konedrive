@@ -59,7 +59,7 @@ pub(crate) enum ListingStart {
 /// enumeration it was given in, so that a removal of an item a page of that enumeration
 /// named is said by a later page of it or by the changes since the delta link it ends
 /// with — as for an item removed while a listing that was never stopped goes on. It was
-/// not measured (design §13); a next link Graph refuses begins a full listing anew
+/// not measured; a next link Graph refuses begins a full listing anew
 /// ([`decide_page_refusal`]).
 pub(crate) fn decide_listing_start(under_way: Option<&ListingUnderWay>, delta_link: Option<&str>, is_full_listing_requested: bool) -> ListingStart {
     match (under_way, delta_link) {
@@ -106,8 +106,8 @@ pub(crate) enum AfterPageRefusal {
 
 /// What `error` leads to. Pure: 410 (`ResyncRequired`, `ResyncUpload`) begins a full
 /// listing, whatever link it answers; so does the next link the store kept of a stopped
-/// full listing that OneDrive will not go on with (today `fetch.rs:118-123`). A delta
-/// link refused otherwise fails the cycle, as today (`fetch.rs:190-201`): the link is
+/// full listing that OneDrive will not go on with. A delta
+/// link refused otherwise fails the cycle: the link is
 /// kept, and a whole drive is not listed again for one refused request. A link this
 /// cycle was given and anything else fail the cycle too. And a full listing is begun for
 /// a refused link once in a cycle (`allowance`): a second refusal fails the cycle, and

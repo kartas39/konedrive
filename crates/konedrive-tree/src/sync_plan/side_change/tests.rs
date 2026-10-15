@@ -110,7 +110,7 @@ fn two_contents_are_one_but_for_the_time_when_all_else_that_tells_them_is_the_sa
     assert!(!is_same_content_but_for_time(Some(&written_here()), Some(&ContentVersion::ChangedHere { size: 3, mtime: 200, mtime_nsec: 7, change_count: 2 })));
 }
 
-/// New (the brief's §5): a copy's cTag mark survives an edit in place, so a content the rows
+/// A copy's cTag mark survives an edit in place, so a content the rows
 /// took from a mark (a cTag and no hash) is another content's only when the size and the
 /// time in whole seconds are the same too.
 #[test]

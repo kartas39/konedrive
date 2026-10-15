@@ -74,7 +74,7 @@ TrayItem::TrayItem(AppStatus *status, AccountItem *only, QObject *parent)
         }
     });
     // The account's own hold (metered connection, battery). The icon of every account
-    // lifts every account's (writes.md §11), as `sync anyway --all`; an account's icon
+    // lifts every account's (writes.md §6.3), as `sync anyway --all`; an account's icon
     // lifts that account's, as its Status page does.
     m_syncAnyway = m_menu->addAction(QIcon::fromTheme(QStringLiteral("media-playback-start")), i18nc("@action:inmenu", "Sync Anyway"));
     connect(m_syncAnyway, &QAction::triggered, this, [this] {

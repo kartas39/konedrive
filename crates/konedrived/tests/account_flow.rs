@@ -498,7 +498,7 @@ async fn cancel_after_callback_signs_out() {
     assert_eq!(svc.state().get().state, SignInState::SignedOut);
 }
 
-// --- The identity guard (`docs/design/accounts.md` §6.2, test 6) -------------------------------
+// --- The identity guard (`docs/design/accounts.md` §6.2) -------------------------------
 
 /// Two accounts of one daemon, `A` and `B`, and a Microsoft that knows two drives: the
 /// browser's `code-a` signs in to drive `DA`, `code-b` to `DB`.

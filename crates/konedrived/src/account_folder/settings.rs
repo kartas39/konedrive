@@ -75,7 +75,7 @@ impl SyncService {
         Ok(())
     }
 
-    /// `IgnorePatterns`: the account's ignore list (`docs/design/writes.md` §4.2 rule 3).
+    /// `IgnorePatterns`: the account's ignore list (`docs/design/writes.md` §3).
     pub(crate) fn ignore_patterns(&self) -> Vec<String> {
         crate::panic::read(&self.ignore).patterns().to_vec()
     }
@@ -122,7 +122,7 @@ impl SyncService {
         Ok(())
     }
 
-    /// `MachineName`: what a conflict copy is named after (`docs/design/writes.md` §7):
+    /// `MachineName`: what a conflict copy is named after (`docs/design/writes.md` §5):
     /// `machine_name` in `config.toml`, or the host's name.
     pub(crate) fn machine_name(&self) -> String {
         let persist = &self.wiring.persist;

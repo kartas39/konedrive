@@ -27,8 +27,7 @@
 //!   mode worked out again, this switch awaited, the token). So no 403 comes from a switch, and nothing
 //!   is kept as refused for good because of one.
 //!
-//! The sync is not stopped and started for a switch (today `follow_mode` rebuilds it,
-//! `mode.rs:39-73`): every task runs in either access mode.
+//! The sync is not stopped and started for a switch: every task runs in either access mode.
 //!
 //! **The order, to read-only:** the hold (`SendingHolds::set_folder_read_only(true)`,
 //! which wakes the plan: nothing towards OneDrive is started from here on, an upload
@@ -143,7 +142,7 @@ pub async fn apply_wanted_access_mode(mount: &ItemMount, sending_holds: &Sending
 /// tree lock) and the plan woken (`WakeCause::SendingHoldChanged`). Called by
 /// `account_folder/settings.rs` for a folder whose mount is served, whether or not its
 /// sync runs: `sync_plan_wake` is the one the mount was built with
-/// (`KeptFolderParts::sync_plan_wake`). How many rows changed. MISSING-4.f.
+/// (`KeptFolderParts::sync_plan_wake`). How many rows changed.
 pub(crate) async fn apply_ignore_list_change(mount: &ItemMount, sync_plan_wake: &SyncPlanWake) -> Result<u64, String> {
     let rewritten = mount.rewrite_ignored_names().await.map_err(|error| format!("the ignored names of the folder's rows could not be gone over: {error}"))?;
     sync_plan_wake.wake(WakeCause::SendingHoldChanged);

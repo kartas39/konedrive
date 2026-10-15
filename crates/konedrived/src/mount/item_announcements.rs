@@ -5,10 +5,10 @@
 //! the bridge's own lookup while a name is being announced. The queue, the announcement
 //! in progress and the thread are `item_inotify_bridge`'s.
 //!
-//! **Answers for:** design §9, last paragraph: the bridge tells the kernel of what a step
-//! changed "by local item id and the former name, with no table to look the node up in".
+//! **Answers for:** the bridge tells the kernel of what a step changed by local item id
+//! and the former name, with no table to look the node up in (`docs/design/mount.md` §9).
 //! The former place is taken by the step before its commit: the rows give the new place
-//! only (the map's E12).
+//! only.
 //!
 //! **Tested without the rest:**
 // test: a_name_that_is_vanishing_is_answered_with_the_item_that_had_it

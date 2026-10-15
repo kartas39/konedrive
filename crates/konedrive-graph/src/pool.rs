@@ -1,5 +1,5 @@
 //! The transfer pool: how many requests one account has in flight at once, downloads and
-//! uploads together (`docs/design/hydration.md` §6.4).
+//! uploads together (`docs/design/mount.md` §5.6).
 //!
 //! OneDrive publishes no limit on concurrency; it throttles an account as a whole with `429`
 //! or `503` and a `Retry-After`. So the pool finds its own level, per account:
@@ -108,7 +108,7 @@ pub enum Size {
 }
 
 impl Size {
-    /// The size class of a file of `bytes`: its placeholder's size, or the local file's.
+    /// The size class of a file of `bytes`: the size of OneDrive's content, or the local file's.
     pub fn of(bytes: u64) -> Self {
         if bytes >= LARGE_FROM {
             Size::Large

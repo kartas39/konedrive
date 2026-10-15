@@ -67,9 +67,8 @@ fn punch_all_frees_blocks_and_keeps_the_size() {
 
 #[test]
 fn punch_all_on_a_zero_length_file_is_a_no_op() {
-    // `fallocate(..., len=0, ...)` always returns EINVAL; dehydration and
-    // startup recovery call `punch_all` unconditionally, including on
-    // the zero-byte placeholders this crate treats as already hydrated.
+    // `fallocate(..., len=0, ...)` always returns EINVAL; `punch_all` is
+    // given an empty file too, and answers it as done.
     let (dir, _handle) = dir();
     let path = dir.path().join("empty.bin");
     let file =

@@ -25,7 +25,7 @@ use crate::sync_plan::ItemVersions;
 use crate::TreeError;
 
 /// Writes `conflicts` to the table `conflicts` inside `tx`: what `TreeStore::add_conflicts`
-/// (`conflicts.rs:62`) writes in a transaction of its own. Called by the commit below.
+/// (`conflicts.rs`) writes in a transaction of its own. Called by the commit below.
 pub(crate) fn add_conflicts_in(tx: &Transaction<'_>, conflicts: &[ConflictRow]) -> Result<(), TreeError> {
     let mut statement = tx.prepare_cached(
         "INSERT INTO conflicts (kept_copy, at, original) VALUES (?1, ?2, ?3)

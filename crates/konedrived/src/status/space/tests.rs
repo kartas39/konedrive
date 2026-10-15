@@ -47,8 +47,7 @@ fn local_bytes_of_a_directory_named_by_the_link_of_its_descriptor_count_what_is_
     assert_eq!(local_bytes(&link), local_bytes(dir.path()));
 }
 
-/// A `Report` that reports nowhere — the plain
-/// `serve_hydrations`' — starts no walker, and a walker stopped starts
+/// A `Report` that reports nowhere (`Report::nowhere`) starts no walker, and a walker stopped starts
 /// again at the next kick.
 #[tokio::test(start_paused = true)]
 async fn a_report_for_nowhere_starts_no_walker_and_a_stopped_one_starts_again() {

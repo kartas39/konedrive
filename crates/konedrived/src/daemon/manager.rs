@@ -211,10 +211,10 @@ impl AccountManager {
         self.accounts().iter().map(|a| a.path.clone()).collect()
     }
 
-    /// Brings up every account `config.toml` holds, in file order (`docs/design/accounts.md` §3.2, step 4):
+    /// Loads every account `config.toml` holds, in file order (`docs/design/accounts.md` §3.2, step 4):
     /// the session restored from the wallet and the cache, and its folder taken up, down
     /// until [`resume_all`](Self::resume_all) brings it up. An account that repeats an earlier one's id, label, drive
-    /// or folder is loaded but held back (§4.1); one whose id cannot name an object or a
+    /// or folder is loaded but held back (§4.2); one whose id cannot name an object or a
     /// directory, or repeats an id, is not loaded at all, and `Accounts.LastError` says so.
     pub(crate) async fn load(&self) {
         let config = self.config.snapshot();
@@ -289,7 +289,7 @@ impl AccountManager {
             transfers: Transfers { ceiling: config.transfer_ceiling(), large: config.transfer_large(), download_after: config.download_after() },
             ..Wiring::new(Arc::clone(&self.registry), Arc::clone(&account) as Arc<dyn crate::account::FolderAccount>, persist)
         });
-        // A switch to read-only asks the folder what waits to be uploaded (`docs/design/writes.md` §2).
+        // A switch to read-only asks the folder what waits to be uploaded (`docs/design/writes.md` §2.3).
         let uploads: std::sync::Weak<SyncService> = Arc::downgrade(&sync);
         account.set_uploads(uploads);
         Ok(Arc::new(Account { id: entry.id.clone(), path, account, sync, paths, signals: Mutex::new(Vec::new()) }))
@@ -352,7 +352,7 @@ impl AccountManager {
         Ok(account)
     }
 
-    /// `Accounts.Remove` (`docs/design/accounts.md` §7.3): the folder forgotten exactly as
+    /// `Accounts.Remove` (`docs/design/accounts.md` §8.3): the folder forgotten exactly as
     /// `Folder.Unregister` forgets it — never refused for what is unsent: the caller warns
     /// first, by `UploadQueue.UnsentCount()` —, its tree
     /// store with it — then a sign-in under way cancelled, the refresh token and the cached
@@ -457,7 +457,7 @@ impl AccountManager {
         Ok(())
     }
 
-    /// The account whose folder holds `path` (§3.5), for `Files`: the one whose
+    /// The account whose folder holds `path` (`docs/design/accounts.md` §3.3), for `Files`: the one whose
     /// folder is a component prefix of it with its directory part resolved — a folder
     /// reached through a link (`/home` → `/var/home`) — or, only when that cannot be
     /// resolved, taken as given. The file itself is never opened.
@@ -636,7 +636,7 @@ fn remove_account_dir(dir: &Path) {
     }
 }
 
-/// Makes `account`'s folder follow the mode the account runs in (`docs/design/writes.md` §2): it starts
+/// Makes `account`'s folder follow the mode the account runs in (`docs/design/writes.md` §2.1): it starts
 /// in the account's mode now, and a task switches it whenever `Account.Mode` changes. The
 /// task goes with the account's other tasks when it is removed.
 async fn follow_mode(account: &Account) {

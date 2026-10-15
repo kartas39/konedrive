@@ -6,9 +6,9 @@
 //! further change is taken, and reports to the owner of the folder's state through the
 //! report it was made with.
 //!
-//! **Answers for:** design §8: "a row that cannot be written is undone on disk; if the
-//! undo fails too, the mount is taken down and the daemon starts over through the start-up
-//! check". The report is received by a task of the owner of the folder's state
+//! **Answers for:** a row that cannot be written is undone on disk; if the undo fails
+//! too, the mount is taken down and the folder starts over through the start-up check
+//! (`docs/design/mount.md` §3.3, §8.1). The report is received by a task of the owner of the folder's state
 //! (`account_folder::take_down`, `SyncService::take_folder_down_for_fault`): inside a
 //! change of the folder it stops the sync, takes the folder down
 //! (`sync_tasks::stop_order::take_folder_down`), shows the trouble with its cause, and

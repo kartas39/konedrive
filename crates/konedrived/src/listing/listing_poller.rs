@@ -1,5 +1,5 @@
 //! The task that runs a listing cycle into the rows on a schedule, on a refresh and when
-//! the live socket says so: what `listing/poller.rs` is today over `Listing`.
+//! the live socket says so (`docs/design/sync.md` §5.2).
 //!
 //! **State owned:** the task, its handle's signals, and the live task beside it. Stopped
 //! by its owner alone ([`ListingPoller::stop`]); anyone with a [`ListingPollHandle`] may
@@ -14,7 +14,7 @@
 //! up to an interval late.
 //! A refresh given while a cycle runs is kept, and several are one: one more cycle runs
 //! after the one under way. It holds no cycle back for a read-only folder with unsent
-//! changes (today's `held_back`, `listing/poller.rs:170-184`, goes: design §13 (3)).
+//! changes.
 //!
 //! **Tested without the rest**, over a real cycle, the fixture's store and the fake
 //! OneDrive, on the real clock with short waits (a request to the fake is real I/O):
@@ -162,8 +162,7 @@ impl Drop for ListingPoller {
 /// The poller's task: a cycle at once, then when the next is due
 /// ([`decide_cycle_wait`]) or at once on a refresh; none while the account's work is
 /// stopped, which is looked at again when a timed pause ends ([`decide_pause_wait`]),
-/// after the interval and on a refresh. As today's `run` (`listing/poller.rs:186`)
-/// without what held a read-only folder's cycles back.
+/// after the interval and on a refresh.
 async fn run_cycles(cycle: Arc<ListingCycle>, schedule: Schedule, running: Arc<Running>, refresh: Arc<Notify>, cancel: CancellationToken, mut up: watch::Receiver<bool>) {
     let mut failure_count = 0usize;
     // False once the sender is gone: `changed` would then answer at once, for good.

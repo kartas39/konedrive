@@ -39,11 +39,10 @@ pub(crate) struct Downloaded {
 
 /// Streams the file's bytes into `target`, from `resume` if there is one, and checks them:
 /// what to commit, or the errno to answer with (`guards::End::Fail`).
-/// A download into a staging file, which becomes the item's copy once it is whole: a folder
-/// served through FUSE (`crate::mount`) has no placeholder to fill in place. The file may hold
-/// the start of an earlier download of the item, with its checkpoint: that one is continued
-/// when it is of the same version, as a fill in place continues its own. `size` is the item's
-/// size as the folder's tree has it; `split`, for a large file that nothing waits to open,
+/// A download into a staging file, which becomes the item's copy once it is whole
+/// (`docs/design/mount.md` §5.3). The file may hold the start of an earlier download of
+/// the item, with its checkpoint: that one is continued when it is of the same version.
+/// `size` is the item's size as its row has it; `split`, for a large file that nothing waits to open,
 /// downloads it in parallel parts.
 pub(crate) async fn download_staged(file: &File, item_id: &str, size: u64, source: &dyn ContentSource, split: Option<&Split>) -> Result<Downloaded, i32> {
     let target = Target::new(file.try_clone().map_err(|e| errno_of(&e))?);

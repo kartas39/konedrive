@@ -104,7 +104,7 @@ async fn a_folder_taken_down_is_tried_again_after_a_growing_pause_and_each_refus
     timer.abort();
 }
 
-/// The reviewer's finding: a folder the user started during the pause is not the timer's
+/// A folder the user started during the pause is not the timer's
 /// try any more, and the timer changes nothing of it — it takes no change of the folder,
 /// which would stop a sync that runs.
 #[tokio::test]

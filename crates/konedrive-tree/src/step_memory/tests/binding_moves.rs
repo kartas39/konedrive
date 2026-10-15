@@ -127,7 +127,7 @@ fn the_openings_in_a_row_that_had_the_roots_binding_are_in_the_root() {
     assert_eq!((store.item_store().find_item(listed_first).unwrap(), windows(&mut store, &place(ROOT, "report"))), (None, vec![(10, 10)]));
 }
 
-/// The third review's sequence. A directory is made here as `plans`, and is made in
+/// A directory is made here as `plans`, and is made in
 /// OneDrive under a temporary name, remembered before the request; the answer is lost. A
 /// listing brings the item under the temporary name, and the row is merged with the
 /// directory. The temporary name is the directory's still: it says where OneDrive has the

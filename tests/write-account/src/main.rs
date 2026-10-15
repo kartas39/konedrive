@@ -1,4 +1,4 @@
-//! The guarded harness for the write phase's test account (`docs/design/writes.md` §12). It checks,
+//! The guarded harness for the write phase's test account (`docs/design/writes.md` §8.1). It checks,
 //! against OneDrive itself, what the uploads assume of the service and the wiremock suites can
 //! only take as given. It writes to the drive it is pointed at, so it refuses to start unless
 //! every guard holds, and never sends a request its guard has not admitted:
@@ -14,7 +14,7 @@
 //! 5. the write token comes from `konedrivectl dev export-access-token --read-write`, which the
 //!    daemon hands out only for a drive on the same list ([`args`]).
 //!
-//! How to run it: docs/design/writes.md, "Running against the test account".
+//! How to run it: `docs/design/writes.md` §8.1.
 
 mod args;
 mod checks;

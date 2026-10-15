@@ -1,5 +1,4 @@
-//! Remove: unlink and rmdir. The disk first, the row second (design §8) — the other way
-//! round from today, which records first (`write_operations/remove.rs:26-36`).
+//! Remove: unlink and rmdir. The disk first, the row second (`docs/design/mount.md` §3.3).
 //!
 //! **Decides:** `decide_remove`. **Writes:** `LocalVersionChange::Removed`: a row with
 //! no binding goes; a bound one keeps its binding and what was agreed on, which is the
@@ -75,8 +74,8 @@ pub(super) enum RemoveDecision {
     RowAlone { item: LocalItemId },
 }
 
-/// Whether the removal goes ahead and how; the errno otherwise, in today's order
-/// (`write_operations/remove_plan.rs:37-53`): `ENOENT`, `EISDIR`, `ENOTDIR`, `ENOTEMPTY`.
+/// Whether the removal goes ahead and how; the errno otherwise, in this order: `ENOENT`,
+/// `EISDIR`, `ENOTDIR`, `ENOTEMPTY`.
 /// `ENOTEMPTY` also for a directory the folder shows nothing in while OneDrive has in it
 /// what the folder never showed (`RemoveCase::onedrive_items_never_shown` is not
 /// `Nothing`). For `CannotBeShown`, and for it alone, the caller then tells the user why
