@@ -133,7 +133,6 @@
 // test: what_a_read_does_once_its_whole_download_ended_per_case
 // test: reads_of_a_remembered_content_join_its_download_until_onedrive_has_answered
 // test: while_onedrive_asks_to_wait_what_needs_its_content_fails_at_once_and_the_rest_is_answered
-#![allow(dead_code)]
 
 use std::ffi::OsStr;
 use std::fs::File;
@@ -159,7 +158,7 @@ use super::item_range_fetcher::{ItemRangeFetcher, RangeRefusal};
 use super::item_read_origin::{decide_not_on_disk_read_origin, decide_open_to_read, NotOnDiskReadOrigin, OpenToRead, RangeSource};
 use super::item_write_operations::{FileToFill, ItemWriteOperations, MadeKind, RenameMode};
 use super::item_handles::Fh;
-use super::place_changes::{decide_open_errno, OpenAtRowError, OpenMode, PlaceChanges};
+use super::place_changes::{decide_open_errno, OpenAtRowError, PlaceChanges};
 use super::read_connections::ReadConnections;
 use super::write_operation_thread::WriteOperationThread;
 
@@ -396,7 +395,6 @@ pub(crate) struct ItemKernelRequests {
     access_mode_switch: Arc<AccessModeSwitch>,
     reply_attributes: Arc<WriteReplyAttributes>,
     store: Store,
-    runtime: tokio::runtime::Handle,
 }
 
 impl ItemKernelRequests {
@@ -419,10 +417,9 @@ impl ItemKernelRequests {
         free_up: Arc<ItemFreeUp>,
         access_mode_switch: Arc<AccessModeSwitch>,
         store: Store,
-        runtime: tokio::runtime::Handle,
     ) -> Self {
         let reply_attributes = Arc::new(WriteReplyAttributes { store: store.clone(), lookup: Arc::clone(&lookup) });
-        Self { lookup, read_connections, place_changes, item_handles, write_operations, write_operation_thread, inotify_bridge, downloader, download_states, range_fetcher, free_up, access_mode_switch, reply_attributes, store, runtime }
+        Self { lookup, read_connections, place_changes, item_handles, write_operations, write_operation_thread, inotify_bridge, downloader, download_states, range_fetcher, free_up, access_mode_switch, reply_attributes, store }
     }
 
     /// lookup. For the inotify bridge's own thread (`ItemInotifyBridge::is_own_thread` of
@@ -530,7 +527,7 @@ impl ItemKernelRequests {
                 OpenToRead::NotOnDisk { item, content } => return Ok(OpenedFile { fh: self.item_handles.add_file(OpenItemFile::ReadingNotOnDisk { item, content }), keeps_cache: true }),
                 OpenToRead::BackingFile => {}
             }
-            let opened = self.place_changes.open_at_row_path(OpenMode::Read, || {
+            let opened = self.place_changes.open_at_row_path(|| {
                 self.read_connections.read(|reader| match reader.find_item(node)? {
                     Some(row) if matches!(decide_open_to_read(&row), Ok(OpenToRead::BackingFile)) => Ok(reader.find_path(node)?.map(|path| (path, ()))),
                     Some(_) | None => Ok(None),
@@ -573,7 +570,7 @@ impl ItemKernelRequests {
                 NotOnDiskReadOrigin::Refused(errno) => return Err(errno),
                 NotOnDiskReadOrigin::OneDriveRange(source) => source,
                 NotOnDiskReadOrigin::LandedSince => {
-                    let opened = self.place_changes.open_at_row_path(OpenMode::Read, || {
+                    let opened = self.place_changes.open_at_row_path(|| {
                         // The row the path is read with, in one read: it must still say
                         // the content the handle was opened as is on disk.
                         self.read_connections.read(|reader| match decide_not_on_disk_read_origin(&to_node_row(reader.find_item(item)?), &content) {
@@ -890,7 +887,7 @@ impl ItemKernelRequests {
     /// directory none of whose content is (it is made on disk with the first that comes),
     /// nor of one the folder does not show any more.
     pub(super) fn answer_fsyncdir(&self, node: LocalItemId) -> Result<(), Errno> {
-        let opened = self.place_changes.open_at_row_path(OpenMode::Read, || {
+        let opened = self.place_changes.open_at_row_path(|| {
             self.read_connections.read(|reader| match reader.find_item(node)? {
                 Some(row) if row.kind == ItemKind::Directory => Ok(reader.find_path(node)?.map(|path| (path, ()))),
                 Some(_) | None => Ok(None),

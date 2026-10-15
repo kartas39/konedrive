@@ -73,7 +73,6 @@
 // test: a_refused_start_says_what_the_rebuild_of_its_store_lost
 // test: the_upload_sessions_of_a_store_of_an_older_version_are_cancelled_before_it_is_removed
 // test: a_quota_read_at_the_start_that_has_space_forgets_the_refusals_that_fit
-#![allow(dead_code, unused_variables)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -707,7 +706,7 @@ fn start_sync_tasks(input: &FolderStartInput, store: &Store, mount: &Arc<ItemMou
         },
     });
     let plan_loop = tokio::spawn(Arc::clone(&plan).run(stop.clone()));
-    SyncTasks { listing_poller: Some(listing_poller), poll, plan, plan_loop, thumbnail_filler, sending_holds: Arc::clone(sending_holds), sync_plan_wake: Arc::clone(sync_plan_wake), stop }
+    SyncTasks { listing_poller: Some(listing_poller), poll, plan_loop, thumbnail_filler, sending_holds: Arc::clone(sending_holds), sync_plan_wake: Arc::clone(sync_plan_wake), stop }
 }
 
 /// The runner of the plan's steps towards the folder, made of the parts the mount hands out

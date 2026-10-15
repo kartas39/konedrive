@@ -15,10 +15,8 @@
 // test: a_pin_is_set_by_the_stores_job_and_the_plan_woken
 // test: the_status_of_a_path_is_the_rows_sync_state_its_pin_and_what_runs_for_it
 // test: a_directory_is_downloaded_file_by_file_and_a_failure_is_said_after_the_rest
-// test: what_is_downloaded_below_a_path_is_counted_from_the_rows
 // test: a_free_up_after_the_thread_stopped_is_refused
 // test: a_download_asked_by_path_while_onedrive_asks_to_wait_is_refused_with_the_time_left
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -299,6 +297,7 @@ impl ItemFilesInterface {
     /// its checkpoint (`user.konedrive.progress`; none where none was written). For the
     /// test support of the daemon (`account_folder::testing::staged`); no member of the
     /// bus asks it.
+    #[cfg(any(test, feature = "fault-injection"))]
     pub(crate) async fn list_unfinished_downloads(&self) -> Result<Vec<(PathBuf, u64, Option<u64>)>, FilesRefusal> {
         let files = self.download_states.list_unfinished_files();
         let items: Vec<LocalItemId> = files.iter().map(|(item, _)| *item).collect();
@@ -322,26 +321,6 @@ impl ItemFilesInterface {
         })
     }
 
-    /// How much is downloaded at and below `path`: the sizes of the local contents of the
-    /// rows there that say on disk (`ItemReader::list_shown_files_below`); the backing
-    /// directory is not walked.
-    pub(crate) async fn count_downloaded_below(&self, path: &Path) -> Result<DownloadedSpace, FilesRefusal> {
-        let (item, _) = self.find_onedrive_item(path).await?;
-        let count = |counted: DownloadedSpace, file: &Item| match (file.content_presence, file.local.as_ref().and_then(|local| local.content.as_ref())) {
-            (ContentPresence::OnDisk, Some(content)) if file.kind == ItemKind::File => DownloadedSpace { files: counted.files + 1, bytes: counted.bytes + content.size() },
-            _ => counted,
-        };
-        if item.kind == ItemKind::File {
-            return Ok(count(DownloadedSpace::default(), &item));
-        }
-        let (mut after, mut counted) = (None, DownloadedSpace::default());
-        loop {
-            let files = self.list_files_below(item.local_item_id, after).await?;
-            let Some(last) = files.last() else { return Ok(counted) };
-            after = Some(last.local_item_id);
-            counted = files.iter().fold(counted, count);
-        }
-    }
 }
 
 /// What a free-up did.
@@ -352,14 +331,6 @@ pub(crate) struct FreedSpace {
     /// Downloaded files left as they are: pinned, being downloaded, or changed here and not
     /// uploaded yet.
     pub(crate) kept: u64,
-}
-
-/// The space the downloaded copies at and below a path take: how many files, and their
-/// bytes on disk.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DownloadedSpace {
-    pub(crate) files: u64,
-    pub(crate) bytes: u64,
 }
 
 /// Why the mount refuses what the `Files` interface asked.

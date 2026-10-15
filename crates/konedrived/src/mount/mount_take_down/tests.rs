@@ -31,7 +31,7 @@ fn a_take_down_asked_for_switches_the_folder_to_read_only_and_reports_once() {
 #[test]
 fn a_second_cause_does_not_report_again() {
     let (access_mode_switch, reported, mount_take_down) = mount_take_down();
-    let first = TakeDownCause::StoreFailed { detail: "disk I/O error".into() };
+    let first = TakeDownCause::UndoFailed { path: "disk I/O error".into() };
     mount_take_down.ask(first.clone());
     mount_take_down.ask(TakeDownCause::UndoFailed { path: PathBuf::from("docs/a") });
     mount_take_down.ask(first.clone());

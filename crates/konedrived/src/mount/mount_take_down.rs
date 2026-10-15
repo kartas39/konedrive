@@ -20,7 +20,6 @@
 //! **Tested without the rest:**
 // test: a_take_down_asked_for_switches_the_folder_to_read_only_and_reports_once
 // test: a_second_cause_does_not_report_again
-#![allow(dead_code, unused_variables)]
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,9 +35,6 @@ pub(crate) enum TakeDownCause {
     /// A backing file could not be made or cut after the row that says so was written:
     /// the row says of the file at `path` what the disk does not hold.
     BackingFileBehindRow { path: PathBuf },
-    /// The store failed under a write operation in a way that leaves the disk ahead of the
-    /// rows.
-    StoreFailed { detail: String },
 }
 
 /// Who is told of a take-down: the owner of the folder's state

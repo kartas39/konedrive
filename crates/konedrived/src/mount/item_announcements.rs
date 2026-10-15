@@ -17,7 +17,6 @@
 // test: an_item_moved_is_one_vanishing_and_one_appearing
 // test: each_announcement_is_one_system_call_at_the_path_of_its_place
 // test: an_announcement_whose_directory_or_item_the_rows_no_longer_show_is_no_system_call
-#![allow(dead_code, unused_variables)]
 
 use std::ffi::OsStr;
 use std::path::PathBuf;

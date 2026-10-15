@@ -64,7 +64,6 @@ fn the_sentence_of_a_take_down_names_the_folder_the_cause_and_what_the_user_can_
     let cases = [
         (TakeDownCause::UndoFailed { path: PathBuf::from("/home/u/OneDrive/a.txt") }, "/home/u/OneDrive/a.txt"),
         (TakeDownCause::BackingFileBehindRow { path: PathBuf::from("/home/u/OneDrive/b.txt") }, "/home/u/OneDrive/b.txt"),
-        (TakeDownCause::StoreFailed { detail: "disk I/O error".into() }, "disk I/O error"),
     ];
     let mut sentences = Vec::new();
     for (cause, named) in cases {
@@ -75,7 +74,7 @@ fn the_sentence_of_a_take_down_names_the_folder_the_cause_and_what_the_user_can_
         sentences.push(sentence);
     }
     sentences.dedup();
-    assert_eq!(sentences.len(), 3, "each cause has a sentence of its own");
+    assert_eq!(sentences.len(), 2, "each cause has a sentence of its own");
 }
 
 /// The owner's timer: each try that is refused is counted, and the next is due after the
@@ -256,7 +255,7 @@ fn a_report_for_a_mount_that_did_not_ask_takes_nothing_down() {
         assert!(!mount.is_take_down_asked());
         stage_folder(&service, &fixture.folder(), Sync::Stopped(Why::NotStarted), Some(kept)).await;
 
-        SyncService::take_folder_down_for_fault(Arc::downgrade(&service), TakeDownCause::StoreFailed { detail: "of another mount".into() }).await;
+        SyncService::take_folder_down_for_fault(Arc::downgrade(&service), TakeDownCause::UndoFailed { path: "of another mount".into() }).await;
         assert!(read_sync(&service, |folder| matches!(folder.up().map(|up| &up.sync), Some(Sync::Stopped(Why::NotStarted)))).await);
         assert!(service.mount().is_some_and(|kept| Arc::ptr_eq(&kept, &mount)), "the folder keeps its mount");
         assert_eq!(service.last_error(), "");

@@ -39,7 +39,6 @@
 // test: a_file_not_on_disk_renamed_over_a_file_on_disk_sets_that_one_aside
 // test: a_file_saved_by_a_rename_over_the_original_is_one_item_with_its_binding_and_new_content
 // test: a_move_that_cannot_be_taken_back_asks_for_the_take_down_and_keeps_its_record
-#![allow(dead_code)]
 
 use std::ffi::OsStr;
 use std::path::PathBuf;

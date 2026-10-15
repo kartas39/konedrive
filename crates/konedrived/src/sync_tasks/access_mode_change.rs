@@ -47,7 +47,6 @@
 // test: a_close_after_the_switch_is_written_and_waits_under_the_hold
 // test: the_switch_stops_neither_task
 // test: a_folder_started_read_only_holds_what_is_unsent_from_its_first_plan
-#![allow(dead_code, unused_variables)]
 
 use crate::config::Mode;
 use crate::mount::ItemMount;

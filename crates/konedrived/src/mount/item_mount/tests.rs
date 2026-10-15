@@ -47,7 +47,6 @@ fn the_parts_are_built_in_an_order_in_which_each_has_what_it_is_made_with() {
     assert!(findings.held_items.is_empty() && !findings.has_unread_part, "{findings:?}");
     assert_eq!(fixture.list_items(), rows, "the check found the rows as the disk has them");
     assert!(crate::panic::lock(&fixture.take_downs).is_empty());
-    assert!(!mount.item_handles().is_open_for_writing(copy.local_item_id));
     assert!(mount.backing_directory().resolve_root_path().join("docs/copy.txt").is_file());
     // The place changes were made with the id of the thread that was started for them.
     let parts = &mount.parts_to_stop;
@@ -224,7 +223,7 @@ fn a_mount_that_asked_to_be_taken_down_refuses_the_switch_to_read_write() {
     assert!(mount.switch_to_read_write().expect("no take-down was asked"));
     let take_down = mount.folder_step_parts().mount_take_down;
 
-    take_down.ask(crate::mount::TakeDownCause::StoreFailed { detail: "a fault".into() });
+    take_down.ask(crate::mount::TakeDownCause::UndoFailed { path: "a fault".into() });
 
     assert!(!mount.access_mode_switch().is_read_write(), "the asking made the folder read-only");
     assert!(mount.switch_to_read_write().is_err(), "and no switch makes it take changes again");

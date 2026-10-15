@@ -30,7 +30,6 @@
 // test: a_row_refused_after_the_disk_removes_what_was_made
 // test: a_made_entry_that_cannot_be_removed_again_asks_for_the_take_down_and_keeps_its_record
 // test: a_created_file_is_answered_and_has_its_writer_whatever_is_read_after_its_row
-#![allow(dead_code)]
 
 use std::ffi::OsStr;
 use std::io;

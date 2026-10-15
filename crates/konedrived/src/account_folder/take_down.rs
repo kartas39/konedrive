@@ -212,7 +212,6 @@ pub(super) fn describe_take_down(cause: &crate::mount::TakeDownCause, folder: &P
     let what = match cause {
         TakeDownCause::UndoFailed { path } => format!("a change of {} could not be recorded and could not be undone", path.display()),
         TakeDownCause::BackingFileBehindRow { path } => format!("{} could not be made or cut on disk after the change was recorded", path.display()),
-        TakeDownCause::StoreFailed { detail } => format!("konedrive's records of the folder could not be written ({detail})"),
     };
     format!(
         "the sync folder {} was stopped: {what}; konedrive checks the folder and starts it again by itself, and \"sync now\" tries at once",

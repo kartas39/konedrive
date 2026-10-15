@@ -19,14 +19,12 @@
 // test: a_sign_out_holds_all_sending_wakes_the_plan_and_stops_no_task
 // test: a_sign_in_forgets_what_was_not_allowed_and_wakes_the_plan
 // test: a_refresh_wakes_the_plan_and_asks_for_a_cycle
-// test: the_network_back_wakes_the_live_socket_and_the_plan
 // test: a_forget_with_something_unsent_is_not_refused
 // test: a_folder_taken_down_has_no_mount_a_closed_store_and_its_trouble_said
 // test: a_folder_forgotten_has_its_write_bits_and_a_closed_store
 // test: a_folder_forgotten_with_no_parts_kept_has_its_write_bits
 // test: a_store_somebody_still_holds_after_the_wait_is_answered
 // test: a_closed_store_that_is_not_there_or_not_of_this_version_counts_as_nothing_unsent
-#![allow(dead_code, unused_variables)]
 
 use konedrive_tree::{Reason, Store, UnsentTotal};
 
@@ -94,16 +92,6 @@ impl SyncTasks {
         self.poll.refresh();
     }
 
-    /// The network is back: the live socket is looked at again
-    /// (`ListingPollHandle::wake_live`), a cycle is asked for
-    /// (`ListingPollHandle::refresh`), and the plan's task is woken
-    /// (`WakeCause::SendingHoldChanged`: "the network"). No next try is made due: a step
-    /// that failed for the network is tried at its own time.
-    pub(crate) fn wake_for_network(&self) {
-        self.poll.wake_live();
-        self.poll.refresh();
-        self.sync_plan_wake.wake(WakeCause::SendingHoldChanged);
-    }
 }
 
 /// The account signed in: what OneDrive refused as not allowed may be allowed now

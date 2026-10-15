@@ -20,7 +20,6 @@
 // test: a_file_with_no_binding_and_nothing_on_disk_cannot_be_read
 // test: a_range_is_asked_of_the_drive_and_the_item_the_binding_names
 // test: a_directory_and_an_item_the_folder_does_not_show_are_not_opened_to_be_read
-#![allow(dead_code, unused_variables)]
 
 use fuser::Errno;
 use konedrive_tree::{ContentPresence, ContentVersion, Item, ItemKind, LocalItemId, OneDriveItemReference};

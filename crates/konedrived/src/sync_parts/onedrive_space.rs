@@ -19,7 +19,6 @@
 // test: a_507_with_no_space_left_makes_onedrive_full
 // test: a_quota_read_with_space_again_ends_full_and_says_how_much_is_free
 // test: a_refresh_reads_the_quota_and_a_due_read_waits_after_one_that_failed
-#![allow(dead_code, unused_variables)]
 
 use konedrive_graph::drive::{DriveClient, DriveQuota};
 

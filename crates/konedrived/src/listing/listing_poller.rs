@@ -242,6 +242,7 @@ impl Default for Schedule {
 
 impl Schedule {
     /// The poll alone, every `interval`, with these retries: no live task.
+    #[cfg(test)]
     pub(crate) fn polled(interval: Duration, retry: Vec<Duration>) -> Self {
         Self { interval, retry, live: None, ..Self::default() }
     }

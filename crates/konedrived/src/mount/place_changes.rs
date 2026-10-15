@@ -103,7 +103,6 @@
 // test: a_temporary_name_is_moved_to_like_any_place_and_is_not_cleaned
 // test: a_change_dropped_without_its_end_still_ends_the_count_and_wakes_the_sleepers
 // test: an_undo_that_fails_is_answered_as_such_and_asks_nothing_by_itself
-#![allow(dead_code, unused_variables)]
 
 use std::ffi::CString;
 use std::fs::File;
@@ -166,13 +165,6 @@ pub(crate) enum PlaceRefusal {
 /// each directory of the path that has one, the outermost first
 /// (`ItemReader::find_path_with_marks`).
 pub(crate) type DirectoryMarks = Vec<Option<OneDriveItemId>>;
-
-/// How a backing file is opened by a reader.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum OpenMode {
-    Read,
-    Write,
-}
 
 /// Why an open at a row's path failed.
 #[derive(Debug)]
@@ -304,7 +296,7 @@ impl PlaceChanges {
         PlaceChange { place_changes: self }
     }
 
-    /// Opens the backing file at the path `find_path` answers, with what else it answers
+    /// Opens to read the backing file at the path `find_path` answers, with what else it answers
     /// (the row, a content version), such that no place change came between the two:
     /// while a change is under way it sleeps on `ended`; then calls `find_path` — which
     /// reads the row and its path in ONE read closure (`ReadConnections::read` or
@@ -317,7 +309,7 @@ impl PlaceChanges {
     /// Called by every open of a backing file outside the write-operation thread: the open
     /// request's read branch, a read whose content landed since, `ItemContentFiles`.
     /// Never on the write-operation thread (asserted).
-    pub(super) fn open_at_row_path<T>(&self, mode: OpenMode, mut find_path: impl FnMut() -> Result<Option<(PathBuf, T)>, TreeError>) -> Result<Option<(File, T)>, OpenAtRowError> {
+    pub(super) fn open_at_row_path<T>(&self, mut find_path: impl FnMut() -> Result<Option<(PathBuf, T)>, TreeError>) -> Result<Option<(File, T)>, OpenAtRowError> {
         debug_assert_ne!(std::thread::current().id(), self.write_operation_thread_id, "a backing file is opened by a row's path off the write-operation thread, which would sleep on its own change");
         let mut crossed_tries = 0;
         loop {
@@ -331,7 +323,7 @@ impl PlaceChanges {
                 false => (self.wait_for_no_change(), None),
             };
             let Some((path, row)) = find_path().map_err(OpenAtRowError::Store)? else { return Ok(None) };
-            let opened = self.open(mode, &path);
+            let opened = self.backing_directory.open_to_read(&path);
             if self.count.load(Ordering::SeqCst) != count {
                 // A change began since the count was read: what was opened may be another
                 // item's file, and a missing one may only have moved.
@@ -408,13 +400,6 @@ impl PlaceChanges {
             self.sleeper_count.fetch_add(1, Ordering::SeqCst);
             held = self.ended.wait(held).unwrap_or_else(PoisonError::into_inner);
             self.sleeper_count.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
-
-    fn open(&self, mode: OpenMode, path: &Path) -> io::Result<File> {
-        match mode {
-            OpenMode::Read => self.backing_directory.open_to_read(path),
-            OpenMode::Write => self.backing_directory.open_to_write(path),
         }
     }
 

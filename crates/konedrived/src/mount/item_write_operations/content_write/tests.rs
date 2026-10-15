@@ -9,7 +9,6 @@ use super::*;
 use crate::mount::item_fixture::{onedrive_id_of, DiskMarksRead, ItemFixture, ONEDRIVE_MTIME};
 use crate::mount::item_write_operations::tests::{bind, make_row, take_off_disk, OperationPoint, OperationsFixture};
 use crate::mount::item_write_operations::MadeKind;
-use crate::mount::place_changes::OpenMode;
 
 #[test]
 fn each_case_of_a_writers_open_is_decided() {
@@ -201,7 +200,7 @@ fn a_reader_between_the_row_that_says_on_disk_and_the_file_being_made_waits_and_
     operations.run_at(OperationPoint::RowWritten, move || {
         let (place_changes, read_connections) = (Arc::clone(&place_changes), Arc::clone(&read_connections));
         let thread = std::thread::spawn(move || {
-            let opened = place_changes.open_at_row_path(OpenMode::Read, || read_connections.read(|reader| Ok(reader.find_path(empty)?.map(|path| (path, ())))));
+            let opened = place_changes.open_at_row_path(|| read_connections.read(|reader| Ok(reader.find_path(empty)?.map(|path| (path, ())))));
             matches!(opened, Ok(Some(_)))
         });
         *crate::panic::lock(&started) = Some(thread);

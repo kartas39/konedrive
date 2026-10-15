@@ -50,7 +50,6 @@
 // test: the_count_of_bytes_read_as_ranges_starts_over_once_it_reached_the_threshold
 // test: no_more_than_the_latest_contents_onedrive_answered_with_another_are_remembered
 // test: the_failure_of_a_download_onedrive_did_not_answer_is_kept_with_what_is_remembered_of_its_key
-#![allow(dead_code, unused_variables)]
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -575,6 +574,7 @@ impl ItemDownloadStates {
     /// a download that failed, to be gone on from. None has a name in the backing
     /// directory: they are held here alone. In no order. For the test support of the
     /// daemon (`ItemFilesInterface::list_unfinished_downloads`).
+    #[cfg(any(test, feature = "fault-injection"))]
     pub(super) fn list_unfinished_files(&self) -> Vec<(LocalItemId, Arc<File>)> {
         let states = crate::panic::lock(&self.states);
         states

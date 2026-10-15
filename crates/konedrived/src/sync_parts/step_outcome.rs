@@ -12,7 +12,6 @@
 //! refuses decides nothing, and says which refusal it was.
 //!
 //! **Tested without the rest:** nothing to test: no function decides here.
-#![allow(dead_code, unused_variables)]
 
 use std::ffi::OsString;
 use std::path::PathBuf;

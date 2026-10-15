@@ -393,8 +393,7 @@ impl StepMemory<'_> {
 
     /// `item` goes through `temporary_name` in OneDrive: kept before the request that takes
     /// the name, and answered for the row that has the item's binding until OneDrive
-    /// confirmed the item at another place or removed, or its step forgets it. Refused for
-    /// an id with no row.
+    /// confirmed the item at another place or removed. Refused for an id with no row.
     pub fn remember_temporary_name(&mut self, item: LocalItemId, temporary_name: &TemporaryName) -> Result<(), TreeError> {
         self.write(|tx| remember_temporary_name(tx, item, temporary_name))
     }

@@ -33,7 +33,6 @@
 // test: an_item_that_gave_its_binding_up_loses_its_marks
 // test: the_rows_are_read_without_waiting_for_the_stores_reading_thread
 // test: the_time_a_file_is_given_is_its_contents_with_the_nanoseconds
-#![allow(dead_code)]
 
 use std::fs::File;
 use std::io;
@@ -46,7 +45,7 @@ use konedrive_graph::quickxor::QuickXor;
 use konedrive_tree::{ConfirmedItem, ContentPresence, ContentVersion, Item, ItemKind, ItemVersions, LocalItemId, TreeError, TreeStore};
 
 use super::item_handles::ItemHandles;
-use super::place_changes::{decide_open_trouble, OpenAtRowError, OpenMode, PlaceChanges};
+use super::place_changes::{decide_open_trouble, OpenAtRowError, PlaceChanges};
 use crate::sync_parts::step_outcome::{StepFailure, StepObstacle, StepTrouble};
 
 /// How many bytes of a file are hashed at a time.
@@ -218,7 +217,7 @@ impl ItemContentFiles {
                 }
             })
         };
-        let opened = self.place_changes.open_at_row_path(OpenMode::Read, find_path).map_err(|error| decide_open_trouble(&error))?;
+        let opened = self.place_changes.open_at_row_path(find_path).map_err(|error| decide_open_trouble(&error))?;
         let is_open_for_writing = self.item_handles.is_open_for_writing(id);
         let Some((file, path)) = opened.filter(|_| !is_open_for_writing) else {
             let obstacle = if is_open_for_writing { StepObstacle::OpenForWriting } else { StepObstacle::ContentChanged };
@@ -272,7 +271,7 @@ impl ItemContentFiles {
                 Ok(reader.find_path(item)?.map(|path| (path, row)))
             })
         };
-        match self.place_changes.open_at_row_path(OpenMode::Read, find_path) {
+        match self.place_changes.open_at_row_path(find_path) {
             Ok(opened) => Ok(opened.map(|(entry, row)| MarkedEntry { entry, row })),
             Err(OpenAtRowError::NoFile { .. }) => Ok(None),
             Err(OpenAtRowError::Store(error)) => Err(io::Error::other(error.to_string())),

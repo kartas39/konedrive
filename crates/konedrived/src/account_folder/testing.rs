@@ -213,11 +213,12 @@ impl ContentSource for Replaceable {
 
 /// What a test's service was made with, for the test to act on: found again by
 /// [`parts`].
-// Read by this crate's tests alone; a build for another crate's tests only keeps them alive.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone)]
 pub(crate) struct Parts {
+    /// Read by this crate's tests alone.
+    #[cfg(test)]
     pub(crate) account: Arc<Account>,
+    #[cfg(test)]
     pub(crate) persist: Persist,
     /// The directory of a `config.toml` made for the service, kept as long as its parts.
     _config: Option<Arc<tempfile::TempDir>>,
@@ -323,7 +324,13 @@ impl Builder {
         }
         let service = SyncService::new(wiring);
         registry.add(&service);
-        let parts = Parts { account, persist, _config: config };
+        let parts = Parts {
+            #[cfg(test)]
+            account,
+            #[cfg(test)]
+            persist,
+            _config: config,
+        };
         let mut made = MADE.lock().unwrap();
         made.retain(|(service, _)| service.strong_count() > 0);
         made.push((Arc::downgrade(&service), parts));

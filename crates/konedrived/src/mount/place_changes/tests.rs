@@ -164,7 +164,7 @@ impl Fixture {
     }
 
     fn open_at(&self, rel: &'static str) -> Result<Option<String>, OpenAtRowError> {
-        let opened = self.place_changes.open_at_row_path(OpenMode::Read, || Ok(Some((PathBuf::from(rel), ()))))?;
+        let opened = self.place_changes.open_at_row_path(|| Ok(Some((PathBuf::from(rel), ()))))?;
         Ok(opened.map(|(file, ())| read_whole(file)))
     }
 }
@@ -232,7 +232,7 @@ fn a_reader_that_began_during_a_change_sleeps_until_its_end_and_is_woken() {
     let reads_during_a_change = AtomicUsize::new(0);
     std::thread::scope(|scope| {
         let reader = scope.spawn(|| {
-            f.place_changes.open_at_row_path(OpenMode::Read, || {
+            f.place_changes.open_at_row_path(|| {
                 reads_during_a_change.fetch_add((f.count() % 2) as usize, Ordering::SeqCst);
                 Ok(Some((PathBuf::from("a"), ())))
             })
@@ -252,7 +252,7 @@ fn a_reader_whose_open_was_crossed_by_a_change_tries_again_and_gets_the_file_of_
     f.write("a", "x");
     let rows = rows(&[("x", "a")]);
     let calls = AtomicU32::new(0);
-    let opened = f.place_changes.open_at_row_path(OpenMode::Read, || {
+    let opened = f.place_changes.open_at_row_path(|| {
         let found = find_row(&rows, "x");
         // The first row read is crossed: the file is moved before the reader opens.
         if calls.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -275,7 +275,7 @@ fn two_renames_between_a_readers_row_and_its_open_never_give_it_the_other_items_
     f.write("b", "y");
     let rows = rows(&[("x", "a"), ("y", "b")]);
     let calls = AtomicU32::new(0);
-    let opened = f.place_changes.open_at_row_path(OpenMode::Read, || {
+    let opened = f.place_changes.open_at_row_path(|| {
         let found = find_row(&rows, "x");
         if calls.fetch_add(1, Ordering::SeqCst) == 0 {
             for (item, to) in [("x", "c"), ("y", "a")] {
@@ -326,7 +326,7 @@ fn readers_never_get_another_items_file_while_two_entries_are_renamed_back_and_f
                 start.wait();
                 for _ in 0..READS {
                     let mut tries = 0;
-                    let opened = f.place_changes.open_at_row_path(OpenMode::Read, || {
+                    let opened = f.place_changes.open_at_row_path(|| {
                         tries += 1;
                         find_row(rows, item)
                     });
@@ -353,7 +353,7 @@ fn after_three_crossed_tries_the_next_change_waits_for_the_readers_try() {
     let order = Arc::new(AtomicU64::new(0));
     let (read_at, begun_at) = (AtomicU64::new(0), Arc::new(AtomicU64::new(0)));
     let (began, has_begun) = mpsc::channel();
-    let opened = f.place_changes.open_at_row_path(OpenMode::Read, || {
+    let opened = f.place_changes.open_at_row_path(|| {
         let call = calls.fetch_add(1, Ordering::SeqCst) + 1;
         was_lock_held.lock().unwrap().push(matches!(f.place_changes.changes.try_lock(), Err(TryLockError::WouldBlock)));
         if call <= CROSSED_TRIES {
@@ -387,22 +387,20 @@ fn after_three_crossed_tries_the_next_change_waits_for_the_readers_try() {
 #[test]
 fn a_row_that_is_gone_answers_none_and_a_failure_of_the_store_is_told_as_such() {
     let f = fixture();
-    let none = f.place_changes.open_at_row_path(OpenMode::Read, || Ok(None::<(PathBuf, ())>));
+    let none = f.place_changes.open_at_row_path(|| Ok(None::<(PathBuf, ())>));
     assert!(matches!(none, Ok(None)));
-    let failed = f.place_changes.open_at_row_path(OpenMode::Read, || Err::<Option<(PathBuf, ())>, _>(TreeError::Refused("no".into())));
+    let failed = f.place_changes.open_at_row_path(|| Err::<Option<(PathBuf, ())>, _>(TreeError::Refused("no".into())));
     assert!(matches!(failed, Err(OpenAtRowError::Store(TreeError::Refused(_)))));
 }
 
+/// A reader never writes through what it opened.
 #[test]
-fn a_file_is_opened_to_write_when_asked() {
+fn a_file_is_opened_to_read() {
     use std::io::Write;
     let f = fixture();
     f.write("a", "x");
-    let (mut file, ()) = f.place_changes.open_at_row_path(OpenMode::Write, || Ok(Some((PathBuf::from("a"), ())))).unwrap().unwrap();
-    file.write_all(b"y").unwrap();
-    assert_eq!(f.read("a").as_deref(), Some("y"));
-    let (mut file, ()) = f.place_changes.open_at_row_path(OpenMode::Read, || Ok(Some((PathBuf::from("a"), ())))).unwrap().unwrap();
-    assert!(file.write_all(b"z").is_err(), "opened to read");
+    let (mut file, ()) = f.place_changes.open_at_row_path(|| Ok(Some((PathBuf::from("a"), ())))).unwrap().unwrap();
+    assert!(file.write_all(b"z").is_err());
 }
 
 #[test]
@@ -543,7 +541,7 @@ fn a_reader_that_panics_under_the_lock_leaves_it_usable() {
     f.write("a", "x");
     let calls = AtomicU32::new(0);
     let reader = catch_unwind(AssertUnwindSafe(|| {
-        f.place_changes.open_at_row_path(OpenMode::Read, || {
+        f.place_changes.open_at_row_path(|| {
             if calls.fetch_add(1, Ordering::SeqCst) < CROSSED_TRIES {
                 f.change(|_| ());
                 return Ok(Some((PathBuf::from("a"), ())));
@@ -613,7 +611,7 @@ fn an_open_by_a_rows_path_on_the_write_operation_thread_is_a_fault() {
     let f = fixture();
     f.write("a", "x");
     let place_changes = Arc::clone(&f.place_changes);
-    let has_panicked = f.changer.run(move || catch_unwind(AssertUnwindSafe(|| place_changes.open_at_row_path(OpenMode::Read, || Ok(Some((PathBuf::from("a"), ())))).is_ok())).is_err());
+    let has_panicked = f.changer.run(move || catch_unwind(AssertUnwindSafe(|| place_changes.open_at_row_path(|| Ok(Some((PathBuf::from("a"), ())))).is_ok())).is_err());
     assert!(has_panicked, "with its own change open the thread would sleep on itself");
 }
 

@@ -69,7 +69,6 @@
 // test: what_is_downloaded_before_a_write_is_read_without_waiting_for_the_stores_reading_thread
 // test: bytes_written_through_a_handle_that_was_never_closed_are_unsent_after_the_check_at_start_though_size_and_time_stand
 // test: a_file_opened_for_writing_and_never_closed_is_changed_here_after_the_check_at_start_also_when_nothing_was_written
-#![allow(dead_code)]
 
 use std::fs::File;
 use std::path::{Path, PathBuf};

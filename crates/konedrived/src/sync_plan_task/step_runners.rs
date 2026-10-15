@@ -12,7 +12,6 @@
 // test: a_step_towards_the_folder_runs_under_the_folders_lease_and_a_download_does_not
 // test: a_step_that_waits_for_the_lease_when_the_stop_comes_is_not_run
 // test: the_show_steps_go_to_the_folder_steps_as_one_call
-#![allow(dead_code, unused_variables)]
 
 use std::future::Future;
 use std::pin::Pin;

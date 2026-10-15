@@ -133,7 +133,6 @@
 // test: a_download_onedrive_has_not_answered_is_given_up_when_the_wait_starts
 // test: the_plans_download_waits_the_wait_out
 // test: the_first_file_refused_during_a_wait_is_told_and_no_failure_is_recorded
-#![allow(dead_code)]
 
 use std::fs::File;
 use std::path::PathBuf;

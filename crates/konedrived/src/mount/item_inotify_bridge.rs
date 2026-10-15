@@ -28,7 +28,6 @@
 // test: a_changed_content_is_a_touch_of_the_file_by_path
 // test: the_kernels_pages_of_a_changed_content_are_dropped_before_the_file_is_touched
 // test: an_announcement_in_a_directory_the_folder_no_longer_shows_is_skipped_and_the_next_performed
-#![allow(dead_code, unused_variables)]
 
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;

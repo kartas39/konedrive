@@ -11,6 +11,7 @@ use fuser::{FileType, INodeNo};
 use konedrive_tree::{ContentVersion, ExclusionReason, ItemPlace, LocalVersionChange, PlanFault, Reason};
 
 use super::*;
+use konedrive_tree::WaitReason;
 use crate::folder::disk::{make_aside_entry_name, TEMPORARY_NAME_PREFIX};
 use crate::sync_parts::running_steps::{RunningStep, StepClass};
 use crate::mount::item_attributes::tests::shown_item;
@@ -27,7 +28,6 @@ fn lookup(fixture: &ItemFixture) -> Arc<ItemLookup> {
         Arc::clone(&fixture.item_handles),
         Arc::clone(&fixture.download_states),
         Arc::clone(&fixture.access_mode_switch),
-        Arc::clone(&fixture.upload_rules),
         Arc::clone(&fixture.running_steps),
         Arc::clone(&fixture.published_plan),
         Arc::clone(&fixture.backing_directory),
@@ -82,9 +82,8 @@ fn a_name_is_looked_up_by_one_read_of_the_local_place() {
     let docs = fixture.show_onedrive_directory("docs");
     let file = fixture.show_onedrive_file("docs/a.txt", b"hello");
     let found = find_entry(&fixture, &lookup, ROOT, "docs").unwrap();
-    assert_eq!((found.item.local_item_id, found.attributes.kind, found.attributes.ino), (docs.local_item_id, FileType::Directory, INodeNo(docs.local_item_id.as_i64() as u64)));
+    assert_eq!((found.local_item_id(), found.attributes.kind, found.attributes.ino), (docs.local_item_id, FileType::Directory, INodeNo(docs.local_item_id.as_i64() as u64)));
     let found = find_entry(&fixture, &lookup, docs.local_item_id, "a.txt").unwrap();
-    assert_eq!(found.item, file, "the row as the rows have it");
     assert_eq!((found.attributes.ino, found.attributes.kind, found.attributes.size, found.attributes.mtime, found.attributes.blocks), (INodeNo(file.local_item_id.as_i64() as u64), FileType::RegularFile, 5, at(ONEDRIVE_MTIME), 0));
     assert_eq!(errno_of(find_entry(&fixture, &lookup, docs.local_item_id, "missing")), Some(Errno::ENOENT));
     assert_eq!(errno_of(find_entry(&fixture, &lookup, ROOT, "a.txt")), Some(Errno::ENOENT), "a name is looked up in its directory alone");
@@ -93,7 +92,7 @@ fn a_name_is_looked_up_by_one_read_of_the_local_place() {
     // one OneDrive has that the folder does not show.
     fixture.move_here(file.local_item_id, "b.txt");
     assert_eq!(errno_of(find_entry(&fixture, &lookup, docs.local_item_id, "a.txt")), Some(Errno::ENOENT));
-    assert_eq!(find_entry(&fixture, &lookup, ROOT, "b.txt").unwrap().item.local_item_id, file.local_item_id);
+    assert_eq!(find_entry(&fixture, &lookup, ROOT, "b.txt").unwrap().local_item_id(), file.local_item_id);
     fixture.list_onedrive_file("docs/listed.txt", b"new in OneDrive");
     assert_eq!(errno_of(find_entry(&fixture, &lookup, docs.local_item_id, "listed.txt")), Some(Errno::ENOENT));
     // A read-only folder shows no write bit.
@@ -112,7 +111,7 @@ fn a_name_that_is_not_utf8_is_looked_up_as_it_was_given() {
     fs::write(fixture.folder().join(&name), b"abc").unwrap();
     let asked = name.clone();
     let found = ask(&fixture, &lookup, move |lookup| lookup.find_entry(ROOT, &asked)).unwrap();
-    assert_eq!((found.item.local_item_id, found.attributes.size), (made, 3));
+    assert_eq!((found.local_item_id(), found.attributes.size), (made, 3));
     assert!(found.attributes.blocks > 0, "its backing file is found by the same bytes");
     assert_eq!(list_names(&fixture, &lookup, ROOT).unwrap(), [name], "and listed by them");
     // Other bytes are another name.
@@ -374,7 +373,7 @@ fn a_lookup_while_a_place_change_is_under_way_does_not_wait_and_answers_no_block
     // the rows, with nothing of the disk in them.
     let end = hold_place_change_open(&fixture);
     let found = find_entry(&fixture, &lookup, ROOT, "a.bin").unwrap();
-    assert_eq!((found.item.local_item_id, found.attributes.size, found.attributes.blocks), (file.local_item_id, 65_536, 0), "no blocks for that one answer");
+    assert_eq!((found.local_item_id(), found.attributes.size, found.attributes.blocks), (file.local_item_id, 65_536, 0), "no blocks for that one answer");
     assert_eq!(find_attributes(&fixture, &lookup, file.local_item_id, None).unwrap().blocks, 0);
     assert_eq!(find_attributes(&fixture, &lookup, docs.local_item_id, None).unwrap().mtime, at(START_TIME), "nor a directory's time");
     assert_eq!(list_names(&fixture, &lookup, ROOT).unwrap(), ["a.bin", "docs"]);
@@ -433,9 +432,9 @@ fn a_lookup_racing_renames_never_answers_the_blocks_of_another_items_file() {
                         let name = ["a", "b", "c"][(reader + round) % 3];
                         match lookup.find_entry(ROOT, OsStr::new(name)) {
                             Ok(found) => {
-                                let (_, size, blocks) = facts.iter().find(|(item, ..)| *item == found.item.local_item_id).expect("one of the two items");
+                                let (_, size, blocks) = facts.iter().find(|(item, ..)| *item == found.local_item_id()).expect("one of the two items");
                                 assert_eq!(found.attributes.size, *size);
-                                assert!(found.attributes.blocks == 0 || found.attributes.blocks == *blocks, "{name}: item {} was answered {} blocks, and its file has {blocks}", found.item.local_item_id, found.attributes.blocks);
+                                assert!(found.attributes.blocks == 0 || found.attributes.blocks == *blocks, "{name}: item {} was answered {} blocks, and its file has {blocks}", found.local_item_id(), found.attributes.blocks);
                                 answered_with_blocks += usize::from(found.attributes.blocks != 0);
                             }
                             Err(errno) => assert_eq!(errno, Errno::ENOENT, "a name that is free at that moment"),
@@ -451,7 +450,7 @@ fn a_lookup_racing_renames_never_answers_the_blocks_of_another_items_file() {
     // Everything is where it began, and a lookup at rest has its blocks.
     for (name, (item, _, blocks)) in ["a", "b"].into_iter().zip(facts) {
         let found = find_entry(&fixture, &lookup, ROOT, name).unwrap();
-        assert_eq!((found.item.local_item_id, found.attributes.blocks), (item, blocks));
+        assert_eq!((found.local_item_id(), found.attributes.blocks), (item, blocks));
     }
     fixture.assert_rows_and_disk_agree();
     // Not asserted: how many answers had blocks while the renames ran.

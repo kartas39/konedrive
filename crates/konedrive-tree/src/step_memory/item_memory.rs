@@ -190,15 +190,15 @@ impl MismatchedItem {
 /// The temporary name an exchange of names is going through: the name an item is given in
 /// OneDrive while the name it takes is still another item's. It says where OneDrive has the
 /// item from the first request of the exchange until OneDrive confirmed it at another
-/// place, or its step forgets it.
+/// place.
 ///
 /// *Voided by:* the commit of a request OneDrive confirmed the item at another place by —
 /// a move ([`ItemMemory::forget_confirmed_request`]), the making of a new item
 /// (`forget_temporary_name_unless_at`) — or removed
 /// (`forget_temporary_names_of_items_onedrive_lacks`); a listing that names the item at
 /// another place (`forget_temporary_name_unless_at`, in the page's transaction) or as
-/// gone, by itself or with a directory above it (the sweep at the end of every page); and
-/// its step, done with it (`forget_fact`). It goes with the binding to the row that has it.
+/// gone, by itself or with a directory above it (the sweep at the end of every page). It
+/// goes with the binding to the row that has it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemporaryName {
     /// The temporary name, in the directory of `toward`.

@@ -40,7 +40,6 @@
 // test: the_attributes_a_node_has_are_named_by_one_read
 // test: the_sync_mark_per_case
 // test: the_state_attribute_per_case
-#![allow(dead_code, unused_variables)]
 
 use std::ffi::OsStr;
 use std::fs::File;
@@ -51,7 +50,7 @@ use std::time::UNIX_EPOCH;
 
 use fuser::{Errno, FileAttr};
 use konedrive_fs::placeholder::{State, XATTR_DRIVE, XATTR_ITEM_ID, XATTR_PIN, XATTR_ROOT, XATTR_STATE, XATTR_SYNC};
-use konedrive_tree::{ContentPresence, FileSyncState, Item, ItemKind, LocalItemId, TreeError, WaitReason};
+use konedrive_tree::{ContentPresence, FileSyncState, Item, ItemKind, LocalItemId, TreeError};
 
 use super::access_mode_switch::AccessModeSwitch;
 use super::backing_directory::{BackingDirectory, EntryKind};
@@ -64,7 +63,6 @@ use super::item_handles::ItemHandles;
 use super::item_handles::Fh;
 use super::place_changes::PlaceChanges;
 use super::read_connections::ReadConnections;
-use super::upload_rules::UploadRules;
 use crate::sync_parts::published_plan::{decide_is_shown_blocked, ItemAnswer, PublishedPlan};
 use crate::sync_parts::running_steps::RunningSteps;
 
@@ -184,11 +182,18 @@ pub(super) fn decide_state_attribute(sync_state: Option<FileSyncState>, is_downl
     }
 }
 
-/// An item the folder shows, with the attributes it is answered with.
+/// An item the folder shows: the attributes it is answered with.
 #[derive(Debug, Clone)]
 pub(super) struct ShownEntry {
-    pub(super) item: Item,
     pub(super) attributes: FileAttr,
+}
+
+impl ShownEntry {
+    /// The item's local item id: the node id it is answered with.
+    #[cfg(test)]
+    pub(super) fn local_item_id(&self) -> LocalItemId {
+        LocalItemId::new(self.attributes.ino.0 as i64)
+    }
 }
 
 /// The answers to the kernel's reading requests.
@@ -198,7 +203,6 @@ pub(super) struct ItemLookup {
     item_handles: Arc<ItemHandles>,
     download_states: Arc<ItemDownloadStates>,
     access_mode_switch: Arc<AccessModeSwitch>,
-    upload_rules: Arc<UploadRules>,
     /// Which steps run: the sync mark's `uploading`.
     running_steps: Arc<RunningSteps>,
     /// The plan's last answers: the sync mark's `blocked`.
@@ -219,13 +223,12 @@ impl ItemLookup {
         item_handles: Arc<ItemHandles>,
         download_states: Arc<ItemDownloadStates>,
         access_mode_switch: Arc<AccessModeSwitch>,
-        upload_rules: Arc<UploadRules>,
         running_steps: Arc<RunningSteps>,
         published_plan: Arc<PublishedPlan>,
         backing_directory: Arc<BackingDirectory>,
         mount_started_at: i64,
     ) -> Self {
-        Self { read_connections, place_changes, item_handles, download_states, access_mode_switch, upload_rules, running_steps, published_plan, backing_directory, mount_started_at }
+        Self { read_connections, place_changes, item_handles, download_states, access_mode_switch, running_steps, published_plan, backing_directory, mount_started_at }
     }
 
     /// The row of `node`, as the folder shows it or not. Calls `ItemReader::find_item` on
@@ -339,14 +342,10 @@ impl ItemLookup {
     /// The blocks of a file open for writing are its writer's file's too, by the same
     /// `fstat`: no path is looked at for it. An error of the store or of the `fstat` is
     /// logged and answers no facts: the attributes are then the row's.
-    pub(super) fn read_backing_file_facts(&self, item: &Item) -> BackingFileFacts {
-        self.read_backing_file_facts_through(item, &|node| self.find_path(node))
-    }
-
-    /// [`read_backing_file_facts`](Self::read_backing_file_facts), with the path of the
-    /// item's local version found by `find_path`: the one reading of these facts, for a
-    /// thread of the mount and for the write-operation thread alike.
-    pub(super) fn read_backing_file_facts_through(&self, item: &Item, find_path: FindPath<'_>) -> BackingFileFacts {
+    ///
+    /// The path of the item's local version is found by `find_path`: the one reading of
+    /// these facts, for a thread of the mount and for the write-operation thread alike.
+    pub(super) fn read_backing_file_facts(&self, item: &Item, find_path: FindPath<'_>) -> BackingFileFacts {
         let no_facts = BackingFileFacts { size_and_times: SizeAndTimes::OfLocalContent, blocks: 0, directory_mtime: None };
         if item.local.is_none() {
             return no_facts;
@@ -391,9 +390,9 @@ impl ItemLookup {
     /// `find_path`: for the reply of a write operation, made on the write-operation
     /// thread.
     pub(super) fn describe_through(&self, item: Item, find_path: FindPath<'_>) -> Result<ShownEntry, Errno> {
-        let facts = self.read_backing_file_facts_through(&item, find_path);
+        let facts = self.read_backing_file_facts(&item, find_path);
         let attributes = to_item_attributes(&item, self.access_mode_switch.access_mode(), &facts, self.mount_started_at).ok_or(Errno::ESTALE)?;
-        Ok(ShownEntry { item, attributes })
+        Ok(ShownEntry { attributes })
     }
 
     /// The attributes the bridge's own lookup is answered for a name that is vanishing
