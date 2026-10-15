@@ -41,7 +41,7 @@ A change that adds, moves or removes a file changes its line here.
 | `crates/konedrivectl` | The command line: everything the window can do |
 | `crates/konedrive-graph` | Sign-in with Microsoft and everything that talks to Microsoft Graph |
 | `crates/konedrive-tree` | The store (SQLite): a row per item with its three versions, the step memory, and the sync plan |
-| `crates/konedrive-fs` | A folder's files on the local filesystem: konedrive's extended attributes and modes, write leases, file handles, the feature probe |
+| `crates/konedrive-fs` | A folder's files on the local filesystem: konedrive's extended attributes and modes, the feature probe |
 | `crates/konedrive-reason` | Why a change is kept back: the reasons, their spellings and groups |
 | `crates/konedrive-dbus` | D-Bus names and client proxies of the daemon, for `konedrivectl` and tests |
 | `crates/konedrive-text` | What the codes mean, in words: the one catalogue of sentences, and the C++ generated from it |
@@ -867,9 +867,8 @@ The sync plan:
   `RESERVED_PREFIX`), and `proc_path`, the path of an open descriptor.
 - `placeholder.rs` — what konedrive keeps on a file or a directory: its extended attributes
   and its modes. `[tests]`
-- `handle.rs` — file handles: the kernel's name for an inode. `[tests]`
-- `probe.rs` — whether a directory's filesystem can be a sync folder's: sparse files, `user.*`
-  attributes, file handles. `[tests]`
+- `probe.rs` — whether a directory's filesystem can be a sync folder's: nameless files, sparse
+  files, hole punching, `user.*` attributes. `[tests]`
 
 ## `crates/konedrive-reason`: why a change is kept back
 
