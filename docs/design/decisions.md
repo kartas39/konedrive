@@ -554,8 +554,9 @@ client has an answer a user already knows, it is followed.
   guard — except a folder's delete, which carries none at all (next entry).
 - **Why.** It is the only way two writers cannot overwrite each other, and it makes every step
   replayable after a crash: "did my request land?" is answered by the content hash.
-- **Trade-off.** An extra read on every refused guard; and a session checks `If-Match` when it is
-  created, not when it completes, which leaves a window of one fragment (limitations log F80).
+- **Trade-off.** An extra read on every refused guard. A session's guard holds to its end: OneDrive
+  refuses its last fragment when the item's content changed since the session was opened, and keeps
+  that change (measured on OneDrive personal, 2026-10-14).
 
 ### A folder delete is the whole folder, as on Windows; the recycle bin is the safety net
 

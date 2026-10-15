@@ -574,13 +574,10 @@ One path for every file with content (`upload/content/session.rs`, `send_session
    a run. Before each fragment, the first too, the upload may stop (§11), and the file is looked for
    under its row's names: removed, the upload ends as §5.2 says; moved by a recorded row, it goes
    on.
-4. Before the last fragment the worker probes for a writer, compares the file with the snapshot and,
-   for a changed file, reads the item again: its eTag or cTag must still be the guard's. `If-Match`
-   is checked when a session is created, not when it completes; this narrows the window in which an
-   edit made in OneDrive meanwhile is superseded to about one fragment, and such an edit stays in
-   the item's version history (limitations log F80). The read is skipped when the session's opening
-   was the request just before; a last fragment sent again (§6.1) is not preceded by a new read
-   (issue #231).
+4. The item is not read again before the last fragment: OneDrive refuses that fragment itself when
+   the item's content changed since the session was opened, keeps that change, and the ended session
+   is taken as the item changed. After a rename or a move in OneDrive it takes the fragment (measured
+   on OneDrive personal, 2026-10-14).
 5. The last fragment's answer carries the item; a hash in it must be the one computed while sending.
    A mismatch is never committed: the content goes up again from zero.
 6. After a crash or a dropped connection the session's status says where to go on from, but only for
@@ -995,7 +992,7 @@ uploads: rows kept when an account turns read-only by itself (F140) and consent 
 Microsoft (F66); copies and moves told apart by the recorded object (F53), deletes decided only on
 the helper's word (F54); other devices (F72), changes that must come from the daemon's own process
 to be told apart (F74), a size change by path (F75), placeholders moved into a brand-new directory
-(Z2); `fileSize` left out of a session (F39), the placeholder an open session leaves (F172), the
-one-fragment window (F80); moved-out objects (Z3, F120, F121, F124, F261); what a removal keeps
+(Z2); `fileSize` left out of a session (F39), the placeholder an open session leaves (F172);
+moved-out objects (Z3, F120, F121, F124, F261); what a removal keeps
 (F187) and what keeps an item that can no longer be placed (F255); the automatic hold without
 NetworkManager or UPower (F175). File modes lost across a round trip are issue #216.
