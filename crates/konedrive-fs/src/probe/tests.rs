@@ -85,13 +85,3 @@ fn other_errors_are_reported_as_unusable_with_their_own_text() {
         }
     }
 }
-
-/// A filesystem that gives no file handle answers `EOPNOTSUPP`, and is
-/// refused in the words of every other missing feature. No such filesystem
-/// can be mounted here without root, so the answer is given to the mapping
-/// itself; a filesystem that gives handles passes the whole probe above.
-#[test]
-fn a_filesystem_without_file_handles_is_refused_by_name() {
-    let error = classify(io::Error::from_raw_os_error(libc::EOPNOTSUPP), Path::new("/some/dir"), HANDLES);
-    assert_eq!(error.to_string(), "/some/dir: the filesystem does not support file handles (name_to_handle_at)");
-}

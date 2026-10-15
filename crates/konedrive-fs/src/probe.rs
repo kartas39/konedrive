@@ -7,7 +7,6 @@ use std::path::Path;
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 
-use crate::handle::FileHandle;
 use crate::placeholder::punch_all;
 
 #[derive(Debug, thiserror::Error)]
@@ -73,11 +72,8 @@ fn open_probe_file(dir: &Path) -> io::Result<File> {
     Ok(File::from(fd))
 }
 
-/// What a filesystem that gives no file handle is said to lack.
-const HANDLES: &str = "file handles (name_to_handle_at)";
-
 /// Creates one nameless temporary file in `dir` and exercises every feature
-/// a folder needs: sparse size, hole punching, user xattrs and a file handle.
+/// a folder needs: sparse size, hole punching and user xattrs.
 pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
     let unusable = |e: io::Error| ProbeError::Unusable {
         path: dir.display().to_string(),
@@ -97,9 +93,6 @@ pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
     punch_all(&file).map_err(|e| classify(e, dir, "sparse files with hole punching"))?;
     xattr::FileExt::set_xattr(&file, crate::placeholder::XATTR_STATE, b"probe")
         .map_err(|e| classify(e, dir, "user.* extended attributes"))?;
-    // A file or directory of the folder is its handle, and nothing else: a
-    // filesystem that gives none cannot say which object is which.
-    FileHandle::of(&file).map_err(|e| classify(e, dir, HANDLES))?;
     Ok(())
 }
 

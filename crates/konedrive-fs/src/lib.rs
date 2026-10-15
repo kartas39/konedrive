@@ -1,7 +1,6 @@
 //! Local filesystem primitives for a folder's files: konedrive's extended
-//! attributes and modes, file handles and the feature probe.
+//! attributes and modes, and the feature probe.
 
-pub mod handle;
 pub mod placeholder;
 pub mod probe;
 

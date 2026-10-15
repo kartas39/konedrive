@@ -49,8 +49,8 @@ account: the switch on the Account page, or `konedrivectl account mode read-writ
 
 Supported: several personal Microsoft accounts, each with its own folder; KDE Plasma 6 with KDE
 Frameworks 6.21 or later; FUSE 3 (`fusermount3`). A folder's filesystem must give nameless files
-(`O_TMPFILE`), hole punching, `user.*` extended attributes and file handles (the probe when a
-folder is chosen, [accounts.md](accounts.md)); the design was measured on Linux 7.2.
+(`O_TMPFILE`), hole punching and `user.*` extended attributes (the probe when a folder is
+chosen, [accounts.md](accounts.md)); the design was measured on Linux 7.2.
 
 ## The processes
 
