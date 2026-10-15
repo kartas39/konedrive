@@ -1,10 +1,9 @@
 use std::fs::File;
-use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::time::{Duration, UNIX_EPOCH};
 
 use super::{
-    combine_op_and_restore_results, punch_all, read_progress, read_state, remove_progress, set_mtime,
+    combine_op_and_restore_results, read_progress, read_state, remove_progress, set_mtime,
     with_owner_write, write_ctag, write_progress, write_state, Progress, State, StateError,
     XATTR_CTAG, XATTR_PROGRESS, XATTR_STATE,
 };
@@ -47,35 +46,6 @@ fn an_unparseable_state_is_an_error_not_an_absent_one() {
             other => panic!("{bad:?} must not be readable as a state: {other:?}"),
         }
     }
-}
-
-#[test]
-fn punch_all_frees_blocks_and_keeps_the_size() {
-    let (dir, _handle) = dir();
-    let path = dir.path().join("big.bin");
-    std::fs::write(&path, vec![7u8; 1 << 20]).unwrap();
-    let file = File::options().read(true).write(true).open(&path).unwrap();
-    punch_all(&file).unwrap();
-
-    let meta = std::fs::metadata(&path).unwrap();
-    assert_eq!(meta.len(), 1 << 20, "size must be preserved");
-    assert!(meta.blocks() < 64, "expected the blocks to be freed, got {}", meta.blocks());
-    let mut content = Vec::new();
-    File::open(&path).unwrap().read_to_end(&mut content).unwrap();
-    assert!(content.iter().all(|b| *b == 0));
-}
-
-#[test]
-fn punch_all_on_a_zero_length_file_is_a_no_op() {
-    // `fallocate(..., len=0, ...)` always returns EINVAL; `punch_all` is
-    // given an empty file too, and answers it as done.
-    let (dir, _handle) = dir();
-    let path = dir.path().join("empty.bin");
-    let file =
-        File::options().create(true).truncate(true).read(true).write(true).open(&path).unwrap();
-    assert_eq!(file.metadata().unwrap().len(), 0);
-    punch_all(&file).unwrap();
-    assert_eq!(file.metadata().unwrap().len(), 0);
 }
 
 fn locked(dir: &std::path::Path, name: &str, content: &[u8]) -> std::path::PathBuf {

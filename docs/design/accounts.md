@@ -296,9 +296,9 @@ refused, before anything is touched, in this order:
    that is not empty and carries no root id of ours.
 
 **The probe** (`konedrive_fs::probe::probe_dir`) makes one nameless file in the folder
-(`O_TMPFILE`) and checks every feature the backing directory needs: a sparse size and hole
-punching, and a `user.*` extended attribute. A missing feature is named in the refusal. A folder that already carries a root id of ours is not probed again: it
-was probed when it was first registered.
+(`O_TMPFILE`) and checks every feature the backing directory needs: a sparse size and a `user.*`
+extended attribute. A missing feature is named in the refusal. A folder that already carries a
+root id of ours is not probed again: it was probed when it was first registered.
 
 **The root id** is a random UUID in `user.konedrive.root` on the folder's directory. One the folder
 carries is used again, so that a registration made again after a failure, a Forget or a restart

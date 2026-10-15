@@ -7,7 +7,6 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::str::FromStr;
 use std::time::SystemTime;
 
-use nix::fcntl::FallocateFlags;
 use nix::sys::stat::Mode;
 use xattr::FileExt;
 
@@ -240,26 +239,6 @@ pub fn write_progress(file: &File, progress: &Progress) -> io::Result<()> {
 
 pub fn remove_progress(file: &File) -> io::Result<()> {
     remove_xattr(file, XATTR_PROGRESS)
-}
-
-/// Releases every block while keeping the logical size.
-///
-/// A zero-length file has no blocks to release, and `fallocate` with `len ==
-/// 0` returns `EINVAL` unconditionally at the VFS level (not filesystem
-/// specific), so that case is short-circuited before the syscall rather than
-/// surfaced as an error.
-pub(crate) fn punch_all(file: &File) -> io::Result<()> {
-    let size = file.metadata()?.len() as i64;
-    if size == 0 {
-        return Ok(());
-    }
-    nix::fcntl::fallocate(
-        file.as_fd(),
-        FallocateFlags::FALLOC_FL_PUNCH_HOLE | FallocateFlags::FALLOC_FL_KEEP_SIZE,
-        0,
-        size,
-    )?;
-    Ok(())
 }
 
 #[cfg(test)]
