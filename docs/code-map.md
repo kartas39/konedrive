@@ -868,7 +868,7 @@ The sync plan:
 - `placeholder.rs` — what konedrive keeps on a file or a directory: its extended attributes
   and its modes. `[tests]`
 - `probe.rs` — whether a directory's filesystem can be a sync folder's: nameless files, sparse
-  files, hole punching, `user.*` attributes. `[tests]`
+  files, `user.*` attributes. `[tests]`
 
 ## `crates/konedrive-reason`: why a change is kept back
 

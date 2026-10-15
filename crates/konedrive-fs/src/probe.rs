@@ -7,7 +7,6 @@ use std::path::Path;
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 
-use crate::placeholder::punch_all;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProbeError {
@@ -73,7 +72,7 @@ fn open_probe_file(dir: &Path) -> io::Result<File> {
 }
 
 /// Creates one nameless temporary file in `dir` and exercises every feature
-/// a folder needs: sparse size, hole punching and user xattrs.
+/// a folder needs: a sparse size and user xattrs.
 pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
     let unusable = |e: io::Error| ProbeError::Unusable {
         path: dir.display().to_string(),
@@ -90,7 +89,6 @@ pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
         open_probe_file(dir).map_err(|e| classify(e, dir, "temporary files (O_TMPFILE)"))?;
     file.write_all(&[1u8; 4096]).map_err(unusable)?;
     file.set_len(1 << 20).map_err(unusable)?;
-    punch_all(&file).map_err(|e| classify(e, dir, "sparse files with hole punching"))?;
     xattr::FileExt::set_xattr(&file, crate::placeholder::XATTR_STATE, b"probe")
         .map_err(|e| classify(e, dir, "user.* extended attributes"))?;
     Ok(())
