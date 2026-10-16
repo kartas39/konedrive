@@ -488,31 +488,44 @@ is drawn without opening the file.
 
 **The filler**, a task of the folder's sync ([sync.md](sync.md) §9):
 
-- its candidates are the files the folder shows that OneDrive has, whose MIME type is an image's or
-  a video's, and that have no thumbnail recorded for the content OneDrive has now at the path they
-  are at (`ItemReader::list_thumbnail_candidates`, the store's `thumbnail_marks`);
+- its candidates are the files the folder shows that OneDrive has, whose MIME type is one a
+  thumbnail is made for, and that have no thumbnail recorded for the content OneDrive has now at
+  the path they are at (`ItemReader::list_thumbnail_candidates`, the store's `thumbnail_marks`).
+  The types are images and videos (`image/*`, `video/*`); PDF and PostScript (`application/pdf`,
+  `application/postscript`); OpenDocument (`application/vnd.oasis.opendocument.*`) and Office Open
+  XML (`application/vnd.openxmlformats-officedocument.*`); the older Word, Excel and PowerPoint
+  (`application/msword`, `application/vnd.ms-excel`, `application/vnd.ms-powerpoint`); EPUB
+  (`application/epub+zip`). Graph draws a thumbnail of a document too (measured on 2026-10-16 for
+  a PDF, a DOCX and an ODT). Plain text is left out: a folder of code would ask for thousands;
 - for each it asks Graph for one thumbnail, `c512x512`, and writes it as a PNG to `x-large`,
   `large` and `normal`, scaled down and never up, tagged with the file's URI and the content's time;
   a `406` is asked once more at Graph's named size `large`;
 - every answer that settles whether the item has a usable thumbnail is recorded — a thumbnail
-  written, a refusal, a body that will not decode or is over the decode limits (4096 × 4096 px, 64
-  MiB), a thumbnail that cannot be written into the cache — and the item is not asked again until
-  its content or its path changes. Only a passing trouble (no answer, `401`, `408`, `429`, a 5xx) is
-  tried again at the next drain. The cache itself is not looked at;
-- it runs after every cycle, when thumbnails are turned on again, and every ten minutes, draining
-  200 candidates at a time until each has been looked at once;
+  written, none to be had (`404`), a refusal, a body that will not decode or is over the decode
+  limits (4096 × 4096 px, 64 MiB) — and the item is not asked again until its content or its path
+  changes. Only a passing trouble (no answer, `401`, `408`, `429`, a 5xx) is tried again at the
+  next drain. A thumbnail that cannot be written into the cache (a full disk, a directory that
+  cannot be written) records nothing and ends the drain: no further request starts in it, what
+  was started ends, and the next drain asks again;
+- the cache is looked at in the first drain after the folder's sync starts and in the one the
+  ten-minute timer starts: a thumbnail written of which the cache lacks a size (`normal`, `large`
+  or `x-large`) has its mark forgotten (`ItemReader::list_thumbnail_marks`,
+  `ItemStore::forget_thumbnail_marks`), and the same drain makes it again. Three `stat`s per such
+  thumbnail every ten minutes; not after every cycle, which come often while files change;
+- it runs after every cycle, when thumbnails are turned on again, and every ten minutes by a timer
+  that no cycle starts over, draining 200 candidates at a time until each has been looked at once;
 - a thumbnail is a request to the Graph API, not a download, and takes no slot of the transfer pool.
   At most two run at once, and none starts before the folder's first listing ended, during a
   listing, during a `Retry-After`, while a file is being opened, or while anything waits for a slot
   of the pool (`desktop/thumbs/request_start.rs`).
 
-`xx-large` is not filled: it would be a second request per image at about four times the bytes.
+`xx-large` is not filled: it would be a second request per file at about four times the bytes.
 Where Dolphin asks for that size, KIO makes its own thumbnail, which reads the file.
 
 **The setting.** Thumbnails are fetched per account, on by default (`Folder.Thumbnails`,
 `SetThumbnails`, `sync thumbnails`, "Download thumbnails"). Off, the filler asks for nothing, and
-Dolphin, with its previews on, reads every image or video it previews in full; the thumbnails in the
-cache stay. The filler also asks for nothing while the account is paused or holds back by itself.
+Dolphin, with its previews on, reads in full every file it previews; the thumbnails in the cache
+stay. The filler also asks for nothing while the account is paused or holds back by itself.
 
 **What still reads a file.** For a name with no extension, or an ambiguous one, KIO reads the first
 bytes to learn the type (K1). Those bytes are a range read, not a download: the file is downloaded

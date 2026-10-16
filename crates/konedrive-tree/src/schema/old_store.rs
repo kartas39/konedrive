@@ -7,8 +7,9 @@
 //!
 //! **Answers for:** `docs/design/decisions.md` §3.10: a store of any other version than
 //! this build's is rebuilt, as one that was lost is, but for the version just before,
-//! which is brought to this build's in place where the change between the two only adds —
-//! a rebuild loses the pins and the activity log, which an added column is no reason for.
+//! which is brought to this build's in place where the change between the two only adds or
+//! makes an index anew — a rebuild loses the pins and the activity log, which an added
+//! column or an index made from the rows is no reason for.
 //! The cases, by what the file says of itself:
 //!
 //! - *this build's version*: used as it is.
@@ -27,8 +28,10 @@
 //! (`sync_tasks::start_order::cancel_upload_sessions_of_old_store`), so that their empty
 //! files do not hold names in OneDrive. Here they are only counted.
 //!
-//! **The migration step**: version 30 adds the column `is_kept` of `pins` to a store of
-//! version 29; a store of any older version is rebuilt.
+//! **The migration step**: version 31 makes the index of the files a thumbnail is made for
+//! anew, `items_thumbnail_type` in place of `items_image_or_video`, and adds the column
+//! `is_written` of `thumbnail_marks`, to a store of version 30; a store of any older
+//! version is rebuilt.
 //!
 //! **Tested without the rest:**
 // test: a_store_of_todays_version_is_used
@@ -44,11 +47,12 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension};
 
-use super::{at_version, IS_KEPT_COLUMN, SCHEMA_VERSION};
+use super::{at_version, thumbnail_type_index, SCHEMA_VERSION};
+use crate::item_store::IS_WRITTEN_COLUMN;
 use crate::{meta, TreeError};
 
 /// The version before this build's: the one a store is brought from in place ([`migrate`]).
-const MIGRATED_VERSION: &str = "29";
+const MIGRATED_VERSION: &str = "30";
 
 /// What the file at the store's path says of itself, before anything is changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,8 +90,8 @@ pub enum OldStoreDecision {
     /// No store: the schema is made.
     Make,
     /// The version before this build's, which this build's differs from only by what it
-    /// adds: the store is brought to this build's in place ([`migrate`]) and then used, with everything
-    /// it held.
+    /// adds and by an index made anew: the store is brought to this build's in place
+    /// ([`migrate`]) and then used, with everything it held.
     Migrate,
     /// The file is removed and the store made empty; the folder's start then goes the way
     /// of a store that was lost (`docs/design/mount.md` §7.4). What that loses is [`RebuildLoss`], counted
@@ -120,10 +124,14 @@ pub fn decide_old_store(stored: &StoredVersion) -> OldStoreDecision {
 }
 
 /// Brings the store behind `conn`, which is of [`MIGRATED_VERSION`], to this build's version:
-/// the column `is_kept` of `pins`, every row a pin as it was. One transaction with the
-/// version's number: a crash or an error leaves the store at the version it had.
+/// the index of the files a thumbnail is made for holds the documents too
+/// (`items_thumbnail_type`, made from the rows, in place of `items_image_or_video`), and the
+/// column `is_written` of `thumbnail_marks`, every mark taken for one of a thumbnail
+/// written. One transaction with the version's number: a crash or an error leaves the
+/// store at the version it had.
 fn migrate(conn: &Connection) -> Result<(), TreeError> {
-    at_version(conn, SCHEMA_VERSION, |tx| Ok(tx.execute_batch(&format!("ALTER TABLE pins ADD COLUMN {IS_KEPT_COLUMN};"))?))
+    let step = format!("DROP INDEX items_image_or_video; {} ALTER TABLE thumbnail_marks ADD COLUMN {IS_WRITTEN_COLUMN};", thumbnail_type_index());
+    at_version(conn, SCHEMA_VERSION, |tx| Ok(tx.execute_batch(&step)?))
 }
 
 /// Whether SQLite says of the file that it is no database, or is corrupt.

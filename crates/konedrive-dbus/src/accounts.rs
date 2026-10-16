@@ -257,7 +257,7 @@ pub trait Folder {
     /// Unix seconds when the pause ends by itself; 0 until resumed, or not paused.
     #[zbus(property)]
     fn paused_until(&self) -> zbus::Result<i64>;
-    /// Whether Graph's thumbnails of images and videos are fetched.
+    /// Whether Graph's thumbnails of images, videos and documents are fetched.
     #[zbus(property)]
     fn thumbnails(&self) -> zbus::Result<bool>;
     /// How many gigabytes of the free space of this computer's disk the downloads of

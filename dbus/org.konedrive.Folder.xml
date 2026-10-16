@@ -102,7 +102,7 @@
     <!-- The account's own sync setting (issue #80): written to the
          account's section of config.toml and taken at once, and refused
          Unsupported for a folder not connected to OneDrive, as Pause is.
-         Whether Graph's thumbnails of images and videos
+         Whether Graph's thumbnails of images, videos and documents
          are fetched (off, Dolphin downloads a cloud-only file in full to
          show its preview while its previews are on); turned on again, the
          items without one are asked for. -->

@@ -376,12 +376,12 @@ security](#5-account-and-security), [the desktop](#6-the-desktop), [testing](#7-
 ### 3.10 A store of another version is rebuilt, not migrated
 
 - **Decision.** A store of the version just before this build's is brought up in place where the
-  change between the two only adds; a store of any other version, a newer daemon's, or a file that
-  is no store, is rebuilt as a lost one is, after what the rebuild loses is counted and told
-  (`konedrive-tree/src/schema/old_store.rs`).
+  change between the two only adds or makes an index anew; a store of any other version, a newer
+  daemon's, or a file that is no store, is rebuilt as a lost one is, after what the rebuild loses
+  is counted and told (`konedrive-tree/src/schema/old_store.rs`).
 - **Why.** The store can be made again from OneDrive and the disk. A migration step for every
   layout ever shipped would be code that runs once and can lose data when it is wrong; a change
-  that only adds is no reason to lose the pins.
+  that only adds, or an index made again from the rows, is no reason to lose the pins.
 - **Trade-off.** An upgrade over several layouts, or a downgrade, costs a full listing and what a
   lost store costs (D36).
 
@@ -725,10 +725,10 @@ answer a user already knows, it is followed.
 ### 6.7 Thumbnails from OneDrive, up to 512 px
 
 - **Decision.** The daemon writes OneDrive's own thumbnails into the freedesktop cache at the sizes
-  `normal`, `large` and `x-large`, from one `c512x512` request per image; `xx-large` is not filled
+  `normal`, `large` and `x-large`, from one `c512x512` request per file; `xx-large` is not filled
   ([desktop.md](desktop.md) §8).
 - **Why.** Dolphin draws a correctly tagged cached thumbnail without opening the file, so previews
-  cost no download. One request per image serves the three sizes; a 1024 px request would be four
+  cost no download. One request per file serves the three sizes; a 1024 px request would be four
   times the bytes for a size used only at maximum zoom.
 - **Trade-off.** At maximum zoom KIO makes its own thumbnail and reads the file; type detection of
   files without a telling extension still reads them (K1).

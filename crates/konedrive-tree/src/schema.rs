@@ -1,14 +1,14 @@
 //! The store's schema: its version, what a new store is created with, and
 //! when a store is rebuilt ([`old_store`]): one of the version before, where the
-//! change between the two only adds, is brought to this one in place, and one of any
-//! other version is rebuilt.
+//! change between the two only adds or makes an index anew, is brought to this one in
+//! place, and one of any other version is rebuilt.
 
 use std::path::Path;
 
 use rusqlite::Connection;
 
 use crate::step_memory::schema as step_memory_schema;
-use crate::item_store::{own_upload_contents_schema, place_change_records_schema, thumbnail_marks_schema, unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, IMAGE_OR_VIDEO, LEFT_HERE, NOT_PLACED, SHOWN_AGAINST_PLACEMENT};
+use crate::item_store::{own_upload_contents_schema, place_change_records_schema, thumbnail_marks_schema, unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, HAS_THUMBNAIL_TYPE, LEFT_HERE, NOT_PLACED, SHOWN_AGAINST_PLACEMENT};
 use crate::model::{ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK, PLACED};
 use crate::{meta, TreeError, TreeStore};
 
@@ -19,19 +19,22 @@ pub use old_store::{decide_old_store, find_stored_version, list_old_store_upload
 
 /// The schema this daemon reads and writes, kept in `meta` as
 /// `schema_version`. A store of the version before, where the change between the two
-/// only adds, is brought to this one in place; a store of any other version — an
-/// earlier one, or a newer daemon's — is rebuilt from a full listing
+/// only adds or makes an index anew, is brought to this one in place; a store of any
+/// other version — an earlier one, or a newer daemon's — is rebuilt from a full listing
 /// ([`decide_old_store`]).
 ///
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "30";
+pub const SCHEMA_VERSION: &str = "31";
 
-/// The column of `pins` that version 30 added, as the schema of a new store has it and as
-/// the step from version 29 adds it ([`old_store`]): one text, so that a store brought
-/// from 29 and a store made at 30 have the same column. Every row of version 29 is a pin.
-pub(crate) const IS_KEPT_COLUMN: &str = "is_kept INTEGER NOT NULL DEFAULT 1";
+/// The index of the files a thumbnail is made for, which version 31 made in place of
+/// `items_image_or_video`, as the schema of a new store makes it and as the step from
+/// version 30 makes it ([`old_store`]): one text, so that a store brought from 30 and a
+/// store made at 31 have the same index.
+fn thumbnail_type_index() -> String {
+    format!("CREATE INDEX items_thumbnail_type ON items(local_item_id) WHERE {HAS_THUMBNAIL_TYPE};")
+}
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with.
@@ -79,8 +82,9 @@ pub(crate) const IS_KEPT_COLUMN: &str = "is_kept INTEGER NOT NULL DEFAULT 1";
 ///   whose own placement says it cannot: a listing changed the placement of an item both
 ///   sides agree on, which is in neither index of what differs. `items_not_placed` holds
 ///   every row whose own placement says so, shown or not: what the folder cannot show is
-///   counted and listed from it. `items_image_or_video` holds the rows whose MIME type is
-///   an image's or a video's: the files a thumbnail is made for.
+///   counted and listed from it. `items_thumbnail_type` holds the rows whose MIME type is
+///   one a thumbnail is made for: an image's, a video's, or a document's that OneDrive draws
+///   a thumbnail of ([`crate::item_store`]'s `thumbnail_marks`, which lists the types).
 ///   `unsent_since` is a stamp of one counter of the store (`meta` `last_unsent_since`, whose
 ///   row is made here), set while the row's local place or content is not the synced one
 ///   and null while they are the same: three triggers keep it (`items_unsent_since_insert`,
@@ -116,7 +120,7 @@ pub(crate) const IS_KEPT_COLUMN: &str = "is_kept INTEGER NOT NULL DEFAULT 1";
 ///   `own_upload_contents_item_gone` that takes it with the item's row
 ///   ([`crate::item_store`]'s `own_upload_content`, which has its schema).
 /// - `thumbnail_marks`: which content of a file, at which path, a thumbnail was last made
-///   for, by local item id, and the trigger `thumbnail_marks_item_gone` that takes it with
+///   for, and whether one was written, by local item id, and the trigger `thumbnail_marks_item_gone` that takes it with
 ///   the item's row ([`crate::item_store`]'s `thumbnail_marks`, which has its schema).
 /// - `pins`: the items that carry a mark of their own, by OneDrive item id
 ///   ([`crate::item_store`]'s `item_pins`): a pin (`is_kept` 1), or an exception from the
@@ -186,7 +190,7 @@ fn schema() -> String {
          CREATE INDEX items_seen_in_full_listing ON items(seen_in_full_listing) WHERE onedrive_parent_id IS NOT NULL;
          CREATE INDEX items_unsent ON items(unsent_since) WHERE unsent_since IS NOT NULL AND NOT {left_here};
          CREATE INDEX items_not_placed ON items(local_item_id) WHERE {not_placed};
-         CREATE INDEX items_image_or_video ON items(local_item_id) WHERE {image_or_video};
+         {thumbnail_type_index}
          CREATE TRIGGER items_parent_kept BEFORE DELETE ON items
              WHEN OLD.local_item_id = {root}
                OR EXISTS (SELECT 1 FROM items WHERE local_parent_id = OLD.local_item_id)
@@ -204,7 +208,7 @@ fn schema() -> String {
          {place_change_records}
          {own_upload_contents}
          {thumbnail_marks}
-         CREATE TABLE pins (id TEXT PRIMARY KEY, {is_kept_column});
+         CREATE TABLE pins (id TEXT PRIMARY KEY, is_kept INTEGER NOT NULL DEFAULT 1);
          CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
          INSERT INTO meta (key, value) VALUES ('{last_unsent_since}', '0');
          CREATE TRIGGER items_unsent_since_insert AFTER INSERT ON items
@@ -219,13 +223,12 @@ fn schema() -> String {
          CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
                                 path TEXT NOT NULL, detail TEXT NOT NULL);
          CREATE TABLE conflicts (kept_copy TEXT PRIMARY KEY, at INTEGER NOT NULL, original TEXT NOT NULL);",
-        is_kept_column = IS_KEPT_COLUMN,
         step_memory = step_memory_schema(),
         place_change_records = place_change_records_schema(),
         own_upload_contents = own_upload_contents_schema(),
         thumbnail_marks = thumbnail_marks_schema(),
         not_placed = NOT_PLACED,
-        image_or_video = IMAGE_OR_VIDEO,
+        thumbnail_type_index = thumbnail_type_index(),
         no_local_parent_directory = no_parent_directory("local"),
         no_onedrive_parent_directory = no_parent_directory("onedrive"),
         no_synced_parent_directory = no_parent_directory("synced"),

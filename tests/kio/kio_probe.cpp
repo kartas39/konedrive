@@ -189,33 +189,45 @@ void cacheNaming()
     }
 }
 
+/// A preview of the file `name` at `edge`, and whether it opened the file.
+QString previewAndWatch(const QString &name, int edge)
+{
+    OpenWatch watch;
+    const Preview p = preview(path(name), edge);
+    const bool opened = watch.opened().count(name) > 0;
+    return QStringLiteral("%1; opened=%2").arg(describe(p), opened ? QStringLiteral("yes") : QStringLiteral("no"));
+}
+
 // B: a file with no data and our own cached thumbnail — drawn from the cache
-// without an open, or opened anyway?
+// without an open, or opened anyway? An image, and a PDF, whose thumbnail
+// konedrive writes the same way.
 void cacheHonoured()
 {
     const time_t mtime = 1700000000;
     const QString withEntry = path(QStringLiteral("sparse.jpg"));
     const QString withoutEntry = path(QStringLiteral("sparse-nocache.jpg"));
+    const QString pdfWithEntry = path(QStringLiteral("report.pdf"));
+    const QString pdfWithoutEntry = path(QStringLiteral("report-nocache.pdf"));
     makeSparse(withEntry, 500000, mtime);
     makeSparse(withoutEntry, 500000, mtime);
+    makeSparse(pdfWithEntry, 100000, mtime);
+    makeSparse(pdfWithoutEntry, 100000, mtime);
     for (const auto &[sizeDir, edge] : {std::pair{QStringLiteral("normal"), 128}, std::pair{QStringLiteral("large"), 256}}) {
         writeOwnThumbnail(withEntry, sizeDir, edge, fullyEncoded(withEntry));
         writeOwnThumbnail(withEntry, sizeDir, edge, prettyDecoded(withEntry));
+        // As the thumbnail filler names it: by the FullyEncoded URI alone.
+        writeOwnThumbnail(pdfWithEntry, sizeDir, edge, fullyEncoded(pdfWithEntry));
     }
     for (const int edge : {128, 256}) {
-        OpenWatch watch;
-        const Preview p = preview(withEntry, edge);
-        const bool opened = watch.opened().count(QStringLiteral("sparse.jpg")) > 0;
-        result(QStringLiteral("B.cached %1").arg(edge),
-               QStringLiteral("%1; opened=%2").arg(describe(p), opened ? QStringLiteral("yes") : QStringLiteral("no")));
+        result(QStringLiteral("B.cached %1").arg(edge), previewAndWatch(QStringLiteral("sparse.jpg"), edge));
     }
-    // The control: without an entry KIO must open the file, or the watch
+    for (const int edge : {128, 256}) {
+        result(QStringLiteral("B.cached report.pdf %1").arg(edge), previewAndWatch(QStringLiteral("report.pdf"), edge));
+    }
+    // The controls: without an entry KIO must open the file, or the watch
     // above proves nothing.
-    OpenWatch watch;
-    const Preview p = preview(withoutEntry, 128);
-    const bool opened = watch.opened().count(QStringLiteral("sparse-nocache.jpg")) > 0;
-    result(QStringLiteral("B.control"),
-           QStringLiteral("%1; opened=%2").arg(describe(p), opened ? QStringLiteral("yes") : QStringLiteral("no")));
+    result(QStringLiteral("B.control"), previewAndWatch(QStringLiteral("sparse-nocache.jpg"), 128));
+    result(QStringLiteral("B.control report-nocache.pdf"), previewAndWatch(QStringLiteral("report-nocache.pdf"), 128));
 }
 
 // C: listing a folder, then resolving each item's type the way Dolphin's

@@ -51,7 +51,7 @@ impl Folder {
         self.ignore_patterns_changed(&emitter).await.map_err(Fault::ZBus)
     }
 
-    /// Whether Graph's thumbnails of images and videos are fetched; written to `config.toml`.
+    /// Whether Graph's thumbnails of images, videos and documents are fetched; written to `config.toml`.
     async fn set_thumbnails(&self, on: bool, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<()> {
         self.service.change_run_settings(move |s| s.thumbnails = on).await?;
         self.thumbnails_changed(&emitter).await.map_err(Fault::ZBus)

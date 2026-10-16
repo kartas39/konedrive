@@ -1,7 +1,8 @@
 # What KIO opens, and what it does with the trash
 
-Sections A to C: what KIO opens, measured on KIO 6.30.0-1.fc44 on 2026-09-24. Section D: what KIO
-does when a file of the sync folder is moved to the trash, measured on KIO 6.31.0 on 2026-10-11.
+Sections A to C: what KIO opens, measured on KIO 6.30.0-1.fc44 on 2026-09-24, and the PDF of
+section B on KIO 6.31.0 on 2026-10-16. Section D: what KIO does when a file of the sync folder is
+moved to the trash, measured on KIO 6.31.0 on 2026-10-11.
 
 ## How A to C were measured
 
@@ -85,6 +86,23 @@ zero-byte, still undecodable) placeholder instead, exactly as `B.control` does. 
 then restored to `st.st_mtime` and a final run reproduced the original values shown above
 byte-for-byte (modulo the scratch directory's random path in the URI text). This is the
 before/after showing the check can actually fail, not just always report "cached".
+
+**A PDF**, measured on 2026-10-16 on `kf6-kio-core-6.31.0-1.fc45`, with
+`kdegraphics-thumbnailers-26.08.1-1.fc45`, whose `gsthumbnail` draws PDFs. Two more zero-byte
+placeholders, `report.pdf` and `report-nocache.pdf` (of one size and mtime), the first with a
+red thumbnail in `normal` and `large` under its `FullyEncoded` name alone, as the thumbnail filler
+writes it:
+
+```
+RESULT B.cached report.pdf 128: preview, center pixel #ff0000; opened=no
+RESULT B.cached report.pdf 256: preview, center pixel #ff0000; opened=no
+RESULT B.control report-nocache.pdf: preview, center pixel #ffffff; opened=yes
+```
+
+KIO draws the cached thumbnail of a PDF as it draws an image's, without opening the file; without
+one, its PDF previewer opens the file to draw its own. So OneDrive's thumbnail of a PDF spares the
+download as an image's does. The image's lines of the same run were the ones above, unchanged on
+KIO 6.31.
 
 ## C. Type detection
 
