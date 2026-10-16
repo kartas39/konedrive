@@ -52,9 +52,11 @@ class ActivityEvent:
 
 
 class Ctl:
-    """Every call is `<binary> --account <account> <args...>`. Never anything else — this tool
-    never picks an account implicitly, per the requirement that a stress run always names one
-    explicitly."""
+    """Every call is `<binary> --account <account> <args...>`, so this tool never picks an
+    account implicitly, per the requirement that a stress run always names one explicitly.
+    The one exception is a command on a path (`sync pin`, `sync free`), which refuses
+    `--account` because the path decides the account: every path this tool passes is inside
+    the run folder, which is inside the checked account's folder."""
 
     def __init__(self, binary: str, account: str, timeout: float = 120.0):
         self.binary = binary
@@ -63,8 +65,14 @@ class Ctl:
         self.calls = 0
 
     def run(self, *args: str) -> Run:
+        return self._run(["--account", self.account, *args])
+
+    def _run_on_path(self, *args: str) -> Run:
+        return self._run(list(args))
+
+    def _run(self, args: list) -> Run:
         self.calls += 1
-        cmd = [self.binary, "--account", self.account, *args]
+        cmd = [self.binary, *args]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout)
         except subprocess.TimeoutExpired as e:
@@ -97,10 +105,10 @@ class Ctl:
         return self.run("sync", "transfers")
 
     def pin(self, path: str) -> Run:
-        return self.run("sync", "pin", path)
+        return self._run_on_path("sync", "pin", path)
 
     def free(self, path: str) -> Run:
-        return self.run("sync", "free", path)
+        return self._run_on_path("sync", "free", path)
 
     def export_access_token(self, out_path: str, read_write: bool = False) -> Run:
         args = ["dev", "export-access-token", "--out", out_path]

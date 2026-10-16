@@ -619,9 +619,8 @@ def scenario_pin_many(ctx: RunContext, problems: list, extra: dict) -> None:
     left = len(paths)
     while time.monotonic() < deadline:
         pool = konedrivectl_wrap.parse_pool(ctx.ctl.transfers().stdout)
-        if pool:
-            largest_pool = max(largest_pool, pool[0])
-            ceiling = pool[1]
+        if pool and pool[0] > largest_pool:
+            largest_pool, ceiling = pool
         left = sum(1 for path in paths if not _downloaded(path))
         if left == 0:
             break
