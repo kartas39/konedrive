@@ -53,9 +53,9 @@
     <!-- "Free up space" for chosen paths: no pin holds for each path from
          now on, as after Unpin (a path pinned by a folder above it gets an
          exception, and the folder stays pinned), and then everything under it
-         is freed. Files in use are skipped and counted as busy;
-         skipped_pinned counts the downloaded files left because a download is
-         filling them or they hold a change not uploaded yet. A file named
+         is freed. skipped_pinned counts the downloaded files left because a
+         download is filling them, a program holds them open for writing or
+         they hold a change not uploaded yet. A file named
          itself that has a change waiting to be uploaded refuses the call
          NotUploaded, before anything changes; one inside a folder is left.
          Routed as Pin. Counts are summed over the accounts. -->
@@ -63,7 +63,6 @@
       <arg name="paths" type="as" direction="in"/>
       <arg name="files" type="u" direction="out"/>
       <arg name="bytes" type="t" direction="out"/>
-      <arg name="busy" type="u" direction="out"/>
       <arg name="skipped_pinned" type="u" direction="out"/>
     </method>
     <!-- "Open in OneDrive": the address of the page OneDrive's web interface

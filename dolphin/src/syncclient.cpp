@@ -205,14 +205,6 @@ void SyncClient::start(Operation operation, const QStringList &paths)
             if (!request->timer->isActive()) {
                 request->timer->start();
             }
-        } else if (operation == Operation::FreeUpSpace) {
-            // FreeUp's `busy` (files, bytes, busy, skipped_pinned) also
-            // folds in files changed here and not uploaded (review #6).
-            const QDBusPendingReply<uint, qulonglong, uint, uint> freeUpReply = *finished;
-            const uint busy = freeUpReply.argumentAt<2>();
-            if (busy > 0) {
-                Q_EMIT freeUpKeptBusy(busy);
-            }
         } else if (operation == Operation::OpenOnline) {
             const QDBusPendingReply<QString> urlReply = *finished;
             Q_EMIT webUrlReady(toSend.first(), urlReply.argumentAt<0>());

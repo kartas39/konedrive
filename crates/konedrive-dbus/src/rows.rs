@@ -108,8 +108,6 @@ pub struct Freed {
     /// Files freed, and their bytes.
     pub files: u32,
     pub bytes: u64,
-    /// Files kept because they were in use or changed here.
-    pub busy: u32,
     /// Downloaded files kept by a pin below.
     pub pinned: u32,
 }
@@ -120,8 +118,6 @@ pub struct FreedSpace {
     /// Files freed, and their bytes.
     pub files: u32,
     pub bytes: u64,
-    /// Files kept because they were in use.
-    pub busy: u32,
 }
 
 #[cfg(test)]

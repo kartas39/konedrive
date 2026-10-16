@@ -109,14 +109,11 @@ impl SyncService {
 
 /// What `FreeUpSpace()` and `FreeUp()` did: files freed up, the bytes of blocks that gave
 /// back, and downloaded files left because something keeps them on this device (a pin, a
-/// download filling them, a change not uploaded yet). `busy` and `modified` are always 0:
-/// the bus still carries them.
+/// download filling them, a change not uploaded yet).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FreedUp {
     pub(crate) files: u32,
     pub(crate) bytes: u64,
-    pub(crate) busy: u32,
-    pub(crate) modified: u32,
     pub(crate) pinned: u32,
 }
 

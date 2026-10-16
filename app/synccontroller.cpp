@@ -511,17 +511,13 @@ void SyncController::freeUpSpace()
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
         w->deleteLater();
         m_freeingUp = false;
-        const QDBusPendingReply<uint, qulonglong, uint> reply = *w;
+        const QDBusPendingReply<uint, qulonglong> reply = *w;
         if (reply.isError()) {
             m_freeUpResult = i18n("Could not free up space: %1", reply.error().message());
         } else {
             const uint files = reply.argumentAt<0>();
             const qulonglong bytes = reply.argumentAt<1>();
-            const uint busy = reply.argumentAt<2>();
             m_freeUpResult = i18np("Freed 1 file (%2).", "Freed %1 files (%2).", files, QLocale().formattedDataSize(qint64(bytes)));
-            if (busy > 0) {
-                m_freeUpResult += QLatin1Char(' ') + i18np("1 file was in use and was kept.", "%1 files were in use and were kept.", busy);
-            }
         }
         Q_EMIT freeUpResultChanged();
     });

@@ -47,18 +47,13 @@ pub fn conflicts_text(conflicts: &[Conflict]) -> String {
     out
 }
 
-/// `sync free-up-space`: "Freed N files (X). M files were in use and kept."
+/// `sync free-up-space`: "Freed N files (X)."
 pub fn free_up_text(freed: &FreedSpace) -> String {
-    let FreedSpace { files, bytes, busy } = *freed;
-    if files == 0 && busy == 0 {
+    let FreedSpace { files, bytes } = *freed;
+    if files == 0 {
         return "Nothing was downloaded, so there was nothing to free up.".to_owned();
     }
-    let mut out = format!("Freed {files} {} ({}).", if files == 1 { "file" } else { "files" }, human_bytes(bytes));
-    if busy > 0 {
-        let were = if busy == 1 { "file was" } else { "files were" };
-        out.push_str(&format!(" {busy} {were} in use and kept."));
-    }
-    out
+    format!("Freed {files} {} ({}).", if files == 1 { "file" } else { "files" }, human_bytes(bytes))
 }
 
 /// `sync hydrate`, done.
@@ -155,12 +150,11 @@ pub fn menu_text(answer: &std::collections::HashMap<String, zbus::zvariant::Owne
     out
 }
 
-/// `sync free`: what was freed, what was kept because it was in use or
-/// changed here (FreeUp's `busy` counts both), and the downloaded files a pin
-/// of their own — or of a folder below the one freed — kept.
+/// `sync free`: what was freed, and the downloaded files a pin of their own — or of a
+/// folder below the one freed — kept.
 pub fn free_text(freed: &Freed) -> String {
-    let Freed { files, bytes, busy, pinned } = *freed;
-    if files == 0 && busy == 0 && pinned == 0 {
+    let Freed { files, bytes, pinned } = *freed;
+    if files == 0 && pinned == 0 {
         return "Nothing here was downloaded, so there was nothing to free up.".to_owned();
     }
     let mut out = if files == 0 {
@@ -168,10 +162,6 @@ pub fn free_text(freed: &Freed) -> String {
     } else {
         format!("Freed {files} {} ({}).", if files == 1 { "file" } else { "files" }, human_bytes(bytes))
     };
-    if busy > 0 {
-        let were = if busy == 1 { "file was" } else { "files were" };
-        out.push_str(&format!(" {busy} {were} in use or changed here, and kept."));
-    }
     if pinned > 0 {
         let were = if pinned == 1 { "file was" } else { "files were" };
         out.push_str(&format!(" {pinned} {were} kept: a file or folder below is kept on this device."));

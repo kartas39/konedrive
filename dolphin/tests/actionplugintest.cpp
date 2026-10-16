@@ -661,27 +661,6 @@ private Q_SLOTS:
         QTRY_COMPARE(m_fake->calls(), QStringList{QStringLiteral("Unpin ") + a});
     }
 
-    /// FreeUp's `busy` now also counts files changed here and not uploaded,
-    /// not only files in use (review #6): a successful FreeUp with some
-    /// still says so.
-    void freeUpSuccessWithBusyFilesSaysSo()
-    {
-        Tree tree;
-        QVERIFY(tree.root(QStringLiteral("OneDrive")));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/a.bin"), "hydrated"));
-        const QString a = tree.path(QStringLiteral("OneDrive/a.bin"));
-        QVERIFY(startFake());
-        m_fake->defaultAnswer.files = 1;
-        m_fake->defaultAnswer.busy = 2;
-
-        KAbstractFileItemActionPlugin *plugin = createPlugin();
-        QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(answered(plugin->actions(selection({a}), nullptr)), FreeUp)->trigger();
-        QTRY_COMPARE(errors.count(), 1);
-        QVERIFY2(errors.at(0).at(0).toString().contains(QStringLiteral("2 files are in use or were changed here and were kept")),
-                 qPrintable(errors.at(0).at(0).toString()));
-    }
-
     /// Choosing an action returns at once; the daemon's answer, however long
     /// it takes, arrives later on the event loop.
     void callsDoNotBlock()
