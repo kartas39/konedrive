@@ -14,7 +14,7 @@
 //! (`sync_tasks::stop_order::take_folder_down`), shows the trouble with its cause, and
 //! starts the folder again by itself after a growing pause
 //! (`account_folder::take_down::decide_retry_wait`: 1 min, 5 min, 30 min, then hourly; the
-//! user's "sync now" tries at once; the count starts over after a start that stayed up).
+//! user's refresh tries at once; the count starts over after a start that stayed up).
 //! Nothing of the mount and no task of the sync starts the folder.
 //!
 //! **Tested without the rest:**

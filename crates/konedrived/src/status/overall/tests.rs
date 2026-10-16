@@ -247,7 +247,7 @@ fn trouble_that_does_not_stop_the_folder_is_a_warning_that_says_it() {
         s.cycle.sync_trouble = not_blocking("errno 5");
         s.upload_queue.note = Some(may_not_write());
     });
-    assert_eq!(all, about(Reason::Trouble, &format!("{said}. {}", may_not_write().to_string())));
+    assert_eq!(all, about(Reason::Trouble, &format!("{said}. {}", may_not_write())));
     assert_eq!(Reason::Trouble.state(), State::Warning);
 }
 
@@ -311,7 +311,7 @@ fn unreachable_with_other_trouble_is_a_warning() {
         s.cycle.sync_trouble = unreachable("timed out");
         s.upload_queue.note = Some(may_not_write());
     });
-    assert_eq!(both, about(Reason::Trouble, &format!("cannot reach OneDrive (timed out); trying again. {}", may_not_write().to_string())));
+    assert_eq!(both, about(Reason::Trouble, &format!("cannot reach OneDrive (timed out); trying again. {}", may_not_write())));
 }
 
 /// The sentence of the trouble is the folder's alone: it is there under every reason.

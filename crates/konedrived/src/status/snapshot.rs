@@ -259,7 +259,7 @@ pub fn running_trouble(s: &SyncSnapshot) -> Option<(String, TroubleKind)> {
     let kind = s.cycle.sync_trouble.as_ref().map_or(TroubleKind::Other, SyncTrouble::kind);
     let alone = s.folder.trouble.is_none() && s.upload_queue.note.is_none() && s.transfers.disk_space_shortage.is_none();
     let text = published_error(s);
-    (!text.is_empty()).then(|| (text, if alone { kind } else { TroubleKind::Other }))
+    (!text.is_empty()).then_some((text, if alone { kind } else { TroubleKind::Other }))
 }
 
 /// The parts that say something, each by its sentence, joined as `LastError` joins its
