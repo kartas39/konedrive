@@ -86,8 +86,8 @@ inline bool markRoot(const QString &dir)
     return setAttribute(dir, "user.konedrive.root", QByteArrayLiteral("1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d"));
 }
 
-/// "Always keep on this device", set the way the daemon's Pin() does: by
-/// path, on a file or a folder.
+/// "Always keep on this device": `user.konedrive.pin` as the mount answers it
+/// on a file or a folder a pin holds for.
 inline bool pin(const QString &path)
 {
     return setAttribute(path, "user.konedrive.pin", QByteArrayLiteral("1"));
