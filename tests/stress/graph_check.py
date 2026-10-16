@@ -1,5 +1,5 @@
 """Read-only verification against Microsoft Graph itself: after a scenario drains, comparing the
-outbox and item counts (`stress_uploads.py`'s `finish_scenario`) proves nothing went to OneDrive
+upload queue and item counts (`stress_uploads.py`'s `check_scenario`) proves nothing went to OneDrive
 was *lost*, but it says nothing about whether what arrived is *correct* — the same byte count
 with different bytes would look fine. This module lists the run folder straight from Graph and
 compares every file's size and QuickXorHash (`quickxor.py`) against the local disk, and every

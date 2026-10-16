@@ -8,7 +8,7 @@ to an LLM", which a report this script writes directly gives for free, with noth
 ## What it does
 
 It creates, edits, moves, and deletes real files under a read-write account's synced folder, and
-after every scenario checks that the outbox drained cleanly, that nothing of the run is stuck
+after every scenario checks that the upload queue drained cleanly, that nothing of the run is stuck
 locally, that the item counts agree after a refresh, and — **read-only, straight against
 Microsoft Graph** (`graph_check.py`, `urllib` only, GET only, never anything else) — that every
 file OneDrive actually holds matches what is on disk: same set of paths, same size, same
@@ -56,7 +56,7 @@ a development install has (`scripts/dev-install.sh`, the `dev-tools` feature).
   delete does), and the staging directory is removed too.
 - Useful flags: `--files-per-folder` (default 50, so 200 files across the 4 folders),
   `--large-file-mb` (default 30), `--big-file-mb` (default 60, scenario 5's and 5a/5b's files),
-  `--outbox-timeout`, `--refresh-timeout`, `--running-timeout`, `--report <path>`, `--cleanup`,
+  `--upload-queue-timeout`, `--refresh-timeout`, `--running-timeout`, `--report <path>`, `--cleanup`,
   `--daemon-config`,
   `--soak-minutes`, `--seed`, `--soak-max-mb`, `--soak-max-files`. See `--help` for all of them.
 - Exit status: 0 if every scenario and the soak phase passed, 1 if anything failed (including a
@@ -73,8 +73,8 @@ a development install has (`scripts/dev-install.sh`, the `dev-tools` feature).
    outside) and back in; a brand-new folder built outside and moved in whole.
 5. A large file (default 60 MiB) moved to another folder while it is mid-upload, and a second
    large file edited while it is mid-upload — each is written, then the tool polls
-   `sync outbox` until that row is `running` before touching it again. Verified the same way as
-   every other scenario: after the outbox drains, OneDrive must hold exactly one copy, at the new
+   `sync upload-queue` until that row is `running` before touching it again. Verified the same way as
+   every other scenario: after the upload queue drains, OneDrive must hold exactly one copy, at the new
    path, with the latest content; the old path must not be an "extra in OneDrive" mismatch.
 5a. A large file moved out of the synced folder entirely while it is mid-upload. The tool checks
     that it ends up absent from the live OneDrive listing (whether truly deleted or sent to the
@@ -107,8 +107,8 @@ delete, mkdir, and rmdir of a whole subfolder — inside a dedicated `Soak/` sub
 folder, picked by a `random.Random` seeded with `--seed` (a random seed if not given, always
 printed in the report so a failing run can be replayed exactly). It keeps its own record of what
 it made, so it only ever touches something that is really still there; it does not drain or check
-after each operation — it runs the whole workload continuously and only samples the outbox (a
-single, non-blocking `sync outbox` call) every ~30s for the report's timeline. It drains and runs
+after each operation — it runs the whole workload continuously and only samples the upload queue (a
+single, non-blocking `sync upload-queue` call) every ~30s for the report's timeline. It drains and runs
 the full checks (item counts, and the Graph comparison of paths, sizes and hashes) exactly once,
 at the end — the disk is the truth for what should be in OneDrive. `--soak-max-mb` (default 500)
 and `--soak-max-files` (default 1500) are soft caps on the current on-disk footprint of what the
@@ -119,9 +119,9 @@ reached — not a permanent cutoff, so once deletes bring the footprint back dow
 
 A Markdown file under `tests/stress/reports/` (gitignored) by default, or wherever `--report`
 points. For every scenario: pass/fail and its duration. For every failure: each problem in plain
-words, the relevant `sync outbox` / `sync not-uploaded` / `sync status` output at the point of
-failure, any `failed` or `upload-failed` activity. If the soak phase ran: its seed, the count of
-each kind of operation it performed, its sampled outbox timeline, and its final check's result (and
+words, the relevant `sync upload-queue` / `sync not-uploaded` / `sync status` output at the point of
+failure, any `failed` or `update-failed` activity. If the soak phase ran: its seed, the count of
+each kind of operation it performed, its sampled upload queue timeline, and its final check's result (and
 problems, if any). At the end of the report — `journalctl --user -u konedrived --since <run start>
 -p warning` for the whole run, so the report is something that can be handed to whoever is
 debugging a failure without having to go dig any of that up by hand.
