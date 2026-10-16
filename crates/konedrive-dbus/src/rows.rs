@@ -108,7 +108,8 @@ pub struct Freed {
     /// Files freed, and their bytes.
     pub files: u32,
     pub bytes: u64,
-    /// Downloaded files kept by a pin below.
+    /// Downloaded files left as they are: being downloaded, open for writing, or changed
+    /// here and not uploaded yet.
     pub pinned: u32,
 }
 

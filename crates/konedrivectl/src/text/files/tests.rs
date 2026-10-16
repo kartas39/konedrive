@@ -1,5 +1,5 @@
 use crate::text::accounts::removed_text;
-use konedrive_dbus::rows::Conflict;
+use konedrive_dbus::rows::{Conflict, Freed};
 
 /// `sync conflicts` names the file and the copy kept beside it; `account remove` says what
 /// it deleted and that the folder stays.
@@ -58,4 +58,16 @@ fn an_item_that_is_still_here_says_what_keeps_it() {
     assert_eq!(said("uploads:1"), "Still on this computer: 1 change in it waits to be uploaded.");
     assert_eq!(said("open-for-writing:/home/u/OneDrive/docs/new.txt"), "Still on this computer: /home/u/OneDrive/docs/new.txt is open in a program.");
     assert_eq!(said("cycle"), said("a-word-of-a-newer-daemon:x"));
+}
+
+/// `sync free` says what it freed, and why the files it left stayed: never a pin, which the
+/// free-up took off first.
+#[test]
+fn a_free_up_says_what_it_freed_and_why_files_stayed() {
+    assert_eq!(super::free_text(&Freed { files: 0, bytes: 0, pinned: 0 }), "Nothing here was downloaded, so there was nothing to free up.");
+    assert_eq!(super::free_text(&Freed { files: 2, bytes: 2048, pinned: 0 }), "Freed 2 files (2.0 KiB).");
+    assert_eq!(
+        super::free_text(&Freed { files: 0, bytes: 0, pinned: 1 }),
+        "Nothing was freed up. 1 file was kept on this device: being downloaded, open for writing, or changed here and not uploaded yet."
+    );
 }

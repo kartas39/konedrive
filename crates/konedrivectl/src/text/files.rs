@@ -150,8 +150,8 @@ pub fn menu_text(answer: &std::collections::HashMap<String, zbus::zvariant::Owne
     out
 }
 
-/// `sync free`: what was freed, and the downloaded files a pin of their own — or of a
-/// folder below the one freed — kept.
+/// `sync free`: what was freed, and the downloaded files left as they are: being
+/// downloaded, open for writing, or changed here and not uploaded yet.
 pub fn free_text(freed: &Freed) -> String {
     let Freed { files, bytes, pinned } = *freed;
     if files == 0 && pinned == 0 {
@@ -164,7 +164,7 @@ pub fn free_text(freed: &Freed) -> String {
     };
     if pinned > 0 {
         let were = if pinned == 1 { "file was" } else { "files were" };
-        out.push_str(&format!(" {pinned} {were} kept: a file or folder below is kept on this device."));
+        out.push_str(&format!(" {pinned} {were} kept on this device: being downloaded, open for writing, or changed here and not uploaded yet."));
     }
     out
 }
