@@ -118,8 +118,8 @@ pub(crate) use place_change_records::schema as place_change_records_schema;
 pub use item_reader::{ItemCounts, ItemNotShown, ItemReader, ItemsNeverShown, PinnedDownloadTotal, UnsentTotal};
 pub(crate) use item_reader::NOT_PLACED;
 pub(crate) use own_upload_content::schema as own_upload_contents_schema;
-pub(crate) use thumbnail_marks::{schema as thumbnail_marks_schema, IMAGE_OR_VIDEO};
-pub use thumbnail_marks::ThumbnailCandidate;
+pub(crate) use thumbnail_marks::{schema as thumbnail_marks_schema, HAS_THUMBNAIL_TYPE, IS_WRITTEN_COLUMN};
+pub use thumbnail_marks::{ThumbnailCandidate, ThumbnailMark};
 pub use onedrive_versions::{ConfirmedOneDriveVersion, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay};
 pub(crate) use item_row::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE, SHOWN_AGAINST_PLACEMENT};
 

@@ -60,7 +60,7 @@ pub fn free_up_text(freed: &FreedSpace) -> String {
 pub const DOWNLOADED: &str = "Downloaded.";
 
 /// `sync dehydrate`, done.
-pub const FREED_UP: &str = "Freed up.";
+pub const FREED_UP: &str = "Freed up: it takes no space on this computer.";
 
 /// How a suggested command starts when the accounts could not be read to name one.
 pub const PLAIN_PREFIX: &str = "konedrivectl";

@@ -182,7 +182,7 @@ pub struct AccountConfig {
     /// (`local::names::default_machine_name`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) machine_name: String,
-    /// Whether Graph's thumbnails of the account's images and videos are fetched;
+    /// Whether Graph's thumbnails of the account's images, videos and documents are fetched;
     /// `None` for yes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) thumbnails: Option<bool>,

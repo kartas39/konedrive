@@ -36,7 +36,7 @@ fn the_detail_of_a_freed_event_counts_files_and_says_the_size() {
 
 /// Freeing up through the folder's mount: a clean copy is freed and counted; a file with a
 /// change that is not uploaded is refused, by `Dehydrate` and by `FreeUp`'s check, before
-/// anything is freed; a file with nothing on disk has nothing to free; a pinned path loses
+/// anything is freed; a file with nothing on disk is already freed; a pinned path loses
 /// the pin and is freed.
 #[test]
 fn a_clean_copy_is_freed_and_a_change_that_is_not_uploaded_refuses_the_free_up() {
@@ -61,7 +61,9 @@ fn a_clean_copy_is_freed_and_a_change_that_is_not_uploaded_refuses_the_free_up()
         assert!(matches!(service.check_free_up(&[path("clean.txt"), path("changed.txt")]).await, Err(SyncError::NotUploaded(_))));
         assert!(matches!(service.free_up(&[path("clean.txt"), path("changed.txt")]).await, Err(SyncError::NotUploaded(_))));
         assert!(fixture.read_disk_file("clean.txt").is_some(), "nothing was freed by a call that was refused");
-        assert!(matches!(service.dehydrate(&path("online.txt")).await, Err(SyncError::NotHydrated)));
+        // A file that is not on disk is already freed: answered, and nothing changes.
+        service.dehydrate(&path("online.txt")).await.unwrap();
+        assert_eq!(fixture.find_item_at("online.txt").unwrap().content_presence, konedrive_tree::ContentPresence::NotOnDisk);
 
         service.pin(&[path("pinned.txt")]).await.unwrap();
         let refused = service.dehydrate(&path("pinned.txt")).await.unwrap_err();

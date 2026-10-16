@@ -32,7 +32,7 @@ private Q_SLOTS:
         row("name-not-utf8", QStringLiteral("A name that is not valid UTF-8: rename it to upload it."));
         row("too-large", QStringLiteral("Larger than OneDrive takes."));
         row("quota-exceeded", QStringLiteral("OneDrive is full: free some space in OneDrive."));
-        row("forbidden", QStringLiteral("This sign-in does not allow uploads: sign in again."));
+        row("forbidden", QStringLiteral("OneDrive does not allow this change, for example in a folder shared with you to view only: a refresh tries it again."));
         row("open-for-writing", QStringLiteral("Open for writing in another program: it goes up once closed."));
         row("locked", QStringLiteral("Locked in OneDrive (open for co-authoring): tried again later."));
         row("network", QStringLiteral("OneDrive could not be reached: tried again later."));

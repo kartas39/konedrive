@@ -231,9 +231,9 @@ pub(crate) enum FolderCmd {
         #[arg(long)]
         all: bool,
     },
-    /// Show or change whether OneDrive's thumbnails of images and videos are downloaded.
-    /// Off, Dolphin downloads a cloud-only file in full to show its preview while its
-    /// previews are on
+    /// Show or change whether OneDrive's thumbnails of images, videos, PDFs and office
+    /// documents are downloaded. Off, Dolphin downloads a cloud-only file in full to show its
+    /// preview while its previews are on
     Thumbnails {
         #[arg(value_parser = ["on", "off"])]
         state: Option<String>,

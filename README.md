@@ -14,8 +14,8 @@ folder of files at their real sizes, and a file downloads when something reads i
 - **Several accounts**, each with its own folder.
 - **Nothing is lost in a conflict.** A file changed on both sides is kept twice, and listed.
 - **Dolphin.** An emblem on every file — online-only, downloading, downloaded, kept — and a
-  right-click menu: keep, free up, open in OneDrive's web interface. Previews of images and videos
-  come from OneDrive without downloading the file.
+  right-click menu: keep, free up, open in OneDrive's web interface. Previews of images, videos, PDFs
+  and office documents come from OneDrive without downloading the file.
 - **A window and a tray icon** — one icon per account — with the state of each account, what is
   being transferred, recent activity, conflicts, and what could not be synced and why.
 - **Pause**, for a few hours or until resumed; and by itself on a metered connection or on battery,

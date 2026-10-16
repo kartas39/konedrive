@@ -11,20 +11,17 @@
 //! (`forget_folder`).
 //!
 //! **Tested without the rest:**
-// test: a_stop_ends_the_listing_before_the_plans_task
-// test: a_stop_ends_the_thumbnail_filler
-// test: a_step_between_its_disk_change_and_its_commit_is_waited_for_at_a_stop
 // test: a_step_that_waits_for_the_lease_under_the_stoppers_write_lock_does_not_hold_the_stop
-// test: a_request_cut_off_by_a_stop_is_gone_on_with_or_adopted_at_the_next_start
-// test: a_sign_out_holds_all_sending_wakes_the_plan_and_stops_no_task
-// test: a_sign_in_forgets_what_was_not_allowed_and_wakes_the_plan
+// test: a_sign_out_holds_all_sending_and_stops_no_task
+// test: a_sign_in_makes_every_next_try_due_ends_the_hold_wakes_the_plan_and_asks_for_a_cycle
 // test: a_refresh_wakes_the_plan_and_asks_for_a_cycle
-// test: a_forget_with_something_unsent_is_not_refused
-// test: a_folder_taken_down_has_no_mount_a_closed_store_and_its_trouble_said
+// test: a_folder_taken_down_has_no_mount_and_a_closed_store
 // test: a_folder_forgotten_has_its_write_bits_and_a_closed_store
-// test: a_folder_forgotten_with_no_parts_kept_has_its_write_bits
 // test: a_store_somebody_still_holds_after_the_wait_is_answered
+// test: the_daemons_end_stops_the_mount_and_closes_nothing
+// test: a_folder_forgotten_with_no_parts_kept_has_its_write_bits
 // test: a_closed_store_that_is_not_there_or_not_of_this_version_counts_as_nothing_unsent
+// test: a_closed_store_that_cannot_be_read_is_an_error_and_not_nothing_unsent
 
 use konedrive_tree::{Reason, Store, UnsentTotal};
 
@@ -82,9 +79,11 @@ impl SyncTasks {
     }
 
     /// A refresh the user asked for: the plan's task is woken with
-    /// `WakeCause::RefreshAsked` — on which the task itself reads the quota, once, and
-    /// makes every next try due (`StepMemory::clear_next_tries` and its own tries; this
-    /// function reads and clears nothing) —
+    /// `WakeCause::RefreshAsked` — on which the task itself reads the quota, once,
+    /// forgets what OneDrive refused as not allowed
+    /// (`StepMemory::forget_refusals_for(&Reason::Forbidden)`) and makes every next try
+    /// due (`StepMemory::clear_next_tries` and its own tries; this function reads and
+    /// clears nothing) —
     /// and the listing is asked for a cycle (`ListingPollHandle::refresh`). The one way a
     /// refresh reaches a running sync: `Folder.Refresh()` calls nothing else of it.
     pub fn refresh(&self) {

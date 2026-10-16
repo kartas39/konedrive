@@ -57,9 +57,9 @@ pub enum WriteError {
     /// `423`: locked, most likely open for co-authoring. Retry later.
     #[error("the item is locked in OneDrive")]
     Locked,
-    /// `403`: this account may not change the item, most likely because the
-    /// token's scope does not allow writes.
-    #[error("OneDrive does not allow this change: sign in again")]
+    /// `403`: OneDrive does not let this account change the item, for example one in a
+    /// folder shared with it to view only.
+    #[error("OneDrive does not allow this change")]
     Forbidden,
     /// `413`: the file is larger than OneDrive takes. Nothing changes that but another
     /// file.

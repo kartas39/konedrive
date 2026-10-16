@@ -1,3 +1,4 @@
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -54,8 +55,7 @@ impl World {
     }
 
     fn cached(&self, dir: &str, name: &str) -> std::path::PathBuf {
-        let uri = file_uri(&self.root().join(name));
-        self.cache.path().join(dir).join(format!("{:x}.png", md5::Md5::digest(uri.as_bytes())))
+        self.cache.path().join(dir).join(thumbnail_name(&self.root().join(name)))
     }
 
     fn item(&self, name: &str) -> LocalItemId {
@@ -141,11 +141,17 @@ async fn the_thumbnails_being_downloaded_are_counted_and_none_after_the_run() {
     assert!(seen.contains(&2), "both requests under way at once: {seen:?}");
 }
 
+/// Documents are asked for as images are; plain text is not.
 #[tokio::test]
-async fn only_images_and_videos_are_asked_for() {
-    let w = world(&[("notes.txt", "text/plain")]).await;
-    assert_eq!(w.filler().run_once(&CancellationToken::new(), 100).await.taken, 0);
-    assert!(w.server.received_requests().await.unwrap().is_empty());
+async fn a_document_is_asked_for_and_plain_text_is_not() {
+    let w = world(&[("notes.txt", "text/plain"), ("report.pdf", "application/pdf")]).await;
+    Mock::given(method("GET")).and(path(thumb_path("report.pdf", "c512x512")))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "image/jpeg").set_body_bytes(jpeg(400, 512)))
+        .expect(1)
+        .mount(&w.server).await;
+    let made = w.filler().run_once(&CancellationToken::new(), 100).await;
+    assert_eq!((made.taken, made.written), (1, 1));
+    assert!(w.cached("x-large", "report.pdf").is_file());
 }
 
 /// Batches go on where the last one stopped, by local item id — each candidate is looked at
@@ -165,10 +171,10 @@ async fn batches_go_on_where_the_last_stopped() {
     assert_eq!((second.taken, next), (2, Some(w.item("p3.jpg"))), "not the first two again");
     let (third, next) = filler.run_from(&CancellationToken::new(), 2, next).await;
     assert_eq!((third.taken, next), (1, None), "a batch that is not full was the last");
-    let total = filler.drain(&CancellationToken::new(), 2).await;
+    let total = filler.drain(&CancellationToken::new(), 2, DrainCause::Nudged).await;
     assert_eq!(total.taken, 5, "a drain looks at each once, and ends");
     // A passing trouble settled nothing: the next drain asks for all of them again.
-    assert_eq!(filler.drain(&CancellationToken::new(), 2).await.taken, 5);
+    assert_eq!(filler.drain(&CancellationToken::new(), 2, DrainCause::Nudged).await.taken, 5);
 }
 
 /// A full batch whose every candidate was settled leaves nothing for the next one, and the
@@ -177,7 +183,7 @@ async fn batches_go_on_where_the_last_stopped() {
 async fn a_drain_ends_when_the_batch_after_a_full_one_is_empty() {
     let w = world(&[("a.jpg", "image/jpeg"), ("b.jpg", "image/jpeg")]).await;
     Mock::given(method("GET")).and(path_regex(r"^/me/drive/items/[ab]\.jpg/thumbnails/0/c512x512/content$")).respond_with(ResponseTemplate::new(404)).expect(2).mount(&w.server).await;
-    let total = w.filler().drain(&CancellationToken::new(), 2).await;
+    let total = w.filler().drain(&CancellationToken::new(), 2, DrainCause::Nudged).await;
     assert_eq!(total.taken, 2);
 }
 
@@ -306,4 +312,127 @@ async fn nothing_is_asked_while_a_file_is_opened_a_transfer_waits_or_onedrive_th
     filler.drive.pool().throttled(Some(Duration::from_secs(300)));
     run_briefly(&filler).await;
     assert_eq!(asked_count(&w).await, 0, "OneDrive asked to wait");
+}
+
+/// The cache cannot be written: nothing is recorded, the requests under way when the first
+/// failure came end and no other starts; with the cache writable again, the next drain
+/// asks for each and makes it.
+#[tokio::test]
+async fn a_cache_that_cannot_be_written_records_nothing_and_stops_the_drain() {
+    let names: Vec<String> = (0..5).map(|i| format!("p{i}.jpg")).collect();
+    let files: Vec<(&str, &str)> = names.iter().map(|name| (name.as_str(), "image/jpeg")).collect();
+    let w = world(&files).await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/me/drive/items/p\d\.jpg/thumbnails/0/c512x512/content$"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "image/jpeg").set_body_bytes(jpeg(64, 64)))
+        .mount(&w.server)
+        .await;
+    let filler = w.filler();
+    // No directory of a size can be made in it.
+    std::fs::set_permissions(w.cache.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    let failed = filler.drain(&CancellationToken::new(), 200, DrainCause::Nudged).await;
+    std::fs::set_permissions(w.cache.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(failed.written, 0);
+    let asked = asked_count(&w).await;
+    assert!((1..=request_start::REQUESTS_AT_ONCE).contains(&asked), "{asked} asked: none after the first failure");
+
+    let made = filler.drain(&CancellationToken::new(), 200, DrainCause::Nudged).await;
+    assert_eq!((made.taken, made.written), (5, 5), "nothing was recorded");
+    assert!(w.cached("normal", "p0.jpg").is_file());
+}
+
+/// A thumbnail the cache lacks one size of is made again at the drain that looks into the
+/// cache — the timer's, and the first after a start — and not at a cycle's. A file OneDrive
+/// has no thumbnail of has nothing in the cache to look for, and is asked once.
+#[tokio::test]
+async fn a_thumbnail_missing_from_the_cache_is_made_again_at_the_timer_and_after_a_start_and_not_after_a_cycle() {
+    let w = world(&[("p.jpg", "image/jpeg"), ("none.pdf", "application/pdf")]).await;
+    Mock::given(method("GET")).and(path(thumb_path("p.jpg", "c512x512")))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "image/jpeg").set_body_bytes(jpeg(600, 400)))
+        .expect(3)
+        .mount(&w.server).await;
+    Mock::given(method("GET")).and(path(thumb_path("none.pdf", "c512x512"))).respond_with(ResponseTemplate::new(404)).expect(1).mount(&w.server).await;
+    let filler = w.filler();
+    let first = filler.drain(&CancellationToken::new(), 200, DrainCause::Nudged).await;
+    assert_eq!((first.taken, first.written), (2, 1));
+
+    std::fs::remove_file(w.cached("large", "p.jpg")).unwrap();
+    assert_eq!(filler.drain(&CancellationToken::new(), 200, DrainCause::Nudged).await.taken, 0, "a cycle's drain goes by the marks alone");
+    assert!(!w.cached("large", "p.jpg").exists());
+    let timer = filler.drain(&CancellationToken::new(), 200, DrainCause::TimerFired).await;
+    assert_eq!((timer.taken, timer.written), (1, 1), "the timer's drain looks into the cache");
+    assert!(w.cached("large", "p.jpg").is_file());
+    assert_eq!(filler.drain(&CancellationToken::new(), 200, DrainCause::TimerFired).await.taken, 0, "a thumbnail the cache holds whole is not made again");
+
+    std::fs::remove_file(w.cached("x-large", "p.jpg")).unwrap();
+    let started = filler.drain(&CancellationToken::new(), 200, DrainCause::SyncStarted).await;
+    assert_eq!((started.taken, started.written), (1, 1), "and so does the first drain after a start");
+    assert!(w.cached("x-large", "p.jpg").is_file());
+}
+
+/// A filler's first drain is the one after the folder's sync started, whatever woke it:
+/// it looks into the cache.
+#[tokio::test]
+async fn the_first_drain_of_a_filler_looks_into_the_cache_whatever_woke_it() {
+    let w = world(&[("p.jpg", "image/jpeg")]).await;
+    Mock::given(method("GET")).and(path(thumb_path("p.jpg", "c512x512")))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "image/jpeg").set_body_bytes(jpeg(64, 64)))
+        .expect(2)
+        .mount(&w.server).await;
+    assert_eq!(w.filler().run_once(&CancellationToken::new(), 100).await.written, 1);
+    std::fs::remove_file(w.cached("normal", "p.jpg")).unwrap();
+
+    let (kick, stop) = (Arc::new(Notify::new()), CancellationToken::new());
+    let task = w.filler().spawn(Arc::clone(&kick), stop.clone());
+    kick.notify_one();
+    let made_again = tokio::time::timeout(Duration::from_secs(10), async {
+        while !w.cached("normal", "p.jpg").is_file() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    stop.cancel();
+    task.await.unwrap();
+    assert!(made_again.is_ok(), "the nudge started the first drain, and it made the thumbnail again");
+}
+
+#[test]
+fn a_thumbnail_every_size_of_which_is_found_is_whole() {
+    assert_eq!(decide_cached_thumbnail(&["normal", "large", "x-large"]), CachedThumbnail::Whole);
+    assert_eq!(decide_cached_thumbnail(&["x-large", "normal", "large"]), CachedThumbnail::Whole, "in any order");
+}
+
+#[test]
+fn a_thumbnail_one_size_of_which_is_not_found_is_missing() {
+    for lacked in ["normal", "large", "x-large"] {
+        let found: Vec<&str> = SIZES.iter().map(|(size, _)| *size).filter(|size| *size != lacked).collect();
+        assert_eq!(decide_cached_thumbnail(&found), CachedThumbnail::Missing, "without {lacked}");
+    }
+    assert_eq!(decide_cached_thumbnail(&["normal", "large", "xx-large"]), CachedThumbnail::Missing, "a size the filler does not write stands for none");
+}
+
+#[test]
+fn a_thumbnail_no_size_of_which_is_found_is_missing() {
+    assert_eq!(decide_cached_thumbnail(&[]), CachedThumbnail::Missing);
+}
+
+/// The look into the cache finds the sizes whose PNG is a file there, and fails where the
+/// cache cannot be looked into.
+#[test]
+fn the_sizes_found_are_those_whose_png_is_in_the_cache() {
+    let cache = tempfile::tempdir().unwrap();
+    let file = std::path::Path::new("/folder/p.jpg");
+    let name = thumbnail_name(file);
+    for size in ["normal", "large", "x-large"] {
+        std::fs::create_dir_all(cache.path().join(size)).unwrap();
+    }
+    std::fs::write(cache.path().join("normal").join(&name), b"png").unwrap();
+    std::fs::write(cache.path().join("x-large").join(&name), b"png").unwrap();
+    std::fs::create_dir(cache.path().join("large").join(&name)).unwrap();
+    assert_eq!(find_cached_sizes(cache.path(), file).unwrap(), ["normal", "x-large"], "a directory of that name is no thumbnail");
+    assert_eq!(find_cached_sizes(&cache.path().join("none"), file).unwrap(), Vec::<&str>::new(), "no cache at all");
+
+    let not_a_directory = cache.path().join("a-file");
+    std::fs::write(&not_a_directory, b"").unwrap();
+    assert!(find_cached_sizes(&not_a_directory, file).is_err());
 }

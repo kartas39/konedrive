@@ -23,7 +23,7 @@
 //!
 //! **Not here:** `Folder.Refresh()` is `SyncTasks::refresh` (`sync_tasks::stop_order`),
 //! which wakes the plan with `WakeCause::RefreshAsked` — the plan's task makes every
-//! next try due on that cause, and nobody else clears them.
+//! next try due on that cause, and forgets what OneDrive refused as not allowed.
 //!
 //! **With no running sync** (it could not start, the folder was taken down, a change of
 //! the folder is under way) the answers are read from the store alone: the published

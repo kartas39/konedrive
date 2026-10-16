@@ -73,7 +73,7 @@ fn a_refusal_is_worded_for_its_client() {
     for client in [Client::Desktop, Client::CommandLine] {
         assert_eq!(
             said(Operation::FreeUp, Refusal::NotHydrated, client).unwrap(),
-            "“/r/a.bin” is not downloaded, so there is no space to free — it already takes none."
+            "“/r/a.bin” is being downloaded, so its space cannot be freed yet: try again once it is downloaded."
         );
     }
     // One for each.

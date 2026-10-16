@@ -146,7 +146,7 @@ QString reasonSentence(const ReasonParts &parts, const QString &needs, const QSt
     }
     if (parts.key == QLatin1String("forbidden")) {
         if (!parts.hasDetail) {
-            return i18n("This sign-in does not allow uploads: sign in again.");
+            return i18n("OneDrive does not allow this change, for example in a folder shared with you to view only: a refresh tries it again.");
         }
         return QString();
     }

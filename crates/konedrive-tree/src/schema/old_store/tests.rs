@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 use super::*;
-use crate::item_store::tests::shown_items::{show_listed_file, store_in_file_with_listed_root};
+use crate::item_store::tests::shown_items::{listed_content, show_listed_file, store_in_file_with_listed_root};
 use crate::model::{ContentVersion, ItemKind, ItemPlace, LocalItemId, LocalVersionChange};
-use crate::{ActivityKind, ActivityRow, ConflictRow, TreeStore};
+use crate::{ActivityKind, ActivityRow, ConflictRow, ThumbnailMark, TreeStore};
 
 fn store_path(dir: &tempfile::TempDir) -> PathBuf {
     dir.path().join("tree.sqlite")
@@ -40,7 +40,7 @@ fn a_store_of_todays_version_is_used() {
 
 #[test]
 fn a_store_of_an_older_version_is_rebuilt_and_never_migrated() {
-    for version in ["8", "14", "15", "17", "19"] {
+    for version in ["8", "14", "15", "17", "19", "29"] {
         assert_eq!(decide_old_store(&StoredVersion::Version(version.to_owned())), OldStoreDecision::Rebuild, "version {version}");
 
         let dir = tempfile::tempdir().unwrap();
@@ -63,26 +63,53 @@ fn a_store_of_an_older_version_is_rebuilt_and_never_migrated() {
 
 #[test]
 fn a_store_of_the_version_before_is_migrated_in_place_and_keeps_what_it_held() {
-    assert_eq!(decide_old_store(&StoredVersion::Version("29".to_owned())), OldStoreDecision::Migrate);
+    assert_eq!(decide_old_store(&StoredVersion::Version("30".to_owned())), OldStoreDecision::Migrate);
 
-    // A store as version 29 had it: this build's, without the column version 30 added.
+    // A store as version 30 had it: this build's, with the index of images and videos in
+    // place of the one version 31 made, and without the column of the marks it added.
     let dir = tempfile::tempdir().unwrap();
     let path = store_path(&dir);
     let mut store = store_in_file_with_listed_root(&path);
     let file = show_listed_file(&mut store, "F", "R", "f", "h1");
     let row = store.item_store().find_item(file).unwrap();
     store.set_pin("F", true).unwrap();
+    store.item_store().set_thumbnail_made(file, &listed_content("h1"), Path::new("f"), true).unwrap();
     drop(store);
-    Connection::open(&path).unwrap().execute_batch("ALTER TABLE pins DROP COLUMN is_kept;").unwrap();
-    set_stored_version(&path, "29");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "DROP INDEX items_thumbnail_type;
+             CREATE INDEX items_image_or_video ON items(local_item_id) WHERE (onedrive_mime LIKE 'image/%' OR onedrive_mime LIKE 'video/%');
+             ALTER TABLE thumbnail_marks DROP COLUMN is_written;",
+        )
+        .unwrap();
+    set_stored_version(&path, "30");
 
     let (mut store, origin) = TreeStore::open_with_origin(&path).unwrap();
     assert_eq!(origin, StoreOrigin::Kept, "nothing is rebuilt: no full listing follows");
     assert_eq!(store.meta("schema_version").unwrap().as_deref(), Some(SCHEMA_VERSION));
     assert_eq!(store.item_store().find_item(file).unwrap(), row, "the row is as it was");
     assert_eq!(store.delta_link().unwrap().as_deref(), Some("link"), "the listing goes on from where it was");
-    assert_eq!(store.pins().unwrap(), ["F".to_owned()], "the pins are kept, each a pin as it was");
+    assert_eq!(store.pins().unwrap(), ["F".to_owned()], "the pins are kept");
     assert!(store.item_store().is_pinned(file).unwrap());
+    assert_eq!(
+        store.item_store().reader().list_thumbnail_marks(None, 10).unwrap(),
+        [ThumbnailMark { item: file, path: PathBuf::from("f") }],
+        "the mark is kept, taken for one of a thumbnail written"
+    );
+
+    // The index and the column are those of a store made at this version.
+    let made = TreeStore::in_memory().unwrap();
+    let index_sql = |conn: &Connection| -> Vec<String> {
+        let mut statement = conn.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name IN ('items_image_or_video', 'items_thumbnail_type')").unwrap();
+        statement.query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+    };
+    assert_eq!(index_sql(&store.conn), index_sql(&made.conn), "the old index is gone, and the new one is made");
+    let mark_columns = |conn: &Connection| -> Vec<(String, String, Option<String>)> {
+        let mut statement = conn.prepare("SELECT name, type, dflt_value FROM pragma_table_info('thumbnail_marks')").unwrap();
+        statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap().collect::<Result<_, _>>().unwrap()
+    };
+    assert_eq!(mark_columns(&store.conn), mark_columns(&made.conn));
     drop(store);
     assert_eq!(TreeStore::open_with_origin(&path).unwrap().1, StoreOrigin::Kept, "migrated once, then used");
 }

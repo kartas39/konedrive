@@ -93,11 +93,11 @@ fn a_refusal_is_explained_by_its_name_not_its_message() {
     let text = refusal_text(
         SyncAction::Dehydrate("/r/doc.bin"),
         Some("org.konedrive.Error.ModifiedLocally"),
-        "the file is not downloaded",
+        "the file is being downloaded",
         "/r",
     );
     assert!(text.contains("lose your edits"), "{text}");
-    assert!(!text.contains("no space to free"), "{text}");
+    assert!(!text.contains("cannot be freed yet"), "{text}");
 
     let text = refusal_text(
         SyncAction::Dehydrate("/r/doc.bin"),
@@ -105,7 +105,7 @@ fn a_refusal_is_explained_by_its_name_not_its_message() {
         "the file was modified locally",
         "/r",
     );
-    assert!(text.contains("no space to free"), "{text}");
+    assert!(text.contains("cannot be freed yet"), "{text}");
     assert!(!text.contains("lose your edits"), "{text}");
 }
 
@@ -181,7 +181,7 @@ fn a_file_operation_is_told_in_the_catalogues_words() {
         told(SyncAction::Free("/r/a.bin"), "InUse", "x"),
         "“/r/a.bin” is open in another program, so its space cannot be freed right now. Close it there and try again."
     );
-    assert_eq!(told(SyncAction::Free("/r/a.bin"), "NotHydrated", "x"), "“/r/a.bin” is not downloaded, so there is no space to free — it already takes none.");
+    assert_eq!(told(SyncAction::Free("/r/a.bin"), "NotHydrated", "x"), "“/r/a.bin” is being downloaded, so its space cannot be freed yet: try again once it is downloaded.");
     assert_eq!(
         told(SyncAction::Open("/r/own.txt"), "NotManaged", "x"),
         "“/r/own.txt” is not a OneDrive file: it is a file of your own in the sync folder, so it has no page in OneDrive."
@@ -246,7 +246,7 @@ fn several_paths_are_never_put_inside_one_files_quotes() {
         (SyncAction::Unpin(two), "NotManaged", format!("{two}: {not_managed}, so it was never pinned.")),
         (SyncAction::Free(two), "NotManaged", format!("{two}: {not_managed}, and KOneDrive never frees the space of a file it could not download again.")),
         (SyncAction::Free(two), "InUse", format!("{two}: one of these is open in another program, so its space cannot be freed right now. Close it there and try again.")),
-        (SyncAction::Free(two), "NotHydrated", format!("{two}: one of these is not downloaded, so there is no space to free — it already takes none.")),
+        (SyncAction::Free(two), "NotHydrated", format!("{two}: one of these is being downloaded, so its space cannot be freed yet: try again once it is downloaded.")),
         (
             SyncAction::Pin(two),
             "ModifiedLocally",
@@ -273,7 +273,7 @@ fn several_paths_are_never_put_inside_one_files_quotes() {
         (SyncAction::Pin(one), "NotManaged", "“/r/own.txt” is not a OneDrive file: it is a file of your own in the sync folder, so there is nothing for KOneDrive to keep downloaded."),
         (SyncAction::Free(one), "NotManaged", "“/r/own.txt” is not a OneDrive file: it is a file of your own in the sync folder, and KOneDrive never frees the space of a file it could not download again."),
         (SyncAction::Free(one), "InUse", "“/r/own.txt” is open in another program, so its space cannot be freed right now. Close it there and try again."),
-        (SyncAction::Free(one), "NotHydrated", "“/r/own.txt” is not downloaded, so there is no space to free — it already takes none."),
+        (SyncAction::Free(one), "NotHydrated", "“/r/own.txt” is being downloaded, so its space cannot be freed yet: try again once it is downloaded."),
         (SyncAction::Unpin(one), "ModifiedLocally", "“/r/own.txt” was changed here and has not been uploaded, so freeing its space would lose your edits. It was left exactly as it is."),
         (SyncAction::Unpin(one), "Failed", "Unpinning “/r/own.txt” failed: disk full"),
     ];

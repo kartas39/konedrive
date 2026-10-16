@@ -444,7 +444,7 @@ page's transaction.
 | a session to cancel | no empty file left holding a name | cancelled |
 | the failed tries | waiting, and saying why | the stamp; a confirmed request; the binding moves; the time, or a refresh |
 | a refusal for lack of space | not sending until there is room | a quota read says it fits; the stamp or bytes; the binding moves |
-| a refusal for good, of a version or a removal | not sending until the item changes | the stamp, place or bytes; the binding moves; a sign-in, for "not allowed" |
+| a refusal for good, of a version or a removal | not sending until the item changes | the stamp, place or bytes; the binding moves; a sign-in or a refresh, for "not allowed" |
 | a name answered taken, at the place sent | treating two names as one (§6.5) | OneDrive answers again about the name; the binding moves |
 | a temporary name, and where it leads | finishing an exchange after a crash | the item confirmed or listed elsewhere, or gone; the step done with it |
 | an item an upload left with other content | removing it before sending again | the folder has the item; a listing names it otherwise or gone |

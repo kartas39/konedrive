@@ -301,8 +301,8 @@ pub enum RefusedVersion {
 /// that place, the removal ([`ItemMemory::split_by_standing`]); an operation on the
 /// item's binding, or the directory it was sent into giving its binding up
 /// ([`ItemMemory::drop_facts_of_binding`], [`ItemMemory::drop_answers_of_directory`]);
-/// and, for what was not allowed, a new sign-in (`forget_refusals_for`). Nothing asks
-/// OneDrive again while the item is as it was refused, and no listing says that OneDrive
+/// and, for what was not allowed, a new sign-in or a refresh (`forget_refusals_for`).
+/// Nothing asks OneDrive again while the item is as it was refused, and no listing says that OneDrive
 /// would take it now: that is "until the item changes" (`docs/design/sync.md` §7.5), and the one fact here
 /// that an answer of OneDrive does not void.
 #[derive(Debug, Clone, PartialEq, Eq)]

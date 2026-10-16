@@ -80,6 +80,7 @@
 // test: a_hash_that_runs_at_a_stop_is_aborted_and_writes_nothing
 // test: the_plans_read_waits_for_no_job_of_the_stores_writer
 // test: a_refresh_reads_the_quota_once_and_a_quota_read_by_another_is_not_read_again
+// test: a_refresh_forgets_what_was_not_allowed_and_another_wake_keeps_it
 // test: rows_changed_at_random_on_both_sides_converge_through_the_task
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -89,7 +90,7 @@ use std::time::Duration;
 
 use konedrive_graph::drive::DriveQuota;
 use konedrive_graph::pool::TransferPool;
-use konedrive_tree::{FolderStep, FullListingCause, LocalItemId, PlanFault, Store, SyncPlan, SyncStep, WaitReason};
+use konedrive_tree::{FolderStep, FullListingCause, LocalItemId, PlanFault, Reason, Store, SyncPlan, SyncStep, WaitReason};
 use tokio_util::sync::CancellationToken;
 
 use crate::sync_parts::published_plan::{decide_is_shown_blocked, ItemAnswer, PublishedPlan};
@@ -495,6 +496,8 @@ impl SyncPlanTask {
     /// `quota_reader`, `OneDriveSpace::apply_quota`, then
     /// `StepMemory::forget_fitting_space_refusals`; a due one that failed, or said nothing of
     /// the space, is not asked again before `READ_RETRY_WAIT` passed); a refresh (`WakeCause::RefreshAsked`:
+    /// what OneDrive refused as not allowed may be allowed now,
+    /// `StepMemory::forget_refusals_for(&Reason::Forbidden)`, then
     /// `StepMemory::clear_next_tries`, and `LocalStepTries::clear_next_tries` of the
     /// task's own); a listing ended (`SendingHolds::set_listing_ended`, the count of
     /// logged events to 0, and the full listings asked for forgotten once the store's
@@ -526,6 +529,9 @@ impl SyncPlanTask {
             }
         }
         if is_refresh_asked {
+            if let Err(error) = parts.store.call(|store| store.step_memory().forget_refusals_for(&Reason::Forbidden)).await {
+                tracing::warn!("cannot forget what OneDrive refused as not allowed: {error}");
+            }
             if let Err(error) = parts.store.call(|store| store.step_memory().clear_next_tries()).await {
                 tracing::warn!("cannot make the next tries due: {error}");
             }
@@ -794,7 +800,6 @@ impl SyncPlanTask {
         let choice = disk_space::hold_downloads_for_space(planned, running, (parts.free_space_reader)(), (parts.free_space_reserve_reader)());
         let before = parts.state.get().transfers.disk_space_shortage;
         parts.state.update_if_changed(|state| state.transfers.disk_space_shortage = choice.shortage);
-        // TODO: wording
         match (before, choice.shortage) {
             (None, Some(shortage)) => tracing::warn!("pinned files of {} are not downloaded for lack of disk space: {}", parts.folder.display(), shortage),
             (Some(_), None) => tracing::info!("no pinned file of {} waits for disk space any more", parts.folder.display()),

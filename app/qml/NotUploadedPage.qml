@@ -14,7 +14,6 @@ FormCard.FormCardPage {
     id: page
 
     readonly property var sync: Current.sync
-    readonly property var account: Current.account
     readonly property var window: QQC2.ApplicationWindow.window
     readonly property var summary: sync ? sync.notUploadedSummary : []
     /// The counts the summary was last asked for at.
@@ -113,20 +112,11 @@ FormCard.FormCardPage {
                     }
                 }
                 FormCard.FormButtonDelegate {
-                    visible: modelData.reason === "quota-exceeded" || modelData.reason === "waiting-for-space" || modelData.reason === "too-big"
+                    visible: modelData.reason === "quota-exceeded" || modelData.reason === "waiting-for-space" || modelData.reason === "too-big" || modelData.reason === "forbidden"
                     text: i18nc("@action:button", "Refresh")
-                    description: i18n("Once there is room in OneDrive, these go up.")
+                    description: modelData.reason === "forbidden" ? i18n("If OneDrive allows these changes now, they go up.") : i18n("Once there is room in OneDrive, these go up.")
                     icon.name: "view-refresh"
                     onClicked: page.sync.refresh()
-                }
-                FormCard.FormButtonDelegate {
-                    visible: modelData.reason === "forbidden" && page.account !== null
-                    text: i18nc("@action:button", "Sign In Again")
-                    icon.name: "go-next"
-                    onClicked: {
-                        page.account.signIn();
-                        page.window.showPage("account");
-                    }
                 }
             }
         }

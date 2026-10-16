@@ -52,6 +52,26 @@ private:
         return n;
     }
 
+    /// The first visible form row (delegate) under `root`, by the visual tree,
+    /// whose description holds `part`; null when none does.
+    static QQuickItem *itemDescribed(const QQuickItem *root, const QString &part)
+    {
+        const auto children = root->childItems();
+        for (QQuickItem *item : children) {
+            if (!item->isVisible()) {
+                continue;
+            }
+            if (QLatin1String(item->metaObject()->className()).contains(QLatin1String("Delegate"))
+                && item->property("description").toString().contains(part)) {
+                return item;
+            }
+            if (QQuickItem *found = itemDescribed(item, part)) {
+                return found;
+            }
+        }
+        return nullptr;
+    }
+
     /// The delegates a ListView has built: its content item's children
     /// named `name` (pooled ones included).
     static int builtRows(const QQuickItem *list, const QString &name)
@@ -647,7 +667,7 @@ private Q_SLOTS:
                                 {QStringLiteral("Source"), QStringLiteral("onedrive")}});
         fake.sync->queue->set({{QStringLiteral("PendingCount"), QVariant::fromValue<uint>(2)},
                                {QStringLiteral("PendingBytes"), QVariant::fromValue<qulonglong>(1024)},
-                               {QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(5003)}});
+                               {QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(5005)}});
         fake.sync->transfers->set({{QStringLiteral("DownloadLeftCount"), QVariant::fromValue<uint>(1234)},
                                    {QStringLiteral("DownloadLeftBytes"), QVariant::fromValue<qulonglong>(3ULL << 30)},
                                    {QStringLiteral("DownloadDoneBytes"), QVariant::fromValue<qulonglong>(1ULL << 30)},
@@ -657,6 +677,7 @@ private Q_SLOTS:
                                    {QStringLiteral("UploadDoneBytes"), QVariant::fromValue<qulonglong>(0)},
                                    {QStringLiteral("UploadTimeLeft"), QVariant::fromValue<uint>(0)}});
         fake.sync->keptBack = {{QStringLiteral("one-action"), QStringLiteral("quota-exceeded"), 5000, 5000ULL << 20},
+                               {QStringLiteral("one-action"), QStringLiteral("forbidden"), 2, 2048},
                                {QStringLiteral("per-file"), QStringLiteral("name-characters"), 3, 30}};
         KonedriveSkippedList quota;
         for (int i = 0; i < 5000; ++i) {
@@ -686,7 +707,7 @@ private Q_SLOTS:
         QVERIFY(window);
         window->show();
         QTRY_COMPARE(accounts.count(), 1);
-        QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->sync()->blockedCount() == 5003);
+        QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->sync()->blockedCount() == 5005);
         SyncController *sync = accounts.at(0)->sync();
 
         QElapsedTimer clock;
@@ -699,9 +720,19 @@ private Q_SLOTS:
         QVERIFY2(clock.elapsed() < 3000, qPrintable(QString::number(clock.elapsed())));
         QCOMPARE(itemsSaying(page, QStringLiteral("3 files")), 1);
         QCOMPARE(itemsSaying(page, root), 0);
-        QCOMPARE(itemsSaying(page, QStringLiteral("Refresh")), 1);
+        QCOMPARE(itemsSaying(page, QStringLiteral("Refresh")), 2);
         const int rows = itemsSaying(page, QString());
         QVERIFY2(rows <= 10, qPrintable(QString::number(rows)));
+
+        // What OneDrive did not allow is tried again by a refresh; no sign-in is offered for it.
+        QCOMPARE(itemsSaying(page, QStringLiteral("changes: OneDrive does not allow this change")), 1);
+        QCOMPARE(itemsSaying(page, QStringLiteral("Sign In Again")), 0);
+        QQuickItem *tryAgain = itemDescribed(page, QStringLiteral("If OneDrive allows these changes now, they go up."));
+        QVERIFY(tryAgain);
+        QCOMPARE(tryAgain->property("text").toString(), QStringLiteral("Refresh"));
+        QVERIFY(!fake.sync->calls.contains(QStringLiteral("Refresh")));
+        QMetaObject::invokeMethod(tryAgain, "clicked");
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Refresh")));
 
         // Opened, the refused names are listed; the full OneDrive never is.
         QMetaObject::invokeMethod(page, "setOpened", Q_ARG(QVariant, QStringLiteral("name-characters")), Q_ARG(QVariant, true));
@@ -716,7 +747,7 @@ private Q_SLOTS:
         auto *link = window->findChild<QQuickItem *>(QStringLiteral("keptBackLink"));
         QVERIFY(link);
         QTRY_VERIFY(link->isVisible());
-        QTRY_VERIFY2(link->property("text").toString().endsWith(QStringLiteral("003 changes kept back — see Not Uploaded")),
+        QTRY_VERIFY2(link->property("text").toString().endsWith(QStringLiteral("005 changes kept back — see Not Uploaded")),
                      qPrintable(link->property("text").toString()));
         const auto text = [window](const char *name) {
             auto *item = window->findChild<QQuickItem *>(QLatin1String(name));

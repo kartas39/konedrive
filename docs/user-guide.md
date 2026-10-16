@@ -121,9 +121,10 @@ The right-click menu has, under **OneDrive**:
   versions seen. With two personal accounts this opens under the account your browser is signed in
   to (limitations log, F295).
 
-Previews of images and videos come from OneDrive's own thumbnails, so showing them downloads
-nothing. A preview of another kind of file, or one at the largest zoom, does download the file; to
-avoid that, turn previews off in that folder (View → Show Previews).
+Previews of images, videos, PDF and PostScript files, office documents (OpenDocument and Microsoft
+Office) and EPUB books come from OneDrive's own thumbnails, so showing them downloads nothing. A
+preview of another kind of file, plain text for one, or one at the largest zoom, does download the
+file; to avoid that, turn previews off in that folder (View → Show Previews).
 
 Desktop search (KRunner, Dolphin's search) finds nothing in the folder: indexing it would
 download every file.
