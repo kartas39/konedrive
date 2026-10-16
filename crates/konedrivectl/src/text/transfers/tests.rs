@@ -18,8 +18,10 @@ fn transfers_start_with_the_pool_summary() {
     let text = super::transfers_text(&summary, &[], &[]);
     assert_eq!(
         text,
-        "Downloading: 12 now, 8.4 MiB/s\nUploading:    3 now, 1.2 MiB/s\nPool: 7 of 32 · large files: 1 (4 of 4 streams)\nNothing is downloading or uploading.\n"
+        "Downloading: 12 now, 8.4 MiB/s\nUploading:    3 now, 1.2 MiB/s\nThumbnails:   0 now\nPool: 7 of 32 · large files: 1 (4 of 4 streams)\nNothing is downloading or uploading.\n"
     );
+    let thumbnails = super::TransferSummary { thumbnail_downloads: 2, ..summary };
+    assert_eq!(super::thumbnails_line(&thumbnails), "Thumbnails:   2 now");
     let waiting = super::TransferSummary { retry_after: 30, ..summary };
     assert_eq!(super::pool_text(&waiting), "Pool: 7 of 32 · large files: 1 (4 of 4 streams) — OneDrive asked to wait 30 s");
     let over = super::TransferSummary { pool_in_use: 18, pool_size: 16, ..summary };

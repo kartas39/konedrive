@@ -664,7 +664,7 @@ fn start_sync_tasks(input: &FolderStartInput, store: &Store, mount: &Arc<ItemMou
     });
     let listing_poller = ListingPoller::start(listing_cycle, input.schedule.clone(), Arc::clone(&input.running));
     let poll = listing_poller.handle();
-    let thumbnail_filler = input.thumbnail_cache.clone().map(|cache| ThumbnailFiller::new(input.drive.clone(), store.clone(), input.root.clone(), cache, Arc::clone(&input.running)).spawn(Arc::clone(&thumbnail_nudge), stop.clone()));
+    let thumbnail_filler = input.thumbnail_cache.clone().map(|cache| ThumbnailFiller::new(input.drive.clone(), store.clone(), input.root.clone(), cache, Arc::clone(&input.running), input.state.clone()).spawn(Arc::clone(&thumbnail_nudge), stop.clone()));
 
     let quota_drive = input.drive.clone();
     let quota_reader: Arc<dyn Fn() -> RunningFuture<Option<DriveQuota>> + Send + Sync> = Arc::new(move || {

@@ -86,6 +86,8 @@ private Q_SLOTS:
         QCOMPARE(controller.largeFiles(), 1u);
         QCOMPARE(controller.largeTransfers(), 4u);
         QCOMPARE(controller.largeLimit(), 4u);
+        m_fake->transfers->set({{QStringLiteral("ThumbnailDownloads"), QVariant::fromValue<uint>(2)}});
+        QTRY_COMPARE(controller.thumbnailDownloads(), 2u);
         m_fake->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(3)}});
         QTRY_COMPARE(controller.conflictCount(), 3u);
     }

@@ -146,6 +146,7 @@ pub(crate) async fn transfer_summary(proxy: &FolderProxies<'_>) -> zbus::Result<
             done_bytes: transfers.download_done_bytes().await?,
             time_left: transfers.download_time_left().await?,
         },
+        thumbnail_downloads: transfers.thumbnail_downloads().await?,
         active_uploads: transfers.active_uploads().await?,
         upload_speed: transfers.upload_speed().await?,
         uploads: QueueTotals {

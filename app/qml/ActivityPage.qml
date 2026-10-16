@@ -350,7 +350,20 @@ FormCard.FormCardPage {
             }
         }
     }
-
+    // The thumbnails being downloaded, under the files, always shown so that nothing moves
+    // when they start or end: their bytes are in the Downloading card's speed, and none of
+    // them is a file it counts.
+    QQC2.Label {
+        objectName: "thumbnailDownloads"
+        Layout.topMargin: Kirigami.Units.largeSpacing
+        Layout.leftMargin: Kirigami.Units.largeSpacing
+        Layout.rightMargin: Kirigami.Units.largeSpacing
+        Layout.fillWidth: true
+        wrapMode: Text.Wrap
+        visible: page.sync !== null
+        opacity: 0.7
+        text: page.sync ? i18ncp("@info thumbnails of images and videos being downloaded now", "%1 thumbnail downloading", "%1 thumbnails downloading", page.sync.thumbnailDownloads) : ""
+    }
 
     FormCard.FormHeader {
         visible: page.sync !== null && page.sync.uploads.count > 0

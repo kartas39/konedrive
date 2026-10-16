@@ -202,6 +202,8 @@ properties! {
     /// Files downloading now: the entries of `Downloads`, each file once however many
     /// streams it runs.
     ACTIVE_DOWNLOADS: u32 = MOVING, "ActiveDownloads", |s| count(s.downloads.len());
+    /// Thumbnails being downloaded now: none of them is an entry of `Downloads`.
+    THUMBNAIL_DOWNLOADS: u32 = MOVING, "ThumbnailDownloads", |s| s.snapshot.transfers.thumbnail_downloads;
     /// Files uploading now: the entries of `Uploads`.
     ACTIVE_UPLOADS: u32 = MOVING, "ActiveUploads", |s| count(s.snapshot.upload_queue.uploads.len());
     /// The large files (100 MiB and up) the sync moves now, each once however many streams

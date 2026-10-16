@@ -297,6 +297,9 @@ pub trait Transfers {
     /// Files downloading and uploading now: the entries of `downloads` and `uploads`.
     #[zbus(property)]
     fn active_downloads(&self) -> zbus::Result<u32>;
+    /// Thumbnails being downloaded now; none of them is a file of `Downloads`.
+    #[zbus(property)]
+    fn thumbnail_downloads(&self) -> zbus::Result<u32>;
     #[zbus(property)]
     fn active_uploads(&self) -> zbus::Result<u32>;
     /// Every slot of the pool held now, the opens' reserve included (may be above the size).

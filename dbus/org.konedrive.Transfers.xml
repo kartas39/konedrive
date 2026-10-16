@@ -25,7 +25,8 @@
          uploaded (the average of the last 3 s); the files downloading and
          uploading now: the entries of Downloads and of Uploads, each file
          once however many streams it runs (no thumbnail is a file
-         downloading); and the account's transfer pool: every slot held now
+         downloading); the thumbnails being downloaded now
+         (ThumbnailDownloads); and the account's transfer pool: every slot held now
          (PoolInUse: downloads, uploads, metadata operations and files being
          opened, the opens' reserve included, so it may be above the size),
          how many requests it has in flight at most now (PoolSize), which
@@ -40,6 +41,7 @@
     <property name="DownloadSpeed" type="t" access="read"/>
     <property name="UploadSpeed" type="t" access="read"/>
     <property name="ActiveDownloads" type="u" access="read"/>
+    <property name="ThumbnailDownloads" type="u" access="read"/>
     <property name="ActiveUploads" type="u" access="read"/>
     <property name="PoolInUse" type="u" access="read"/>
     <property name="PoolSize" type="u" access="read"/>

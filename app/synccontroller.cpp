@@ -111,7 +111,7 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
             // a stale row would otherwise look like a download still going.
             m_transfers->setTransfers({});
             m_downloadSpeed = m_uploadSpeed = 0;
-            m_activeDownloads = m_activeUploads = 0;
+            m_activeDownloads = m_activeUploads = m_thumbnailDownloads = 0;
             m_poolInUse = m_largeFiles = m_largeTransfers = m_retryAfter = 0;
             m_retryAfterRefusal.clear();
             m_downloadLeftCount = m_uploadLeftCount = 0;
@@ -245,6 +245,7 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         number("UploadSpeed", m_uploadSpeed);
         count("ActiveDownloads", m_activeDownloads);
         count("ActiveUploads", m_activeUploads);
+        count("ThumbnailDownloads", m_thumbnailDownloads);
         count("PoolInUse", m_poolInUse);
         count("PoolSize", m_poolSize);
         count("PoolCeiling", m_poolCeiling);
