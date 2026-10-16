@@ -23,7 +23,8 @@ use tokio_util::sync::CancellationToken;
 use crate::sync_tasks::start_order::{KeptFolderParts, RefusedStart, StartedFolder};
 
 use super::SyncService;
-use crate::config::Mode;
+use crate::config::{AccountHold, Mode};
+use crate::status::folder_trouble::FolderTrouble;
 use crate::folder::root::SyncRoot;
 use crate::mount::ItemMount;
 use crate::content_source::source::ContentSource;
@@ -43,12 +44,12 @@ pub(super) struct Folder {
 pub(super) enum Standing {
     Active,
     /// `config.toml` gives the account what an earlier account has (`docs/design/accounts.md` §4.2): its
-    /// folder is not brought up and no registration is made. The sentence that says why.
-    HeldBack(String),
+    /// folder is not brought up and no registration is made. Why.
+    HeldBack(AccountHold),
     /// `Accounts.Remove` is taking the account away: nothing is registered or brought up
     /// for it. `held` is the reason it was held back for, which a removal that fails gives
     /// back.
-    Retiring { held: Option<String> },
+    Retiring { held: Option<AccountHold> },
 }
 
 /// What the folder is now.
@@ -120,27 +121,23 @@ pub(super) enum Down {
     /// `config.toml` says what the folder shows in a word that is not `"onedrive"`
     /// (`written`): it is never brought up on a guess (`SY6`).
     UnreadSource { written: String },
-    /// A bring-up failed. The sentence that says so.
-    Failed { why: String },
+    /// A bring-up failed: why.
+    Failed { why: FolderTrouble },
 }
 
 impl Down {
-    /// The sentence `LastError` and a `NotUp` refusal say of a folder at `root` that is
-    /// down for this; empty while it only waits.
-    pub(crate) fn why(&self, root: &SyncRoot) -> String {
+    /// What `LastError` and a `NotUp` refusal say of a folder at `root` that is down for
+    /// this; `None` while it only waits.
+    pub(crate) fn trouble(&self, root: &SyncRoot) -> Option<FolderTrouble> {
         match self {
-            Down::NotYetUp => String::new(),
-            Down::Failed { why } => why.clone(),
-            Down::UnreadSource { written } => format!(
-                "cannot bring up the sync folder {}: config.toml has source = {written:?} for it, which is not \
-                 \"onedrive\"; correct it and start konedrive again, or forget the folder and add it again",
-                root.path.display()
-            ),
+            Down::NotYetUp => None,
+            Down::Failed { why } => Some(why.clone()),
+            Down::UnreadSource { written } => Some(FolderTrouble::UnreadSource { path: root.path.clone(), written: written.clone() }),
         }
     }
 
     /// What a folder that only waits waits for, for a refusal that has to say why the
-    /// folder is not up; `None` when it is down for a reason of its own ([`why`](Self::why)).
+    /// folder is not up; `None` when it is down for a reason of its own ([`trouble`](Self::trouble)).
     pub(crate) fn waits_for(&self) -> Option<&'static str> {
         match self {
             Down::NotYetUp => Some("it is being brought up"),
@@ -165,23 +162,23 @@ pub(super) enum Why {
     /// A change of the folder stopped it and has not started it again: the change is
     /// under way, or was cut before its end. The next change starts it.
     Interrupted,
-    /// It could not start. The sentence; `Refresh()` tries again.
-    CannotStart(String),
+    /// It could not start: why. `Refresh()` tries again.
+    CannotStart(FolderTrouble),
     /// It could not start because no drive is known for the account yet
-    /// (`StartRefusal::DriveNotKnown`). The sentence. The owner's watcher of the account
+    /// (`StartRefusal::DriveNotKnown`): why. The owner's watcher of the account
     /// starts it again when the account changes (`mode::watch_account`); `Refresh()`
     /// tries too.
-    DriveNotKnown(String),
+    DriveNotKnown(FolderTrouble),
     /// A fault took the folder's mount down (`TakeDownCause`): the sync was stopped, the
     /// mount and the store ended, and the folder shows the trouble with its cause.
-    /// `cause` is the sentence shown. The owner starts the folder again by itself:
+    /// `cause` is what is shown. The owner starts the folder again by itself:
     /// `attempt` counts the starts tried since the last one that stayed up (0: none
     /// yet), `next_try_at` is when the next is due, Unix seconds
     /// (`take_down::decide_retry_wait`) — `None` when none is (the store could not be
     /// closed: `TakeDownOutcome::StoreStillOpen`). `Refresh()` tries at once and leaves
     /// the count; a start that stayed up (`take_down::STAYED_UP_AFTER`) forgets it. The
     /// timer and the count are this state and nothing else's.
-    TakenDown { cause: String, attempt: u32, next_try_at: Option<i64> },
+    TakenDown { cause: FolderTrouble, attempt: u32, next_try_at: Option<i64> },
 }
 
 /// A folder that is up.
@@ -351,7 +348,7 @@ pub(super) enum SyncView {
     #[default]
     None,
     /// The folder is up and its sync does not run: why, when it could not start.
-    Stopped(Option<String>),
+    Stopped(Option<FolderTrouble>),
     Running(CancellationToken),
 }
 

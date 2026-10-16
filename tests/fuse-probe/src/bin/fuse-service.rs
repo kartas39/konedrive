@@ -141,7 +141,7 @@ async fn main() {
                 let s = service.state().get();
                 format!(
                     "state {:?}, listed {}, placed {}, pinned {}, local bytes {}, last checked {}, last error {:?}",
-                    s.folder.root_state, s.cycle.items_listed, s.cycle.items_placed, s.local.pinned_count, s.local.local_bytes, s.cycle.last_checked > 0, s.folder.last_error
+                    s.folder.root_state, s.cycle.items_listed, s.cycle.items_placed, s.local.pinned_count, s.local.local_bytes, s.cycle.last_checked > 0, konedrived::status::snapshot::published_error(&s)
                 )
             }
             ["activity"] => said(service.recent_activity(20).await.map(|recent| recent.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(" | ")).map_err(|e| e.to_string())),

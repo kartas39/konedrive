@@ -12,7 +12,7 @@ use konedrive_graph::oauth::Endpoints;
 
 use crate::account::{AccountError, AccountService, Siblings};
 use sign_in::SignIns;
-use crate::config::{is_valid_client_id, AccountConfig, AccountId, AccountPaths, ConfigError, ConfigStore, OnBattery, Paths};
+use crate::config::{is_valid_client_id, AccountConfig, AccountId, AccountPaths, ConfigError, ConfigStore, ConfigTrouble, OnBattery, Paths};
 use crate::account::secret::{AccountSecrets, Wallet};
 use crate::account::state::SignInState;
 use crate::desktop::baloo::Baloo;
@@ -221,10 +221,7 @@ impl AccountManager {
         for (entry, held) in config.accounts.iter().zip(config.holds()) {
             let taken = self.accounts().iter().any(|a| a.id == entry.id);
             if taken || account_path(&entry.id).is_none() || self.paths.account(&entry.id).is_none() {
-                let why = held.unwrap_or_else(|| "its id repeats an earlier account's".into());
-                let message = format!("the account {:?} is not loaded: {why}", entry.label);
-                tracing::error!("{message}");
-                self.config.note_error(message);
+                self.config.note_trouble(ConfigTrouble::AccountNotLoaded { label: entry.label.clone(), hold: held });
                 continue;
             }
             match self.build(entry) {
@@ -240,11 +237,7 @@ impl AccountManager {
                     }
                     account.sync.restore().await;
                 }
-                Err(e) => {
-                    let message = format!("the account {:?} cannot be loaded: {e}", entry.label);
-                    tracing::error!("{message}");
-                    self.config.note_error(message);
-                }
+                Err(e) => self.config.note_trouble(ConfigTrouble::AccountNotBuilt { label: entry.label.clone(), detail: e.to_string() }),
             }
         }
     }

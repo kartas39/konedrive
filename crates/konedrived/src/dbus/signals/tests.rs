@@ -58,7 +58,8 @@ async fn the_overall_state_is_sent_when_it_changes_and_not_again_when_it_does_no
     use konedrive_dbus::FOLDER_INTERFACE_NAME;
 
     use crate::account::state::{SignInState, StateHandle};
-    use crate::status::snapshot::{RootState, SyncTrouble, TroubleKind};
+    use crate::status::snapshot::RootState;
+    use crate::status::sync_trouble::{CycleError, SyncTrouble};
 
     let state = SyncStateHandle::new(SyncSnapshot::default());
     let account = StateHandle::new(AccountSnapshot::default());
@@ -133,11 +134,11 @@ async fn the_overall_state_is_sent_when_it_changes_and_not_again_when_it_does_no
 
     // Trouble: the reason and its sentence in one message; a reworded sentence alone
     // sends `Trouble` only.
-    let trouble = |text: &str| Some(SyncTrouble { text: text.into(), blocking: false, kind: TroubleKind::Unreachable });
-    state.update(|s| s.cycle.sync_trouble = trouble("cannot reach OneDrive (timed out); trying again"));
+    let trouble = |detail: &str| Some(SyncTrouble::Cycle(CycleError::Offline(detail.into())));
+    state.update(|s| s.cycle.sync_trouble = trouble("timed out"));
     settle().await;
     assert_eq!(since(&sent), [vec![overall(Reason::Unreachable), ("Trouble", Value::from("cannot reach OneDrive (timed out); trying again"))]]);
-    state.update(|s| s.cycle.sync_trouble = trouble("cannot reach OneDrive (refused); trying again"));
+    state.update(|s| s.cycle.sync_trouble = trouble("refused"));
     settle().await;
     assert_eq!(since(&sent), [vec![("Trouble", Value::from("cannot reach OneDrive (refused); trying again"))]]);
 

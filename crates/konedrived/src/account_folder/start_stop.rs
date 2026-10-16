@@ -11,6 +11,7 @@ use crate::account_folder::pause::decide_paused_until;
 use crate::account_folder::take_down::decide_retry_wait;
 use crate::account_folder::{SyncError, SyncService};
 use crate::config::DriveId;
+use crate::status::folder_trouble::FolderTrouble;
 use crate::listing::listing_cycle::DriveRecord;
 use crate::onedrive_steps::content_upload::Limits;
 use crate::sync_parts::lease::Lease;
@@ -265,7 +266,7 @@ impl SyncService {
         match &stopped.folder().is {
             Is::Absent => return Err(SyncError::NoRoot),
             Is::Down(record, down) => {
-                let why = down.waits_for().map_or_else(|| down.why(&record.root), str::to_owned);
+                let why = down.waits_for().map(str::to_owned).or_else(|| down.trouble(&record.root).map(|t| t.to_string())).unwrap_or_default();
                 return Err(if retry {
                     SyncError::not_up(&format!("bringing it up was tried just now and failed: {why}"))
                 } else {
@@ -335,16 +336,10 @@ fn decide_refused_sync(before: &Sync, take_down_try: Option<TakeDownTry>, refusa
         };
     }
     match refusal {
-        StartRefusal::DriveNotKnown => Why::DriveNotKnown(format!(
-            "{} is not synced yet: sign in to this account first",
-            folder.display()
-        )),
-        StartRefusal::Store(why) => Why::CannotStart(format!("{} is not synced: {why}", folder.display())),
-        StartRefusal::Mount(why) => Why::CannotStart(format!("{} is not synced: {why}", folder.display())),
-        StartRefusal::LegacyPlaceholders => Why::CannotStart(format!(
-            "{} was set up by an older version of konedrive, which is no longer supported. Remove this account and add it again.",
-            folder.display()
-        )),
+        StartRefusal::DriveNotKnown => Why::DriveNotKnown(FolderTrouble::DriveNotKnown { path: folder.to_owned() }),
+        StartRefusal::Store(why) => Why::CannotStart(FolderTrouble::StoreFailed { path: folder.to_owned(), detail: why.clone() }),
+        StartRefusal::Mount(why) => Why::CannotStart(FolderTrouble::MountFailed { path: folder.to_owned(), detail: why.clone() }),
+        StartRefusal::LegacyPlaceholders => Why::CannotStart(FolderTrouble::LegacyPlaceholders { path: folder.to_owned() }),
     }
 }
 

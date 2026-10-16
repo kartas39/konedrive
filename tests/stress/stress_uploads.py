@@ -243,7 +243,7 @@ def check_scenario(ctx: RunContext, tag: str = ""):
         act_run = ctx.ctl.activity(limit=200)
         if act_run.ok:
             events = konedrivectl_wrap.parse_activity(act_run.stdout)
-            failed = [e for e in events if e.kind in ("failed", "update-failed")]
+            failed = [e for e in events if e.kind in ("failed", "update-failed", "upload-failed")]
             if failed:
                 extra["failed_activity"] = "\n".join(
                     f"{e.at}  {e.kind}  {e.path}" + (f"  ({e.detail})" if e.detail else "") for e in failed

@@ -334,7 +334,7 @@ fn a_download_that_would_not_leave_the_free_space_kept_is_held_and_said() {
     let snapshot = task_fixture.state.get();
     assert_eq!(snapshot.transfers.disk_space_shortage, Some(DiskSpaceShortage { count: 1, bytes: 5 * GB, free_space: 12 * GB, reserve: 10 * GB }));
     let (trouble, _) = crate::status::snapshot::running_trouble(&snapshot).expect("a trouble of the folder");
-    assert_eq!(trouble, "1 file(s) kept on this device wait for disk space: 5.0 GiB to download, 12.0 GiB free, 10 GiB stay free");
+    assert_eq!(trouble, "1 file kept on this device waits for disk space: 5.0 GiB to download, 12.0 GiB free, 10 GiB stay free");
 
     let running = [TaskFixture::running_step(LocalItemId::new(5), StepClass::Download, 0, GB)];
     let (to_start, held) = task.hold_downloads_for_space(planned(), &running);

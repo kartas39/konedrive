@@ -103,7 +103,7 @@ The directories below are in layer order: a directory uses only the directories 
 `listing/` does not use `onedrive_steps/`. The order, as `scripts/check-structure.sh` has it:
 `config`, `account`, `folder`, `conditions`, `status`, `content_source`, `local`, `sync_parts`,
 `mount`, `folder_steps`, `onedrive_steps`, `listing`, `desktop`, `upload_queue`,
-`sync_plan_task`, `sync_tasks`, `account_folder`, `daemon`, `dbus`.
+`sync_plan_task`, `sync_tasks`, `account_folder`, `daemon`, `sentences`, `dbus`.
 
 - `main.rs` — the program: reads the configuration, starts the daemon on the session bus, and
   stops when a task it needs is gone; `--tidy`, what the unit runs after the daemon's end.
@@ -126,6 +126,8 @@ The directories below are in layer order: a directory uses only the directories 
 - `model.rs` — what `config.toml` holds (version 2), and the rules of labels, client ids and
   held accounts.
 - `store.rs` — `ConfigStore`, the one owner of the file.
+- `config_trouble.rs` — `AccountHold`, why an account is held back, and `ConfigTrouble`, what
+  `Accounts.LastError` says: cases with their data.
 - `atomic.rs` — one file replaced in one step.
 - `migrate.rs` — version 1 of `config.toml` and its migration to version 2. `[tests]`
 
@@ -190,6 +192,10 @@ What the sync reports of itself.
   the folder's state, the check at start (`LocalScan`), live changes, `LastError`. `[tests]`
 - `overall.rs` — the state an account is in as a whole and the reason for it
   (`Folder.Overall`, `Trouble`, `NotUpdated`): the one rule every client follows. `[tests]`
+- `folder_trouble.rs` — `FolderTrouble`, why a folder is not up or its sync does not run, and
+  `TakeDownCause`, why a mount cannot go on: cases with their data.
+- `sync_trouble.rs` — `SyncTrouble`, what the folder's sync last ran into: a `CycleError` of
+  a cycle with OneDrive, or a start that was refused; whether it blocks, and its kind.
 
 ### `crates/konedrived/src/content_source/`
 
@@ -370,7 +376,7 @@ Who else asks, and the mount's end:
 - `item_announcements.rs` — `ItemAnnouncement`: what is told, by local item id and former
   name. `[tests]`
 - `mount_take_down.rs` — `MountTakeDown`: how a part says the mount must be taken down and the
-  folder started over. `[tests]`
+  folder started over (its cause is `status::folder_trouble::TakeDownCause`). `[tests]`
 - `stale_mount.rs` — the mount a daemon that died left on a folder: how one is told, and
   taken off. `[tests]`
 - `tidy_step.rs` — what follows the daemon's end (`konedrived --tidy`): each folder a plain
@@ -537,6 +543,16 @@ The daemon as a whole: the accounts and their objects on the bus.
 - `startup.rs` — `Daemon`: the configuration's lock, the migration, the start.
 - `stop.rs` — the stop on SIGTERM or SIGINT, with its bound; `Tasks`, the tasks whose end
   stops the daemon. `[tests]`
+
+### `crates/konedrived/src/sentences/`
+
+Every sentence the daemon says to a person about what is wrong: the `Display` of each case of
+trouble, which the bus, the journal and `LastError` say through.
+
+- `mod.rs` — the list of the modules.
+- `config_sentences.rs` — of `config.toml` and the accounts in it. `[tests]`
+- `status_sentences.rs` — of a folder's trouble, the sync's, and what holds its uploads and
+  downloads. `[tests]`
 
 ### `crates/konedrived/src/dbus/`
 

@@ -1,9 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::*;
+use crate::mount::TakeDownCause;
 use crate::account_folder::folder::TakeDownTry;
-use crate::account_folder::staged_folder::{make_service, read_sync, stage_folder, wait_for_folder, START};
+use crate::account_folder::staged_folder::{make_service, read_sync, stage_folder, wait_for_folder, START, the_cause as store_failed};
 use crate::account_folder::SyncService;
 
 const MINUTE: i64 = 60;
@@ -11,7 +12,12 @@ const MINUTE: i64 = 60;
 /// The sync of a folder a fault took down, with `attempt` starts tried and the next due at
 /// `next_try_at`.
 fn taken_down(attempt: u32, next_try_at: Option<i64>) -> Sync {
-    Sync::Stopped(Why::TakenDown { cause: "the cause".into(), attempt, next_try_at })
+    Sync::Stopped(Why::TakenDown { cause: the_cause(), attempt, next_try_at })
+}
+
+/// What the folders of these tests were taken down for.
+fn the_cause() -> FolderTrouble {
+    FolderTrouble::TakenDown { path: PathBuf::from("/home/u/OneDrive"), cause: TakeDownCause::UndoFailed { path: PathBuf::from("/home/u/OneDrive/a") } }
 }
 
 /// The count and the time of the next try of a folder that is taken down; `None` for any
@@ -19,7 +25,7 @@ fn taken_down(attempt: u32, next_try_at: Option<i64>) -> Sync {
 async fn read_take_down(service: &SyncService) -> Option<(u32, Option<i64>)> {
     read_sync(service, |folder| match folder.up().map(|up| &up.sync) {
         Some(Sync::Stopped(Why::TakenDown { cause, attempt, next_try_at })) => {
-            assert_eq!(cause, "the cause", "the cause is kept as it was");
+            assert_eq!(*cause, the_cause(), "the cause is kept as it was");
             Some((*attempt, *next_try_at))
         }
         _ => None,
@@ -56,25 +62,6 @@ fn a_try_that_stayed_up_starts_the_count_over() {
         let last = TakeDownTry { attempt: 4, started_at: START };
         assert_eq!(decide_take_down_attempt(Some(last), START + up_for), 1, "up for {up_for} s");
     }
-}
-
-#[test]
-fn the_sentence_of_a_take_down_names_the_folder_the_cause_and_what_the_user_can_do() {
-    let folder = Path::new("/home/u/OneDrive");
-    let cases = [
-        (TakeDownCause::UndoFailed { path: PathBuf::from("/home/u/OneDrive/a.txt") }, "/home/u/OneDrive/a.txt"),
-        (TakeDownCause::BackingFileBehindRow { path: PathBuf::from("/home/u/OneDrive/b.txt") }, "/home/u/OneDrive/b.txt"),
-    ];
-    let mut sentences = Vec::new();
-    for (cause, named) in cases {
-        let sentence = describe_take_down(&cause, folder);
-        assert!(sentence.contains("the sync folder /home/u/OneDrive was stopped"), "{sentence}");
-        assert!(sentence.contains(named), "{sentence}");
-        assert!(sentence.contains("sync now"), "{sentence}");
-        sentences.push(sentence);
-    }
-    sentences.dedup();
-    assert_eq!(sentences.len(), 2, "each cause has a sentence of its own");
 }
 
 /// The owner's timer: each try that is refused is counted, and the next is due after the
@@ -202,7 +189,7 @@ async fn a_forget_of_a_folder_that_is_taken_down_is_made_and_its_timer_tries_not
 async fn a_retirement_forgets_the_folder_and_takes_no_registration_afterwards() {
     let (service, _clock) = make_service();
     let folder = tempfile::tempdir().unwrap();
-    stage_folder(&service, folder.path(), Sync::Stopped(Why::CannotStart("it could not".into())), None).await;
+    stage_folder(&service, folder.path(), Sync::Stopped(Why::CannotStart(store_failed())), None).await;
     assert_eq!(service.retire().await.unwrap(), Some(folder.path().to_owned()));
     assert!(matches!(service.register_root(folder.path()).await, Err(SyncError::Removing)));
     assert_eq!(service.retire().await.unwrap(), None, "an account with no folder is retired all the same");
@@ -230,7 +217,7 @@ fn what_is_unsent_is_counted_through_the_open_store_of_a_folder_whose_sync_does_
         let (service, _clock) = make_service();
         let kept = make_kept_parts(&fixture);
         let mount = Arc::clone(&kept.mount);
-        stage_folder(&service, &fixture.folder(), Sync::Stopped(Why::CannotStart("it cannot".into())), Some(kept)).await;
+        stage_folder(&service, &fixture.folder(), Sync::Stopped(Why::CannotStart(store_failed())), Some(kept)).await;
         assert_eq!(service.count_unsent().await.unwrap(), 3, "two new files and a removal");
 
         let kept = service.folder.write().await.record_mut().and_then(|record| record.kept.parts.take());

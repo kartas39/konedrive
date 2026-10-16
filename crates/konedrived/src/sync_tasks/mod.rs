@@ -20,7 +20,7 @@
 //! (`FolderStartInput::take_down_report`): no task of the sync takes the folder down or
 //! starts it. After a take-down for a fault the OWNER starts the folder again by itself,
 //! after a growing pause (`account_folder::take_down`: 1 min, 5 min, 30 min, then hourly;
-//! the user's "sync now" tries at once; the count starts over after a start that stayed
+//! the user's refresh tries at once; the count starts over after a start that stayed
 //! up): the timer and the count are the owner's state, and nothing here keeps either.
 //!
 //! **What the owner's change must do:**

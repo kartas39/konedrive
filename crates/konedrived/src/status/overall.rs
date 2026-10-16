@@ -10,7 +10,8 @@
 use konedrive_dbus::overall::Reason;
 
 use crate::account::state::SignInState;
-use crate::status::snapshot::{published_error, published_state, running_trouble, SyncSnapshot, TroubleKind};
+use crate::status::snapshot::{published_error, published_state, running_trouble, SyncSnapshot};
+use crate::status::sync_trouble::TroubleKind;
 
 /// What [`overall`] decides.
 #[derive(Debug, Clone, PartialEq, Eq)]

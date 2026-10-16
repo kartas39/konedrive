@@ -81,7 +81,8 @@ use tokio_util::sync::CancellationToken;
 use crate::listing::classify::classify;
 use crate::sync_parts::sync_plan_wake::{SyncPlanWake, WakeCause};
 use crate::status::report::Report;
-use crate::status::snapshot::{SyncStateHandle, SyncTrouble, TroubleKind};
+use crate::status::snapshot::SyncStateHandle;
+use crate::status::sync_trouble::{CycleError, SyncTrouble};
 
 /// How a cycle begins, and what a refused page leads to.
 mod listing_start;
@@ -240,7 +241,7 @@ impl ListingCycle {
         self.state.update(|state| match &result {
             Ok(_) => state.cycle.sync_trouble = None,
             Err(CycleError::Cancelled) => {}
-            Err(error) => state.cycle.sync_trouble = Some(SyncTrouble { text: error.to_string(), blocking: error.blocking(), kind: error.kind() }),
+            Err(error) => state.cycle.sync_trouble = Some(SyncTrouble::Cycle(error.clone())),
         });
         result
     }
@@ -502,58 +503,3 @@ pub(crate) struct Neighbours {
 /// Told the drive an account's token reaches.
 pub(crate) type DriveSeen = Arc<dyn Fn(&str) + Send + Sync>;
 
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum CycleError {
-    #[error("signed out: sign in again to keep this folder in step with OneDrive")]
-    SignedOut,
-    #[error(
-        "this folder was listed from another OneDrive account (drive {0}); forget it and register \
-         a folder for the account signed in now"
-    )]
-    OtherAccount(String),
-    /// The account is signed in to a drive another account of this daemon has
-    /// (`docs/design/accounts.md` §6.1); that account's label. Two folders of one drive would
-    /// download everything twice.
-    #[error(
-        "this account is signed in to the Microsoft account already connected as '{0}'; sign it \
-         out, or remove one of the two"
-    )]
-    DriveTaken(String),
-    #[error("cannot reach OneDrive ({0}); trying again")]
-    Offline(String),
-    /// A failure of the tree store, in its own words ("the tree store: …"), that ends
-    /// the cycle and stops the folder.
-    #[error("{0}")]
-    Store(String),
-    #[error("the folder could not be brought up to date: {0}")]
-    Apply(String),
-    #[error("cancelled")]
-    Cancelled,
-}
-
-impl CycleError {
-    /// Trouble that stops the folder until someone acts.
-    pub(crate) fn blocking(&self) -> bool {
-        matches!(
-            self,
-            CycleError::SignedOut | CycleError::OtherAccount(_) | CycleError::DriveTaken(_) | CycleError::Store(_)
-        )
-    }
-}
-
-impl CycleError {
-    /// The kind of trouble this is for the account's overall state: only
-    /// [`Offline`](CycleError::Offline) is OneDrive out of reach, whatever its sentence says.
-    pub(crate) fn kind(&self) -> TroubleKind {
-        match self {
-            CycleError::Offline(_) => TroubleKind::Unreachable,
-            _ => TroubleKind::Other,
-        }
-    }
-}
-
-impl From<TreeError> for CycleError {
-    fn from(e: TreeError) -> Self {
-        CycleError::Store(e.to_string())
-    }
-}

@@ -9,7 +9,9 @@
 use std::path::Path;
 
 use super::folder::{Down, Folder, Is, Record, Standing, Stopped, Sync, Up, Why};
-use super::persisted::{no_root_id, Persisted};
+use super::persisted::Persisted;
+use crate::config::AccountHold;
+use crate::status::folder_trouble::FolderTrouble;
 use super::{SyncError, SyncService};
 use crate::account::state::SignInState;
 use crate::folder::root::{self, SyncRoot};
@@ -18,7 +20,7 @@ use crate::folder::root::{self, SyncRoot};
 fn check_standing(folder: &Folder) -> Result<(), SyncError> {
     match &folder.standing {
         Standing::Active => Ok(()),
-        Standing::HeldBack(why) => Err(SyncError::HeldBack(why.clone())),
+        Standing::HeldBack(hold) => Err(SyncError::HeldBack(FolderTrouble::HeldBack { hold: hold.clone() }.to_string())),
         Standing::Retiring { .. } => Err(SyncError::Removing),
     }
 }
@@ -72,11 +74,10 @@ impl SyncService {
     /// has. The folder is not brought up, `State` reads `error`,
     /// `LastError` says why, and a registration is refused the same way. The folder it
     /// records is held as recorded, for a Forget.
-    pub(crate) async fn hold_back(&self, why: &str) {
-        let message = format!("this account is held back: {why}; correct config.toml and start konedrived again");
-        tracing::warn!("{message}");
+    pub(crate) async fn hold_back(&self, hold: &AccountHold) {
+        tracing::warn!("{}", FolderTrouble::HeldBack { hold: hold.clone() });
         let mut stopped = self.change().await;
-        stopped.folder_mut().standing = Standing::HeldBack(message);
+        stopped.folder_mut().standing = Standing::HeldBack(hold.clone());
         self.restore_in(&mut stopped).await;
     }
 
@@ -243,7 +244,9 @@ impl SyncService {
     pub(super) async fn bring_up(&self, stopped: &mut Stopped<'_>) {
         let Some(record) = stopped.folder().record().cloned() else { return };
         if let Err(down) = self.source_brought_back(&stopped.folder().is) {
-            tracing::error!("{}", down.why(&record.root));
+            if let Some(trouble) = down.trouble(&record.root) {
+                tracing::error!("{trouble}");
+            }
             stopped.folder_mut().is = Is::Down(record, down);
             return;
         }
@@ -263,15 +266,9 @@ impl SyncService {
         // directory carries, and none is minted for it.
         let carried = root::recorded_root_id(&path).await;
         let stands = if root::looks_like_a_root_id(&record.root.root_id) {
-            (carried.as_deref() != Some(record.root.root_id.as_str())).then(|| {
-                format!(
-                    "the sync folder is not at {} any more: it was moved or deleted, or another folder stands in \
-                     its place; move the sync folder back, or forget it",
-                    path.display()
-                )
-            })
+            (carried.as_deref() != Some(record.root.root_id.as_str())).then(|| FolderTrouble::Moved { path: path.clone() })
         } else {
-            carried.is_none().then(|| no_root_id(&path))
+            carried.is_none().then(|| FolderTrouble::NoRootId { path: path.clone() })
         };
         if let Some(why) = stands {
             tracing::error!("{why}");
@@ -281,7 +278,7 @@ impl SyncService {
         match root::register_root(&path).await {
             Ok(root) => self.come_up(stopped, root, false).await,
             Err(e) => {
-                let why = format!("cannot bring up the sync folder {}: {}", path.display(), SyncError::from(e));
+                let why = FolderTrouble::RootNotRegistered { path: path.clone(), detail: SyncError::from(e).to_string() };
                 tracing::error!("{why}");
                 stopped.folder_mut().is = Is::Down(record, Down::Failed { why });
             }

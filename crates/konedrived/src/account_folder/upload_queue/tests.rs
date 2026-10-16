@@ -5,7 +5,7 @@ use konedrive_tree::{Reason, WaitReason};
 
 use super::*;
 use crate::account_folder::folder::{Sync, View, Why};
-use crate::account_folder::staged_folder::{make_kept_parts, make_service, publish_running_view, stage_folder};
+use crate::account_folder::staged_folder::{make_kept_parts, make_service, publish_running_view, stage_folder, the_cause};
 use crate::mount::item_fixture::ItemFixture;
 use crate::sync_parts::running_steps::{RunningStep, StepClass};
 
@@ -83,8 +83,8 @@ async fn the_queue_is_refused_with_no_folder_and_with_no_open_store() {
     assert!(matches!(service.upload_queue(0).await, Err(SyncError::NoRoot)));
 
     let folder = tempfile::tempdir().unwrap();
-    stage_folder(&service, folder.path(), Sync::Stopped(Why::CannotStart("the store is locked".into())), None).await;
+    stage_folder(&service, folder.path(), Sync::Stopped(Why::CannotStart(the_cause())), None).await;
     for refused in [service.upload_queue(0).await.map(drop), service.not_uploaded().await.map(drop), service.not_uploaded_summary().await.map(drop)] {
-        assert!(matches!(&refused, Err(SyncError::NotUp(why)) if why.contains("the store is locked")), "{refused:?}");
+        assert!(matches!(&refused, Err(SyncError::NotUp(why)) if why.contains("the cause")), "{refused:?}");
     }
 }

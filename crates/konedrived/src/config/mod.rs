@@ -4,6 +4,7 @@
 //! ([`crate::config::migrate`]), holds back accounts that collide ([`Config::holds`]), and runs every
 //! read-modify-write under one lock ([`ConfigStore::update`]).
 //!
+//! - `config_trouble` — why an account is held back, and what `Accounts.LastError` says;
 //! - `paths` — where the daemon's files are, and each account's;
 //! - `ids` — [`AccountId`] and [`DriveId`];
 //! - `model` — what the file holds, and the rules of what it may hold;
@@ -12,6 +13,7 @@
 //! - `migrate` — version 1, and the moves a migration leaves for the start.
 
 mod atomic;
+mod config_trouble;
 mod ids;
 pub(crate) mod migrate;
 mod model;
@@ -19,6 +21,7 @@ mod paths;
 mod store;
 
 pub(crate) use atomic::write_atomic;
+pub use config_trouble::{AccountHold, ConfigTrouble};
 pub use ids::{AccountId, DriveId};
 pub use model::{DOWNLOAD_AFTER, 
     check_label, is_valid_client_id, signed_in_label, AccountConfig, Config, HoldSettings, Mode, OnBattery, Origin, RootConfig,

@@ -545,7 +545,7 @@ mount, still served — are started again, taken down (`take_folder_down`) or fo
 When the mount asks to be taken down for a fault ([mount.md](mount.md) §8) it tells the owner, which
 takes the folder down inside one change, says why on the folder, and starts it again by itself with
 nothing kept, so that the start-up check runs: after 1 minute, then 5, 30, then every hour. A start
-that stays up 10 minutes starts the count over; "sync now" tries at once.
+that stays up 10 minutes starts the count over; a refresh tries at once.
 
 ## 10. How it is tested
 

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::config::ids::{drive_or_none, drives, is_account_id};
-use crate::config::{AccountId, DriveId};
+use crate::config::{AccountHold, AccountId, DriveId};
 
 /// The version of `config.toml` this build reads and writes.
 pub const CONFIG_VERSION: u32 = 2;
@@ -498,13 +498,13 @@ impl Config {
     /// earlier folder's root id, or is, is inside or contains an earlier folder. One held
     /// for its id is not loaded at all; any other is loaded, but its folder is not brought
     /// up (`AccountManager::load`). Nothing is rewritten.
-    pub(crate) fn holds(&self) -> Vec<Option<String>> {
+    pub(crate) fn holds(&self) -> Vec<Option<AccountHold>> {
         self.accounts
             .iter()
             .enumerate()
             .map(|(i, account)| {
                 if !account.id.is_valid() {
-                    return Some(format!("its id {:?} is not 12 lowercase hexadecimal characters", account.id));
+                    return Some(AccountHold::BadId { id: account.id.clone() });
                 }
                 self.accounts[..i].iter().find_map(|earlier| conflict(earlier, account))
             })
@@ -513,29 +513,25 @@ impl Config {
 }
 
 /// Why `later` cannot be brought up beside `earlier`, if it cannot.
-fn conflict(earlier: &AccountConfig, later: &AccountConfig) -> Option<String> {
-    let other = &earlier.label;
+fn conflict(earlier: &AccountConfig, later: &AccountConfig) -> Option<AccountHold> {
+    let other = earlier.label.clone();
     if earlier.id == later.id {
-        return Some(format!("its id is also the id of {other:?}"));
+        return Some(AccountHold::SameId { other });
     }
     if earlier.label.to_lowercase() == later.label.to_lowercase() {
-        return Some(format!("its label is also the label of {other:?}"));
+        return Some(AccountHold::SameLabel { other });
     }
     if later.drive_id.is_some() && earlier.drive_id == later.drive_id {
-        return Some(format!("it is the same Microsoft account as {other:?}"));
+        return Some(AccountHold::SameDrive { other });
     }
     let (Some(a), Some(b)) = (&earlier.root, &later.root) else {
         return None;
     };
     if !b.id.is_empty() && a.id == b.id {
-        return Some(format!("its folder has the root id of the folder of {other:?}"));
+        return Some(AccountHold::SameRoot { other });
     }
     if a.path.starts_with(&b.path) || b.path.starts_with(&a.path) {
-        return Some(format!(
-            "its folder {} is, is inside, or contains the folder of {other:?}, {}",
-            b.path.display(),
-            a.path.display()
-        ));
+        return Some(AccountHold::NestedFolder { folder: b.path.clone(), other, other_folder: a.path.clone() });
     }
     None
 }

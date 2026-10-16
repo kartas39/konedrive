@@ -18,6 +18,7 @@ pub(crate) mod sync_tasks;
 pub mod upload_queue;
 pub mod account_folder;
 pub mod daemon;
+pub(crate) mod sentences;
 pub mod dbus;
 
 /// Not a layer: the wall clock, read in one place.

@@ -14,28 +14,17 @@
 //! (`sync_tasks::stop_order::take_folder_down`), shows the trouble with its cause, and
 //! starts the folder again by itself after a growing pause
 //! (`account_folder::take_down::decide_retry_wait`: 1 min, 5 min, 30 min, then hourly; the
-//! user's "sync now" tries at once; the count starts over after a start that stayed up).
+//! user's refresh tries at once; the count starts over after a start that stayed up).
 //! Nothing of the mount and no task of the sync starts the folder.
 //!
 //! **Tested without the rest:**
 // test: a_take_down_asked_for_switches_the_folder_to_read_only_and_reports_once
 // test: a_second_cause_does_not_report_again
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::access_mode_switch::AccessModeSwitch;
-
-/// Why the mount cannot go on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TakeDownCause {
-    /// A change of the backing directory whose row could not be written could not be
-    /// undone either: the disk has at `path` what no row says.
-    UndoFailed { path: PathBuf },
-    /// A backing file could not be made or cut after the row that says so was written:
-    /// the row says of the file at `path` what the disk does not hold.
-    BackingFileBehindRow { path: PathBuf },
-}
+pub(crate) use crate::status::folder_trouble::TakeDownCause;
 
 /// Who is told of a take-down: the owner of the folder's state
 /// (`SyncService::take_down_report` makes it). Called once, from the write-operation

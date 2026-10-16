@@ -81,7 +81,7 @@ impl SyncTasks {
         self.sending_holds.set_signed_out(true);
     }
 
-    /// A refresh the user asked for ("sync now"): the plan's task is woken with
+    /// A refresh the user asked for: the plan's task is woken with
     /// `WakeCause::RefreshAsked` — on which the task itself reads the quota, once, and
     /// makes every next try due (`StepMemory::clear_next_tries` and its own tries; this
     /// function reads and clears nothing) —
@@ -185,7 +185,7 @@ async fn end_kept_parts(kept: KeptFolderParts, mount_end: MountEnd) -> TakeDownO
 /// `files_interface`, the view's clone of the store): each holds the store open.
 ///
 /// It says nothing: the sentence the folder shows is the owner's
-/// (`account_folder::take_down::describe_take_down`, kept as `Why::TakenDown::cause` and
+/// (`FolderTrouble::TakenDown`, kept as `Why::TakenDown::cause` and
 /// published by the owner's `publish`, the one writer of it).
 ///
 /// In this order: the mount stopped (`ItemMount::stop`, off the runtime's threads: it
@@ -195,7 +195,7 @@ async fn end_kept_parts(kept: KeptFolderParts, mount_end: MountEnd) -> TakeDownO
 ///
 /// Nothing is started here. The OWNER starts the folder again by itself, after a growing
 /// pause (`account_folder::take_down::decide_retry_wait`: 1 min, 5 min, 30 min, then
-/// hourly), at once on the user's "sync now", and at the daemon's next start; the folder
+/// hourly), at once on the user's refresh, and at the daemon's next start; the folder
 /// shows its trouble with its cause meanwhile. Each such start is
 /// `start_order::start_folder_sync` with nothing kept, which runs the check at start,
 /// which settles what the failed undo left from its record (`docs/design/mount.md` §8.1).

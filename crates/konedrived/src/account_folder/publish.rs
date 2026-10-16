@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use super::folder::{Folder, Is, Record, Standing, Sync, SyncView, View, Why};
 use super::SyncService;
-use crate::status::snapshot::{RootState, SyncSnapshot, SyncTrouble, TroubleKind};
+use crate::status::folder_trouble::FolderTrouble;
+use crate::status::snapshot::{RootState, SyncSnapshot};
+use crate::status::sync_trouble::SyncTrouble;
 
 /// What a folder's state comes to on the bus, and for the readers.
 #[derive(Clone)]
@@ -20,11 +22,11 @@ pub(super) struct Published {
     /// `State`, before the sync has its say (`published_state`).
     pub(crate) state: RootState,
     /// The registration's part of `LastError`: what it ran into.
-    pub(crate) error: String,
+    pub(crate) error: Option<FolderTrouble>,
     /// `Writable`: the folder takes changes, and what is changed in it is uploaded.
     pub(crate) writable: bool,
     /// Why the folder's sync could not start: blocking trouble, until one does.
-    pub(crate) cannot_start: Option<String>,
+    pub(crate) cannot_start: Option<FolderTrouble>,
     pub(crate) view: View,
 }
 
@@ -34,11 +36,11 @@ pub(super) fn publish(folder: &Folder) -> Published {
     let path = folder.record().map(|record| record.root.path.display().to_string()).unwrap_or_default();
     // An account held back says so over whatever its folder is: nothing acts on the
     // folder but a Forget.
-    if let Standing::HeldBack(why) = &folder.standing {
+    if let Standing::HeldBack(hold) = &folder.standing {
         return Published {
             path,
             state: RootState::Error,
-            error: why.clone(),
+            error: Some(FolderTrouble::HeldBack { hold: hold.clone() }),
             writable: false,
             cannot_start: None,
             view: View { wanted: folder.wanted, ..View::default() },
@@ -72,16 +74,16 @@ pub(super) fn publish(folder: &Folder) -> Published {
         sync: sync.clone(),
     };
     let (state, error, down) = match &folder.is {
-        Is::Absent => (RootState::None, String::new(), None),
+        Is::Absent => (RootState::None, None, None),
         Is::Down(record, down) => {
-            let error = down.why(&record.root);
+            let error = down.trouble(&record.root);
             // Nothing is known to be wrong with a folder that only waits: it is brought up
             // in a moment.
             let state = if down.waits_for().is_some() { RootState::Waiting } else { RootState::Error };
-            let why = down.waits_for().map_or_else(|| error.clone(), str::to_owned);
+            let why = down.waits_for().map(str::to_owned).or_else(|| error.as_ref().map(ToString::to_string)).unwrap_or_default();
             (state, error, Some(why))
         }
-        Is::Up(_) => (RootState::Ready, String::new(), None),
+        Is::Up(_) => (RootState::Ready, None, None),
     };
     let cannot_start = match &sync {
         SyncView::Stopped(why) => why.clone(),
@@ -100,10 +102,10 @@ impl SyncService {
         self.state.update_if_changed(|s| {
             s.folder.root_path = published.path;
             s.folder.root_state = published.state;
-            s.folder.last_error = published.error;
+            s.folder.trouble = published.error;
             s.folder.writable = published.writable;
-            if let Some(text) = published.cannot_start {
-                s.cycle.sync_trouble = Some(SyncTrouble { text, blocking: true, kind: TroubleKind::Other });
+            if let Some(trouble) = published.cannot_start {
+                s.cycle.sync_trouble = Some(SyncTrouble::NotStarted(trouble));
             }
             also(s);
         });
