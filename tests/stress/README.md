@@ -120,7 +120,7 @@ reached — not a permanent cutoff, so once deletes bring the footprint back dow
 A Markdown file under `tests/stress/reports/` (gitignored) by default, or wherever `--report`
 points. For every scenario: pass/fail and its duration. For every failure: each problem in plain
 words, the relevant `sync upload-queue` / `sync not-uploaded` / `sync status` output at the point of
-failure, any `failed` or `update-failed` activity. If the soak phase ran: its seed, the count of
+failure, any `failed`, `update-failed` or `upload-failed` activity. If the soak phase ran: its seed, the count of
 each kind of operation it performed, its sampled upload queue timeline, and its final check's result (and
 problems, if any). At the end of the report — `journalctl --user -u konedrived --since <run start>
 -p warning` for the whole run, so the report is something that can be handed to whoever is
