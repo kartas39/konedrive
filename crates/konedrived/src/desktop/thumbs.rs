@@ -15,6 +15,9 @@
 //! changes; only a passing trouble — no answer, `401`, `408`, `429`, 5xx — is
 //! tried again at the next drain. A `406` at `c512x512` is asked
 //! once more at Graph's named size `large` before it counts as a refusal.
+//!
+//! How many thumbnails are being downloaded now is `Transfers.ThumbnailDownloads`
+//! (`TransferStatus::thumbnail_downloads`), written here as each request starts and ends.
 
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -29,6 +32,7 @@ pub(crate) mod request_start;
 
 use crate::folder::root::SyncRoot;
 use crate::conditions::running::Running;
+use crate::status::snapshot::SyncStateHandle;
 use konedrive_graph::pool::Class;
 use request_start::{decide_request_start, ListingProgress, RequestFacts, RequestStart, RequestWait, ASKED_AGAIN_AFTER};
 use konedrive_graph::drive::{DriveClient, Thumbnail};
@@ -75,6 +79,8 @@ pub(crate) struct ThumbnailFiller {
     /// Whether thumbnails are asked for now: the account's setting, and its pause
     /// (`conditions::running`).
     running: Arc<Running>,
+    /// Where the count of the thumbnails being downloaded is said.
+    state: SyncStateHandle,
 }
 
 /// What one `run_once` did: `taken` is how many candidates it
@@ -99,8 +105,8 @@ enum FillError {
 }
 
 impl ThumbnailFiller {
-    pub fn new(drive: DriveClient, store: Store, root: SyncRoot, cache: PathBuf, running: Arc<Running>) -> Self {
-        Self { drive, store, root, cache, running }
+    pub fn new(drive: DriveClient, store: Store, root: SyncRoot, cache: PathBuf, running: Arc<Running>, state: SyncStateHandle) -> Self {
+        Self { drive, store, root, cache, running, state }
     }
 
     /// What [`decide_request_start`] is asked with, read now: the listing from the store,
@@ -177,7 +183,10 @@ impl ThumbnailFiller {
                 tokio::select! {
                     () = cancel.cancelled() => break false,
                     () = tokio::time::sleep(wait) => {}
-                    Some(done) = running.join_next(), if !running.is_empty() => written += usize::from(done.unwrap_or(false)),
+                    Some(done) = running.join_next(), if !running.is_empty() => {
+                        written += usize::from(done.unwrap_or(false));
+                        self.state.set_thumbnail_downloads(running.len());
+                    }
                 }
             };
             if !is_started {
@@ -192,9 +201,11 @@ impl ThumbnailFiller {
                     written = one.make(wanted) => written,
                 }
             });
+            self.state.set_thumbnail_downloads(running.len());
         }
         while let Some(done) = running.join_next().await {
             written += usize::from(done.unwrap_or(false));
+            self.state.set_thumbnail_downloads(running.len());
         }
         (RunOutcome { taken, written }, next)
     }

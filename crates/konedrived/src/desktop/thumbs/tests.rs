@@ -22,6 +22,7 @@ struct World {
     server: MockServer,
     fixture: ItemFixture,
     cache: tempfile::TempDir,
+    state: SyncStateHandle,
 }
 
 async fn world(files: &[(&str, &str)]) -> World {
@@ -32,7 +33,7 @@ async fn world(files: &[(&str, &str)]) -> World {
         // The listing's row carries no MIME type in the fixture: it is written as a listing would have.
         fixture.write_rows(move |store| store.bench_sql(&format!("UPDATE items SET onedrive_mime = '{mime}' WHERE local_item_id = {item}")));
     }
-    World { server: MockServer::start().await, fixture, cache: tempfile::tempdir().unwrap() }
+    World { server: MockServer::start().await, fixture, cache: tempfile::tempdir().unwrap(), state: SyncStateHandle::new(Default::default()) }
 }
 
 fn thumb_path(name: &str, size: &str) -> String {
@@ -49,7 +50,7 @@ impl World {
         let retry = konedrive_graph::drive::RetryPolicy { attempts: 2, default_wait: Duration::from_millis(10), max_wait: Duration::from_millis(50) };
         let drive = konedrive_graph::drive::DriveClient::new(Url::parse(&format!("{}/", self.server.uri())).unwrap(), Arc::new(StaticToken::new("T"))).unwrap().with_retry(retry);
         let root = SyncRoot { path: self.root(), root_id: "r".into() };
-        ThumbnailFiller::new(drive, self.fixture.store.clone(), root, self.cache.path().to_path_buf(), Arc::default())
+        ThumbnailFiller::new(drive, self.fixture.store.clone(), root, self.cache.path().to_path_buf(), Arc::default(), self.state.clone())
     }
 
     fn cached(&self, dir: &str, name: &str) -> std::path::PathBuf {
@@ -109,6 +110,35 @@ async fn an_item_with_no_usable_thumbnail_is_not_asked_again() {
     let first = filler.run_once(&CancellationToken::new(), 100).await;
     assert_eq!((first.taken, first.written), (3, 0));
     assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.taken, 0);
+}
+
+/// The thumbnails being downloaded are counted as their requests start and end, and none is
+/// once the run has ended.
+#[tokio::test]
+async fn the_thumbnails_being_downloaded_are_counted_and_none_after_the_run() {
+    let w = world(&[("a.jpg", "image/jpeg"), ("b.jpg", "image/jpeg")]).await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/me/drive/items/[ab]\.jpg/thumbnails/0/c512x512/content$"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "image/jpeg").set_body_bytes(jpeg(64, 64)).set_delay(Duration::from_millis(300)))
+        .mount(&w.server)
+        .await;
+    let mut counts = w.state.subscribe();
+    let seen = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        while counts.changed().await.is_ok() {
+            let count = counts.borrow_and_update().transfers.thumbnail_downloads;
+            seen.push(count);
+            if count == 0 {
+                break;
+            }
+        }
+        seen
+    });
+    let made = w.filler().run_once(&CancellationToken::new(), 100).await;
+    assert_eq!(made.written, 2);
+    assert_eq!(w.state.get().transfers.thumbnail_downloads, 0, "none after the run");
+    let seen = seen.await.unwrap();
+    assert!(seen.contains(&2), "both requests under way at once: {seen:?}");
 }
 
 #[tokio::test]

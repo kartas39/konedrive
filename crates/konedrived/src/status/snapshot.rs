@@ -202,6 +202,10 @@ pub struct TransferStatus {
     /// none was, and when no wait runs. Written by `ThrottleWait::tell_refusal`, taken off
     /// when the pool says the wait is over ([`SyncStateHandle::set_throughput`]).
     pub(crate) retry_after_refusal: String,
+    /// `ThumbnailDownloads`: the thumbnails being downloaded now, none of them a file of
+    /// `Downloads`. ONE writer: the thumbnail filler (`desktop::thumbs`), as its requests
+    /// start and end; 0 once its drain has ended.
+    pub(crate) thumbnail_downloads: u32,
     /// The pinned files whose content is still to be downloaded, as the store had them at
     /// the last plan that asked. ONE writer: the plan's task, with every plan whose
     /// reading counted them (`SyncPlanTask::publish_round`), and to none when it stops. On
@@ -342,6 +346,12 @@ impl SyncStateHandle {
             }
             std::mem::replace(&mut s.transfers.throughput, throughput) != throughput || is_refusal_over
         });
+    }
+
+    /// `ThumbnailDownloads`, told only when it changed.
+    pub(crate) fn set_thumbnail_downloads(&self, count: usize) {
+        let count = u32::try_from(count).unwrap_or(u32::MAX);
+        self.tx.send_if_modified(|s| std::mem::replace(&mut s.transfers.thumbnail_downloads, count) != count);
     }
 
     /// The queue totals, told only when they changed.

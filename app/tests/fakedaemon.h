@@ -342,6 +342,7 @@ class FakeTransfers : public FakeFolderInterface
     Q_PROPERTY(qulonglong UploadSpeed READ uploadSpeed)
     Q_PROPERTY(uint ActiveDownloads READ activeDownloads)
     Q_PROPERTY(uint ActiveUploads READ activeUploads)
+    Q_PROPERTY(uint ThumbnailDownloads READ thumbnailDownloads)
     Q_PROPERTY(uint PoolInUse READ poolInUse)
     Q_PROPERTY(uint PoolSize READ poolSize)
     Q_PROPERTY(uint PoolCeiling READ poolCeiling)
@@ -369,6 +370,7 @@ public:
                                   {QStringLiteral("UploadSpeed"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("ActiveDownloads"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("ActiveUploads"), QVariant::fromValue<uint>(0)},
+                                  {QStringLiteral("ThumbnailDownloads"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("PoolInUse"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("PoolSize"), QVariant::fromValue<uint>(16)},
                                   {QStringLiteral("PoolCeiling"), QVariant::fromValue<uint>(64)},
@@ -395,6 +397,7 @@ public:
     qulonglong uploadSpeed() const { return value("UploadSpeed").toULongLong(); }
     uint activeDownloads() const { return value("ActiveDownloads").toUInt(); }
     uint activeUploads() const { return value("ActiveUploads").toUInt(); }
+    uint thumbnailDownloads() const { return value("ThumbnailDownloads").toUInt(); }
     uint poolInUse() const { return value("PoolInUse").toUInt(); }
     uint poolSize() const { return value("PoolSize").toUInt(); }
     uint poolCeiling() const { return value("PoolCeiling").toUInt(); }

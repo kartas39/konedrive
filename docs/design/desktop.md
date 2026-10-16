@@ -149,6 +149,7 @@ first row that holds decides:
 | `Downloads`, `Uploads` (`a(stt)`) | each transfer under way as (path, bytes done, bytes total): a download for as long as it holds its slot of the pool, until the file landed or the try failed; no thumbnail is one |
 | `DownloadSpeed`, `UploadSpeed` (`t`) | bytes a second each way, the average of the last 3 s |
 | `ActiveDownloads`, `ActiveUploads` (`u`) | the files moving now, each once however many streams it runs |
+| `ThumbnailDownloads` (`u`) | the thumbnails being downloaded now (§8); none of them is a file of `Downloads`, and their bytes count in `DownloadSpeed` |
 | `PoolInUse`, `PoolSize`, `PoolCeiling` (`u`) | the account's transfer pool: every slot held now (it may be above the size), how many requests it has in flight at most now, which adapts to OneDrive's throttling, and its ceiling (`[transfers] max`) |
 | `LargeFiles`, `LargeStreams`, `LargeStreamLimit` (`u`) | the large files (100 MiB and up) the sync moves now, their streams, and how many may run at once (`[transfers] large`); a file being opened is never one |
 | `RetryAfter` (`u`) | the seconds left of OneDrive's `Retry-After`, during which no transfer starts |

@@ -278,6 +278,18 @@ FormCard.FormCardPage {
             leftText: i18ncp("@info changes left to upload", "%1 change left", "%1 changes left", uploading.leftCount)
         }
     }
+    // The thumbnails being downloaded, while any is: their bytes are in the Downloading
+    // card's speed, and none of them is a file it counts.
+    QQC2.Label {
+        objectName: "thumbnailDownloads"
+        Layout.leftMargin: Kirigami.Units.largeSpacing
+        Layout.rightMargin: Kirigami.Units.largeSpacing
+        Layout.fillWidth: true
+        wrapMode: Text.Wrap
+        visible: page.sync !== null && page.sync.thumbnailDownloads > 0
+        opacity: 0.7
+        text: page.sync ? i18ncp("@info thumbnails of images and videos being downloaded now", "%1 thumbnail downloading", "%1 thumbnails downloading", page.sync.thumbnailDownloads) : ""
+    }
     // The account's transfer pool, shared by both directions: shown once, with the large
     // transfers under way, and OneDrive's Retry-After counting down while it runs.
     QQC2.Label {

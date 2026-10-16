@@ -108,6 +108,9 @@ class SyncController : public QObject
     Q_PROPERTY(qulonglong uploadSpeed READ uploadSpeed NOTIFY syncChanged)
     Q_PROPERTY(uint activeDownloads READ activeDownloads NOTIFY syncChanged)
     Q_PROPERTY(uint activeUploads READ activeUploads NOTIFY syncChanged)
+    /// Thumbnails being downloaded now (Transfers.ThumbnailDownloads): none of them is a file
+    /// of activeDownloads.
+    Q_PROPERTY(uint thumbnailDownloads READ thumbnailDownloads NOTIFY syncChanged)
     Q_PROPERTY(uint poolInUse READ poolInUse NOTIFY syncChanged)
     Q_PROPERTY(uint poolSize READ poolSize NOTIFY syncChanged)
     Q_PROPERTY(uint poolCeiling READ poolCeiling NOTIFY syncChanged)
@@ -215,6 +218,7 @@ public:
     qulonglong uploadSpeed() const { return m_uploadSpeed; }
     uint activeDownloads() const { return m_activeDownloads; }
     uint activeUploads() const { return m_activeUploads; }
+    uint thumbnailDownloads() const { return m_thumbnailDownloads; }
     uint poolInUse() const { return m_poolInUse; }
     uint poolSize() const { return m_poolSize; }
     uint poolCeiling() const { return m_poolCeiling; }
@@ -392,6 +396,7 @@ private:
     qulonglong m_uploadSpeed = 0;
     uint m_activeDownloads = 0;
     uint m_activeUploads = 0;
+    uint m_thumbnailDownloads = 0;
     uint m_poolInUse = 0;
     uint m_poolSize = 0;
     uint m_poolCeiling = 0;
