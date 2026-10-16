@@ -1,4 +1,5 @@
 use super::*;
+use crate::account::account_trouble::AccountTrouble;
 
 #[test]
 fn state_strings_match_the_dbus_api() {
@@ -40,49 +41,13 @@ fn clear_account_keeps_state_and_client_id() {
     assert_eq!((s.display_name.as_str(), s.email.as_str(), s.quota), ("", "", QuotaFigures::default()));
 }
 
-/// Every note's text, written out: clients read it.
-#[test]
-fn every_mode_note_says_what_last_error_said() {
-    let said = |note: ModeNote| note.text();
-    assert_eq!(
-        said(ModeNote::WiderGrant("Files.ReadWrite offline_access".into())),
-        "Microsoft answered a request for read-only access with a token that can also change files \
-         (Files.ReadWrite offline_access); konedrive uses it to read only. The consent stays with Microsoft until it \
-         is revoked at https://account.live.com/consent/Manage"
-    );
-    assert_eq!(
-        said(ModeNote::ConfigUnreadable),
-        "config.toml cannot be read now, so this account runs read-only until it can"
-    );
-    assert_eq!(
-        said(ModeNote::NoDriveRecorded),
-        "config.toml sets this account to read-write, but records no OneDrive drive for it; it runs read-only \
-         until a sign-in records one"
-    );
-    assert_eq!(
-        said(ModeNote::DriveMismatch { live: "D2".into(), recorded: "D1".into() }),
-        "this account's sign-in reaches the OneDrive drive D2, but config.toml records drive D1 for it; it runs \
-         read-only until the two agree"
-    );
-    assert_eq!(
-        said(ModeNote::SignInToWrite),
-        "Changes made here are not uploaded: this account's sign-in does not allow konedrive to change files in \
-         OneDrive. Switch it to read-write again to sign in with that permission."
-    );
-    assert_eq!(
-        said(ModeNote::DriveNotSeen),
-        "config.toml sets this account to read-write, but which OneDrive its sign-in reaches has not been checked \
-         yet; it runs read-only until it is"
-    );
-}
-
 /// A wish for read-only that waits is no word of `LastError`: an error and a note come and
 /// go beside it, and it goes when the account is no longer signed in.
 #[test]
 fn a_wish_for_read_only_is_a_state_beside_last_error() {
     let mut s = AccountSnapshot { read_only_wish: Some(ReadOnlyWish { unsent: 3 }), ..AccountSnapshot::default() };
     assert_eq!(s.published_error(), "");
-    s.set_error("no network");
+    s.set_error(AccountTrouble::ProfileNotRead { detail: "no network".into() });
     s.set_mode_note(Some(ModeNote::DriveNotSeen));
     s.clear_error();
     assert_eq!((s.read_only_wish, s.published_error().as_str()), (Some(ReadOnlyWish { unsent: 3 }), ""));
@@ -95,14 +60,14 @@ fn a_wish_for_read_only_is_a_state_beside_last_error() {
 #[test]
 fn an_error_and_the_mode_note_take_each_others_place() {
     let mut s = AccountSnapshot::default();
-    s.set_error("Could not load account info: no network");
+    s.set_error(AccountTrouble::ProfileNotRead { detail: "no network".into() });
     s.set_mode_note(Some(ModeNote::SignInToWrite));
-    assert_eq!(s.published_error(), ModeNote::SignInToWrite.text(), "a note replaces an error");
+    assert_eq!(s.published_error(), ModeNote::SignInToWrite.to_string(), "a note replaces an error");
     s.set_mode_note(None);
     assert_eq!(s.published_error(), "", "and the error it replaced does not come back");
 
     s.set_mode_note(Some(ModeNote::DriveNotSeen));
-    s.set_error("Could not load account info: no network");
+    s.set_error(AccountTrouble::ProfileNotRead { detail: "no network".into() });
     assert_eq!(s.published_error(), "Could not load account info: no network", "an error replaces a note");
     s.set_mode_note(None);
     assert_eq!(s.published_error(), "Could not load account info: no network", "a note taken back leaves the error");

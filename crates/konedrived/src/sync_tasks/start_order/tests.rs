@@ -204,7 +204,7 @@ fn the_holds_that_stand_at_the_start_are_set_before_the_first_plan() {
     fixture.runtime().block_on(async {
         let graph = fixture.start_fake_onedrive().await;
         let mut input = make_start_input(&fixture, graph.client());
-        input.standing_holds = StandingSendingHolds { paused_until: Some(None), is_signed_out: true, writes_refusal: Some("the sign-in grants no writes".into()) };
+        input.standing_holds = StandingSendingHolds { paused_until: Some(None), is_signed_out: true, writes_refusal: Some(crate::account::state::ModeNote::SignInToWrite) };
 
         let started = start_sync_over_parts(&input, make_kept_parts(&fixture), StoreOrigin::Kept).await.ok().expect("the start goes through");
 
@@ -213,7 +213,7 @@ fn the_holds_that_stand_at_the_start_are_set_before_the_first_plan() {
         assert!(holds.is_held(StepClass::Download, now) && holds.is_held(StepClass::Content, now));
         // Each stands by itself: with the sign-out ended, the refusal is the one shown; then the pause.
         holds.set_signed_out(false);
-        assert_eq!(holds.find(now), Some(SendingHold::WritesNotAllowed { reason: "the sign-in grants no writes".into() }));
+        assert_eq!(holds.find(now), Some(SendingHold::WritesNotAllowed { reason: crate::account::state::ModeNote::SignInToWrite }));
         holds.set_writes_refusal(None);
         assert_eq!(holds.find(now), Some(SendingHold::Paused { until: None }));
         stop(started).await;

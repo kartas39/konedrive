@@ -115,7 +115,10 @@ fn the_throttles_time_is_rounded_up_to_the_minute() {
     assert_eq!(said(minute + 59), said(minute + 60));
     assert_ne!(said(minute), said(minute + 1), "the full minute reads as itself");
     assert!(said(minute).starts_with("OneDrive asked to slow down; uploads continue at "), "{}", said(minute));
-    assert_eq!(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()).to_string(), "nothing is uploaded: the sign-in cannot write");
+    assert_eq!(
+        UploadQueueNote::WritesNotAllowed(crate::account::state::ModeNote::SignInToWrite).to_string(),
+        "nothing is uploaded: the account's sign-in does not allow changes"
+    );
 }
 
 /// The pinned files that wait for disk space: how many, what they need and what there is.

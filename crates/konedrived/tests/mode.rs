@@ -16,10 +16,8 @@ use common::*;
 use konedrive_dbus::accounts::{AccountProxy, AccountsProxy, TokenExportProxy};
 use konedrive_dbus::error_name;
 use konedrive_dbus::testing::TestBus;
-use konedrived::account::state::{ReadOnlyWish, SignInState};
-use konedrived::account::{
-    AccountService, FolderAccount, HeldUnsentChanges, AccountFolder, CONFIG_UNREADABLE, DRIVE_NOT_KNOWN, DRIVE_NOT_SEEN, SIGN_IN_TO_WRITE,
-};
+use konedrived::account::state::{ModeNote, ReadOnlyWish, SignInState};
+use konedrived::account::{AccountFolder, AccountService, FolderAccount, HeldUnsentChanges, DRIVE_NOT_KNOWN};
 use konedrived::account::cache::AccountInfo;
 use konedrived::config::{AccountId, ConfigError, ConfigStore, DriveId, Mode, Paths};
 use konedrive_graph::secret::MemoryStore;
@@ -613,14 +611,16 @@ async fn the_switch_to_read_only_asks_the_folder_again_while_a_request_is_in_fli
 #[tokio::test]
 async fn a_read_write_account_runs_read_write_only_with_the_grant_for_its_own_drive() {
     const READ: &str = "Files.Read User.Read offline_access";
+    let (sign_in_to_write, drive_not_seen) = (ModeNote::SignInToWrite.to_string(), ModeNote::DriveNotSeen.to_string());
+    let (sign_in_to_write, drive_not_seen) = (sign_in_to_write.as_str(), drive_not_seen.as_str());
     // (granted, drive the token was seen to reach, listed, mode, LastError, next refresh asks)
     let cases = [
         (READ_WRITE, "D1", true, Mode::ReadWrite, "", READ_WRITE),
-        (READ, "D1", true, Mode::ReadOnly, SIGN_IN_TO_WRITE, READ),
-        ("", "", true, Mode::ReadOnly, SIGN_IN_TO_WRITE, READ),
+        (READ, "D1", true, Mode::ReadOnly, sign_in_to_write, READ),
+        ("", "", true, Mode::ReadOnly, sign_in_to_write, READ),
         (READ_WRITE, "D1", false, Mode::ReadWrite, "", READ_WRITE),
-        (READ, "D1", false, Mode::ReadOnly, SIGN_IN_TO_WRITE, READ),
-        (READ_WRITE, "", true, Mode::ReadOnly, DRIVE_NOT_SEEN, READ),
+        (READ, "D1", false, Mode::ReadOnly, sign_in_to_write, READ),
+        (READ_WRITE, "", true, Mode::ReadOnly, drive_not_seen, READ),
         (READ_WRITE, "D2", true, Mode::ReadOnly, "reaches the OneDrive drive D2", READ),
     ];
     for (granted, seen, listed, mode, error, asked) in cases {
@@ -797,7 +797,7 @@ async fn the_mode_and_the_drive_are_read_together_and_fail_closed() {
 
     std::fs::write(s.config().file(), "config_version = 2\nthis is not [toml\n").unwrap();
     s.account.refresh_info().await.unwrap();
-    assert_eq!(wait_for_error(&s.account, "cannot be read").await, CONFIG_UNREADABLE);
+    assert_eq!(wait_for_error(&s.account, "cannot be read").await, ModeNote::ConfigUnreadable.to_string());
     assert_eq!(s.account.mode().await.unwrap(), "read-only", "fails closed");
 
     assert!(text.contains("mode = \"read-write\""), "{text}");

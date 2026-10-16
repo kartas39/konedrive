@@ -102,6 +102,7 @@ use crate::sync_plan_task::row_steps::RowSteps;
 use crate::sync_plan_task::step_runners::{RunningFuture, StepRunners};
 use crate::sync_plan_task::{SyncPlanTask, SyncPlanTaskParts};
 use crate::account::quota::Quota;
+use crate::account::state::ModeNote;
 use crate::conditions::running::Running;
 use crate::config::Mode;
 use crate::sync_parts::published_plan::PublishedPlan;
@@ -165,7 +166,7 @@ pub(crate) struct StandingSendingHolds {
     /// the same function its watcher of the account sets it by afterwards
     /// (`account_folder::mode::decide_account_holds`), from the account's snapshot read
     /// when the start begins.
-    pub(crate) writes_refusal: Option<String>,
+    pub(crate) writes_refusal: Option<ModeNote>,
 }
 
 /// Everything a folder's start needs.

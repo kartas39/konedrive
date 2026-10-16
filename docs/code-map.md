@@ -143,7 +143,10 @@ One account: its sign-in, mode, state, quota, cached profile, stored secret.
 - `mode.rs` — `Account.SetMode`: the switch between read-only and read-write; the wish for
   read-only that waits until everything is sent, is forced or is taken back. `[tests]`
 - `state.rs` — the observable account state (`AccountSnapshot`), with the wish for read-only
-  and the mode's note in `LastError`. `[tests]`
+  and the mode's note in `LastError` (`ModeNote`, also why the account may not write). `[tests]`
+- `account_trouble.rs` — what went wrong for an account, as cases with their data: a sign-in
+  in the browser (`SignInFailure`), a sign-in refused (`Refused`), a switch to read-write
+  (`ReadWriteFailure`), and what `LastError` says (`AccountTrouble`).
 - `quota.rs` — the quota of the account's drive, one copy whoever reads it. `[tests]`
 - `cache.rs` — the cached profile and quota (`account.json`), shown offline. `[tests]`
 - `secret.rs` — the refresh token's storage in the Secret Service, an item per account.
@@ -550,6 +553,8 @@ Every sentence the daemon says to a person about what is wrong: the `Display` of
 trouble, which the bus, the journal and `LastError` say through.
 
 - `mod.rs` — the list of the modules.
+- `account_sentences.rs` — of an account's sign-in, its switch to read-write, and why it runs
+  read-only or may not write. `[tests]`
 - `config_sentences.rs` — of `config.toml` and the accounts in it. `[tests]`
 - `status_sentences.rs` — of a folder's trouble, the sync's, and what holds its uploads and
   downloads. `[tests]`

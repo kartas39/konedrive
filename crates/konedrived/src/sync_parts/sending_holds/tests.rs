@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use futures_util::FutureExt;
 
 use super::*;
+use crate::account::state::ModeNote;
 use crate::sync_parts::sync_plan_wake::WakeCause;
 use crate::sync_parts::sending_holds::BACKOFF_MAX;
 
@@ -126,10 +127,10 @@ fn each_cause_is_set_and_cleared_by_itself_and_wakes_the_plan() {
     holds.set_signed_out(false);
     assert_eq!((holds.find(NOW), is_plan_woken(&wake)), (None, true));
 
-    holds.set_writes_refusal(Some("the sign-in grants no writes".into()));
-    assert_eq!((holds.find(NOW), is_plan_woken(&wake)), (Some(SendingHold::WritesNotAllowed { reason: "the sign-in grants no writes".into() }), true));
-    holds.set_writes_refusal(Some("another drive".into()));
-    assert_eq!((holds.find(NOW), is_plan_woken(&wake)), (Some(SendingHold::WritesNotAllowed { reason: "another drive".into() }), true), "another reason is a change");
+    holds.set_writes_refusal(Some(ModeNote::SignInToWrite));
+    assert_eq!((holds.find(NOW), is_plan_woken(&wake)), (Some(SendingHold::WritesNotAllowed { reason: ModeNote::SignInToWrite }), true));
+    holds.set_writes_refusal(Some(ModeNote::DriveNotSeen));
+    assert_eq!((holds.find(NOW), is_plan_woken(&wake)), (Some(SendingHold::WritesNotAllowed { reason: ModeNote::DriveNotSeen }), true), "another reason is a change");
     holds.set_writes_refusal(None);
     assert_eq!((holds.find(NOW), is_plan_woken(&wake)), (None, true));
 
@@ -159,8 +160,8 @@ fn the_first_cause_in_the_order_of_the_cases_is_the_one_shown() {
     assert_eq!(holds.find(NOW + 60), Some(SendingHold::FirstListingNotEnded), "a pause and a throttle whose end passed hold no more");
     holds.set_paused(Some(None));
     assert_eq!((holds.find(NOW), holds.find_end(NOW + 30)), (Some(SendingHold::Paused { until: None }), None), "a pause until resumed ends by nothing");
-    holds.set_writes_refusal(Some("no writes".into()));
-    assert_eq!((holds.find(NOW), holds.find_end(NOW + 30)), (Some(SendingHold::WritesNotAllowed { reason: "no writes".into() }), None));
+    holds.set_writes_refusal(Some(ModeNote::SignInToWrite));
+    assert_eq!((holds.find(NOW), holds.find_end(NOW + 30)), (Some(SendingHold::WritesNotAllowed { reason: ModeNote::SignInToWrite }), None));
     holds.set_signed_out(true);
     assert_eq!(holds.find(NOW), Some(SendingHold::SignedOut));
     holds.set_stopping();
@@ -172,7 +173,7 @@ fn a_throttle_holds_no_download_and_a_pause_does() {
     let every_hold = [
         (SendingHold::Stopping, true),
         (SendingHold::SignedOut, true),
-        (SendingHold::WritesNotAllowed { reason: "no writes".into() }, false),
+        (SendingHold::WritesNotAllowed { reason: ModeNote::SignInToWrite }, false),
         (SendingHold::Paused { until: None }, true),
         (SendingHold::Paused { until: Some(NOW) }, true),
         (SendingHold::Throttled { until: NOW }, false),
@@ -192,10 +193,10 @@ fn a_throttle_holds_no_download_and_a_pause_does() {
 #[test]
 fn a_download_is_held_by_a_pause_that_is_not_the_hold_shown() {
     let (_wake, holds) = sending_holds();
-    holds.set_writes_refusal(Some("no writes".into()));
+    holds.set_writes_refusal(Some(ModeNote::SignInToWrite));
     assert!(!holds.is_held(StepClass::Download, NOW) && holds.is_held(StepClass::Content, NOW));
     holds.set_paused(Some(Some(NOW + 60)));
-    assert_eq!(holds.find(NOW), Some(SendingHold::WritesNotAllowed { reason: "no writes".into() }), "the pause is not the one shown");
+    assert_eq!(holds.find(NOW), Some(SendingHold::WritesNotAllowed { reason: ModeNote::SignInToWrite }), "the pause is not the one shown");
     assert!(holds.is_held(StepClass::Download, NOW), "and holds the download all the same");
     assert!(!holds.is_held(StepClass::Download, NOW + 60), "until its end");
     assert!(!holds.is_held(StepClass::Folder, NOW) && !holds.is_held(StepClass::Row, NOW));
@@ -240,16 +241,16 @@ fn a_read_only_folder_holds_what_is_sent_and_no_download_and_is_shown_after_the_
     holds.set_paused(Some(None));
     assert_eq!(holds.find(NOW), Some(SendingHold::FolderReadOnly));
     assert!(holds.is_held(StepClass::Download, NOW), "the pause behind it holds the download");
-    holds.set_writes_refusal(Some("no writes".into()));
-    assert_eq!(holds.find(NOW), Some(SendingHold::WritesNotAllowed { reason: "no writes".into() }));
+    holds.set_writes_refusal(Some(ModeNote::SignInToWrite));
+    assert_eq!(holds.find(NOW), Some(SendingHold::WritesNotAllowed { reason: ModeNote::SignInToWrite }));
     // Neither setter clears the other's hold.
     holds.set_writes_refusal(None);
     assert_eq!(holds.find(NOW), Some(SendingHold::FolderReadOnly), "the account's refusal ended, the folder is read-only still");
-    holds.set_writes_refusal(Some("no writes".into()));
+    holds.set_writes_refusal(Some(ModeNote::SignInToWrite));
     holds.set_paused(None);
     while is_plan_woken(&wake) {}
     holds.set_folder_read_only(false);
-    assert_eq!((holds.find(NOW), is_plan_woken(&wake)), (Some(SendingHold::WritesNotAllowed { reason: "no writes".into() }), true), "read-write again: the account's refusal stands, and the plan is woken");
+    assert_eq!((holds.find(NOW), is_plan_woken(&wake)), (Some(SendingHold::WritesNotAllowed { reason: ModeNote::SignInToWrite }), true), "read-write again: the account's refusal stands, and the plan is woken");
     holds.set_writes_refusal(None);
     assert_eq!(holds.find(NOW), Some(SendingHold::Throttled { until: NOW + 30 }));
     assert_eq!(holds.find(NOW + 30), None);

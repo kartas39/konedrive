@@ -44,7 +44,7 @@ fn not_blocking(detail: &str) -> Option<SyncTrouble> {
 
 /// The note of an account that may not write.
 fn may_not_write() -> UploadQueueNote {
-    UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into())
+    UploadQueueNote::WritesNotAllowed(crate::account::state::ModeNote::SignInToWrite)
 }
 
 /// A reason with nothing said of trouble.

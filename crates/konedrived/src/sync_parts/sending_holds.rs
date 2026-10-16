@@ -30,6 +30,8 @@ use std::time::Duration;
 
 use konedrive_graph::drive::MAX_RETRY_AFTER;
 
+use crate::account::state::ModeNote;
+
 use crate::sync_parts::running_steps::StepClass;
 use crate::sync_parts::sync_plan_wake::{SyncPlanWake, WakeCause};
 
@@ -41,8 +43,8 @@ pub(crate) enum SendingHold {
     /// The account is signed out.
     SignedOut,
     /// The account's sign-in grants no writes, or the token reaches another drive than
-    /// the folder's: with the reason as the account says it.
-    WritesNotAllowed { reason: String },
+    /// the folder's: why.
+    WritesNotAllowed { reason: ModeNote },
     /// The folder is read-only: what is unsent stays here, not sent and not lost, and is
     /// sent when the folder is read-write again. Set by a switch to read-only
     /// (`sync_tasks::access_mode_change`), before the account gives up the token that
@@ -75,7 +77,7 @@ fn decide_is_held(hold: Option<&SendingHold>, class: StepClass) -> bool {
 struct Holds {
     is_stopping: bool,
     is_signed_out: bool,
-    writes_refusal: Option<String>,
+    writes_refusal: Option<ModeNote>,
     is_folder_read_only: bool,
     paused_until: Option<Option<i64>>,
     throttled_until: Option<i64>,
@@ -205,7 +207,7 @@ impl SendingHolds {
     /// (`StandingSendingHolds::writes_refusal`). That the folder is read-only is NOT
     /// given here: that is a hold of its own
     /// ([`set_folder_read_only`](Self::set_folder_read_only)), with another setter.
-    pub(crate) fn set_writes_refusal(&self, refusal: Option<String>) {
+    pub(crate) fn set_writes_refusal(&self, refusal: Option<ModeNote>) {
         self.change(|holds| holds.writes_refusal = refusal);
     }
 

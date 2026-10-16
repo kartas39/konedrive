@@ -15,7 +15,7 @@ use tokio::sync::watch;
 
 use super::folder::{Standing, Sync, Why};
 use super::SyncService;
-use crate::account::state::{AccountSnapshot, SignInState};
+use crate::account::state::{AccountSnapshot, ModeNote, SignInState};
 use crate::account::{HeldUnsentChanges, AccountFolder};
 use crate::config::{Mode, WriteStanding};
 use crate::sync_parts::sending_holds::SendingHold;
@@ -100,7 +100,7 @@ pub(crate) struct AccountHolds {
     /// Why the account may not write to OneDrive now; `None` when it may, and when the
     /// only cause is that the account or the folder is read-only (that is the folder's
     /// own hold, `SendingHold::FolderReadOnly`).
-    pub(crate) writes_refusal: Option<String>,
+    pub(crate) writes_refusal: Option<ModeNote>,
 }
 
 /// What `snapshot`, the account's state, and `standing`, what `config.toml` says of its
@@ -119,19 +119,15 @@ pub(crate) struct AccountHolds {
 pub fn decide_account_holds(snapshot: &AccountSnapshot, standing: Option<&WriteStanding>) -> AccountHolds {
     let is_signed_out = snapshot.state != SignInState::SignedIn;
     let writes_refusal = match standing {
-        None => Some("config.toml cannot be read".to_owned()),
+        None => Some(ModeNote::ConfigUnreadable),
         // A read-only account's folder is read-only, and held as such.
         Some(WriteStanding { mode: Mode::ReadOnly, .. }) => None,
-        Some(WriteStanding { recorded_drive: None, .. }) => Some("config.toml records no drive for the account".to_owned()),
-        Some(WriteStanding { recorded_drive: Some(_), .. }) if snapshot.live_drive.is_empty() => {
-            Some("which OneDrive drive the account's sign-in reaches has not been seen yet".to_owned())
+        Some(WriteStanding { recorded_drive: None, .. }) => Some(ModeNote::NoDriveRecorded),
+        Some(WriteStanding { recorded_drive: Some(_), .. }) if snapshot.live_drive.is_empty() => Some(ModeNote::DriveNotSeen),
+        Some(WriteStanding { recorded_drive: Some(drive), .. }) if *drive != snapshot.live_drive => {
+            Some(ModeNote::DriveMismatch { live: snapshot.live_drive.clone(), recorded: drive.as_str().to_owned() })
         }
-        Some(WriteStanding { recorded_drive: Some(drive), .. }) if *drive != snapshot.live_drive => Some(format!(
-            "the account's token was last seen to reach drive {:?}, not drive {:?}, which config.toml records",
-            snapshot.live_drive,
-            drive.as_str()
-        )),
-        Some(_) if !konedrive_graph::oauth::grants_writes(&snapshot.granted_scopes) => Some("the account's sign-in does not allow changes".to_owned()),
+        Some(_) if !konedrive_graph::oauth::grants_writes(&snapshot.granted_scopes) => Some(ModeNote::SignInToWrite),
         Some(_) => None,
     };
     AccountHolds { is_signed_out, writes_refusal }

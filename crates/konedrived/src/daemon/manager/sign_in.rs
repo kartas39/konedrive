@@ -14,6 +14,7 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 use zbus::Connection;
 
 use super::{follow_mode, remove_account_dir, Account, AccountManager, ManagerError};
+use crate::account::account_trouble::SignInFailure;
 use crate::account::attempt::{self, Attempt, SignedIn};
 use crate::account::{claim_new, signed_in_sentence, AccountError, Refused};
 use crate::config::{AccountId, Mode};
@@ -71,7 +72,7 @@ impl AccountManager {
         let graph = attempt::graph(&self.options.endpoints).map_err(|e| ManagerError::Failed(e.to_string()))?;
         // Read-only, with Microsoft's account picker: a new account is any account.
         let oauth = attempt::oauth_client(http, self.options.endpoints.clone(), &client_id, Mode::ReadOnly);
-        let browser = Attempt::bind(oauth).await.map_err(ManagerError::Failed)?;
+        let browser = Attempt::bind(oauth).await.map_err(|failure| ManagerError::Failed(failure.to_string()))?;
         let (url, asked) = (browser.picker_url(), browser.scope());
         // Nothing refuses this one from here on: the one under way gives way to it.
         self.end_sign_in(None).await;
@@ -88,7 +89,7 @@ impl AccountManager {
             // The browser's request stays unanswered until the account is made or refused.
             let (signed_in, browser) = match browser.tokens(timeout, cancelled).await {
                 Ok((tokens, browser)) => {
-                    (attempt::confirm(tokens, &graph).await.map_err(|unconfirmed| unconfirmed.sentence()), Some(browser))
+                    (attempt::confirm(tokens, &graph).await, Some(browser))
                 }
                 Err(why) => (Err(why), None),
             };
@@ -138,7 +139,7 @@ impl AccountManager {
     /// Graph, and no other change of the accounts waits for it. What it finds may be old
     /// by the time the account is made; the guard is asked again in the write itself,
     /// which sees every drive recorded since.
-    async fn finish_sign_in(&self, number: u32, asked: &'static str, signed_in: Result<SignedIn, String>, browser: Option<Answer>) {
+    async fn finish_sign_in(&self, number: u32, asked: &'static str, signed_in: Result<SignedIn, SignInFailure>, browser: Option<Answer>) {
         let unsettled = match &signed_in {
             Ok(_) => self.siblings.settle().await,
             Err(_) => Vec::new(),
@@ -148,8 +149,8 @@ impl AccountManager {
         // With each end, the sentence the browser reads.
         let (end, sentence) = match signed_in {
             // Not reached: a wait that was cancelled is under way no longer.
-            Err(why) if why.is_empty() => (End { outcome: CANCELLED, message: why, account: None }, String::new()),
-            Err(why) => (End::failed(why.clone()), why),
+            Err(SignInFailure::Cancelled) => (End { outcome: CANCELLED, message: String::new(), account: None }, String::new()),
+            Err(why) => (End::failed(why.to_string()), why.to_string()),
             Ok(signed_in) => match self.make_signed_in(&connection, &signed_in, asked, &unsettled).await {
                 Ok(account) => {
                     let label = account.account.state().get().label;
@@ -158,10 +159,10 @@ impl AccountManager {
                     (End { outcome: SIGNED_IN, message: label, account: Some(account.path.clone()) }, sentence)
                 }
                 Err(refused) => {
-                    let sentence = refused.sentence();
+                    let sentence = refused.to_string();
                     let end = match refused {
                         Refused::AlreadyConnected { id, label } => End { outcome: ALREADY_ADDED, message: label, account: account_path(&id) },
-                        Refused::Other(why) => End::failed(why),
+                        _ => End::failed(sentence.clone()),
                     };
                     (end, sentence)
                 }
@@ -212,19 +213,19 @@ impl AccountManager {
                     remove_account_dir(&paths.dir);
                 }
                 self.siblings.remove(&entry.id);
-                return Err(Refused::Other(e.to_string()));
+                return Err(Refused::NotMade { detail: e.to_string() });
             }
         };
         if let Err(e) = account.account.start_signed_in(signed_in, asked).await {
             self.unmake(&account, connection, false).await;
-            return Err(Refused::Other(e));
+            return Err(e);
         }
         follow_mode(&account).await;
         // Listed before it is on the bus, as an account `add` makes is.
         self.list(Arc::clone(&account));
         if let Err(e) = self.export(connection, &account).await {
             self.unmake(&account, connection, true).await;
-            return Err(Refused::Other(format!("cannot put the account on the bus: {e}")));
+            return Err(Refused::NotOnBus { detail: e.to_string() });
         }
         // The name and the quota come after the account does.
         let service = Arc::clone(&account.account);

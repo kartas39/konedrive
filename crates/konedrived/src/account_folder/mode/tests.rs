@@ -3,6 +3,7 @@ use std::sync::Arc;
 use konedrive_graph::drive::DriveQuota;
 
 use super::*;
+use crate::account::state::ModeNote;
 use crate::account::AccountFolder;
 use crate::account_folder::staged_folder::{make_kept_parts, make_service, publish_running_view, read_sync, stage_folder};
 use crate::account_folder::testing::parts;
@@ -29,35 +30,31 @@ fn standing(mode: Mode, recorded_drive: Option<&str>) -> WriteStanding {
 #[test]
 fn what_of_the_account_holds_the_sending_is_the_first_cause_that_holds() {
     let read_write_d1 = standing(Mode::ReadWrite, Some("D1"));
-    // (the snapshot, what config.toml says, signed out, what the refusal says)
-    let cases: [(AccountSnapshot, Option<WriteStanding>, bool, Option<&str>); 11] = [
+    // The recorded drive is said as a drive id is kept: one spelling whatever the case of its letters.
+    let mismatch = || Some(ModeNote::DriveMismatch { live: "D9".into(), recorded: "d1".into() });
+    // (the snapshot, what config.toml says, signed out, the refusal)
+    let cases: [(AccountSnapshot, Option<WriteStanding>, bool, Option<ModeNote>); 11] = [
         (snapshot(SignInState::SignedIn, READ_WRITE, "D1"), Some(read_write_d1.clone()), false, None),
         (snapshot(SignInState::SignedOut, "", ""), Some(standing(Mode::ReadOnly, None)), true, None),
         (snapshot(SignInState::SigningIn, READ_WRITE, "D1"), Some(read_write_d1.clone()), true, None),
-        (snapshot(SignInState::SignedIn, READ_WRITE, "D1"), None, false, Some("config.toml cannot be read")),
+        (snapshot(SignInState::SignedIn, READ_WRITE, "D1"), None, false, Some(ModeNote::ConfigUnreadable)),
         // A read-only account: nothing of it refuses, whatever else is amiss.
         (snapshot(SignInState::SignedIn, READ, ""), Some(standing(Mode::ReadOnly, None)), false, None),
         (snapshot(SignInState::SignedIn, READ, "D9"), Some(standing(Mode::ReadOnly, Some("D1"))), false, None),
-        (snapshot(SignInState::SignedIn, READ_WRITE, "D1"), Some(standing(Mode::ReadWrite, None)), false, Some("records no drive")),
+        (snapshot(SignInState::SignedIn, READ_WRITE, "D1"), Some(standing(Mode::ReadWrite, None)), false, Some(ModeNote::NoDriveRecorded)),
         // The drive not seen yet is said as that, not as a drive "" that differs.
-        (snapshot(SignInState::SignedIn, READ_WRITE, ""), Some(read_write_d1.clone()), false, Some("has not been seen yet")),
-        (snapshot(SignInState::SignedIn, READ_WRITE, "D9"), Some(read_write_d1.clone()), false, Some("\"D9\"")),
-        (snapshot(SignInState::SignedIn, READ, "D1"), Some(read_write_d1.clone()), false, Some("does not allow changes")),
+        (snapshot(SignInState::SignedIn, READ_WRITE, ""), Some(read_write_d1.clone()), false, Some(ModeNote::DriveNotSeen)),
+        (snapshot(SignInState::SignedIn, READ_WRITE, "D9"), Some(read_write_d1.clone()), false, mismatch()),
+        (snapshot(SignInState::SignedIn, READ, "D1"), Some(read_write_d1.clone()), false, Some(ModeNote::SignInToWrite)),
         // Another drive comes before a grant that cannot write: signing in again cannot cure it.
-        (snapshot(SignInState::SignedIn, READ, "D9"), Some(read_write_d1.clone()), false, Some("\"D9\"")),
+        (snapshot(SignInState::SignedIn, READ, "D9"), Some(read_write_d1.clone()), false, mismatch()),
     ];
     for (snapshot, standing, is_signed_out, refusal) in cases {
         let holds = decide_account_holds(&snapshot, standing.as_ref());
         let said = format!("{:?} {:?} {:?} {standing:?}: {holds:?}", snapshot.state, snapshot.granted_scopes, snapshot.live_drive);
         assert_eq!(holds.is_signed_out, is_signed_out, "{said}");
-        match refusal {
-            None => assert_eq!(holds.writes_refusal, None, "{said}"),
-            Some(words) => assert!(holds.writes_refusal.as_deref().is_some_and(|why| why.contains(words)), "{said}"),
-        }
+        assert_eq!(holds.writes_refusal, refusal, "{said}");
     }
-    let mismatch = decide_account_holds(&snapshot(SignInState::SignedIn, READ_WRITE, "D9"), Some(&read_write_d1)).writes_refusal.unwrap();
-    // The recorded drive is said as a drive id is kept: one spelling whatever the case of its letters.
-    assert!(mismatch.contains("\"D9\"") && mismatch.contains("\"d1\""), "both drives are named: {mismatch}");
 }
 
 /// The account switches to read-only while the folder's sync does not run but its mount is

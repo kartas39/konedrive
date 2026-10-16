@@ -258,7 +258,7 @@ fn every_entry_that_is_not_blocked_is_paused_while_the_account_is() {
     // An item the check at start left, and a faulty one, keep their word too.
     assert_eq!(decide_queue_state(&entry(changed_file(), waiting(WaitReason::StartUpCheck)), &paused), Some(QueueState::Waiting));
     // No other hold changes a word.
-    for hold in [SendingHold::Stopping, SendingHold::SignedOut, SendingHold::WritesNotAllowed { reason: "no".into() }, SendingHold::Throttled { until: 900 }, SendingHold::FirstListingNotEnded] {
+    for hold in [SendingHold::Stopping, SendingHold::SignedOut, SendingHold::WritesNotAllowed { reason: crate::account::state::ModeNote::SignInToWrite }, SendingHold::Throttled { until: 900 }, SendingHold::FirstListingNotEnded] {
         assert_eq!(decide_queue_state(&entry(changed_file(), None), &running(Some(hold))), Some(QueueState::Ready));
     }
 }
