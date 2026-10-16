@@ -137,7 +137,7 @@ impl Down {
     }
 
     /// What a folder that only waits waits for, for a refusal that has to say why the
-    /// folder is not up; `None` when it is down for a reason of its own ([`why`](Self::why)).
+    /// folder is not up; `None` when it is down for a reason of its own ([`trouble`](Self::trouble)).
     pub(crate) fn waits_for(&self) -> Option<&'static str> {
         match self {
             Down::NotYetUp => Some("it is being brought up"),
