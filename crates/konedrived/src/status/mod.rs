@@ -1,7 +1,9 @@
 pub mod activity;
+pub mod folder_trouble;
 pub(crate) mod overall;
 pub(crate) mod report;
 pub mod snapshot;
+pub(crate) mod sync_trouble;
 pub(crate) mod space;
 pub(crate) mod throttle_wait;
 pub(crate) mod totals;

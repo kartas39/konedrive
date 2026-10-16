@@ -475,7 +475,7 @@ async fn a_next_link_of_this_cycle_that_onedrive_refuses_fails_the_cycle_and_is_
 
     assert!(matches!(failed, Err(CycleError::Offline(_))), "{failed:?}");
     let trouble = folder.state.get().cycle.sync_trouble.expect("the trouble is said");
-    assert!(!trouble.blocking);
+    assert!(!trouble.blocking());
     assert_eq!(folder.listing_under_way().expect("the listing is under way").next_link, Some(folder.page_link(2)));
 
     folder.forget_requests().await;
@@ -649,7 +649,7 @@ async fn a_drive_that_is_not_the_folders_stops_the_cycle_before_anything_is_list
     let refused = cycle.run(&CancellationToken::new()).await;
 
     assert!(matches!(&refused, Err(CycleError::OtherAccount(drive)) if drive == DRIVE_ID), "{refused:?}");
-    assert!(state.get().cycle.sync_trouble.is_some_and(|trouble| trouble.blocking));
+    assert!(state.get().cycle.sync_trouble.is_some_and(|trouble| trouble.blocking()));
     assert_eq!(graph.with(|cloud| cloud.count("GET", "delta")), 0);
 }
 
@@ -803,7 +803,7 @@ async fn a_drive_another_account_has_recorded_is_not_listed_into_this_folder() {
     let refused = cycle.run(&CancellationToken::new()).await;
 
     assert!(matches!(&refused, Err(CycleError::DriveTaken(label)) if label == "Other"), "{refused:?}");
-    assert!(folder.state.get().cycle.sync_trouble.is_some_and(|trouble| trouble.blocking));
+    assert!(folder.state.get().cycle.sync_trouble.is_some_and(|trouble| trouble.blocking()));
     assert_eq!(folder.graph.with(|cloud| cloud.count("GET", "delta")), 0);
     assert_eq!(record.store.account(&record.account).expect("the account").drive_id, None);
 }

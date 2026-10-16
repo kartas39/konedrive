@@ -134,3 +134,9 @@ pub(super) async fn end_running_sync(service: &SyncService) {
     service.view.send_replace(View::default());
     tokio::task::spawn_blocking(move || drop(kept)).await.expect("the parts are dropped");
 }
+
+/// What the folders of the tests ran into, where any trouble does: a store that failed,
+/// "/home/u/OneDrive is not synced: the cause".
+pub(crate) fn the_cause() -> crate::status::folder_trouble::FolderTrouble {
+    crate::status::folder_trouble::FolderTrouble::StoreFailed { path: "/home/u/OneDrive".into(), detail: "the cause".into() }
+}

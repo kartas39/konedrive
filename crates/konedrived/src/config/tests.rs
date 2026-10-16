@@ -220,12 +220,12 @@ id = "R7"
     for ((account, held), expected) in config.accounts.iter().zip(&holds).zip(expected) {
         match (held, expected) {
             (None, None) => {}
-            (Some(why), Some(words)) => assert!(why.contains(words), "{}: {why}", account.label),
+            (Some(why), Some(words)) => assert!(why.to_string().contains(words), "{}: {why}", account.label),
             _ => panic!("{}: held {held:?}, expected {expected:?}", account.label),
         }
     }
     assert_eq!(
-        holds[6].as_deref(),
+        holds[6].as_ref().map(ToString::to_string).as_deref(),
         Some("its id \"my-account\" is not 12 lowercase hexadecimal characters"),
         "the sentence Accounts.LastError says, with the id as plain quoted text"
     );

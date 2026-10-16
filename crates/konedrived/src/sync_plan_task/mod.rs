@@ -796,7 +796,7 @@ impl SyncPlanTask {
         parts.state.update_if_changed(|state| state.transfers.disk_space_shortage = choice.shortage);
         // TODO: wording
         match (before, choice.shortage) {
-            (None, Some(shortage)) => tracing::warn!("pinned files of {} are not downloaded for lack of disk space: {}", parts.folder.display(), shortage.text()),
+            (None, Some(shortage)) => tracing::warn!("pinned files of {} are not downloaded for lack of disk space: {}", parts.folder.display(), shortage),
             (Some(_), None) => tracing::info!("no pinned file of {} waits for disk space any more", parts.folder.display()),
             (None, None) | (Some(_), Some(_)) => {}
         }

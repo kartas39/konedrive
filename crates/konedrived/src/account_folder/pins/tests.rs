@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use super::*;
 use crate::account_folder::folder::{Sync, View, Why};
-use crate::account_folder::staged_folder::{make_kept_parts, make_service, stage_folder};
+use crate::account_folder::staged_folder::{make_kept_parts, make_service, stage_folder, the_cause};
 use crate::mount::item_fixture::ItemFixture;
 
 /// The scene's end: the view and the folder let go of the mount, which is dropped where a
@@ -75,7 +75,7 @@ async fn a_pin_needs_a_folder_and_its_mount() {
     let (service, _clock) = make_service();
     assert!(matches!(service.pin(&["/f/a.txt".into()]).await, Err(SyncError::NoRoot)));
     let folder = tempfile::tempdir().unwrap();
-    stage_folder(&service, folder.path(), Sync::Stopped(Why::CannotStart("it cannot".into())), None).await;
+    stage_folder(&service, folder.path(), Sync::Stopped(Why::CannotStart(the_cause())), None).await;
     let refused = service.pin(&[folder.path().join("a.txt")]).await.unwrap_err();
-    assert!(matches!(&refused, SyncError::NotUp(why) if why.contains("it cannot")), "{refused:?}");
+    assert!(matches!(&refused, SyncError::NotUp(why) if why.contains("the cause")), "{refused:?}");
 }

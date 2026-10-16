@@ -11,8 +11,8 @@ use serde::Deserialize;
 use crate::config::atomic::write_atomic;
 use crate::config::store::write_config;
 use crate::config::{
-    AccountConfig, AccountId, Config, ConfigError, ConfigStore, DriveId, HoldSettings, Origin, Paths, RootConfig, CONFIG_VERSION,
-    MIGRATED_LABEL,
+    AccountConfig, AccountId, Config, ConfigError, ConfigStore, ConfigTrouble, DriveId, HoldSettings, Origin, Paths, RootConfig,
+    CONFIG_VERSION, MIGRATED_LABEL,
 };
 
 /// `config.toml`, version 1: no `config_version`, one account, one folder. Only read.
@@ -171,9 +171,7 @@ pub fn finish_file_moves(store: &ConfigStore, paths: &Paths) {
             Err(ConfigError::Write(failed.join("; ")))
         };
         if let Err(e) = done {
-            let message = format!("moving the files of account {:?} failed: {e}", account.label);
-            tracing::error!("{message}");
-            store.note_error(message);
+            store.note_trouble(ConfigTrouble::FilesNotMoved { label: account.label.clone(), detail: e.to_string() });
         }
     }
 }
@@ -201,11 +199,7 @@ pub fn move_hold_settings(store: &ConfigStore) {
              pause_on_metered = {pause_on_metered}, on_battery = {:?}",
             on_battery.as_str()
         ),
-        Err(e) => {
-            let message = format!("moving the accounts' pause_on_metered and on_battery failed: {e}");
-            tracing::error!("{message}");
-            store.note_error(message);
-        }
+        Err(e) => store.note_trouble(ConfigTrouble::HoldSettingsNotMoved { detail: e.to_string() }),
     }
 }
 

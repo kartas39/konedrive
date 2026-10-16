@@ -185,7 +185,7 @@ async fn end_kept_parts(kept: KeptFolderParts, mount_end: MountEnd) -> TakeDownO
 /// `files_interface`, the view's clone of the store): each holds the store open.
 ///
 /// It says nothing: the sentence the folder shows is the owner's
-/// (`account_folder::take_down::describe_take_down`, kept as `Why::TakenDown::cause` and
+/// (`FolderTrouble::TakenDown`, kept as `Why::TakenDown::cause` and
 /// published by the owner's `publish`, the one writer of it).
 ///
 /// In this order: the mount stopped (`ItemMount::stop`, off the runtime's threads: it

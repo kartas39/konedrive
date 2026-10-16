@@ -7,8 +7,8 @@ use std::sync::{Mutex, MutexGuard};
 use crate::config::atomic::write_atomic;
 use crate::config::migrate::V1Config;
 use crate::config::{
-    check_label, is_valid_client_id, AccountConfig, AccountId, Config, DriveId, Mode, OnBattery, Origin, Paths, RootConfig,
-    DEFAULT_CLIENT_ID,
+    check_label, is_valid_client_id, AccountConfig, AccountId, Config, ConfigTrouble, DriveId, Mode, OnBattery, Origin, Paths,
+    RootConfig, DEFAULT_CLIENT_ID,
 };
 
 /// Why a [`ConfigStore`] call changed nothing.
@@ -78,8 +78,9 @@ struct Inner {
     config: Config,
     /// Why the file could not be loaded; `Some` means poisoned.
     poisoned: Option<String>,
-    /// Trouble that belongs to no account: the poison, or a migration step that failed.
-    last_error: String,
+    /// Trouble that belongs to no account: the poison, an account not loaded, or a
+    /// migration step that failed, in the order they came.
+    troubles: Vec<ConfigTrouble>,
 }
 
 /// What `config.toml` holds.
@@ -146,8 +147,8 @@ impl ConfigStore {
                 tracing::warn!("{}: account {:?} is held: {why}", file.display(), account.label);
             }
         }
-        let last_error = poisoned.clone().unwrap_or_default();
-        Self { file, inner: Mutex::new(Inner { config, poisoned, last_error }) }
+        let troubles = poisoned.iter().map(|detail| ConfigTrouble::Unreadable { detail: detail.clone() }).collect();
+        Self { file, inner: Mutex::new(Inner { config, poisoned, troubles }) }
     }
 
     pub fn file(&self) -> &Path {
@@ -183,15 +184,13 @@ impl ConfigStore {
     /// `Accounts.LastError`: why the file could not be loaded, or which migration step
     /// failed. Empty when there is nothing.
     pub(crate) fn last_error(&self) -> String {
-        self.lock().last_error.clone()
+        self.lock().troubles.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")
     }
 
-    pub(crate) fn note_error(&self, message: String) {
-        let mut inner = self.lock();
-        if !inner.last_error.is_empty() {
-            inner.last_error.push_str("; ");
-        }
-        inner.last_error.push_str(&message);
+    /// Adds `trouble` to what `Accounts.LastError` says, and logs it.
+    pub(crate) fn note_trouble(&self, trouble: ConfigTrouble) {
+        tracing::error!("{trouble}");
+        self.lock().troubles.push(trouble);
     }
 
     /// The one way to change `config.toml`: under the store's lock, re-reads the file,

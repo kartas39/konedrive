@@ -44,15 +44,6 @@ impl Persisted {
     }
 }
 
-/// What is said of a recorded folder that nothing gives a root id for.
-pub(super) fn no_root_id(path: &std::path::Path) -> String {
-    format!(
-        "cannot bring up the sync folder {}: config.toml does not record its root id, \
-         and the folder carries none that can be read",
-        path.display()
-    )
-}
-
 impl SyncService {
     /// The root is "persisted, so it survives a restart" — with its id — as the account's
     /// `[accounts.root]`, through the one `ConfigStore`: every write re-reads

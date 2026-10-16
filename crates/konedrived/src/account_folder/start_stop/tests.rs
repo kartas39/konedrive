@@ -3,13 +3,13 @@ use std::path::Path;
 use konedrive_tree::RebuildLoss;
 
 use super::*;
-use crate::account_folder::staged_folder::{make_service, read_sync, stage_folder, START};
+use crate::account_folder::staged_folder::{make_service, read_sync, stage_folder, START, the_cause};
 use crate::account_folder::SyncError;
 
 const FOLDER: &str = "/home/u/OneDrive";
 
 fn taken_down(attempt: u32, next_try_at: Option<i64>) -> Sync {
-    Sync::Stopped(Why::TakenDown { cause: "the cause".into(), attempt, next_try_at })
+    Sync::Stopped(Why::TakenDown { cause: the_cause(), attempt, next_try_at })
 }
 
 fn refusals() -> [StartRefusal; 3] {
@@ -23,7 +23,7 @@ fn a_refused_try_after_a_take_down_keeps_the_cause_and_counts_the_try() {
         for refusal in refusals() {
             let own_try = TakeDownTry { attempt: tried_before + 1, started_at: START };
             let why = decide_refused_sync(&taken_down(tried_before, Some(START)), Some(own_try), &refusal, Path::new(FOLDER), START + 2);
-            assert_eq!(why, Why::TakenDown { cause: "the cause".into(), attempt: tried_before + 1, next_try_at: Some(START + 2 + wait) }, "{refusal:?}");
+            assert_eq!(why, Why::TakenDown { cause: the_cause(), attempt: tried_before + 1, next_try_at: Some(START + 2 + wait) }, "{refusal:?}");
         }
     }
 }
@@ -35,7 +35,7 @@ fn a_refused_refresh_of_a_taken_down_folder_leaves_its_count_and_its_next_try() 
             // The user's try carries the count as it was; a start that is no try at all changes nothing either.
             for user_try in [Some(TakeDownTry { attempt: 2, started_at: START + 10 }), None] {
                 let why = decide_refused_sync(&taken_down(2, next_try_at), user_try, &refusal, Path::new(FOLDER), START + 10);
-                assert_eq!(why, Why::TakenDown { cause: "the cause".into(), attempt: 2, next_try_at }, "{refusal:?}");
+                assert_eq!(why, Why::TakenDown { cause: the_cause(), attempt: 2, next_try_at }, "{refusal:?}");
             }
         }
     }
@@ -43,23 +43,28 @@ fn a_refused_refresh_of_a_taken_down_folder_leaves_its_count_and_its_next_try() 
 
 #[test]
 fn a_start_refused_for_no_drive_waits_for_the_account() {
-    for before in [Sync::Stopped(Why::NotStarted), Sync::Stopped(Why::Interrupted), Sync::Stopped(Why::CannotStart("earlier".into())), Sync::Stopped(Why::DriveNotKnown("earlier".into()))] {
+    for before in [Sync::Stopped(Why::NotStarted), Sync::Stopped(Why::Interrupted), Sync::Stopped(Why::CannotStart(the_cause())), Sync::Stopped(Why::DriveNotKnown(the_cause()))] {
         let why = decide_refused_sync(&before, None, &StartRefusal::DriveNotKnown, Path::new(FOLDER), START);
-        assert!(matches!(&why, Why::DriveNotKnown(said) if said.contains(FOLDER)), "{why:?}");
+        assert!(matches!(&why, Why::DriveNotKnown(said) if said.to_string().contains(FOLDER)), "{why:?}");
     }
 }
 
 #[test]
 fn a_folder_of_an_older_konedrive_says_to_remove_the_account_and_add_it_again() {
     let why = decide_refused_sync(&Sync::Stopped(Why::NotStarted), None, &StartRefusal::LegacyPlaceholders, Path::new(FOLDER), START);
-    assert!(matches!(&why, Why::CannotStart(said) if said.contains(FOLDER) && said.contains("older version") && said.contains("Remove this account and add it again")), "{why:?}");
+    assert_eq!(why, Why::CannotStart(FolderTrouble::LegacyPlaceholders { path: FOLDER.into() }));
 }
 
 #[test]
 fn any_other_refusal_of_a_folder_that_was_not_taken_down_is_said_with_its_cause() {
-    for (refusal, named) in [(StartRefusal::Store("the store is locked".into()), "the store is locked"), (StartRefusal::Mount("no fuse".into()), "no fuse")] {
+    let path = || std::path::PathBuf::from(FOLDER);
+    let cases = [
+        (StartRefusal::Store("the store is locked".into()), FolderTrouble::StoreFailed { path: path(), detail: "the store is locked".into() }),
+        (StartRefusal::Mount("no fuse".into()), FolderTrouble::MountFailed { path: path(), detail: "no fuse".into() }),
+    ];
+    for (refusal, trouble) in cases {
         let why = decide_refused_sync(&Sync::Stopped(Why::NotStarted), None, &refusal, Path::new(FOLDER), START);
-        assert!(matches!(&why, Why::CannotStart(said) if said.contains(FOLDER) && said.contains(named)), "{why:?}");
+        assert_eq!(why, Why::CannotStart(trouble), "{refusal:?}");
     }
 }
 
@@ -108,12 +113,12 @@ async fn a_refresh_of_a_taken_down_folder_that_is_refused_leaves_it_as_it_was() 
     assert!(matches!(&refused, SyncError::NotUp(why) if why.contains("the cause")), "{refused:?}");
     let (sync, take_down_try) = read_sync(&service, |folder| {
         let up = folder.up().expect("the folder is up");
-        (matches!(&up.sync, Sync::Stopped(Why::TakenDown { cause, attempt: 2, next_try_at: Some(due) }) if cause == "the cause" && *due == START + 1800), up.take_down_try)
+        (matches!(&up.sync, Sync::Stopped(Why::TakenDown { cause, attempt: 2, next_try_at: Some(due) }) if *cause == the_cause() && *due == START + 1800), up.take_down_try)
     })
     .await;
     assert!(sync, "the count and the next try are as they were");
     assert_eq!(take_down_try, None, "the user's try is over");
-    assert_eq!(service.last_error(), "the cause", "the trouble shown is the take-down's cause");
+    assert_eq!(service.last_error(), the_cause().to_string(), "the trouble shown is the take-down's cause");
 }
 
 /// A start that is refused says why as the folder's blocking trouble, and `Refresh()`

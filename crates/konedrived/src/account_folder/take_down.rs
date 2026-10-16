@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use super::folder::{Down, Is, Standing, Stopped, Sync, TakeDownTry, Why};
 use super::{SyncError, SyncService};
-use crate::mount::TakeDownCause;
+use crate::status::folder_trouble::FolderTrouble;
 use crate::sync_tasks::stop_order::TakeDownOutcome;
 
 impl SyncService {
@@ -205,20 +205,6 @@ pub(super) fn decide_retry_wait(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_secs(minutes * 60)
 }
 
-/// The sentence the folder shows while it is down for `cause`, with the folder's path and
-/// what the user can do ("sync now" tries at once). Pure.
-pub(super) fn describe_take_down(cause: &crate::mount::TakeDownCause, folder: &Path) -> String {
-    // TODO: wording
-    let what = match cause {
-        TakeDownCause::UndoFailed { path } => format!("a change of {} could not be recorded and could not be undone", path.display()),
-        TakeDownCause::BackingFileBehindRow { path } => format!("{} could not be made or cut on disk after the change was recorded", path.display()),
-    };
-    format!(
-        "the sync folder {} was stopped: {what}; konedrive checks the folder and starts it again by itself, and \"sync now\" tries at once",
-        folder.display()
-    )
-}
-
 /// Which try the next start by the owner is, after a fault took the mount down at `now`:
 /// one more than `last`'s, the try the taken-down sync was started as — but 1 when that
 /// start stayed up for [`STAYED_UP_AFTER`], and when the sync was no such try (`None`).
@@ -253,7 +239,7 @@ impl SyncService {
     /// the parts and the activity log detached, then
     /// `sync_tasks::stop_order::take_folder_down` over those parts, taken out of the
     /// record; the folder's sync is `Why::TakenDown` with the sentence of `cause`
-    /// ([`describe_take_down`]: the ONE maker of it, published by `publish` as the
+    /// (`FolderTrouble::TakenDown`, said by `crate::sentences`, published by `publish` as the
     /// folder's blocking trouble), the starts tried so far
     /// ([`decide_take_down_attempt`] of `Up::take_down_try`) and the time of the next try
     /// ([`decide_retry_wait`]; none when the store could not be closed); the desktop told to list the folder's
@@ -279,7 +265,7 @@ impl SyncService {
             };
             let root = up.record.root.clone();
             let tried = decide_take_down_attempt(up.take_down_try.take(), now).saturating_sub(1);
-            let said = describe_take_down(&cause, &root.path);
+            let said = FolderTrouble::TakenDown { path: root.path.clone(), cause };
             tracing::error!("{said}");
             up.sync = Sync::Stopped(Why::TakenDown { cause: said.clone(), attempt: tried, next_try_at: None });
             // Before the store is closed: the view and the bus let go of the parts (the record keeps none now), and
@@ -382,10 +368,7 @@ impl SyncService {
             Is::Down(record, _) => record.clone(),
             Is::Absent => return,
         };
-        let why = format!(
-            "bringing up the sync folder {} failed inside konedrive ({panic}); nothing is synced until it is brought up again",
-            record.root.path.display()
-        );
+        let why = FolderTrouble::BringUpPanicked { path: record.root.path.clone(), detail: panic.to_owned() };
         folder.is = Is::Down(record, Down::Failed { why });
     }
 }

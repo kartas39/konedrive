@@ -4,7 +4,7 @@ use std::sync::Arc;
 use futures_util::FutureExt;
 
 use super::*;
-use crate::account_folder::staged_folder::{make_kept_parts, make_service, read_sync, stage_folder, wait_for_folder};
+use crate::account_folder::staged_folder::{make_kept_parts, make_service, read_sync, stage_folder, wait_for_folder, the_cause};
 use crate::conditions::running::Clock;
 use crate::mount::item_fixture::ItemFixture;
 use crate::sync_tasks::start_order::StartRefusal;
@@ -84,13 +84,13 @@ async fn the_next_change_says_a_refusal_that_a_cut_start_left() {
 async fn a_refusal_left_by_a_cut_try_after_a_take_down_is_counted_and_keeps_the_cause() {
     let (service, clock) = make_service();
     let folder = tempfile::tempdir().unwrap();
-    stage_folder(&service, folder.path(), Sync::Stopped(Why::TakenDown { cause: "the cause".into(), attempt: 1, next_try_at: Some(clock.now()) }), None).await;
+    stage_folder(&service, folder.path(), Sync::Stopped(Why::TakenDown { cause: the_cause(), attempt: 1, next_try_at: Some(clock.now()) }), None).await;
     service.folder.write().await.up_mut().unwrap().take_down_try = Some(TakeDownTry { attempt: 2, started_at: clock.now() });
     assert!(service.sync_change.run(async { refused(StartRefusal::Mount("no".into())) }, || {}).now_or_never().is_none());
 
     let stopped = service.change().await;
     let up = stopped.folder().up().unwrap();
-    assert!(matches!(&up.sync, Sync::Stopped(Why::TakenDown { cause, attempt: 2, next_try_at: Some(due) }) if cause == "the cause" && *due == clock.now() + 30 * 60), "counted, and the next try due");
+    assert!(matches!(&up.sync, Sync::Stopped(Why::TakenDown { cause, attempt: 2, next_try_at: Some(due) }) if *cause == the_cause() && *due == clock.now() + 30 * 60), "counted, and the next try due");
     assert_eq!(up.take_down_try, None);
 }
 

@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
+use crate::status::folder_trouble::FolderTrouble;
+use crate::status::sync_trouble::{SyncTrouble, TroubleKind};
 use crate::status::totals;
 
 /// `LiveChanges` on the bus: how changes made in OneDrive reach this computer now.
@@ -109,7 +111,7 @@ pub struct FolderStatus {
     pub root_path: String,
     pub root_state: RootState,
     /// What the registration ran into.
-    pub last_error: String,
+    pub(crate) trouble: Option<FolderTrouble>,
     /// `Writable`: the folder's mount takes changes, and what is changed in the folder is
     /// uploaded now — its account is read-write and its plan's task runs. False from the
     /// moment a change of the folder tells its sync to stop.
@@ -222,26 +224,6 @@ impl SyncSnapshot {
     }
 }
 
-/// What the folder's sync last ran into. `blocking` trouble —
-/// signed out, another account, an unusable store — makes `RootState` read
-/// `error`; the rest (no network) is said in `LastError` and retried.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SyncTrouble {
-    pub(crate) text: String,
-    pub(crate) blocking: bool,
-    /// What kind of trouble it is: what `status::overall` decides by, never by `text`.
-    pub(crate) kind: TroubleKind,
-}
-
-/// The kinds of [`SyncTrouble`] that the account's overall state tells apart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TroubleKind {
-    /// OneDrive cannot be reached: the account reads offline when nothing else is wrong.
-    Unreachable,
-    /// Anything else.
-    Other,
-}
-
 /// What keeps the folder's changes from going. ONE writer: the plan's task, which writes
 /// it with every plan it publishes, from the hold that is shown (`SyncPlanTask::publish_round`:
 /// `SendingHold::WritesNotAllowed` and `SendingHold::Throttled`, each as the note of its name),
@@ -254,16 +236,6 @@ pub enum UploadQueueNote {
     Throttled(i64),
 }
 
-impl UploadQueueNote {
-    /// The note as `LastError` says it.
-    pub(crate) fn text(&self) -> String {
-        match self {
-            // The minute the wait is over in, never one already past when it ends.
-            Self::Throttled(until) => format!("OneDrive asked to slow down; uploads continue at {}", clock(until.div_euclid(60) * 60 + if until.rem_euclid(60) > 0 { 60 } else { 0 })),
-            Self::WritesNotAllowed(why) => format!("nothing is uploaded: {why}"),
-        }
-    }
-}
 
 /// The downloads of pinned files that wait for space on this computer's disk: how many
 /// and for how many bytes, with the free space of the filesystem the backing directory is
@@ -276,33 +248,6 @@ pub struct DiskSpaceShortage {
     pub(crate) reserve: u64,
 }
 
-impl DiskSpaceShortage {
-    /// The shortage as `LastError` says it.
-    pub(crate) fn text(&self) -> String {
-        let size = crate::status::activity::human_size;
-        // TODO: wording
-        format!(
-            "{} file(s) kept on this device wait for disk space: {} to download, {} free, {} GiB stay free",
-            self.count,
-            size(self.bytes),
-            size(self.free_space),
-            self.reserve >> 30
-        )
-    }
-}
-
-/// `at` (Unix seconds) as the clock on the wall shows it here, `HH:MM`.
-fn clock(at: i64) -> String {
-    let seconds = at as libc::time_t;
-    // SAFETY: `tm` is plain data that `localtime_r` fills in; both pointers are valid for
-    // the call and nothing keeps them after it.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    if unsafe { libc::localtime_r(&seconds, &mut tm) }.is_null() {
-        return "a later time".to_owned();
-    }
-    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
-}
-
 /// The problems of a folder that keeps running, in the order `LastError` says them and
 /// joined as it joins them: what the registration ran into, the sync's trouble, then the
 /// upload queue's note, then the pinned files that wait for disk space; `None` with none.
@@ -311,17 +256,16 @@ fn clock(at: i64) -> String {
 /// reach is all that is wrong — the kind the sync's trouble carries, and no other part
 /// saying anything.
 pub fn running_trouble(s: &SyncSnapshot) -> Option<(String, TroubleKind)> {
-    let upload_queue = s.upload_queue.note.as_ref().map(UploadQueueNote::text).unwrap_or_default();
-    let (sync, kind) = s.cycle.sync_trouble.as_ref().map_or(("", TroubleKind::Other), |t| (t.text.as_str(), t.kind));
-    let disk_space = s.transfers.disk_space_shortage.as_ref().map(DiskSpaceShortage::text).unwrap_or_default();
-    let alone = s.folder.last_error.is_empty() && upload_queue.is_empty() && disk_space.is_empty();
-    let text = joined([s.folder.last_error.as_str(), sync, upload_queue.as_str(), disk_space.as_str()]);
+    let kind = s.cycle.sync_trouble.as_ref().map_or(TroubleKind::Other, SyncTrouble::kind);
+    let alone = s.folder.trouble.is_none() && s.upload_queue.note.is_none() && s.transfers.disk_space_shortage.is_none();
+    let text = published_error(s);
     (!text.is_empty()).then(|| (text, if alone { kind } else { TroubleKind::Other }))
 }
 
-/// The parts that say something, joined as `LastError` joins its problems.
-fn joined<const N: usize>(parts: [&str; N]) -> String {
-    parts.into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(". ")
+/// The parts that say something, each by its sentence, joined as `LastError` joins its
+/// problems.
+fn joined<const N: usize>(parts: [Option<&dyn std::fmt::Display>; N]) -> String {
+    parts.into_iter().flatten().map(ToString::to_string).filter(|part| !part.is_empty()).collect::<Vec<_>>().join(". ")
 }
 
 /// `RootState` as published: the registration's state, unless the sync is blocked
@@ -330,7 +274,7 @@ fn joined<const N: usize>(parts: [&str; N]) -> String {
 /// A folder that is recorded and not up yet reads `waiting` while nothing is known to be
 /// wrong.
 pub fn published_state(s: &SyncSnapshot) -> &'static str {
-    let blocked = s.cycle.sync_trouble.as_ref().is_some_and(|t| t.blocking);
+    let blocked = s.cycle.sync_trouble.as_ref().is_some_and(SyncTrouble::blocking);
     match s.folder.root_state {
         RootState::Ready if blocked => "error",
         RootState::Ready if s.cycle.listing => "listing",
@@ -344,9 +288,12 @@ pub fn published_state(s: &SyncSnapshot) -> &'static str {
 /// said here, it stayed until a Forget, and a folder that
 /// ever had a conflict read as trouble for good.
 pub fn published_error(s: &SyncSnapshot) -> String {
-    let upload_queue = s.upload_queue.note.as_ref().map(UploadQueueNote::text).unwrap_or_default();
-    let disk_space = s.transfers.disk_space_shortage.as_ref().map(DiskSpaceShortage::text).unwrap_or_default();
-    joined([s.folder.last_error.as_str(), s.cycle.sync_trouble.as_ref().map_or("", |t| t.text.as_str()), upload_queue.as_str(), disk_space.as_str()])
+    joined([
+        s.folder.trouble.as_ref().map(|t| t as &dyn std::fmt::Display),
+        s.cycle.sync_trouble.as_ref().map(|t| t as &dyn std::fmt::Display),
+        s.upload_queue.note.as_ref().map(|t| t as &dyn std::fmt::Display),
+        s.transfers.disk_space_shortage.as_ref().map(|t| t as &dyn std::fmt::Display),
+    ])
 }
 
 /// Shared, observable sync state (see `account::state::StateHandle`, the same

@@ -1,7 +1,9 @@
 use konedrive_dbus::overall::State;
 
 use super::*;
-use crate::status::snapshot::{UploadQueueNote, RootState, SyncTrouble};
+use crate::status::folder_trouble::FolderTrouble;
+use crate::status::snapshot::{RootState, UploadQueueNote};
+use crate::status::sync_trouble::{CycleError, SyncTrouble};
 
 /// A folder that is up and at rest: `up-to-date` for an account that is signed in.
 fn healthy() -> SyncSnapshot {
@@ -23,12 +25,26 @@ fn with(change: impl FnOnce(&mut SyncSnapshot)) -> Overall {
     of(&s)
 }
 
-fn unreachable(text: &str) -> Option<SyncTrouble> {
-    Some(SyncTrouble { text: text.into(), blocking: false, kind: TroubleKind::Unreachable })
+/// OneDrive out of reach, the request having run into `detail`: "cannot reach OneDrive
+/// (timed out); trying again" for "timed out".
+fn unreachable(detail: &str) -> Option<SyncTrouble> {
+    Some(SyncTrouble::Cycle(CycleError::Offline(detail.into())))
 }
 
-fn other(text: &str, blocking: bool) -> Option<SyncTrouble> {
-    Some(SyncTrouble { text: text.into(), blocking, kind: TroubleKind::Other })
+/// Trouble that stops the folder: a store that failed, its sentence `said`.
+fn blocking(said: &str) -> Option<SyncTrouble> {
+    Some(SyncTrouble::Cycle(CycleError::Store(said.into())))
+}
+
+/// Trouble that does not stop the folder: what OneDrive answered could not be written,
+/// "the folder could not be brought up to date: errno 5" for "errno 5".
+fn not_blocking(detail: &str) -> Option<SyncTrouble> {
+    Some(SyncTrouble::Cycle(CycleError::Apply(detail.into())))
+}
+
+/// The note of an account that may not write.
+fn may_not_write() -> UploadQueueNote {
+    UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into())
 }
 
 /// A reason with nothing said of trouble.
@@ -55,7 +71,7 @@ fn an_account_signing_in_is_offline() {
 #[test]
 fn an_account_not_signed_in_is_offline() {
     let mut s = healthy();
-    s.cycle.sync_trouble = other("signed out", true);
+    s.cycle.sync_trouble = blocking("signed out");
     assert_eq!(overall(SignInState::SignedOut, &s, 0), about(Reason::SignedOut, "signed out"));
     assert_eq!(Reason::SignedOut.state(), State::Offline);
 }
@@ -73,7 +89,7 @@ fn an_account_with_no_folder_is_offline() {
 #[test]
 fn an_account_that_cannot_reach_onedrive_is_offline_and_says_the_trouble() {
     let said = "cannot reach OneDrive (timed out); trying again";
-    assert_eq!(with(|s| s.cycle.sync_trouble = unreachable(said)), about(Reason::Unreachable, said));
+    assert_eq!(with(|s| s.cycle.sync_trouble = unreachable("timed out")), about(Reason::Unreachable, said));
     assert_eq!(Reason::Unreachable.state(), State::Offline);
 }
 
@@ -144,12 +160,12 @@ fn a_folder_at_rest_is_up_to_date() {
 #[test]
 fn unreachable_and_paused_is_paused() {
     let both = with(|s| {
-        s.cycle.sync_trouble = unreachable("cannot reach OneDrive (timed out); trying again");
+        s.cycle.sync_trouble = unreachable("timed out");
         s.pause.paused_until = Some(0);
     });
     assert_eq!(both, about(Reason::Paused, "cannot reach OneDrive (timed out); trying again"));
     let held = with(|s| {
-        s.cycle.sync_trouble = unreachable("cannot reach OneDrive (timed out); trying again");
+        s.cycle.sync_trouble = unreachable("timed out");
         s.pause.held_back = "power-saver".into();
     });
     assert_eq!(held, about(Reason::HeldBack, "cannot reach OneDrive (timed out); trying again"));
@@ -170,7 +186,7 @@ fn a_listing_and_a_pause_is_paused() {
 fn a_listing_with_trouble_that_does_not_stop_it_is_listing() {
     let listing = with(|s| {
         s.cycle.listing = true;
-        s.cycle.sync_trouble = unreachable("cannot reach OneDrive (timed out); trying again");
+        s.cycle.sync_trouble = unreachable("timed out");
     });
     assert_eq!(listing, plain(Reason::Listing));
     // What needs the user is counted while listing too.
@@ -183,14 +199,17 @@ fn a_listing_with_trouble_that_does_not_stop_it_is_listing() {
 
 // --- Nothing is decided by a sentence ---
 
-/// Out of reach is the kind the trouble carries: a reworded sentence is offline all the
-/// same, and the old sentence under another kind is not.
+/// Out of reach is the case the trouble is: whatever the request ran into is offline all
+/// the same, and the words of out of reach in another case are not.
 #[test]
-fn unreachable_is_decided_by_the_kind_and_not_by_the_sentence() {
-    let reworded = "OneDrive does not answer; the next try is in a minute";
-    assert_eq!(with(|s| s.cycle.sync_trouble = unreachable(reworded)), about(Reason::Unreachable, reworded));
-    let old_words = "cannot reach OneDrive (timed out); trying again";
-    assert_eq!(with(|s| s.cycle.sync_trouble = other(old_words, false)), about(Reason::Trouble, old_words));
+fn unreachable_is_decided_by_the_case_and_not_by_the_sentence() {
+    let detail = "OneDrive does not answer";
+    assert_eq!(
+        with(|s| s.cycle.sync_trouble = unreachable(detail)),
+        about(Reason::Unreachable, "cannot reach OneDrive (OneDrive does not answer); trying again")
+    );
+    let words = "cannot reach OneDrive (timed out); trying again";
+    assert_eq!(with(|s| s.cycle.sync_trouble = not_blocking(words)), about(Reason::Trouble, &format!("the folder could not be brought up to date: {words}")));
 }
 
 #[test]
@@ -202,13 +221,13 @@ fn a_folder_not_up_yet_is_starting() {
 
 #[test]
 fn a_folder_stopped_on_an_error_says_everything_last_error_says() {
-    let blocked = with(|s| s.cycle.sync_trouble = other("signed out: sign in again", true));
+    let blocked = with(|s| s.cycle.sync_trouble = blocking("signed out: sign in again"));
     assert_eq!(blocked, about(Reason::Stopped, "signed out: sign in again"));
 
     // A folder that could not be brought up: what the registration ran into.
     let mut s = healthy();
     s.folder.root_state = RootState::Error;
-    s.folder.last_error = "cannot bring up the sync folder".into();
+    s.folder.trouble = Some(FolderTrouble::NoRootId { path: "/home/u/OneDrive".into() });
     let stopped = of(&s);
     assert_eq!(stopped.reason, Reason::Stopped);
     assert_eq!(stopped.trouble, published_error(&s));
@@ -221,14 +240,14 @@ fn a_folder_stopped_on_an_error_says_everything_last_error_says() {
 #[test]
 fn trouble_that_does_not_stop_the_folder_is_a_warning_that_says_it() {
     let said = "the folder could not be brought up to date: errno 5";
-    assert_eq!(with(|s| s.cycle.sync_trouble = other(said, false)), about(Reason::Trouble, said));
+    assert_eq!(with(|s| s.cycle.sync_trouble = not_blocking("errno 5")), about(Reason::Trouble, said));
     // Every part of `LastError` that is a problem of a running folder counts, joined as
     // `LastError` joins them.
     let all = with(|s| {
-        s.cycle.sync_trouble = other(said, false);
-        s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()));
+        s.cycle.sync_trouble = not_blocking("errno 5");
+        s.upload_queue.note = Some(may_not_write());
     });
-    assert_eq!(all, about(Reason::Trouble, &format!("{said}. {}", UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()).text())));
+    assert_eq!(all, about(Reason::Trouble, &format!("{said}. {}", may_not_write().to_string())));
     assert_eq!(Reason::Trouble.state(), State::Warning);
 }
 
@@ -243,7 +262,7 @@ fn the_first_rule_that_holds_decides() {
         (Reason::Paused, |s| s.pause.paused_until = Some(0)),
         (Reason::HeldBack, |s| s.pause.held_back = "metered".into()),
         (Reason::Throttled, |s| s.transfers.throughput.retry_after = 300),
-        (Reason::Trouble, |s| s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()))),
+        (Reason::Trouble, |s| s.upload_queue.note = Some(may_not_write())),
         (Reason::Transferring, |s| s.upload_queue.pending_count = 1),
         (Reason::UpToDate, |_| {}),
     ];
@@ -259,7 +278,7 @@ fn the_first_rule_that_holds_decides() {
     for (_, change) in &rules {
         change(&mut s);
     }
-    s.cycle.sync_trouble = other("the tree store: disk I/O error", true);
+    s.cycle.sync_trouble = blocking("the tree store: disk I/O error");
     assert_eq!(of(&s).reason, Reason::Stopped);
     s.folder.root_state = RootState::Waiting;
     s.cycle.sync_trouble = None;
@@ -276,12 +295,12 @@ fn the_first_rule_that_holds_decides() {
 fn a_pause_and_trouble() {
     let paused = with(|s| {
         s.pause.paused_until = Some(0);
-        s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()));
+        s.upload_queue.note = Some(may_not_write());
     });
-    assert_eq!(paused, about(Reason::Paused, &UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()).text()));
+    assert_eq!(paused, about(Reason::Paused, &may_not_write().to_string()));
     let stopped = with(|s| {
         s.pause.paused_until = Some(0);
-        s.cycle.sync_trouble = other("signed out", true);
+        s.cycle.sync_trouble = blocking("signed out");
     });
     assert_eq!(stopped, about(Reason::Stopped, "signed out"));
 }
@@ -289,24 +308,24 @@ fn a_pause_and_trouble() {
 #[test]
 fn unreachable_with_other_trouble_is_a_warning() {
     let both = with(|s| {
-        s.cycle.sync_trouble = unreachable("cannot reach OneDrive (timed out); trying again");
-        s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()));
+        s.cycle.sync_trouble = unreachable("timed out");
+        s.upload_queue.note = Some(may_not_write());
     });
-    assert_eq!(both, about(Reason::Trouble, &format!("cannot reach OneDrive (timed out); trying again. {}", UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()).text())));
+    assert_eq!(both, about(Reason::Trouble, &format!("cannot reach OneDrive (timed out); trying again. {}", may_not_write().to_string())));
 }
 
 /// The sentence of the trouble is the folder's alone: it is there under every reason.
 #[test]
 fn the_sentences_are_published_under_every_reason() {
     let mut s = healthy();
-    s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()));
+    s.upload_queue.note = Some(may_not_write());
     s.local.conflict_count = 1;
-    let said = |reason| about(reason, &UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()).text());
+    let said = |reason| about(reason, &may_not_write().to_string());
     assert_eq!(of(&s), said(Reason::Conflicts));
     assert_eq!(overall(SignInState::SignedOut, &s, 0), said(Reason::SignedOut));
 
     // A folder that has stopped says everything `LastError` says.
-    s.cycle.sync_trouble = other("the tree store: disk I/O error", true);
+    s.cycle.sync_trouble = blocking("the tree store: disk I/O error");
     let stopped = of(&s);
     assert_eq!((stopped.reason, stopped.trouble), (Reason::Stopped, published_error(&s)));
 }
@@ -317,13 +336,13 @@ fn the_sentences_are_published_under_every_reason() {
 fn no_trouble_is_published_while_listing_or_starting() {
     let listing = with(|s| {
         s.cycle.listing = true;
-        s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()));
+        s.upload_queue.note = Some(may_not_write());
         s.local.conflict_count = 1;
     });
     assert_eq!(listing, plain(Reason::Conflicts));
     let starting = with(|s| {
         s.folder.root_state = RootState::Waiting;
-        s.upload_queue.note = Some(UploadQueueNote::WritesNotAllowed("the sign-in cannot write".into()));
+        s.upload_queue.note = Some(may_not_write());
     });
     assert_eq!(starting, plain(Reason::Starting));
 }
