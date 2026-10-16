@@ -120,8 +120,9 @@ fn thumbnail_type_index() -> String {
 ///   `own_upload_contents_item_gone` that takes it with the item's row
 ///   ([`crate::item_store`]'s `own_upload_content`, which has its schema).
 /// - `thumbnail_marks`: which content of a file, at which path, a thumbnail was last made
-///   for, and whether one was written, by local item id, and the trigger `thumbnail_marks_item_gone` that takes it with
-///   the item's row ([`crate::item_store`]'s `thumbnail_marks`, which has its schema).
+///   for, and whether one was written, by local item id, and the trigger
+///   `thumbnail_marks_item_gone` that takes it with the item's row ([`crate::item_store`]'s
+///   `thumbnail_marks`, which has its schema).
 /// - `pins`: the items that carry a mark of their own, by OneDrive item id
 ///   ([`crate::item_store`]'s `item_pins`): a pin (`is_kept` 1), or an exception from the
 ///   pin of a directory above (`is_kept` 0).

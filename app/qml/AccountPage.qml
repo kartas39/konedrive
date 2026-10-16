@@ -241,7 +241,7 @@ FormCard.FormCardPage {
             readonly property bool on: page.sync !== null && page.sync.thumbnails
 
             text: i18n("Download thumbnails")
-            description: i18n("Dolphin shows previews of images and videos in OneDrive without downloading them.")
+            description: i18n("Dolphin shows previews of images, videos, PDFs and office documents in OneDrive without downloading them.")
             checked: on
             // The inner switch writes `checked` back, ending the binding: kept in step here.
             onOnChanged: checked = on

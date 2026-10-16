@@ -362,7 +362,7 @@ FormCard.FormCardPage {
         wrapMode: Text.Wrap
         visible: page.sync !== null
         opacity: 0.7
-        text: page.sync ? i18ncp("@info thumbnails of images and videos being downloaded now", "%1 thumbnail downloading", "%1 thumbnails downloading", page.sync.thumbnailDownloads) : ""
+        text: page.sync ? i18ncp("@info thumbnails of images, videos and documents being downloaded now", "%1 thumbnail downloading", "%1 thumbnails downloading", page.sync.thumbnailDownloads) : ""
     }
 
     FormCard.FormHeader {

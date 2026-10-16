@@ -166,7 +166,7 @@ pub const NOTHING_TO_LIFT: &str = "No account is paused by itself: nothing to li
 /// `sync thumbnails`' answer.
 pub fn thumbnails_text(on: bool) -> &'static str {
     if on {
-        "Thumbnails: on — OneDrive's previews of images and videos are downloaded."
+        "Thumbnails: on — OneDrive's previews of images, videos, PDFs and office documents are downloaded."
     } else {
         "Thumbnails: off — Dolphin downloads a cloud-only file in full to show its preview while its previews are on."
     }
