@@ -290,6 +290,48 @@ fn a_refresh_reads_the_quota_once_and_a_quota_read_by_another_is_not_read_again(
     });
 }
 
+/// A change OneDrive refused as not allowed (`403`) is kept back through every wake but a
+/// refresh: the refresh forgets the refusal, and the next plan sends the change again.
+#[test]
+fn a_refresh_forgets_what_was_not_allowed_and_another_wake_keeps_it() {
+    use konedrive_tree::{FactStanding, Refusal, RefusedVersion};
+    let task_fixture = TaskFixture::new();
+    let (fixture, task, stop) = (&task_fixture.fixture, Arc::clone(&task_fixture.task), CancellationToken::new());
+    let file = fixture.make_own_file("view-only.txt", b"mine");
+    let (id, stamp, local) = (file.local_item_id, file.unsent_since, file.local.clone().expect("shown"));
+    fixture.write_rows(move |store| {
+        let refusal = Refusal { reason: Reason::Forbidden, version: RefusedVersion::Shown(local) };
+        assert_eq!(store.step_memory().remember_refusal(id, stamp, &refusal)?, FactStanding::StillSaid);
+        Ok(())
+    });
+    let other_causes = [
+        WakeCause::LocalVersionWritten,
+        WakeCause::ListingPageWritten,
+        WakeCause::ListingEnded,
+        WakeCause::StepFinished,
+        WakeCause::UserAnswered,
+        WakeCause::QuotaRead,
+        WakeCause::SendingHoldChanged,
+        WakeCause::RequestRecordSettled,
+        WakeCause::NextCleaningTryChanged,
+    ];
+    fixture.runtime().block_on(async {
+        // What the next plan has of the file: whether its step is planned, and what it waits for.
+        let plan_file = async || {
+            let round = task.make_plan(task.gather_daemon_facts()).await.expect("the store is read");
+            let wait = round.plan.waits.iter().find(|wait| wait.item == id).map(|wait| wait.reason.clone());
+            (round.plan.steps.iter().any(|step| step.local_item_id() == id), wait)
+        };
+        assert_eq!(plan_file().await, (false, Some(WaitReason::User(Reason::Forbidden))), "the refusal is remembered");
+
+        task.apply_wake_causes(&other_causes.into(), &stop).await;
+        assert_eq!(plan_file().await, (false, Some(WaitReason::User(Reason::Forbidden))), "no other cause forgets it");
+
+        task.apply_wake_causes(&[WakeCause::RefreshAsked].into(), &stop).await;
+        assert_eq!(plan_file().await, (true, None), "the change is sent again");
+    });
+}
+
 /// The download of a pinned file of `size` bytes, of the item `number`.
 fn download_step(number: i64, size: u64) -> SyncStep {
     use konedrive_tree::{ContentPresence, ContentVersion, DriveId, ItemPlace, ItemVersion, ItemVersions, OneDriveItemId, OneDriveItemReference};

@@ -34,7 +34,8 @@
          what is unsent. -->
     <method name="Unregister"/>
     <!-- Asks OneDrive for changes now rather than within the minute, and
-         tries the changes waiting to be uploaded that are in backoff now.
+         tries the changes waiting to be uploaded that are in backoff now,
+         and once more those OneDrive refused as not allowed (forbidden).
          Reads the quota again (Account.QuotaRemaining, QuotaState, ...): with
          space again, a full OneDrive ends (UploadQueue.QuotaFull), and the
          files too big before go up once they fit.

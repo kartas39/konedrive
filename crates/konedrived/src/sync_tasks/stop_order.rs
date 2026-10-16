@@ -82,9 +82,11 @@ impl SyncTasks {
     }
 
     /// A refresh the user asked for: the plan's task is woken with
-    /// `WakeCause::RefreshAsked` — on which the task itself reads the quota, once, and
-    /// makes every next try due (`StepMemory::clear_next_tries` and its own tries; this
-    /// function reads and clears nothing) —
+    /// `WakeCause::RefreshAsked` — on which the task itself reads the quota, once,
+    /// forgets what OneDrive refused as not allowed
+    /// (`StepMemory::forget_refusals_for(&Reason::Forbidden)`) and makes every next try
+    /// due (`StepMemory::clear_next_tries` and its own tries; this function reads and
+    /// clears nothing) —
     /// and the listing is asked for a cycle (`ListingPollHandle::refresh`). The one way a
     /// refresh reaches a running sync: `Folder.Refresh()` calls nothing else of it.
     pub fn refresh(&self) {

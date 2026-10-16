@@ -39,6 +39,19 @@ fn not_uploaded_lists_reasons_then_the_files_of_per_file_ones() {
     assert_eq!(not_uploaded_text(&[], &[], "k"), "Everything here is uploaded or waits to be.\n");
 }
 
+/// `sync not-uploaded`: what OneDrive did not allow (`403`) is said as OneDrive's refusal,
+/// which a refresh tries again; nothing tells the person to sign in.
+#[test]
+fn not_uploaded_says_a_refresh_tries_again_what_onedrive_did_not_allow() {
+    let summary = vec![KeptBackReason { group: "one-action".to_owned(), reason: "forbidden".to_owned(), count: 2, bytes: 0 }];
+    let text = not_uploaded_text(&summary, &[], "konedrivectl");
+    assert_eq!(
+        text,
+        "Needs you: one action fixes them all:\n  2: OneDrive does not allow this change, for example in a folder shared with you to view only: a refresh tries it again.\n"
+    );
+    assert!(!text.to_lowercase().contains("sign in"), "{text}");
+}
+
 /// A sentence in brackets has no full stop before the bracket; a reason with no sentence is
 /// shown as stored, and as a heading keeps its colon.
 #[test]

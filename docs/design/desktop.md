@@ -78,7 +78,7 @@ No token is ever exposed through `Account`.
 |---|---|
 | `Register(s path)` | binds a folder to the account and brings it up; the refusals and their order are in [accounts.md](accounts.md) §7.1 |
 | `Unregister()` | Forget: the mount comes off, and the folder is a plain directory with what it holds on this computer ([accounts.md](accounts.md) §7.2). Never refused for unsent changes; a client warns first with `UploadQueue.UnsentCount` |
-| `Refresh()` | asks OneDrive for changes now, tries the changes in backoff now, and reads the quota again. A folder that is down after a failure is brought up first, and one whose sync could not start has it started. Refused `NotUp`, with why, when that fails and for a folder that only waits (`State` `waiting`) |
+| `Refresh()` | asks OneDrive for changes now, tries the changes in backoff now and once more those OneDrive refused as not allowed (`forbidden`), and reads the quota again. A folder that is down after a failure is brought up first, and one whose sync could not start has it started. Refused `NotUp`, with why, when that fails and for a folder that only waits (`State` `waiting`) |
 | `Skipped() → a(ssss)` | everything OneDrive has that the folder cannot hold: (path in OneDrive, reason, what keeps it here, where it is here) ([sync.md](sync.md) §5, §6) |
 | `FreeUpSpace() → (u files, t bytes)` | frees up every downloaded file that nothing holds ([mount.md](mount.md) §6): the files freed and their bytes. A file a pin keeps, a download is filling, or that holds an unsent change is left, and is not counted in the answer |
 | `Pause(u seconds)`, `Resume()` | the user's pause, for `seconds` or until `Resume` when 0 ([writes.md](writes.md) §6.3); `NoRoot` with no folder |

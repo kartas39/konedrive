@@ -29,8 +29,8 @@ pub(crate) enum WakeCause {
     StepFinished,
     /// The user answered: a pin set or taken off.
     UserAnswered,
-    /// A refresh was asked for, by the user or because the network is back: every next
-    /// try is due.
+    /// A refresh was asked for (`Folder.Refresh`): every next try is due, and what
+    /// OneDrive refused as not allowed is tried again.
     RefreshAsked,
     /// The quota was read: OneDrive may have space again, or none.
     QuotaRead,

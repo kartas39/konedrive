@@ -75,7 +75,8 @@ pub enum Reason {
     /// content: a failed try, tried again (`docs/design/writes.md` §4.7).
     Quota,
     /// `403`: OneDrive does not allow this change. Kept as a refusal for good until the
-    /// item changes or the account signs in again (`docs/design/sync.md` §7.5).
+    /// item changes, the account signs in again or a refresh is asked for
+    /// (`docs/design/sync.md` §7.5).
     Forbidden,
     /// `400`: `refused: <the service's message>`. Blocked.
     Refused(Option<String>),

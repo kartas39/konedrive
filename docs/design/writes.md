@@ -330,7 +330,7 @@ follows, the one place that counts tries ([sync.md](sync.md) §7).
 | `507`, `quotaLimitReached` | §4.7 |
 | `413` | the file is larger than OneDrive takes: a refusal for good (`too-large`), its session given up |
 | `400` | a refusal for good, with OneDrive's message |
-| `403` | a refusal for good (`forbidden`) |
+| `403` | a refusal for good (`forbidden`); sent once more after a sign-in or a refresh |
 | `423` | locked (co-authoring): tried again later |
 | `429`, `503` | a fragment: §4.3. Then, and for any other request, every step towards OneDrive of the folder waits (§6.2) |
 | the account signed out | all sending held until the sign-in |

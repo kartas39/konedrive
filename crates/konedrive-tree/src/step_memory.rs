@@ -439,7 +439,8 @@ impl StepMemory<'_> {
     }
 
     /// Every refusal for good whose reason is `reason`, whatever its detail, is forgotten:
-    /// the account signed in again, and what was not allowed may be now. How many.
+    /// the account signed in again, or the user asked for a refresh, and what was not
+    /// allowed may be now. How many.
     pub fn forget_refusals_for(&mut self, reason: &Reason) -> Result<usize, TreeError> {
         self.write(|tx| forget_refusals_for(tx, reason))
     }

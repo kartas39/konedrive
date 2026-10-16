@@ -46,7 +46,7 @@ pub const REASONS: &[ReasonText] = &[
     bare("name-not-utf8", "A name that is not valid UTF-8: rename it to upload it."),
     bare("too-large", "Larger than OneDrive takes."),
     bare("quota-exceeded", "OneDrive is full: free some space in OneDrive."),
-    bare("forbidden", "This sign-in does not allow uploads: sign in again."),
+    bare("forbidden", "OneDrive does not allow this change, for example in a folder shared with you to view only: a refresh tries it again."),
     detailed("refused", "Refused by OneDrive.", "OneDrive refused it: {detail}"),
     bare("locked", "Locked in OneDrive (open for co-authoring): tried again later."),
     as_stored("not-found"),
@@ -60,11 +60,8 @@ pub const REASONS: &[ReasonText] = &[
     bare("the upload session ended twice", "OneDrive ended the upload twice: tried again later."),
     detailed("not allowed now", "Uploads are not allowed now: it goes on when they are.", "Uploads are not allowed now: it goes on when they are ({detail})."),
     bare("blocked", INCOMPLETE),
-    // TODO: wording
     bare("not-read-on-disk", "KOneDrive could not read this on disk when it started: nothing of it is uploaded until it can be read at a start."),
-    // TODO: wording
     bare("being-checked", "Being checked: KOneDrive is asking OneDrive for the whole folder again, and goes on by itself."),
-    // TODO: wording
     bare("quiet-time", "Changed a moment ago: it goes up once it has been left alone for a moment."),
     bare("network", "OneDrive could not be reached: tried again later."),
     bare("local-error", "The local file could not be read: tried again later."),
