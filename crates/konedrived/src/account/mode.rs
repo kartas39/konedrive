@@ -1,5 +1,4 @@
 use super::*;
-use crate::account::attempt::Unconfirmed;
 
 impl AccountService {
     /// `Account.SetMode` (`docs/design/accounts.md` §10): switches the account to `mode` — `read-only` or
@@ -74,7 +73,7 @@ impl AccountService {
                 return Err(ModeError::Failed(format!("{DRIVE_NOT_KNOWN} ({e})")));
             }
         }
-        let browser = Attempt::bind(self.oauth_client(&snapshot.client_id, Mode::ReadWrite)).await.map_err(ModeError::Failed)?;
+        let browser = Attempt::bind(self.oauth_client(&snapshot.client_id, Mode::ReadWrite)).await.map_err(|failure| ModeError::Failed(failure.to_string()))?;
         // Pinned to this account: the password asked for again, its email filled
         // in, so that a browser signed in to another account cannot consent for it.
         let url = self.authorize_url(&browser);
@@ -105,7 +104,7 @@ impl AccountService {
         let (generation, asked) = (attempt.generation, attempt.browser.scope());
         match self.complete_sign_in(attempt).await {
             Ok((tokens, browser)) => self.commit_read_write(generation, asked, tokens, browser).await,
-            Err(message) => self.abort_read_write(generation, message, None).await,
+            Err(failure) => self.abort_read_write(generation, ReadWriteFailure::Failed(failure), None).await,
         }
     }
 
@@ -118,21 +117,17 @@ impl AccountService {
     async fn commit_read_write(&self, generation: u64, asked: &'static str, tokens: TokenResponse, browser: Answer) {
         let granted = tokens.granted(asked);
         if !grants_writes(&granted) {
-            let message = format!(
-                "Microsoft did not allow konedrive to change files in OneDrive (the sign-in granted \
-                 {granted:?}); the account stays read-only."
-            );
-            return self.abort_read_write(generation, message, Some(browser)).await;
+            return self.abort_read_write(generation, ReadWriteFailure::NotGranted { granted }, Some(browser)).await;
         }
         let SignedIn { tokens, refresh_token, identity } = match attempt::confirm(tokens, self.graph()).await {
             Ok(signed_in) => signed_in,
-            Err(Unconfirmed::NoRefreshToken) => {
-                let message = "Microsoft did not return a refresh token; the account stays read-only.".into();
-                return self.abort_read_write(generation, message, Some(browser)).await;
-            }
-            Err(Unconfirmed::Unidentified(e)) => {
-                let message = format!("Could not check which account this is ({e}); the account stays read-only.");
-                return self.abort_read_write(generation, message, Some(browser)).await;
+            Err(failure) => {
+                let failure = match failure {
+                    SignInFailure::NoRefreshToken => ReadWriteFailure::NoRefreshToken,
+                    SignInFailure::Unidentified { detail } => ReadWriteFailure::Unidentified { detail },
+                    other => ReadWriteFailure::Failed(other),
+                };
+                return self.abort_read_write(generation, failure, Some(browser)).await;
             }
         };
         let session = self.session.lock().await;
@@ -143,7 +138,7 @@ impl AccountService {
         let now = self.config.current();
         let refusal = match &now {
             Some(config) => read_write_refusal(config, &self.id, &identity.drive, &who),
-            None => Some(CONFIG_UNREADABLE_AT_SWITCH.into()),
+            None => Some(ReadWriteFailure::ConfigUnreadable),
         };
         if let Some(why) = refusal {
             drop(session);
@@ -154,7 +149,7 @@ impl AccountService {
         // only once it is stored.
         if let Err(e) = self.secrets.store(&refresh_token).await {
             drop(session);
-            return self.abort_read_write(generation, format!("{e}; the account stays read-only."), Some(browser)).await;
+            return self.abort_read_write(generation, ReadWriteFailure::NotStored { detail: e.to_string() }, Some(browser)).await;
         }
         // All with the token manager's refresh lock held: no refresh can run between recording the
         // grant and caching the new token, so none can record its narrower grant over it. The
@@ -196,17 +191,18 @@ impl AccountService {
 
     /// A switch to read-write that did not go through: `LastError` says why, and nothing
     /// else changes — the account stays signed in, read-only. Only for the current attempt;
-    /// an empty `message` is a cancel, which says nothing. `browser`, when it still waits
-    /// for its answer, is told the same.
-    async fn abort_read_write(&self, generation: u64, message: String, browser: Option<Answer>) {
+    /// a cancel says nothing. `browser`, when it still waits for its answer, is told the
+    /// same.
+    async fn abort_read_write(&self, generation: u64, failure: ReadWriteFailure, browser: Option<Answer>) {
         let session = self.session.lock().await;
-        if session.generation != generation || message.is_empty() {
+        if session.generation != generation || failure == ReadWriteFailure::Failed(SignInFailure::Cancelled) {
             return;
         }
+        let trouble = AccountTrouble::ReadWrite(failure);
         if let Some(browser) = browser {
-            browser.say(&message);
+            browser.say(&trouble.to_string());
         }
-        self.state.update(|s| s.set_error(message));
+        self.state.update(|s| s.set_error(trouble));
     }
 
     /// Keeps the user's wish for read-only until nothing is unsent: written to
@@ -452,16 +448,13 @@ impl AccountService {
 /// the account's own: a sign-in as someone else changes nothing. Nothing else is asked of it.
 /// An account with no drive recorded (the switch records one before its sign-in begins, so
 /// only a `config.toml` that lost it since) has none to compare with, and is told that.
-fn read_write_refusal(config: &Config, id: &AccountId, drive: &DriveId, who: &str) -> Option<String> {
-    let Some(mine) = config.account(id) else { return Some("This account was removed.".into()) };
+fn read_write_refusal(config: &Config, id: &AccountId, drive: &DriveId, who: &str) -> Option<ReadWriteFailure> {
+    let Some(mine) = config.account(id) else { return Some(ReadWriteFailure::Removed) };
     let Some(recorded) = &mine.drive_id else {
-        return Some(format!("{DRIVE_NOT_KNOWN}; the account stays read-only."));
+        return Some(ReadWriteFailure::DriveNotKnown);
     };
     if recorded != drive {
-        return Some(format!(
-            "This account is {who}, and the browser signed in as a different Microsoft account; the \
-             account stays read-only."
-        ));
+        return Some(ReadWriteFailure::OtherMicrosoftAccount { who: who.to_owned() });
     }
     None
 }

@@ -35,13 +35,15 @@
 //! The file writes of the leaves are blocking and `fsync`ed, also where they run under the
 //! refresh lock on a runtime thread.
 
+pub mod account_trouble;
 pub(crate) mod attempt;
 pub mod cache;
 mod mode;
 pub mod quota;
 pub mod secret;
 mod sign_in;
-pub(crate) use sign_in::{claim_new, signed_in_sentence, Refused};
+pub(crate) use account_trouble::Refused;
+pub(crate) use sign_in::{claim_new, signed_in_sentence};
 pub mod state;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -54,6 +56,7 @@ use tokio::sync::{oneshot, Mutex};
 
 use crate::account::cache::AccountInfo;
 use crate::account::quota::Quota;
+use crate::account::account_trouble::{AccountTrouble, ReadWriteFailure, SignInFailure};
 use crate::account::attempt::{Attempt, SignedIn};
 use crate::config::{AccountConfig, AccountId, AccountPaths, Config, ConfigError, ConfigStore, DriveId, Mode, Origin, WriteStanding};
 use konedrive_graph::drive::{DriveClient, Status};
@@ -114,46 +117,12 @@ pub(crate) const EXPORT_NOT_ALLOWED: &str = "a read-write access token is handed
      accounts listed in write_test_drive_ids in config.toml, and this account's drive is not one of \
      them";
 
-/// `LastError` of a switch to read-write whose sign-in ended while `config.toml` could not be
-/// read: nothing is written over a file that cannot be read.
-pub(crate) const CONFIG_UNREADABLE_AT_SWITCH: &str = "config.toml cannot be read now, so the switch to \
-     read-write was not saved; the account stays read-only.";
-
 /// What a switch to read-write says of an account with no drive recorded, when Graph does not
 /// say which one it is either (`Account.SetMode`, refused before any sign-in), or when the
 /// record was lost by the time the sign-in ended (`LastError`): the sign-in is taken only for
 /// the account's own drive, and there is none to compare with.
 pub const DRIVE_NOT_KNOWN: &str = "This account's OneDrive drive is not known yet, so it cannot be \
      switched to read-write now; try again once konedrive has reached OneDrive";
-
-/// `LastError` of an account `config.toml` sets to read-write that has no drive recorded: a
-/// hand edit, or an account never signed in. It runs read-only.
-pub const NO_DRIVE_RECORDED: &str = "config.toml sets this account to read-write, but records no \
-     OneDrive drive for it; it runs read-only until a sign-in records one";
-
-/// `LastError` of a read-write account whose token does not carry `Files.ReadWrite` (`docs/design/accounts.md`
-/// §10). It runs read-only until it signs in with that permission.
-pub const SIGN_IN_TO_WRITE: &str = "Changes made here are not uploaded: this account's sign-in does \
-     not allow konedrive to change files in OneDrive. Switch it to read-write again to sign in with \
-     that permission.";
-
-/// `LastError` of a read-write account whose token has not been seen to reach its recorded
-/// drive since `account.json` was written without it. It runs read-only until it is.
-pub const DRIVE_NOT_SEEN: &str = "config.toml sets this account to read-write, but which OneDrive \
-     its sign-in reaches has not been checked yet; it runs read-only until it is";
-
-/// `LastError` of a read-write account while `config.toml` cannot be read: the
-/// mode and the drive are read from the file each time, and fail closed.
-pub const CONFIG_UNREADABLE: &str = "config.toml cannot be read now, so this account runs read-only \
-     until it can";
-
-/// The start of `LastError` for a sign-in that reaches another drive than the one
-/// `config.toml` records ([`ModeNote::DriveMismatch`]).
-const DRIVE_MISMATCH: &str = "this account's sign-in reaches the OneDrive drive";
-
-/// The start of `LastError` for a read-only request answered with more
-/// ([`ModeNote::WiderGrant`]).
-const WIDER_GRANT: &str = "Microsoft answered a request for read-only access with a token that can";
 
 /// What a folder answers that was told to hold what is unsent
 /// ([`AccountFolder::hold_unsent_changes`]).
@@ -619,7 +588,7 @@ impl AccountService {
                 tokio::spawn(async move { this.refresh_account_info().await });
             }
             Ok(false) => crate::account::cache::remove(&self.cache),
-            Err(e) => self.state.update(|s| s.set_error(e.to_string())),
+            Err(e) => self.state.update(|s| s.set_error(AccountTrouble::Token { detail: e.to_string() })),
         }
     }
 

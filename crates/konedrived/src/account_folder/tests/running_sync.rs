@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::account::state::{AccountSnapshot, SignInState};
+use crate::account::state::{AccountSnapshot, ModeNote, SignInState};
 use crate::account::AccountFolder;
 use crate::account_folder::folder::{Sync, SyncView, Why};
 use crate::account_folder::staged_folder::{end_running_sync, make_service_with_drive, read_sync, stage_running_sync};
@@ -115,7 +115,7 @@ fn the_accounts_state_sets_and_ends_the_holds_of_a_running_sync() {
         let other_drive = AccountSnapshot { live_drive: "d9".into(), ..read_write.clone() };
         made.account.state().update(|s| *s = other_drive.clone());
         service.follow_account(&other_drive).await;
-        assert!(matches!(shown(), Some(SendingHold::WritesNotAllowed { reason }) if reason.contains("\"d9\"")), "{:?}", shown());
+        assert!(matches!(shown(), Some(SendingHold::WritesNotAllowed { reason: ModeNote::DriveMismatch { live, .. } }) if live == "d9"), "{:?}", shown());
 
         made.account.state().update(|s| *s = read_write.clone());
         service.follow_account(&read_write).await;

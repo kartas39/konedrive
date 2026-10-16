@@ -109,7 +109,7 @@ impl fmt::Display for UploadQueueNote {
                 "OneDrive asked to slow down; uploads continue at {}",
                 clock(until.div_euclid(60) * 60 + if until.rem_euclid(60) > 0 { 60 } else { 0 })
             ),
-            UploadQueueNote::WritesNotAllowed(why) => write!(f, "nothing is uploaded: {why}"),
+            UploadQueueNote::WritesNotAllowed(why) => write!(f, "nothing is uploaded: {}", super::account_sentences::say_writes_refusal(why)),
         }
     }
 }

@@ -6,8 +6,11 @@
 //! A layer of its own, after `daemon` and before `dbus`: it sees every type of trouble,
 //! and the bus takes its sentences from it.
 //!
+//! - `account_sentences` — an account's sign-in, its switch to read-write, and why it runs
+//!   read-only;
 //! - `config_sentences` — `config.toml` and the accounts in it;
 //! - `status_sentences` — a folder's trouble, and what holds its uploads and downloads.
 
+mod account_sentences;
 mod config_sentences;
 mod status_sentences;

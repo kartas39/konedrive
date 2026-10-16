@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
+use crate::account::state::ModeNote;
 use crate::status::folder_trouble::FolderTrouble;
 use crate::status::sync_trouble::{SyncTrouble, TroubleKind};
 use crate::status::totals;
@@ -231,7 +232,7 @@ impl SyncSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UploadQueueNote {
     /// The account may not write though its folder is read-write: why.
-    WritesNotAllowed(String),
+    WritesNotAllowed(ModeNote),
     /// OneDrive asked the account's uploads to wait: until when (Unix seconds).
     Throttled(i64),
 }

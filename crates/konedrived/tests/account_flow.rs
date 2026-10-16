@@ -58,7 +58,7 @@ async fn denied_consent_returns_to_signed_out() {
     let url = f.svc.begin_sign_in().await.unwrap();
     simulate_browser(&url, "error=access_denied&error_description=cancelled").await;
     let s = wait_for(f.svc.state(), |s| s.state == SignInState::SignedOut).await;
-    assert!(s.last_error.contains("denied"), "{}", s.last_error);
+    assert!(s.published_error().contains("denied"), "{}", s.published_error());
     assert_eq!(f.store.current(), None);
 }
 
@@ -67,7 +67,7 @@ async fn sign_in_times_out() {
     let f = Fixture::new(Duration::from_millis(300)).await;
     f.svc.begin_sign_in().await.unwrap();
     let s = wait_for(f.svc.state(), |s| s.state == SignInState::SignedOut).await;
-    assert!(s.last_error.contains("Timed out"), "{}", s.last_error);
+    assert!(s.published_error().contains("Timed out"), "{}", s.published_error());
 }
 
 #[tokio::test]
@@ -86,7 +86,7 @@ async fn rejected_code_returns_to_signed_out() {
     // The mock token endpoint only knows `good-code`; anything else gets a 404.
     simulate_browser(&url, "code=unknown-code").await;
     let s = wait_for(f.svc.state(), |s| s.state == SignInState::SignedOut).await;
-    assert!(s.last_error.starts_with("Sign-in failed"), "{}", s.last_error);
+    assert!(s.published_error().starts_with("Sign-in failed"), "{}", s.published_error());
     assert_eq!(f.store.current(), None);
 }
 
@@ -134,9 +134,9 @@ async fn profile_failure_does_not_undo_sign_in() {
         .unwrap();
     let url = svc.begin_sign_in().await.unwrap();
     simulate_browser(&url, "code=any").await;
-    let s = wait_for(svc.state(), |s| !s.last_error.is_empty()).await;
+    let s = wait_for(svc.state(), |s| !s.published_error().is_empty()).await;
     assert_eq!(s.state, SignInState::SignedIn);
-    assert!(s.last_error.contains("account info"), "{}", s.last_error);
+    assert!(s.published_error().contains("account info"), "{}", s.published_error());
     assert_eq!(store.current().as_deref(), Some("RT1"));
 }
 
@@ -281,7 +281,7 @@ async fn refresh_with_missing_wallet_item_signs_out_and_explains_why() {
 
     let s = svc.state().get();
     assert_eq!(s.state, SignInState::SignedOut);
-    assert_eq!(s.last_error, "The stored sign-in was lost. Sign in again.");
+    assert_eq!(s.published_error(), "The stored sign-in was lost. Sign in again.");
 }
 
 /// `refresh_account_info` must not overwrite the token manager's own `SESSION_EXPIRED`
@@ -308,7 +308,7 @@ async fn refresh_after_invalid_grant_keeps_the_session_expired_message() {
 
     let s = svc.state().get();
     assert_eq!(s.state, SignInState::SignedOut);
-    assert_eq!(s.last_error, SESSION_EXPIRED);
+    assert_eq!(s.published_error(), SESSION_EXPIRED);
 }
 
 #[tokio::test]
@@ -600,7 +600,7 @@ async fn a_drive_connected_as_one_account_is_refused_to_another() {
     let (b, page) = sign_in_read(&two.b, "code-a").await;
 
     assert_eq!(b.state, SignInState::SignedOut);
-    assert_eq!(b.last_error, "This Microsoft account is already connected as 'A'.");
+    assert_eq!(b.published_error(), "This Microsoft account is already connected as 'A'.");
     assert!(page.contains("<p>This Microsoft account is already connected as &#39;A&#39;.</p>"), "{page}");
     assert_eq!(two.b_wallet.current(), None, "a refused sign-in stores nothing");
     assert_eq!(drive_of(&two, &two.b), None);
@@ -617,9 +617,9 @@ async fn an_account_signed_in_again_as_someone_else_is_refused() {
     let (a, page) = sign_in_read(&two.a, "code-b").await;
 
     assert_eq!(a.state, SignInState::SignedOut);
-    assert!(a.last_error.starts_with("This account is 'A'. You signed in as a different Microsoft account"), "{}", a.last_error);
+    assert!(a.published_error().starts_with("This account is 'A'. You signed in as a different Microsoft account"), "{}", a.published_error());
     // The browser reads the refusal, not that the sign-in is finished.
-    let said = a.last_error.replace('\'', "&#39;");
+    let said = a.published_error().replace('\'', "&#39;");
     assert!(page.contains(&format!("<p>{said}</p>")), "{page}");
     assert_eq!(two.a_wallet.current(), None);
     assert_eq!(drive_of(&two, &two.a), DriveId::new("DA"), "the slot keeps its drive");
@@ -636,18 +636,18 @@ async fn an_account_with_no_drive_recorded_is_asked_first() {
 
     let b = sign_in_with(&two.b, "code-b").await;
     assert_eq!(b.state, SignInState::SignedOut, "A could not be asked");
-    assert_eq!(b.last_error, "Could not check which account this is; try again.");
+    assert_eq!(b.published_error(), "Could not check which account this is; try again.");
     assert_eq!(two.b_wallet.current(), None);
 
     // An account signed out while its token is still stored — a wallet that did
     // not answer at startup — may be any drive too.
     two.a.state().update(|s| s.state = SignInState::SignedOut);
     let b = sign_in_with(&two.b, "code-b").await;
-    assert_eq!(b.last_error, "Could not check which account this is; try again.", "A holds a token it could not use");
+    assert_eq!(b.published_error(), "Could not check which account this is; try again.", "A holds a token it could not use");
 
     two.a_wallet.store("RT-a").await.unwrap();
     let b = sign_in_with(&two.b, "code-b").await;
-    assert_eq!(b.state, SignInState::SignedIn, "{}", b.last_error);
+    assert_eq!(b.state, SignInState::SignedIn, "{}", b.published_error());
     assert_eq!((drive_of(&two, &two.a), drive_of(&two, &two.b)), (DriveId::new("DA"), DriveId::new("DB")));
     assert_eq!(two.b_wallet.current().as_deref(), Some("RT-b"));
 }
@@ -684,8 +684,8 @@ async fn a_sign_in_whose_token_cannot_be_stored_records_no_drive() {
         .unwrap();
     let url = svc.begin_sign_in().await.unwrap();
     simulate_browser(&url, "code=good-code").await;
-    let s = wait_for(svc.state(), |s| s.state == SignInState::SignedOut && !s.last_error.is_empty()).await;
-    assert!(s.last_error.contains("locked"), "{}", s.last_error);
+    let s = wait_for(svc.state(), |s| s.state == SignInState::SignedOut && !s.published_error().is_empty()).await;
+    assert!(s.published_error().contains("locked"), "{}", s.published_error());
     assert_eq!(svc.config().account(svc.id()).unwrap().drive_id, None, "the drive is taken back");
 }
 
@@ -801,5 +801,5 @@ async fn a_sign_in_commits_only_while_the_account_is_signing_in() {
     assert_eq!(f.store.current(), None);
     // The commit, had it gone through, would have made it `signed-in`.
     let s = f.svc.state().get();
-    assert_eq!((s.state, s.last_error.as_str()), (SignInState::SignedOut, SESSION_EXPIRED));
+    assert_eq!((s.state, s.published_error().as_str()), (SignInState::SignedOut, SESSION_EXPIRED));
 }
