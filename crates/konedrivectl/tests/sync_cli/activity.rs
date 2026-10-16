@@ -15,7 +15,7 @@ async fn binary_transfers_lists_the_downloads_under_way() {
     let addr = f._bus.address();
     let out = run(addr, &["sync", "transfers"]);
     assert!(out.status.success(), "{out:?}");
-    let idle = "Downloading:  0 now, 0 B/s\nUploading:    0 now, 0 B/s\nPool: 0 of 16 · large files: 0 (0 of 4 streams)\nNothing is downloading or uploading.";
+    let idle = "Downloading:  0 now, 0 B/s\nUploading:    0 now, 0 B/s\nThumbnails:   0 now\nPool: 0 of 16 · large files: 0 (0 of 4 streams)\nNothing is downloading or uploading.";
     assert_eq!(out_text(&out).trim(), idle);
 
     // A directory of twelve files was pinned: all of them are left, and one downloads now.
@@ -29,7 +29,7 @@ async fn binary_transfers_lists_the_downloads_under_way() {
     assert!(out.status.success(), "{out:?}");
     // "N now" counts files, not slots: the one downloading, which holds none here. What is left is every pinned file not here yet.
     assert!(text.starts_with("Downloading:  1 now, 12 files left (39.0 MiB), 0 B done, 0 B/s\n"), "{text}");
-    let list = text.lines().nth(3).unwrap_or_default();
+    let list = text.lines().nth(4).unwrap_or_default();
     assert!(list.starts_with("down ") && list.contains("/home/u/OneDrive/big.bin") && list.contains("25%") && list.contains("4.0 MiB"), "{text}");
     drop(entry);
     f.service.state().update(|s| s.transfers.pinned_download = konedrive_tree::PinnedDownloadTotal::default());

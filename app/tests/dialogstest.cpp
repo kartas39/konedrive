@@ -740,6 +740,11 @@ private Q_SLOTS:
         QVERIFY(text("downloadingCardDone").isEmpty());
         QVERIFY(!text("uploadingCardLeft").isEmpty());
 
+        // The thumbnails' line is always there, so that nothing moves when they start or end.
+        QCOMPARE(text("thumbnailDownloads"), QStringLiteral("0 thumbnails downloading"));
+        fake.sync->transfers->set({{QStringLiteral("ThumbnailDownloads"), QVariant::fromValue<uint>(2)}});
+        QTRY_COMPARE(text("thumbnailDownloads"), QStringLiteral("2 thumbnails downloading"));
+
         QVERIFY(!fake.sync->calls.contains(QStringLiteral("Changes")));
         QVERIFY(!fake.sync->calls.contains(QStringLiteral("NotUploaded")));
         fake.stop();

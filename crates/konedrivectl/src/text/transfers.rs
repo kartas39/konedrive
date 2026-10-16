@@ -109,9 +109,9 @@ pub fn uploading_line(summary: &TransferSummary) -> String {
     direction_line("Uploading:", summary.active_uploads, &summary.uploads, ("change", "changes"), summary.upload_speed)
 }
 
-/// The `Thumbnails:` line, while any is being downloaded: `Thumbnails:   2 now`.
-pub fn thumbnails_line(summary: &TransferSummary) -> Option<String> {
-    (summary.thumbnail_downloads > 0).then(|| format!("{:<12} {:>2} now", "Thumbnails:", summary.thumbnail_downloads))
+/// The `Thumbnails:` line, 0 when none is being downloaded: `Thumbnails:   2 now`.
+pub fn thumbnails_line(summary: &TransferSummary) -> String {
+    format!("{:<12} {:>2} now", "Thumbnails:", summary.thumbnail_downloads)
 }
 
 /// `sync status`'s `Waiting to download:` line: `1 234 files (48.2 GiB)`.
@@ -124,14 +124,10 @@ pub fn waiting_download_text(count: u32, bytes: u64) -> String {
 }
 
 /// `sync transfers`: how many files go each way now, what is left and done, how fast, the
-/// thumbnails being downloaded while any is, and the pool; then one line per download and upload under way — its direction, path, how
+/// thumbnails being downloaded, and the pool; then one line per download and upload under way — its direction, path, how
 /// far, and the whole size.
 pub fn transfers_text(summary: &TransferSummary, downloads: &[Transfer], uploads: &[Transfer]) -> String {
-    let mut out = format!("{}\n{}\n", downloading_line(summary), uploading_line(summary));
-    if let Some(thumbnails) = thumbnails_line(summary) {
-        out.push_str(&format!("{thumbnails}\n"));
-    }
-    out.push_str(&format!("{}\n", pool_text(summary)));
+    let mut out = format!("{}\n{}\n{}\n{}\n", downloading_line(summary), uploading_line(summary), thumbnails_line(summary), pool_text(summary));
     if downloads.is_empty() && uploads.is_empty() {
         out.push_str("Nothing is downloading or uploading.\n");
         return out;
