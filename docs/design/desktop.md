@@ -582,8 +582,9 @@ Otherwise `user.konedrive.state` and the pin decide:
 | a folder | no | none |
 | outside a folder, or a state the plugin does not know | — | none |
 
-"Pinned" is `user.konedrive.pin` on the item itself or on a directory above it up to the folder's
-root, read fresh at every call. A file is inside a folder when a directory above it carries
+"Pinned" is `user.konedrive.pin` on the item itself, read fresh at every call: the mount answers
+it on every item a pin holds for, and not on an item excepted from a directory's pin
+([pinning.md](pinning.md) §2.2), so nothing above the item is read. A file is inside a folder when a directory above it carries
 `user.konedrive.root`; ancestors are resolved with `lstat` and `readlink` per component, so a
 symbolic link out of the folder does not count as inside. The root answer is cached per directory
 while an inotify watch on that directory stays in place, for the 256 most recently shown
