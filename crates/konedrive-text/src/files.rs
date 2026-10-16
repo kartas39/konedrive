@@ -167,8 +167,8 @@ pub static REFUSALS: [RefusalText; 27] = [
     },
     every_listed(
         Refusal::NotHydrated,
-        Same("“{file}” is not downloaded, so there is no space to free — it already takes none."),
-        "{files}: one of these is not downloaded, so there is no space to free — it already takes none.",
+        Same("“{file}” is being downloaded, so its space cannot be freed yet: try again once it is downloaded."),
+        "{files}: one of these is being downloaded, so its space cannot be freed yet: try again once it is downloaded.",
     ),
     RefusalText {
         refusal: Refusal::ModifiedLocally,

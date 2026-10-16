@@ -64,7 +64,8 @@ pub enum SyncError {
     NoRoot,
     #[error("not a OneDrive file")]
     NotManaged,
-    #[error("the file is not downloaded")]
+    /// The file is being downloaded, so there is no copy to free yet.
+    #[error("the file is being downloaded")]
     NotHydrated,
     #[error("not a file or folder inside this sync root")]
     OutsideRoot,

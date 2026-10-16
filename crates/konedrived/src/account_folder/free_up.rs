@@ -21,13 +21,14 @@ fn refuse_free_up(path: &Path, decision: FreeUpDecision) -> Result<(), SyncError
 
 impl SyncService {
     /// Frees the space of one downloaded file. Recorded as a `freed` event with what it
-    /// freed.
+    /// freed. A file that is not on disk is already what was asked for: answered at once,
+    /// with no event.
     ///
     /// Refused `NotAllowed` for a file a pin keeps on this device: `FreeUp` is what lets
     /// such a file go. Refused `NotUploaded` for a file with a change
-    /// waiting to be uploaded, `NotHydrated` for one that is not downloaded or is being
-    /// downloaded, and `InUse` for one that could not be freed after all. The mount decides
-    /// ([`FreeUpDecision`]); this says its decision as a refusal.
+    /// waiting to be uploaded, `NotHydrated` for one that is being downloaded, and `InUse`
+    /// for one that could not be freed after all. The mount decides ([`FreeUpDecision`]);
+    /// this says its decision as a refusal.
     pub async fn dehydrate(&self, path: &Path) -> Result<(), SyncError> {
         let mount = self.require_mount()?;
         let files = mount.files_interface();
@@ -35,7 +36,8 @@ impl SyncService {
             FreeUpDecision::Free => {}
             FreeUpDecision::LeavePinned => return Err(SyncError::NotAllowed(refusal(path))),
             FreeUpDecision::LeaveModifiedHere | FreeUpDecision::LeaveOpenForWriting => return Err(SyncError::NotUploaded(path.display().to_string())),
-            FreeUpDecision::LeaveDownloading | FreeUpDecision::NothingToFree => return Err(SyncError::NotHydrated),
+            FreeUpDecision::NothingToFree => return Ok(()),
+            FreeUpDecision::LeaveDownloading => return Err(SyncError::NotHydrated),
         }
         let freed = files.free_up(path).await?;
         if freed.files == 0 {

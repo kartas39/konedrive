@@ -718,7 +718,7 @@ private Q_SLOTS:
         QTest::newRow("Free up: NoRoot") << false << named("NoRoot") << decoy << QStringLiteral("is no longer registered with KOneDrive") << false << true;
         QTest::newRow("Free up: OutsideRoot") << false << named("OutsideRoot") << decoy << QStringLiteral("is not inside any of KOneDrive's folders") << false << true;
         QTest::newRow("Free up: NotManaged") << false << named("NotManaged") << decoy << QStringLiteral("never frees the space of a file it could not download again") << false << true;
-        QTest::newRow("Free up: NotHydrated") << false << named("NotHydrated") << decoy << QStringLiteral("is not downloaded, so there is no space to free") << false << true;
+        QTest::newRow("Free up: NotHydrated") << false << named("NotHydrated") << decoy << QStringLiteral("is being downloaded, so its space cannot be freed yet") << false << true;
         QTest::newRow("Free up: ModifiedLocally") << false << named("ModifiedLocally") << decoy << QStringLiteral("freeing its space would lose your edits") << false << true;
         QTest::newRow("Free up: InUse") << false << named("InUse") << decoy << QStringLiteral("is open in another program, so its space cannot be freed") << false << true;
         QTest::newRow("Free up: NotUploaded") << false << named("NotUploaded") << decoy << QStringLiteral("is not uploaded yet, so freeing it up would lose the changes made here") << false << true;

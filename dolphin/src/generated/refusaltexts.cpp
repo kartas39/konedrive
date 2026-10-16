@@ -29,7 +29,7 @@ QString refusalSentence(Operation operation, const QString &errorName, const QSt
         return QString();
     }
     if (errorName == QLatin1String("org.konedrive.Error.NotHydrated")) {
-        return i18nc("@info", "“%1” is not downloaded, so there is no space to free — it already takes none.", file);
+        return i18nc("@info", "“%1” is being downloaded, so its space cannot be freed yet: try again once it is downloaded.", file);
     }
     if (errorName == QLatin1String("org.konedrive.Error.ModifiedLocally")) {
         switch (operation) {

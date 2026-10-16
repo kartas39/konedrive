@@ -217,7 +217,7 @@ The calls on one file or on chosen paths, each routed by path to the account who
 | Method | Does |
 |---|---|
 | `Hydrate(s path)` | downloads one file now ([mount.md](mount.md) §5) |
-| `Dehydrate(s path)` | frees up one file ([mount.md](mount.md) §6): `NotUploaded` for one with an unsent change, `NotAllowed` for one a pin holds for, `NotHydrated` for one that is not on disk or is downloading, `InUse` for one that could not be freed after all |
+| `Dehydrate(s path)` | frees up one file ([mount.md](mount.md) §6): `NotUploaded` for one with an unsent change, `NotAllowed` for one a pin holds for, `NotHydrated` for one that is being downloaded, `InUse` for one that could not be freed after all; one that is not on disk is answered at once, as freed |
 | `ItemState(s path) → s` | `online-only`, `hydrating`, `hydrated`, or `not-managed` (a directory, a file of the user's own, a path in no folder): the folder's `user.konedrive.state`, read by name through the mount, never by opening the file |
 | `Pin(as) → u`, `Unpin(as) → u`, `FreeUp(as) → (u files, t bytes, u skipped_pinned)` | "Always keep on this device", unpinning, and "Free up space" for chosen paths ([pinning.md](pinning.md) §4, §4.1) |
 | `WebUrl(s path) → s url` | "Open in OneDrive": the address of the item's page in OneDrive's web interface, asked of Graph each time; an account's folder itself answers the drive's root. `NotUploaded` for an item OneDrive does not have yet, `NotSignedIn`, `Unreachable` when OneDrive does not answer, `NotManaged` for a file of the user's own, `Failed` otherwise. The caller opens the address (F295) |

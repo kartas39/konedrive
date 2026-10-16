@@ -17,7 +17,9 @@
          the folder goes on showing the file, which is downloaded again when
          it is opened. A file with a change waiting to be uploaded is
          refused NotUploaded: freeing it up would lose the change. A file a
-         pin holds for is refused NotAllowed: FreeUp is what lets it go. -->
+         pin holds for is refused NotAllowed: FreeUp is what lets it go. A
+         file that is not on disk is left as it is; one being downloaded is
+         refused NotHydrated. -->
     <method name="Dehydrate">
       <arg name="path" type="s" direction="in"/>
     </method>

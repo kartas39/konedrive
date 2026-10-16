@@ -8,8 +8,8 @@ keep|org.konedrive.Error.NoRoot||The folder holding “doc.bin” is no longer r
 keep|org.konedrive.Error.NoRoot|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
 keep|org.konedrive.Error.NotManaged||“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so there is nothing for KOneDrive to keep downloaded.
 keep|org.konedrive.Error.NotManaged|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so there is nothing for KOneDrive to keep downloaded.
-keep|org.konedrive.Error.NotHydrated||“doc.bin” is not downloaded, so there is no space to free — it already takes none.
-keep|org.konedrive.Error.NotHydrated|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|“doc.bin” is not downloaded, so there is no space to free — it already takes none.
+keep|org.konedrive.Error.NotHydrated||“doc.bin” is being downloaded, so its space cannot be freed yet: try again once it is downloaded.
+keep|org.konedrive.Error.NotHydrated|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|“doc.bin” is being downloaded, so its space cannot be freed yet: try again once it is downloaded.
 keep|org.konedrive.Error.ModifiedLocally||“doc.bin” was changed here and has not been uploaded, so downloading it again would overwrite your edits. It was left exactly as it is.
 keep|org.konedrive.Error.ModifiedLocally|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|“doc.bin” was changed here and has not been uploaded, so downloading it again would overwrite your edits. It was left exactly as it is.
 keep|org.konedrive.Error.OutsideRoot||“doc.bin” is not inside any of KOneDrive's folders, so nothing was done with it. Only files and folders inside them can be kept on this device or freed up.
@@ -82,8 +82,8 @@ unpin|org.konedrive.Error.NoRoot||The folder holding “doc.bin” is no longer 
 unpin|org.konedrive.Error.NoRoot|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
 unpin|org.konedrive.Error.NotManaged||“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so it was never pinned.
 unpin|org.konedrive.Error.NotManaged|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so it was never pinned.
-unpin|org.konedrive.Error.NotHydrated||“doc.bin” is not downloaded, so there is no space to free — it already takes none.
-unpin|org.konedrive.Error.NotHydrated|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|“doc.bin” is not downloaded, so there is no space to free — it already takes none.
+unpin|org.konedrive.Error.NotHydrated||“doc.bin” is being downloaded, so its space cannot be freed yet: try again once it is downloaded.
+unpin|org.konedrive.Error.NotHydrated|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|“doc.bin” is being downloaded, so its space cannot be freed yet: try again once it is downloaded.
 unpin|org.konedrive.Error.ModifiedLocally||“doc.bin” was changed here and has not been uploaded, so it was left exactly as it is.
 unpin|org.konedrive.Error.ModifiedLocally|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|“doc.bin” was changed here and has not been uploaded, so it was left exactly as it is.
 unpin|org.konedrive.Error.OutsideRoot||“doc.bin” is not inside any of KOneDrive's folders, so nothing was done with it. Only files and folders inside them can be kept on this device or freed up.
@@ -156,8 +156,8 @@ free-up|org.konedrive.Error.NoRoot||The folder holding “doc.bin” is no longe
 free-up|org.konedrive.Error.NoRoot|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
 free-up|org.konedrive.Error.NotManaged||“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, and KOneDrive never frees the space of a file it could not download again.
 free-up|org.konedrive.Error.NotManaged|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, and KOneDrive never frees the space of a file it could not download again.
-free-up|org.konedrive.Error.NotHydrated||“doc.bin” is not downloaded, so there is no space to free — it already takes none.
-free-up|org.konedrive.Error.NotHydrated|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|“doc.bin” is not downloaded, so there is no space to free — it already takes none.
+free-up|org.konedrive.Error.NotHydrated||“doc.bin” is being downloaded, so its space cannot be freed yet: try again once it is downloaded.
+free-up|org.konedrive.Error.NotHydrated|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|“doc.bin” is being downloaded, so its space cannot be freed yet: try again once it is downloaded.
 free-up|org.konedrive.Error.ModifiedLocally||“doc.bin” was changed here and has not been uploaded, so freeing its space would lose your edits. It was left exactly as it is.
 free-up|org.konedrive.Error.ModifiedLocally|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|“doc.bin” was changed here and has not been uploaded, so freeing its space would lose your edits. It was left exactly as it is.
 free-up|org.konedrive.Error.OutsideRoot||“doc.bin” is not inside any of KOneDrive's folders, so nothing was done with it. Only files and folders inside them can be kept on this device or freed up.
@@ -230,8 +230,8 @@ open-online|org.konedrive.Error.NoRoot||The folder holding “doc.bin” is no l
 open-online|org.konedrive.Error.NoRoot|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
 open-online|org.konedrive.Error.NotManaged||“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so it has no page in OneDrive.
 open-online|org.konedrive.Error.NotManaged|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so it has no page in OneDrive.
-open-online|org.konedrive.Error.NotHydrated||“doc.bin” is not downloaded, so there is no space to free — it already takes none.
-open-online|org.konedrive.Error.NotHydrated|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|“doc.bin” is not downloaded, so there is no space to free — it already takes none.
+open-online|org.konedrive.Error.NotHydrated||“doc.bin” is being downloaded, so its space cannot be freed yet: try again once it is downloaded.
+open-online|org.konedrive.Error.NotHydrated|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|“doc.bin” is being downloaded, so its space cannot be freed yet: try again once it is downloaded.
 open-online|org.konedrive.Error.ModifiedLocally||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.ModifiedLocally
 open-online|org.konedrive.Error.ModifiedLocally|/home/u/OneDrive/Docs/doc.bin is pinned: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned: unpin it first
 open-online|org.konedrive.Error.OutsideRoot||“doc.bin” is not inside any of KOneDrive's folders, so it has no page in OneDrive.
