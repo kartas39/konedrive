@@ -5,10 +5,11 @@
   <interface name="org.konedrive.ActivityLog">
     <!-- The last events, newest first, at most `limit` (the daemon keeps
          200): (unix time, kind, full path, detail). Kinds: downloaded,
-         freed, added, updated, removed, moved, listed, conflict, failed (a download),
+         freed, added, updated, removed, moved, conflict, failed (a download),
          update-failed (a changed file could not be replaced here). For
          ENOSPC the detail is exactly "not enough disk space".
-         A listing or Full reconcile is one "listed" event. A read-write
+         The first filling of a folder is two events of the folder,
+         first-sync-began and first-sync-ended, and none per item. A read-write
          account adds: uploaded (new or changed content, or a folder made
          here; detail: the size, or "folder"), cloud-moved (moved or renamed
          here; detail: where it was), cloud-deleted (deleted here, to

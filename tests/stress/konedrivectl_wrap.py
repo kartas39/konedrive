@@ -2,9 +2,9 @@
 parse the plain-text tables it prints (there is no ``--json``; this tool speaks the same text a
 person reading ``konedrivectl --help`` would see, per ``docs/design/desktop.md`` §3). The exact
 strings parsed here are read out of ``crates/konedrivectl/src/text/`` and
-``crates/konedrive-tree/src/outbox/row.rs`` (the ``OutboxState`` enum: ``waiting``, ``ready``,
-``running``, ``retry``, ``blocked``, ``held``), so a wording change there should update this file
-too.
+``crates/konedrived/src/upload_queue/mod.rs`` (the ``QueueState`` enum: ``ready``, ``running``,
+``retry``, ``waiting``, ``blocked``, ``paused``), so a wording change there should update this
+file too.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ class Run:
 
 
 @dataclasses.dataclass
-class OutboxRow:
+class QueueRow:
     state: str
     kind: str
     path: str
@@ -52,9 +52,11 @@ class ActivityEvent:
 
 
 class Ctl:
-    """Every call is `<binary> --account <account> <args...>`. Never anything else — this tool
-    never picks an account implicitly, per the requirement that a stress run always names one
-    explicitly."""
+    """Every call is `<binary> --account <account> <args...>`, so this tool never picks an
+    account implicitly, per the requirement that a stress run always names one explicitly.
+    The one exception is a command on a path (`sync pin`, `sync free`), which refuses
+    `--account` because the path decides the account: every path this tool passes is inside
+    the run folder, which is inside the checked account's folder."""
 
     def __init__(self, binary: str, account: str, timeout: float = 120.0):
         self.binary = binary
@@ -63,8 +65,14 @@ class Ctl:
         self.calls = 0
 
     def run(self, *args: str) -> Run:
+        return self._run(["--account", self.account, *args])
+
+    def _run_on_path(self, *args: str) -> Run:
+        return self._run(list(args))
+
+    def _run(self, args: list) -> Run:
         self.calls += 1
-        cmd = [self.binary, "--account", self.account, *args]
+        cmd = [self.binary, *args]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout)
         except subprocess.TimeoutExpired as e:
@@ -81,11 +89,11 @@ class Ctl:
     def sync_status(self) -> Run:
         return self.run("sync", "status")
 
-    def outbox_all(self) -> Run:
-        return self.run("sync", "outbox", "--all")
+    def upload_queue_all(self) -> Run:
+        return self.run("sync", "upload-queue", "--all")
 
     def not_uploaded(self) -> Run:
-        return self.run("sync", "not-uploaded")
+        return self.run("sync", "not-uploaded", "--all")
 
     def activity(self, limit: int = 200) -> Run:
         return self.run("sync", "activity", "--limit", str(limit))
@@ -97,13 +105,10 @@ class Ctl:
         return self.run("sync", "transfers")
 
     def pin(self, path: str) -> Run:
-        return self.run("sync", "pin", path)
+        return self._run_on_path("sync", "pin", path)
 
     def free(self, path: str) -> Run:
-        return self.run("sync", "free", path)
-
-    def deletes_confirm(self) -> Run:
-        return self.run("sync", "deletes", "confirm")
+        return self._run_on_path("sync", "free", path)
 
     def export_access_token(self, out_path: str, read_write: bool = False) -> Run:
         args = ["dev", "export-access-token", "--out", out_path]
@@ -116,8 +121,8 @@ class Ctl:
 
 
 def parse_pool(text: str):
-    """`sync transfers`'s `Pool: 15 of 64 (large: 3 of 4)` line — ending `— OneDrive asked to
-    wait 30 s` during a `Retry-After` — as (size, ceiling), or None."""
+    """`sync transfers`'s `Pool: 15 of 64 · large files: 3 (3 of 4 streams)` line — ending `—
+    OneDrive asked to wait 30 s` during a `Retry-After` — as (size, ceiling), or None."""
     for line in text.splitlines():
         m = re.match(r"^Pool: (\d+) of (\d+)\b", line.strip())
         if m:
@@ -137,20 +142,10 @@ def parse_status(text: str) -> dict:
     m = re.match(r"(\d+) in OneDrive, (\d+) in the folder", fields.get("Items", ""))
     if m:
         onedrive_items, folder_items = int(m.group(1)), int(m.group(2))
-    blocked = 0
-    m = re.match(r"(\d+)", fields.get("Blocked", ""))
-    if m:
-        blocked = int(m.group(1))
-    held = 0
-    m = re.match(r"(\d+)", fields.get("Held for confirmation", ""))
-    if m:
-        held = int(m.group(1))
     return {
         "folder": fields.get("Folder", ""),
         "onedrive_items": onedrive_items,
         "folder_items": folder_items,
-        "blocked": blocked,
-        "held": held,
         "fields": fields,
     }
 
@@ -160,9 +155,9 @@ _REASON_RE = re.compile(r"  \(([^)]*)\)$")
 _PROGRESS_RE = re.compile(r"  \d+% of .+$")
 
 
-def parse_outbox(text: str) -> list:
-    """`sync outbox --all`'s rows: `{state:<8} {kind:<8} {path}[  N% of SIZE][  (reason)][  next
-    try TIME]` (`konedrivectl::outbox_text`), after its `Uploading:` summary line
+def parse_upload_queue(text: str) -> list:
+    """`sync upload-queue --all`'s rows: `{state:<8} {kind:<8} {path}[  N% of SIZE][  (reason)][  next
+    try TIME]` (`konedrivectl::upload_queue_text`), after its `Uploading:` summary line
     (`konedrivectl::uploading_line`), which is skipped."""
     lines = [line for line in text.splitlines() if not line.startswith("Uploading:")]
     stripped = "\n".join(lines).strip()
@@ -170,7 +165,7 @@ def parse_outbox(text: str) -> list:
         return []
     rows = []
     for line in lines:
-        if not line.strip() or line.startswith("…") or "sync outbox --all" in line:
+        if not line.strip() or line.startswith("…") or "sync upload-queue --all" in line:
             continue
         if len(line) < 18:
             continue
@@ -188,27 +183,32 @@ def parse_outbox(text: str) -> list:
         m = _PROGRESS_RE.search(rest)
         if m:
             rest = rest[: m.start()]
-        rows.append(OutboxRow(state=state, kind=kind, path=rest, reason=reason, raw=line))
+        rows.append(QueueRow(state=state, kind=kind, path=rest, reason=reason, raw=line))
     return rows
 
 
 def parse_not_uploaded(text: str) -> list:
-    """`sync not-uploaded`'s `path\\n    reason\\n` pairs (`konedrivectl::not_uploaded_text`)."""
+    """`sync not-uploaded --all`'s files as `(path, reason)` (`konedrivectl::not_uploaded_text`):
+    after the summary of every reason with its count, each reason whose files are listed is a
+    heading, and its files follow it as `  path[  (why)]`; a file with no `why` of its own has
+    the heading's."""
     if text.strip() == "Everything here is uploaded or waits to be.":
         return []
     items = []
-    lines = text.splitlines()
-    i = 0
-    while i < len(lines):
-        path = lines[i]
-        i += 1
-        if not path.strip():
+    heading = None
+    for line in text.splitlines():
+        if not line.strip():
+            heading = ""
+        elif heading is None:
             continue
-        reason = ""
-        if i < len(lines) and lines[i].startswith("    "):
-            reason = lines[i].strip()
-            i += 1
-        items.append((path, reason))
+        elif not line.startswith("  "):
+            heading = line.strip()
+        elif line.startswith("  /"):
+            path, why = line[2:], ""
+            m = _REASON_RE.search(path)
+            if m:
+                why, path = m.group(1), path[: m.start()]
+            items.append((path, why or heading))
     return items
 
 

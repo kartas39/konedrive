@@ -1,4 +1,4 @@
-//! The ignore list (`docs/design/writes.md` §4.2 rule 3): names that stay local.
+//! The ignore list (`docs/design/writes.md` §3): names that stay local.
 //!
 //! Shell globs (`*`, `?`, `[...]`, `\` to escape) match the name, not the
 //! path, case-sensitively, and `*` matches a leading dot too (a vim swap file
@@ -9,7 +9,7 @@ use std::ffi::OsStr;
 use std::sync::{Arc, RwLock};
 
 /// Editors' and browsers' temporary files, lock files and the like.
-pub const DEFAULT_PATTERNS: &[&str] = &[
+pub(crate) const DEFAULT_PATTERNS: &[&str] = &[
     "*.swp",
     "*.swo",
     "*.swx",
@@ -28,7 +28,7 @@ pub const DEFAULT_PATTERNS: &[&str] = &[
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IgnoreList {
+pub(crate) struct IgnoreList {
     patterns: Vec<String>,
 }
 
@@ -38,9 +38,9 @@ impl Default for IgnoreList {
     }
 }
 
-/// An account's ignore list as its watcher and its settings share it:
-/// `SetIgnorePatterns` changes what the next examination uses.
-pub type SharedIgnore = Arc<RwLock<IgnoreList>>;
+/// An account's ignore list as its folder's mount and its settings share it:
+/// `SetIgnorePatterns` changes what the next change made in the folder goes by.
+pub(crate) type SharedIgnore = Arc<RwLock<IgnoreList>>;
 
 impl IgnoreList {
     pub fn new<S: Into<String>>(patterns: impl IntoIterator<Item = S>) -> Self {
@@ -48,7 +48,7 @@ impl IgnoreList {
     }
 
     /// The account's list: `patterns` from its config, or the defaults.
-    pub fn configured(patterns: Option<&[String]>) -> Self {
+    pub(crate) fn configured(patterns: Option<&[String]>) -> Self {
         match patterns {
             Some(patterns) => Self::new(patterns.iter().cloned()),
             None => Self::default(),
@@ -56,13 +56,13 @@ impl IgnoreList {
     }
 
     /// This list, to share.
-    pub fn shared(self) -> SharedIgnore {
+    pub(crate) fn shared(self) -> SharedIgnore {
         Arc::new(RwLock::new(self))
     }
 
     /// Why `pattern` is no pattern: empty, a `/` (a pattern matches a name,
     /// never a path), a NUL, or longer than a name can be.
-    pub fn invalid(pattern: &str) -> Option<&'static str> {
+    pub(crate) fn invalid(pattern: &str) -> Option<&'static str> {
         if pattern.trim().is_empty() {
             Some("a pattern cannot be empty")
         } else if pattern.contains('/') {
@@ -76,13 +76,13 @@ impl IgnoreList {
         }
     }
 
-    pub fn patterns(&self) -> &[String] {
+    pub(crate) fn patterns(&self) -> &[String] {
         &self.patterns
     }
 
     /// Whether `name` stays local. A name that is not UTF-8 is matched as
     /// its lossy form.
-    pub fn matches(&self, name: &OsStr) -> bool {
+    pub(crate) fn matches(&self, name: &OsStr) -> bool {
         let name: Vec<char> = name.to_string_lossy().chars().collect();
         self.patterns.iter().any(|pattern| glob(&pattern.chars().collect::<Vec<_>>(), &name))
     }

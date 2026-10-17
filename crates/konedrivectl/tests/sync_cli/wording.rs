@@ -39,7 +39,7 @@ fn parse_why_text_branches(cpp: &str) -> Vec<(String, String)> {
 /// each reason (see `crates/konedrivectl/src/text/files.rs`'s doc comment on
 /// `skip_reason_text`), so a person reading `konedrivectl sync skipped` and
 /// a person reading the window see one explanation, not two that happen to
-/// agree today. Checking only "does the Rust sentence appear somewhere in
+/// agree for now. Checking only "does the Rust sentence appear somewhere in
 /// the C++ file" (the guard's first cut) would still pass if two branches'
 /// bodies were swapped — every sentence would still be *present*, just
 /// answering the wrong reason. Parsing each branch's own (reason, sentence)

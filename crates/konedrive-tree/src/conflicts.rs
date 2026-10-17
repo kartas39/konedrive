@@ -1,71 +1,41 @@
-//! The local versions kept, on record.
+//! The copies kept of local versions, on record.
 
 use rusqlite::params;
 
 use crate::model::column;
 use crate::{TreeError, TreeStore};
 
-/// A local version kept because the file changed or was removed in
-/// OneDrive.
+/// A local version of a file changed on both sides, kept as a copy beside the file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConflictRow {
     pub at: i64,
-    /// Where it was, as a full path.
+    /// Where the file is, as a full path.
     pub original: String,
-    /// Where it is now, as a full path.
-    pub rescued: String,
-    pub kind: ConflictKind,
-}
-
-/// How a local version was kept (`Conflicts.List()`'s fourth field).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConflictKind {
-    /// Moved out of the way, out of the folder (the read phase's rescue).
-    Rescued,
-    /// Kept as a copy beside the original, in a read-write folder, and
-    /// uploaded (`docs/design/writes.md` §7).
-    Copy,
-}
-
-impl ConflictKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Rescued => "rescued",
-            Self::Copy => "copy",
-        }
-    }
-
-    fn parse(value: &str) -> Self {
-        if value == Self::Copy.as_str() {
-            Self::Copy
-        } else {
-            Self::Rescued
-        }
-    }
+    /// Where the copy kept of the local version is, as a full path.
+    pub kept_copy: String,
 }
 
 /// What a query of conflicts selects, in the order [`conflict_row`] reads.
-const COLUMNS: &str = "at, original, rescued, kind";
+const COLUMNS: &str = "at, original, kept_copy";
 
 fn conflict_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConflictRow> {
     Ok(ConflictRow {
         at: row.get(const { column(COLUMNS, "at") })?,
         original: row.get(const { column(COLUMNS, "original") })?,
-        rescued: row.get(const { column(COLUMNS, "rescued") })?,
-        kind: ConflictKind::parse(&row.get::<_, String>(const { column(COLUMNS, "kind") })?),
+        kept_copy: row.get(const { column(COLUMNS, "kept_copy") })?,
     })
 }
 
 impl TreeStore {
-    /// Records local versions a reconcile kept: `(at, original, rescued,
-    /// kind)`, full paths. A path kept at again replaces its row.
+    /// Records the copies kept: `(at, original, kept_copy)`, full paths. A copy kept at
+    /// a path again replaces its row.
     pub fn add_conflicts(&mut self, conflicts: &[ConflictRow]) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
         for c in conflicts {
             tx.execute(
-                "INSERT INTO conflicts (rescued, at, original, kind) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(rescued) DO UPDATE SET at = excluded.at, original = excluded.original, kind = excluded.kind",
-                params![c.rescued, c.at, c.original, c.kind.as_str()],
+                "INSERT INTO conflicts (kept_copy, at, original) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(kept_copy) DO UPDATE SET at = excluded.at, original = excluded.original",
+                params![c.kept_copy, c.at, c.original],
             )?;
         }
         tx.commit()?;
@@ -75,16 +45,16 @@ impl TreeStore {
     /// Every recorded conflict, newest first.
     pub fn conflicts(&self) -> Result<Vec<ConflictRow>, TreeError> {
         let mut statement =
-            self.conn.prepare(&format!("SELECT {COLUMNS} FROM conflicts ORDER BY at DESC, rescued"))?;
+            self.conn.prepare(&format!("SELECT {COLUMNS} FROM conflicts ORDER BY at DESC, kept_copy"))?;
         let rows = statement.query_map([], conflict_row)?.collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
-    /// Up to `limit` conflicts whose rescued path sorts after `after`, in
+    /// Up to `limit` conflicts whose kept copy's path sorts after `after`, in
     /// that order.
     pub fn conflicts_after(&self, after: &str, limit: usize) -> Result<Vec<ConflictRow>, TreeError> {
         let mut statement =
-            self.conn.prepare_cached(&format!("SELECT {COLUMNS} FROM conflicts WHERE rescued > ?1 ORDER BY rescued LIMIT ?2"))?;
+            self.conn.prepare_cached(&format!("SELECT {COLUMNS} FROM conflicts WHERE kept_copy > ?1 ORDER BY kept_copy LIMIT ?2"))?;
         let rows = statement.query_map(params![after, limit as i64], conflict_row)?.collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -94,14 +64,14 @@ impl TreeStore {
         Ok(self.conn.query_row("SELECT count(*) FROM conflicts", [], |r| r.get::<_, i64>(0))? as u64)
     }
 
-    /// Deletes the conflicts whose rescued files are `rescued`, in one
+    /// Deletes the conflicts whose kept copies are at `kept_copies`, in one
     /// transaction; how many there were.
-    pub fn remove_conflicts(&mut self, rescued: &[String]) -> Result<usize, TreeError> {
+    pub fn remove_conflicts(&mut self, kept_copies: &[String]) -> Result<usize, TreeError> {
         let tx = self.conn.transaction()?;
         let mut removed = 0;
         {
-            let mut delete = tx.prepare_cached("DELETE FROM conflicts WHERE rescued = ?1")?;
-            for path in rescued {
+            let mut delete = tx.prepare_cached("DELETE FROM conflicts WHERE kept_copy = ?1")?;
+            for path in kept_copies {
                 removed += delete.execute([path])?;
             }
         }
@@ -109,9 +79,9 @@ impl TreeStore {
         Ok(removed)
     }
 
-    /// Deletes the conflict whose rescued file is `rescued`; whether there
+    /// Deletes the conflict whose kept copy is at `kept_copy`; whether there
     /// was one.
-    pub fn remove_conflict(&self, rescued: &str) -> Result<bool, TreeError> {
-        Ok(self.conn.execute("DELETE FROM conflicts WHERE rescued = ?1", [rescued])? > 0)
+    pub fn remove_conflict(&self, kept_copy: &str) -> Result<bool, TreeError> {
+        Ok(self.conn.execute("DELETE FROM conflicts WHERE kept_copy = ?1", [kept_copy])? > 0)
     }
 }

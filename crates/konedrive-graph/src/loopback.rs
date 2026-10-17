@@ -4,13 +4,17 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::oneshot;
 use url::Url;
 
-const DONE_PAGE: &str = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>KOneDrive</title></head>\
-<body><p>Sign-in finished. You can close this tab and return to KOneDrive.</p></body></html>";
+/// What the browser reads when nobody said what came of the sign-in.
+const UNTOLD: &str = "KOneDrive has the browser's answer. Look at KOneDrive for what came of the sign-in.";
 
 /// How long one connection may take to send its request head.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the browser is kept waiting to be told what came of the sign-in.
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Callback {
@@ -25,6 +29,54 @@ pub enum LoopbackError {
     TimedOut,
     #[error("loopback listener failed: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// The browser's request for the redirect, not answered yet: the page it gets says what
+/// came of the sign-in, which is known only once the code is exchanged and the account
+/// checked. Whoever has the callback says it with [`say`](Self::say). Dropped untold, or
+/// not told in time, the browser is answered all the same, with a page that points to
+/// KOneDrive: its connection is never left open.
+#[derive(Debug)]
+pub struct Answer(oneshot::Sender<String>);
+
+impl Answer {
+    /// Holds `stream` until the answer is said, for at most `patience`.
+    fn hold(mut stream: TcpStream, patience: Duration) -> Self {
+        let (say, said) = oneshot::channel();
+        tokio::spawn(async move {
+            let sentence = match tokio::time::timeout(patience, said).await {
+                Ok(Ok(sentence)) => sentence,
+                _ => UNTOLD.to_owned(),
+            };
+            let _ = respond(&mut stream, "200 OK", &page(&sentence)).await;
+        });
+        Self(say)
+    }
+
+    /// Answers the browser with a page that says `sentence`: that the sign-in went
+    /// through, or why it did not. Never a token, a code or a URL.
+    pub fn say(self, sentence: &str) {
+        let _ = self.0.send(sentence.to_owned());
+    }
+}
+
+/// The page that says `sentence`, which is text: nothing in it is markup.
+fn page(sentence: &str) -> String {
+    let mut text = String::with_capacity(sentence.len());
+    for c in sentence.chars() {
+        match c {
+            '&' => text.push_str("&amp;"),
+            '<' => text.push_str("&lt;"),
+            '>' => text.push_str("&gt;"),
+            '"' => text.push_str("&quot;"),
+            '\'' => text.push_str("&#39;"),
+            c => text.push(c),
+        }
+    }
+    format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>KOneDrive</title></head>\
+         <body><p>{text}</p><p>You can close this tab and return to KOneDrive.</p></body></html>"
+    )
 }
 
 pub struct LoopbackListener {
@@ -54,14 +106,14 @@ impl LoopbackListener {
     /// Answers requests until one to `/` carries `state == expected_state` together with
     /// `code` or `error`, or until `timeout` elapses. Any other `GET` gets 404. A request
     /// that is not a `GET`, or whose head does not come whole and in time, is dropped with
-    /// no answer.
-    pub async fn wait(self, expected_state: &str, timeout: Duration) -> Result<Callback, LoopbackError> {
+    /// no answer. The request that carried the callback is answered through the [`Answer`].
+    pub async fn wait(self, expected_state: &str, timeout: Duration) -> Result<(Callback, Answer), LoopbackError> {
         tokio::time::timeout(timeout, self.serve(expected_state))
             .await
             .map_err(|_| LoopbackError::TimedOut)?
     }
 
-    async fn serve(&self, expected_state: &str) -> Result<Callback, LoopbackError> {
+    async fn serve(&self, expected_state: &str) -> Result<(Callback, Answer), LoopbackError> {
         loop {
             let (mut stream, _) = match &self.v6 {
                 Some(v6) => tokio::select! {
@@ -74,8 +126,7 @@ impl LoopbackListener {
                 continue;
             };
             if let Some(callback) = parse_callback(&target, expected_state) {
-                let _ = respond(&mut stream, "200 OK", DONE_PAGE).await;
-                return Ok(callback);
+                return Ok((callback, Answer::hold(stream, ANSWER_TIMEOUT)));
             }
             let _ = respond(&mut stream, "404 Not Found", "").await;
         }

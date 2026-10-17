@@ -4,7 +4,7 @@ use zbus::names::ErrorName;
 
 use crate::account::{AccountError, ModeError};
 use crate::daemon::manager::ManagerError;
-use crate::sync::SyncError;
+use crate::account_folder::SyncError;
 
 /// How a call is refused: under a D-Bus error *name* ([`Refusal`]) a client can branch
 /// on, with the sentence beside it as the message. "The file was modified locally" and "the
@@ -13,10 +13,10 @@ use crate::sync::SyncError;
 ///
 /// Every interface refuses through this one type, each error of the daemon through its own
 /// `From`: the folder's and `Files` under the daemon's own names, `SetMode` and
-/// `TokenExport` under theirs (`docs/design/desktop.md` §2.6), and an argument that is not
+/// `TokenExport` under theirs (`docs/design/desktop.md` §2.10), and an argument that is not
 /// one (a label, a client id, a mode, an ignore pattern) under the bus's own `InvalidArgs`.
 #[derive(Debug)]
-pub enum Fault {
+pub(crate) enum Fault {
     /// Anything zbus itself reports, passed through unchanged; it goes out under
     /// [`Refusal::Internal`].
     ZBus(zbus::Error),
@@ -95,26 +95,22 @@ impl From<SyncError> for Fault {
             SyncError::Unsupported(_) => Refusal::Unsupported,
             SyncError::InUse => Refusal::InUse,
             SyncError::NoRoot => Refusal::NoRoot,
-            SyncError::NoHelper => Refusal::NoHelper,
             SyncError::NotManaged => Refusal::NotManaged,
             SyncError::NotHydrated => Refusal::NotHydrated,
-            SyncError::ModifiedLocally => Refusal::ModifiedLocally,
             SyncError::OutsideRoot => Refusal::OutsideRoot,
             SyncError::AlreadyRegistered => Refusal::AlreadyRegistered,
             SyncError::NotSignedIn => Refusal::NotSignedIn,
-            SyncError::NoSource => Refusal::NoSource,
             SyncError::NoConflict(_) => Refusal::NoConflict,
             SyncError::NotAllowed(_) => Refusal::NotAllowed,
             SyncError::NotUploaded(_) | SyncError::NotInOneDrive(_) => Refusal::NotUploaded,
             SyncError::Unreachable(_) => Refusal::Unreachable,
-            SyncError::PendingUploads(_) => Refusal::PendingUploads,
             // The bus's own name for it, as the label, the client id and the mode go out.
             SyncError::InvalidArgs(_) => Refusal::InvalidArgs,
             SyncError::NotUp(_) => Refusal::NotUp,
-            SyncError::Helper(_)
-            | SyncError::Config(_)
+            SyncError::Config(_)
             | SyncError::Store(_)
             | SyncError::HeldBack(_)
+            | SyncError::Throttled(_)
             | SyncError::Removing
             | SyncError::Stopping
             | SyncError::Io(_) => Refusal::Failed,
@@ -123,7 +119,7 @@ impl From<SyncError> for Fault {
     }
 }
 
-/// The named refusals of `SetMode` and `TokenExport` (`docs/design/desktop.md` §2.6); a mode
+/// The named refusals of `SetMode` and `TokenExport` (`docs/design/desktop.md` §2.10); a mode
 /// that is not one is refused under the bus's own `InvalidArgs`, as `SetLabel` refuses a
 /// label.
 impl From<ModeError> for Fault {
@@ -133,8 +129,6 @@ impl From<ModeError> for Fault {
             ModeError::WritesNotAllowed(why) => Fault::Refused(Refusal::WritesNotAllowed, why),
             // The account's token does not carry `Files.ReadWrite`.
             ModeError::ModeNotGranted(why) => Fault::Refused(Refusal::ModeNotGranted, why),
-            // Changes wait to be uploaded, and the switch to read-only was not forced.
-            ModeError::PendingUploads(why) => Fault::Refused(Refusal::PendingUploads, why),
             ModeError::NotSignedIn(why) => Fault::Refused(Refusal::NotSignedIn, why),
             ModeError::InvalidMode(why) => Fault::Refused(Refusal::InvalidArgs, why),
             ModeError::Failed(why) => Fault::Refused(Refusal::Failed, why),
@@ -145,7 +139,7 @@ impl From<ModeError> for Fault {
 /// What `TokenExport.ReadWrite` refuses: [`ModeError`]'s names, but a mode that is not one —
 /// which nothing there raises — under `Failed`, not the bus's `InvalidArgs`.
 #[cfg(feature = "dev-tools")]
-pub(crate) fn export_fault(error: ModeError) -> Fault {
+pub fn export_fault(error: ModeError) -> Fault {
     match error {
         ModeError::InvalidMode(why) => Fault::Refused(Refusal::Failed, why),
         other => other.into(),
@@ -153,7 +147,7 @@ pub(crate) fn export_fault(error: ModeError) -> Fault {
 }
 
 /// How `Accounts` refuses: under the folder's names for what an account's folder refused
-/// (`NoHelper`, …) and `NoAccount`, and under the bus's own `InvalidArgs` and `Failed` for a
+/// (`NoRoot`, …) and `NoAccount`, and under the bus's own `InvalidArgs` and `Failed` for a
 /// label, a client id or `config.toml`.
 impl From<ManagerError> for Fault {
     fn from(error: ManagerError) -> Self {

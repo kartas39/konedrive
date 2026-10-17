@@ -5,7 +5,7 @@ use crate::dbus::fault::Result;
 use crate::dbus::properties::*;
 use crate::dbus::UploadQueue;
 
-fn kept_back(kept: crate::sync::outbox::KeptBack) -> rows::KeptBack {
+fn kept_back(kept: crate::account_folder::upload_queue::KeptBack) -> rows::KeptBack {
     rows::KeptBack { path: kept.path, reason: kept.reason }
 }
 
@@ -13,22 +13,16 @@ fn kept_back(kept: crate::sync::outbox::KeptBack) -> rows::KeptBack {
 impl UploadQueue {
     /// The changes waiting to be uploaded, oldest first, at most `limit` (0 for all).
     async fn changes(&self, limit: u32) -> Result<Vec<rows::Change>> {
-        let changes = self.service.outbox(limit).await?;
+        let changes = self.service.upload_queue(limit).await?;
         Ok(changes
             .into_iter()
             .map(|c| rows::Change { seq: c.seq, kind: c.kind, path: c.path, state: c.state, sent: c.sent, total: c.total, reason: c.reason, next_try: c.next_try })
             .collect())
     }
 
-    /// The removals the mass-delete guard held go ahead; how many.
-    async fn confirm_deletes(&self) -> Result<u32> {
-        Ok(self.service.confirm_deletes().await?)
-    }
-
-    /// The removals the mass-delete guard held are dropped, and their items
-    /// placed again; how many.
-    async fn restore_deletes(&self) -> Result<u32> {
-        Ok(self.service.restore_deletes().await?)
+    /// How many changes made here are unsent, in any state of the folder (`SyncService::count_unsent`).
+    async fn unsent_count(&self) -> Result<u64> {
+        Ok(self.service.count_unsent().await?)
     }
 
     /// What stays on this computer and why.
@@ -62,11 +56,6 @@ impl UploadQueue {
     #[zbus(property)]
     async fn blocked_count(&self) -> u32 {
         BLOCKED_COUNT.of(&self.service)
-    }
-
-    #[zbus(property)]
-    async fn held_count(&self) -> u32 {
-        HELD_COUNT.of(&self.service)
     }
 
     #[zbus(property)]

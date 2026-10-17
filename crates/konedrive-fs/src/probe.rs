@@ -1,4 +1,4 @@
-//! Checks that a directory's filesystem can host placeholders at all.
+//! Checks that a directory's filesystem can hold a folder at all.
 
 use std::fs::File;
 use std::io::{self, Write};
@@ -7,14 +7,12 @@ use std::path::Path;
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 
-use crate::lease::WriteLease;
-use crate::placeholder::punch_all;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProbeError {
     /// Something about this directory, right now, stopped the probe.
     /// `errno` is the underlying OS error where there was one, so a caller can
-    /// tell a filesystem that cannot host placeholders from a caller that is
+    /// tell a filesystem that cannot hold a folder from a caller that is
     /// merely not allowed to write here (`EROFS`, `EACCES`).
     #[error("{path}: {why}")]
     Unusable { path: String, why: String, errno: Option<i32> },
@@ -52,9 +50,7 @@ fn classify(e: io::Error, dir: &Path, feature: &'static str) -> ProbeError {
 /// Opens the nameless file the probe works on.
 ///
 /// `O_TMPFILE` gives a real inode on the real filesystem, with a real
-/// directory as its parent, and no directory entry anywhere — the same
-/// construction `placeholder::create_placeholder` uses, minus the `linkat`
-/// that would give it a name. It is unlinked from birth, so it disappears
+/// directory as its parent, and no directory entry anywhere. It is unlinked from birth, so it disappears
 /// when the descriptor closes, *including* when that happens because the
 /// process was killed mid-probe.
 ///
@@ -76,8 +72,7 @@ fn open_probe_file(dir: &Path) -> io::Result<File> {
 }
 
 /// Creates one nameless temporary file in `dir` and exercises every feature
-/// a placeholder needs: sparse size, hole punching, user xattrs and a write
-/// lease.
+/// a folder needs: a sparse size and user xattrs.
 pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
     let unusable = |e: io::Error| ProbeError::Unusable {
         path: dir.display().to_string(),
@@ -85,7 +80,7 @@ pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
         errno: e.raw_os_error(),
     };
 
-    // `O_TMPFILE` is a feature every placeholder needs, available on every
+    // `O_TMPFILE` is a feature every folder needs, available on every
     // local Linux filesystem and on all three supported ones; a filesystem
     // that genuinely lacks it says so with `EOPNOTSUPP` and is reported like
     // any other missing feature, while `EROFS`/`EACCES` here still mean what
@@ -94,42 +89,9 @@ pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
         open_probe_file(dir).map_err(|e| classify(e, dir, "temporary files (O_TMPFILE)"))?;
     file.write_all(&[1u8; 4096]).map_err(unusable)?;
     file.set_len(1 << 20).map_err(unusable)?;
-    punch_all(&file).map_err(|e| classify(e, dir, "sparse files with hole punching"))?;
     xattr::FileExt::set_xattr(&file, crate::placeholder::XATTR_STATE, b"probe")
         .map_err(|e| classify(e, dir, "user.* extended attributes"))?;
-    probe_lease(&file, dir)?;
     Ok(())
-}
-
-/// Exercises `F_SETLEASE` on the probe's own file.
-///
-/// Both dehydration (`hydration::dehydrate::punch_clean_file`) and startup
-/// recovery (`hydration::recovery::reset_interrupted`) take a write lease before they punch a file's
-/// blocks away, and `interpret_setlease_failure` treats only `EAGAIN`
-/// (somebody else has the file open) as "try again later" — every other
-/// refusal, including one that means "this filesystem does not grant leases
-/// at all", is a hard error there. Without this probe that error surfaces
-/// for the first time on the first crash-interrupted file startup recovery
-/// meets (every one of them `failed`, forever) or the first dehydration a
-/// user asks for, on a folder registration had already accepted. The probe's
-/// own file has never been opened anywhere else, so `EAGAIN` is as
-/// impossible here as `EACCES` (this process owns it) — either one reaching
-/// this function is exactly the filesystem-level refusal a real dehydration
-/// or recovery would meet later, reported now, against the folder the user
-/// is trying to register.
-fn probe_lease(file: &File, dir: &Path) -> Result<(), ProbeError> {
-    match WriteLease::take(file) {
-        Ok(Some(lease)) => {
-            drop(lease);
-            Ok(())
-        }
-        Ok(None) => Err(ProbeError::Unusable {
-            path: dir.display().to_string(),
-            why: "a write lease (F_SETLEASE) on a file nothing else has open was refused".into(),
-            errno: None,
-        }),
-        Err(e) => Err(classify(e, dir, "write leases (F_SETLEASE)")),
-    }
 }
 
 #[cfg(test)]

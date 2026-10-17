@@ -113,11 +113,9 @@ private Q_SLOTS:
         QTest::addColumn<QString>("alwaysKeep");
         QTest::addColumn<QString>("freeUp");
         QTest::addColumn<QString>("freeUpWhy");
-        QTest::addColumn<QString>("blockedBy");
         QTest::addColumn<QString>("openOnline");
         QTest::addColumn<QStringList>("expected");
         QTest::addColumn<bool>("keepChecked");
-        QTest::addColumn<QString>("keepToolTip"); // not empty: disabled, with these words
         QTest::addColumn<bool>("freeUpEnabled");
         QTest::addColumn<QString>("freeUpToolTip");
         QTest::addColumn<bool>("openOnlineEnabled");
@@ -128,44 +126,23 @@ private Q_SLOTS:
         const QString off = QStringLiteral("off");
         const QString none;
         const QStringList keepAndFreeUp{Section, AlwaysKeep, FreeUp, SectionEnd};
-        QTest::newRow("nothing") << false << hidden << hidden << none << none << hidden << QStringList() << false << none << false << none << false;
-        QTest::newRow("always keep, unchecked") << true << off << hidden << none << none << hidden << QStringList{Section, AlwaysKeep, SectionEnd} << false << none << false << none
-                                                << false;
-        QTest::newRow("always keep checked, free up, open") << true << QStringLiteral("on") << enabled << none << none << enabled
-                                                            << QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd} << true << none << true << none << true;
-        QTest::newRow("kept by a folder above") << true << QStringLiteral("on-locked") << disabled << QStringLiteral("pinned-above") << QStringLiteral("sub") << hidden
-                                                << keepAndFreeUp << true << QStringLiteral("Kept on this device because “sub” is.") << false
-                                                << QStringLiteral("Kept on this device because “sub” is; unpin it first.") << false;
-        QTest::newRow("unchecked, free up kept by a folder above")
-            << true << off << disabled << QStringLiteral("pinned-above") << QStringLiteral("sub") << hidden << keepAndFreeUp << false << none << false
-            << QStringLiteral("Kept on this device because “sub” is; unpin it first.") << false;
-        QTest::newRow("free up: no helper") << true << off << disabled << QStringLiteral("no-helper") << none << hidden << keepAndFreeUp << false << none << false
-                                            << QStringLiteral("The konedrive helper is not connected. Try again once it is — it reconnects on its own.") << false;
-        QTest::newRow("free up: not uploaded") << true << off << disabled << QStringLiteral("not-uploaded") << none << hidden << keepAndFreeUp << false << none << false
+        QTest::newRow("nothing") << false << hidden << hidden << none << hidden << QStringList() << false << false << none << false;
+        QTest::newRow("always keep, unchecked") << true << off << hidden << none << hidden << QStringList{Section, AlwaysKeep, SectionEnd} << false << false << none << false;
+        QTest::newRow("always keep checked, free up, open") << true << QStringLiteral("on") << enabled << none << enabled
+                                                            << QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd} << true << true << none << true;
+        QTest::newRow("free up: not uploaded") << true << off << disabled << QStringLiteral("not-uploaded") << hidden << keepAndFreeUp << false << false
                                                << QStringLiteral("Not uploaded yet: freeing it up would lose the changes made here.") << false;
-        QTest::newRow("free up: the daemon cannot tell")
-            << true << off << disabled << QStringLiteral("unknown") << none << hidden << keepAndFreeUp << false << none << false
-            << QStringLiteral("KOneDrive cannot tell yet whether a change here waits to be uploaded. Try again in a moment.") << false;
-        // Locked by the folder, and "Free up space" refused for something
-        // else first: each entry says its own reason.
-        QTest::newRow("locked by a folder, free up for the helper")
-            << true << QStringLiteral("on-locked") << disabled << QStringLiteral("no-helper") << QStringLiteral("sub") << hidden << keepAndFreeUp << true
-            << QStringLiteral("Kept on this device because “sub” is.") << false
-            << QStringLiteral("The konedrive helper is not connected. Try again once it is — it reconnects on its own.") << false;
-        QTest::newRow("free up refused for a reason this plugin does not know") << true << off << disabled << QStringLiteral("something-new") << none << hidden << keepAndFreeUp
-                                                                                << false << none << false << none << false;
+        QTest::newRow("free up refused for a reason this plugin does not know")
+            << true << off << disabled << QStringLiteral("something-new") << hidden << keepAndFreeUp << false << false << none << false;
         // A reason is for a disabled entry alone.
-        QTest::newRow("a reason on an enabled entry") << true << off << enabled << QStringLiteral("no-helper") << none << hidden << keepAndFreeUp << false << none << true << none
-                                                      << false;
-        QTest::newRow("not in OneDrive yet") << true << off << hidden << none << none << disabled << QStringList{Section, AlwaysKeep, OpenOnline, SectionEnd} << false << none
-                                             << false << none << false;
-        QTest::newRow("open in OneDrive alone") << false << hidden << hidden << none << none << enabled << QStringList{Section, OpenOnline, SectionEnd} << false << none << false
-                                                << none << true;
-        QTest::newRow("values this plugin does not know") << true << QStringLiteral("sideways") << QStringLiteral("perhaps") << none << none << QStringLiteral("later")
-                                                          << QStringList() << false << none << false << none << false;
+        QTest::newRow("a reason on an enabled entry") << true << off << enabled << QStringLiteral("not-uploaded") << hidden << keepAndFreeUp << false << true << none << false;
+        QTest::newRow("not in OneDrive yet") << true << off << hidden << none << disabled << QStringList{Section, AlwaysKeep, OpenOnline, SectionEnd} << false << false << none
+                                             << false;
+        QTest::newRow("open in OneDrive alone") << false << hidden << hidden << none << enabled << QStringList{Section, OpenOnline, SectionEnd} << false << false << none << true;
+        QTest::newRow("values this plugin does not know") << true << QStringLiteral("sideways") << QStringLiteral("perhaps") << none << QStringLiteral("later") << QStringList()
+                                                          << false << false << none << false;
         // Entries with nothing to call the daemon with are not shown.
-        QTest::newRow("entries, and no paths for them") << false << QStringLiteral("on") << enabled << none << none << hidden << QStringList() << false << none << false << none
-                                                        << false;
+        QTest::newRow("entries, and no paths for them") << false << QStringLiteral("on") << enabled << none << hidden << QStringList() << false << false << none << false;
     }
 
     /// When the answer comes the plugin shows what Menu says, each value of
@@ -177,11 +154,9 @@ private Q_SLOTS:
         QFETCH(QString, alwaysKeep);
         QFETCH(QString, freeUp);
         QFETCH(QString, freeUpWhy);
-        QFETCH(QString, blockedBy);
         QFETCH(QString, openOnline);
         QFETCH(QStringList, expected);
         QFETCH(bool, keepChecked);
-        QFETCH(QString, keepToolTip);
         QFETCH(bool, freeUpEnabled);
         QFETCH(QString, freeUpToolTip);
         QFETCH(bool, openOnlineEnabled);
@@ -191,7 +166,7 @@ private Q_SLOTS:
         QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "online-only"));
         const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
         QVERIFY(startFake());
-        m_fake->menuAnswer = FakeSync::menuOf(taken ? QStringList{doc} : QStringList(), alwaysKeep, freeUp, blockedBy, openOnline, doc, freeUpWhy);
+        m_fake->menuAnswer = FakeSync::menuOf(taken ? QStringList{doc} : QStringList(), alwaysKeep, freeUp, openOnline, doc, freeUpWhy);
 
         const QList<QAction *> actions = answered(createPlugin()->actions(selection({doc}), nullptr));
         QCOMPARE(names(actions), expected);
@@ -200,10 +175,7 @@ private Q_SLOTS:
             QCOMPARE(keep->text(), QStringLiteral("Always Keep on This Device"));
             QVERIFY(keep->isCheckable());
             QCOMPARE(keep->isChecked(), keepChecked);
-            QCOMPARE(keep->isEnabled(), keepToolTip.isEmpty());
-            if (!keepToolTip.isEmpty()) {
-                QCOMPARE(keep->toolTip(), keepToolTip);
-            }
+            QVERIFY(keep->isEnabled());
         }
         if (QAction *free = find(actions, FreeUp)) {
             QCOMPARE(free->text(), QStringLiteral("Free Up Space"));
@@ -234,7 +206,7 @@ private Q_SLOTS:
         const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
         QVERIFY(startFake());
         m_fake->menuDelayMs = 700;
-        m_fake->menuAnswer = FakeSync::menuOf({doc}, QStringLiteral("on"), QStringLiteral("enabled"), QString(), QStringLiteral("enabled"), doc);
+        m_fake->menuAnswer = FakeSync::menuOf({doc}, QStringLiteral("on"), QStringLiteral("enabled"), QStringLiteral("enabled"), doc);
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QElapsedTimer clock;
@@ -514,7 +486,7 @@ private Q_SLOTS:
         const KFileItem folder(url(root), QStringLiteral("inode/directory"), S_IFDIR);
         QVERIFY(startFake());
         m_fake->webUrl = QStringLiteral("https://onedrive.example/root");
-        m_fake->menuAnswer = FakeSync::menuOf({}, QStringLiteral("hidden"), QStringLiteral("hidden"), QString(), QStringLiteral("enabled"), root);
+        m_fake->menuAnswer = FakeSync::menuOf({}, QStringLiteral("hidden"), QStringLiteral("hidden"), QStringLiteral("enabled"), root);
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         const QList<QAction *> actions = answered(plugin->actions(KFileItemListProperties({folder}), nullptr));
@@ -689,27 +661,6 @@ private Q_SLOTS:
         QTRY_COMPARE(m_fake->calls(), QStringList{QStringLiteral("Unpin ") + a});
     }
 
-    /// FreeUp's `busy` now also counts files changed here and not uploaded,
-    /// not only files in use (review #6): a successful FreeUp with some
-    /// still says so.
-    void freeUpSuccessWithBusyFilesSaysSo()
-    {
-        Tree tree;
-        QVERIFY(tree.root(QStringLiteral("OneDrive")));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/a.bin"), "hydrated"));
-        const QString a = tree.path(QStringLiteral("OneDrive/a.bin"));
-        QVERIFY(startFake());
-        m_fake->defaultAnswer.files = 1;
-        m_fake->defaultAnswer.busy = 2;
-
-        KAbstractFileItemActionPlugin *plugin = createPlugin();
-        QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(answered(plugin->actions(selection({a}), nullptr)), FreeUp)->trigger();
-        QTRY_COMPARE(errors.count(), 1);
-        QVERIFY2(errors.at(0).at(0).toString().contains(QStringLiteral("2 files are in use or were changed here and were kept")),
-                 qPrintable(errors.at(0).at(0).toString()));
-    }
-
     /// Choosing an action returns at once; the daemon's answer, however long
     /// it takes, arrives later on the event loop.
     void callsDoNotBlock()
@@ -756,7 +707,6 @@ private Q_SLOTS:
         const auto named = [](const char *name) {
             return QStringLiteral("org.konedrive.Error.") + QLatin1String(name);
         };
-        QTest::newRow("Always keep: NoHelper") << true << named("NoHelper") << decoy << QStringLiteral("must first have the helper stop letting its opens through unchecked") << false << true;
         QTest::newRow("Always keep: NoRoot") << true << named("NoRoot") << decoy << QStringLiteral("is no longer registered with KOneDrive") << false << true;
         QTest::newRow("Always keep: OutsideRoot") << true << named("OutsideRoot") << decoy << QStringLiteral("is not inside any of KOneDrive's folders") << false << true;
         QTest::newRow("Always keep: NotManaged") << true << named("NotManaged") << decoy << QStringLiteral("nothing for KOneDrive to keep downloaded") << false << true;
@@ -765,19 +715,17 @@ private Q_SLOTS:
         QTest::newRow("Always keep: a name that is not ours")
             << true << QStringLiteral("org.freedesktop.DBus.Error.InUse") << QStringLiteral("something else entirely")
             << QStringLiteral("Keeping “doc.bin” on this device failed: something else entirely") << true << true;
-        QTest::newRow("Free up: NoHelper") << false << named("NoHelper") << decoy << QStringLiteral("must first have the helper take off any mark") << false << true;
         QTest::newRow("Free up: NoRoot") << false << named("NoRoot") << decoy << QStringLiteral("is no longer registered with KOneDrive") << false << true;
         QTest::newRow("Free up: OutsideRoot") << false << named("OutsideRoot") << decoy << QStringLiteral("is not inside any of KOneDrive's folders") << false << true;
         QTest::newRow("Free up: NotManaged") << false << named("NotManaged") << decoy << QStringLiteral("never frees the space of a file it could not download again") << false << true;
-        QTest::newRow("Free up: NotHydrated") << false << named("NotHydrated") << decoy << QStringLiteral("is not downloaded, so there is no space to free") << false << true;
+        QTest::newRow("Free up: NotHydrated") << false << named("NotHydrated") << decoy << QStringLiteral("is being downloaded, so its space cannot be freed yet") << false << true;
         QTest::newRow("Free up: ModifiedLocally") << false << named("ModifiedLocally") << decoy << QStringLiteral("freeing its space would lose your edits") << false << true;
         QTest::newRow("Free up: InUse") << false << named("InUse") << decoy << QStringLiteral("is open in another program, so its space cannot be freed") << false << true;
         QTest::newRow("Free up: NotUploaded") << false << named("NotUploaded") << decoy << QStringLiteral("is not uploaded yet, so freeing it up would lose the changes made here") << false << true;
-        // The daemon's own shape: `<path> is pinned by <folder>: unpin it
-        // first` -- the refused path first, which may not be "doc.bin".
-        QTest::newRow("Free up: NotAllowed")
-            << false << named("NotAllowed") << QStringLiteral("OneDrive/sub/byAncestor.bin is pinned by OneDrive/sub: unpin it first")
-            << QStringLiteral("Could not free up space: OneDrive/sub/byAncestor.bin is pinned by OneDrive/sub: unpin it first") << true << false;
+        // The daemon's message is shown as it is: it names the refused
+        // path, which may not be "doc.bin".
+        QTest::newRow("Free up: NotAllowed") << false << named("NotAllowed") << QStringLiteral("OneDrive/sub/other.bin is pinned: unpin it first")
+                                             << QStringLiteral("Could not free up space: OneDrive/sub/other.bin is pinned: unpin it first") << true << false;
         QTest::newRow("Free up: Failed") << false << named("Failed") << QStringLiteral("disk full") << QStringLiteral("Freeing up “doc.bin” failed: disk full") << true << true;
     }
 

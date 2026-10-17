@@ -29,14 +29,14 @@ fn rows(path: &Path) -> i64 {
     rusqlite::Connection::open(path).unwrap().query_row("SELECT count(*) FROM items", [], |r| r.get(0)).unwrap()
 }
 
-/// `docs/design/accounts.md` §8.2: today's file, with its folder, becomes account #1; version 1 is kept, private
+/// `docs/design/accounts.md` §9: a version-1 file, with its folder, becomes account #1; version 1 is kept, private
 /// and byte for byte, in `config.toml.v1`; a restart does not migrate again.
 #[tokio::test]
 async fn a_version_1_folder_becomes_account_1() {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::in_dir(dir.path());
     let v1 = format!(
-        "client_id = \"{CLIENT}\"\nsync_root = \"/home/ann/OneDrive\"\nsync_root_intercepted = true\n\
+        "client_id = \"{CLIENT}\"\nsync_root = \"/home/ann/OneDrive\"\n\
          sync_root_id = \"1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d\"\nsync_root_source = \"onedrive\"\n\
          sync_root_baloo_excluded = true\nsync_root_drive_id = \"D1A2B3C4\"\n"
     );
@@ -56,10 +56,8 @@ async fn a_version_1_folder_becomes_account_1() {
             root: Some(RootConfig {
                 path: "/home/ann/OneDrive".into(),
                 id: "1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d".into(),
-                intercepted: true,
                 source: "onedrive".into(),
                 baloo_excluded: true,
-                upgrade_when_helper: None,
             }),
             ..AccountConfig::new(account.id.clone(), "Personal", Origin::Migrated)
         }
@@ -74,36 +72,25 @@ async fn a_version_1_folder_becomes_account_1() {
     assert_eq!(open(&paths, None).await.snapshot(), config, "a restart loads version 2 as it is");
 }
 
-/// §8.2 step 2: what makes version 1 carry an account over, and what it carries.
+/// `docs/design/accounts.md` §9, step 2: what makes version 1 carry an account over, and what it carries.
 #[tokio::test]
 async fn what_version_1_carries_over() {
     let client = format!("client_id = \"{CLIENT}\"\n");
-    let local = format!("{client}sync_root = \"/home/ann/Offline\"\nsync_root_intercepted = false\n");
+    let local = format!("{client}sync_root = \"/home/ann/Offline\"\n");
     let local_root = RootConfig {
         path: "/home/ann/Offline".into(),
         id: String::new(),
-        intercepted: false,
         source: "local".into(),
         baloo_excluded: false,
-        upgrade_when_helper: None,
     };
     /// The case, the file, the files beside it, the wallet's answer, and the account's
     /// folder when an account is carried over.
     type Case<'a> = (&'a str, &'a str, &'a [&'a str], Option<bool>, Option<Option<RootConfig>>);
-    // A folder recorded before its mode was: the fail-closed one, not the one that serves zeros.
-    let older = format!("{client}sync_root = \"/home/ann/OneDrive\"\n");
-    let older_root = RootConfig { path: "/home/ann/OneDrive".into(), intercepted: true, ..local_root.clone() };
-    // A folder registered without interception on purpose: the choice is kept.
-    let chosen = format!("{local}sync_root_upgrade_when_helper = false\n");
-    let chosen_root = RootConfig { upgrade_when_helper: Some(false), ..local_root.clone() };
-    let cases: [Case; 7] = [
+    let cases: [Case; 4] = [
         ("a client id alone", &client, &[], Some(false), None),
         ("a refresh token, or a wallet that does not answer", &client, &[], Some(true), Some(None)),
         ("the cached account", &client, &["account.json"], None, Some(None)),
-        ("the tree store", &client, &["tree.sqlite"], None, Some(None)),
         ("a local folder from before the defaults", &local, &[], None, Some(Some(local_root.clone()))),
-        ("a folder from before its mode was recorded", &older, &[], None, Some(Some(older_root.clone()))),
-        ("a folder without interception by choice", &chosen, &[], None, Some(Some(chosen_root.clone()))),
     ];
     for (case, text, files, wallet, expected) in cases {
         let dir = tempfile::tempdir().unwrap();
@@ -118,9 +105,6 @@ async fn what_version_1_carries_over() {
         assert!(config.accounts.len() <= 1, "{case}");
         assert!(v1_copy(&paths.config_file).exists(), "{case}");
     }
-    assert!(local_root.upgrades_when_helper(), "Ruling 4 carries over");
-    assert!(!older_root.upgrades_when_helper(), "an intercepted folder has nothing to switch");
-    assert!(!chosen_root.upgrades_when_helper(), "a choice is kept");
 
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::in_dir(dir.path());
@@ -129,7 +113,7 @@ async fn what_version_1_carries_over() {
     assert!(!paths.config_file.exists() && !v1_copy(&paths.config_file).exists());
 }
 
-/// §8.3's crash table: the moves are finished by whichever start comes next — after a
+/// `docs/design/accounts.md` §9: the moves are finished by whichever start comes next — after a
 /// crash right after the commit, between the two moves, or before the flag was cleared.
 #[tokio::test]
 async fn the_file_moves_finish_whatever_step_a_crash_stopped_them_at() {

@@ -85,16 +85,10 @@ pub struct Conflict {
     /// Where the file was, and where the kept version is: full paths.
     pub original: String,
     pub kept: String,
-    /// How it was kept: `rescued` (moved out of the way) or `copy` (beside OneDrive's).
+    /// How it was kept: `copy` (beside the file), the one way there is.
     pub how: String,
 }
 
-impl Conflict {
-    /// Whether the version was kept as a copy beside its original, inside the folder.
-    pub fn is_copy(&self) -> bool {
-        self.how == "copy"
-    }
-}
 
 /// Something that happened in a folder (`ActivityLog.Recent`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -114,9 +108,8 @@ pub struct Freed {
     /// Files freed, and their bytes.
     pub files: u32,
     pub bytes: u64,
-    /// Files kept because they were in use or changed here.
-    pub busy: u32,
-    /// Downloaded files kept by a pin below.
+    /// Downloaded files left as they are: being downloaded, open for writing, or changed
+    /// here and not uploaded yet.
     pub pinned: u32,
 }
 
@@ -126,8 +119,6 @@ pub struct FreedSpace {
     /// Files freed, and their bytes.
     pub files: u32,
     pub bytes: u64,
-    /// Files kept because they were in use.
-    pub busy: u32,
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
+use crate::account::account_trouble::AccountTrouble;
 use crate::account::quota::QuotaFigures;
 use crate::config::Mode;
 
@@ -30,11 +31,18 @@ pub struct AccountSnapshot {
     /// What last went wrong: a sign-in, a refresh, a switch. Written through
     /// [`set_error`](Self::set_error) and [`clear_error`](Self::clear_error); `LastError` is
     /// [`published_error`](Self::published_error).
-    pub last_error: String,
+    pub trouble: Option<AccountTrouble>,
     /// Why the account runs read-only against `config.toml`, or holds more than it asked
     /// for: `recompute_mode`'s alone to set and to take back. It stands in `LastError`
     /// where an error would, so one takes the other's place.
     pub mode_note: Option<ModeNote>,
+    /// The user asked for read-only while changes were unsent: the account is still
+    /// read-write and sends them, and switches by itself when none is left
+    /// (`AccountService::keep_read_only_wish`). `None` with no such wish, and once the
+    /// account is read-only. `recompute_mode`'s to set and to take back; its count is
+    /// `FolderAccount::tell_unsent_count`'s. `Account.ReadOnlyWanted` and
+    /// `Account.UnsentBeforeReadOnly`: a state of its own, never in `LastError`.
+    pub read_only_wish: Option<ReadOnlyWish>,
     pub client_id: String,
     /// `Account.Label`: what the account is called here, as `config.toml` keeps it.
     pub label: String,
@@ -42,10 +50,10 @@ pub struct AccountSnapshot {
     pub email: String,
     /// The account's one quota (`crate::account::quota`); 0 and empty until read.
     pub quota: QuotaFigures,
-    /// `Account.Mode`: the mode the account runs in (`docs/design/writes.md` §2) — read-write only
+    /// `Account.Mode`: the mode the account runs in (`docs/design/accounts.md` §10) — read-write only
     /// while `config.toml` says so, `granted_scopes` carries `Files.ReadWrite`, and
     /// `live_drive` is the drive recorded for it. The account's folder follows it
-    /// (`crate::sync::mode::follow`).
+    /// (`crate::account_folder::mode::watch_account`).
     pub mode: Mode,
     /// What the account's last token may be used for: the token response's `scope` (or what
     /// was asked for, when it said nothing), never more than was asked for — see
@@ -65,8 +73,9 @@ impl Default for AccountSnapshot {
     fn default() -> Self {
         Self {
             state: SignInState::SignedOut,
-            last_error: String::new(),
+            trouble: None,
             mode_note: None,
+            read_only_wish: None,
             client_id: String::new(),
             label: String::new(),
             display_name: String::new(),
@@ -83,21 +92,22 @@ impl Default for AccountSnapshot {
 impl AccountSnapshot {
     /// `LastError` as published: what went wrong, or with nothing wrong the mode's note.
     pub fn published_error(&self) -> String {
-        match &self.mode_note {
-            Some(note) if self.last_error.is_empty() => note.text(),
-            _ => self.last_error.clone(),
+        match (&self.trouble, &self.mode_note) {
+            (Some(trouble), _) => trouble.to_string(),
+            (None, Some(note)) => note.to_string(),
+            (None, None) => String::new(),
         }
     }
 
     /// Says what went wrong, in place of whatever `LastError` said, the mode's note included.
-    pub fn set_error(&mut self, message: impl Into<String>) {
-        self.last_error = message.into();
+    pub(crate) fn set_error(&mut self, trouble: AccountTrouble) {
+        self.trouble = Some(trouble);
         self.mode_note = None;
     }
 
     /// Empties `LastError`: the error and the mode's note.
-    pub fn clear_error(&mut self) {
-        self.last_error.clear();
+    pub(crate) fn clear_error(&mut self) {
+        self.trouble = None;
         self.mode_note = None;
     }
 
@@ -105,14 +115,14 @@ impl AccountSnapshot {
     /// error said since it was set stays.
     pub fn set_mode_note(&mut self, note: Option<ModeNote>) {
         if note.is_some() {
-            self.last_error.clear();
+            self.trouble = None;
         }
         self.mode_note = note;
     }
 
     /// What goes when the account is no longer signed in: its name and quota, and with its
     /// token what the token allowed — so it runs read-only until it signs in again.
-    pub fn clear_account(&mut self) {
+    pub(crate) fn clear_account(&mut self) {
         self.display_name.clear();
         self.email.clear();
         self.quota = QuotaFigures::default();
@@ -120,7 +130,17 @@ impl AccountSnapshot {
         self.wider_grant.clear();
         self.live_drive.clear();
         self.mode = Mode::ReadOnly;
+        self.read_only_wish = None;
     }
+}
+
+/// A wish for read-only that waits for what is unsent
+/// ([`AccountSnapshot::read_only_wish`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadOnlyWish {
+    /// How many changes are still to send, as the folder last counted them; 0 until its
+    /// first plan counted.
+    pub unsent: u64,
 }
 
 /// Why an account runs read-only against `config.toml`, or holds more than it asked for
@@ -141,27 +161,6 @@ pub enum ModeNote {
     SignInToWrite,
     /// Which drive the sign-in reaches has not been seen yet.
     DriveNotSeen,
-}
-
-impl ModeNote {
-    /// The note as `LastError` says it.
-    pub fn text(&self) -> String {
-        use super::{CONFIG_UNREADABLE, DRIVE_MISMATCH, DRIVE_NOT_SEEN, NO_DRIVE_RECORDED, SIGN_IN_TO_WRITE, WIDER_GRANT};
-        match self {
-            Self::WiderGrant(granted) => format!(
-                "{WIDER_GRANT} also change files ({granted}); konedrive uses it to read only. The consent \
-                 stays with Microsoft until it is revoked at https://account.live.com/consent/Manage"
-            ),
-            Self::ConfigUnreadable => CONFIG_UNREADABLE.to_owned(),
-            Self::NoDriveRecorded => NO_DRIVE_RECORDED.to_owned(),
-            Self::DriveMismatch { live, recorded } => format!(
-                "{DRIVE_MISMATCH} {live}, but config.toml records drive {recorded} for it; it runs read-only \
-                 until the two agree"
-            ),
-            Self::SignInToWrite => SIGN_IN_TO_WRITE.to_owned(),
-            Self::DriveNotSeen => DRIVE_NOT_SEEN.to_owned(),
-        }
-    }
 }
 
 /// Shared, observable account state.
@@ -185,7 +184,7 @@ impl StateHandle {
     }
 
     /// Atomically moves from `from` to `to`; returns false (and changes nothing) otherwise.
-    pub fn try_transition(&self, from: SignInState, to: SignInState) -> bool {
+    pub(crate) fn try_transition(&self, from: SignInState, to: SignInState) -> bool {
         self.tx.send_if_modified(|s| {
             if s.state == from {
                 s.state = to;
@@ -204,13 +203,13 @@ impl StateHandle {
 /// What a failed token refresh does to the account's state.
 impl konedrive_graph::token::RefreshReport for StateHandle {
     fn failed(&self, message: &str) {
-        self.update(|s| s.set_error(message));
+        self.update(|s| s.set_error(AccountTrouble::Token { detail: message.to_owned() }));
     }
 
     fn signed_out(&self, message: &str) {
         self.update(|s| {
             s.state = SignInState::SignedOut;
-            s.set_error(message);
+            s.set_error(AccountTrouble::Token { detail: message.to_owned() });
             s.clear_account();
         });
     }

@@ -44,12 +44,12 @@ inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveA
     return argument;
 }
 
-/// One entry of Conflicts(): (unix time, original full path, full path of the kept version,
-/// how it was kept: "rescued", moved out of the way, or "copy", kept beside the original).
+/// One entry of Conflicts(): (unix time, original full path, full path of the copy kept
+/// beside it, how it was kept: always "copy").
 struct KonedriveConflict {
     qint64 time = 0;
     QString original;
-    QString rescued;
+    QString copy;
     QString kind;
 };
 using KonedriveConflictList = QList<KonedriveConflict>;
@@ -58,7 +58,7 @@ Q_DECLARE_METATYPE(KonedriveConflict)
 inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveConflict &conflict)
 {
     argument.beginStructure();
-    argument << conflict.time << conflict.original << conflict.rescued << conflict.kind;
+    argument << conflict.time << conflict.original << conflict.copy << conflict.kind;
     argument.endStructure();
     return argument;
 }
@@ -66,7 +66,7 @@ inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveConflic
 inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveConflict &conflict)
 {
     argument.beginStructure();
-    argument >> conflict.time >> conflict.original >> conflict.rescued >> conflict.kind;
+    argument >> conflict.time >> conflict.original >> conflict.copy >> conflict.kind;
     argument.endStructure();
     return argument;
 }
@@ -119,9 +119,9 @@ inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveO
     return argument;
 }
 
-/// One entry of Outbox(): (seq, kind, full path, state, bytes sent, bytes in all, reason,
+/// One entry of Changes(): (seq, kind, full path, state, bytes sent, bytes in all, reason,
 /// next try in unix seconds or 0). The window's use of it is W8b's.
-struct KonedriveOutboxRow {
+struct KonedriveUploadQueueRow {
     qulonglong seq = 0;
     QString kind;
     QString path;
@@ -131,10 +131,10 @@ struct KonedriveOutboxRow {
     QString reason;
     qint64 nextTry = 0;
 };
-using KonedriveOutboxList = QList<KonedriveOutboxRow>;
-Q_DECLARE_METATYPE(KonedriveOutboxRow)
+using KonedriveUploadQueueList = QList<KonedriveUploadQueueRow>;
+Q_DECLARE_METATYPE(KonedriveUploadQueueRow)
 
-inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveOutboxRow &row)
+inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveUploadQueueRow &row)
 {
     argument.beginStructure();
     argument << row.seq << row.kind << row.path << row.state << row.done << row.total << row.reason << row.nextTry;
@@ -142,7 +142,7 @@ inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveOutboxR
     return argument;
 }
 
-inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveOutboxRow &row)
+inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveUploadQueueRow &row)
 {
     argument.beginStructure();
     argument >> row.seq >> row.kind >> row.path >> row.state >> row.done >> row.total >> row.reason >> row.nextTry;
@@ -151,7 +151,7 @@ inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveO
 }
 
 /// One row of NotUploadedSummary(): (group, reason, count, bytes). Groups:
-/// one-action, per-file, never, waiting.
+/// one-action, per-file, waiting.
 struct KonedriveKeptBack {
     QString group;
     QString reason;
@@ -191,8 +191,8 @@ inline void registerKonedriveSyncTypes()
     qDBusRegisterMetaType<KonedriveOverall>();
     qDBusRegisterMetaType<KonedriveTransfer>();
     qDBusRegisterMetaType<KonedriveTransferList>();
-    qDBusRegisterMetaType<KonedriveOutboxRow>();
-    qDBusRegisterMetaType<KonedriveOutboxList>();
+    qDBusRegisterMetaType<KonedriveUploadQueueRow>();
+    qDBusRegisterMetaType<KonedriveUploadQueueList>();
     qDBusRegisterMetaType<KonedriveKeptBack>();
     qDBusRegisterMetaType<KonedriveKeptBackList>();
 }

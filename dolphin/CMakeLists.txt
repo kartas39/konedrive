@@ -4,11 +4,13 @@ project(konedrive-dolphin VERSION 0.1.0 LANGUAGES CXX)
 
 # Dolphin integration: an overlay emblem for each file's state and pin, and
 # "Always keep on this device" / "Free up space" / "Open in OneDrive" in the context menu. Neither
-# plugin ever opens a file in the sync folder -- opening a placeholder
-# downloads it.
+# plugin ever opens a file in the sync folder -- reading one that is not on
+# this computer downloads it.
 
 set(QT_MIN_VERSION "6.8.0")
-set(KF_MIN_VERSION "6.8.0")
+# Below 6.21 KIO's "Move to Trash" copies the file into the home trash, which downloads it
+# (docs/limitations/K34.md).
+set(KF_MIN_VERSION "6.21.0")
 
 find_package(ECM ${KF_MIN_VERSION} REQUIRED NO_MODULE)
 set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH})

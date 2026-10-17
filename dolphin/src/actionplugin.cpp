@@ -35,9 +35,6 @@ public:
         , m_client(new konedrive::SyncClient(QDBusConnection::sessionBus(), this))
     {
         connect(m_client, &konedrive::SyncClient::failed, this, &KAbstractFileItemActionPlugin::error);
-        connect(m_client, &konedrive::SyncClient::freeUpKeptBusy, this, [this](uint busy) {
-            Q_EMIT error(i18ncp("@info", "%1 file is in use or was changed here and was kept.", "%1 files are in use or were changed here and were kept.", busy));
-        });
         connect(m_client, &konedrive::SyncClient::webUrlReady, this, [this](const QString &path, const QString &address) {
             // Only an address of the web is handed to the desktop, whatever
             // answered on the bus: never a local file or another scheme.
@@ -167,12 +164,8 @@ private:
 
             if (alwaysKeep) {
                 alwaysKeep->setVisible(answer.alwaysKeep != Keep::Hidden);
-                alwaysKeep->setChecked(answer.alwaysKeep == Keep::On || answer.alwaysKeep == Keep::OnLocked);
-                // Checked and locked: unchecking it (Unpin()) would be refused.
-                alwaysKeep->setEnabled(answer.alwaysKeep == Keep::Off || answer.alwaysKeep == Keep::On);
-                if (answer.alwaysKeep == Keep::OnLocked) {
-                    alwaysKeep->setToolTip(konedrive::keptByAFolderToolTip(answer.blockedBy));
-                }
+                alwaysKeep->setChecked(answer.alwaysKeep == Keep::On);
+                alwaysKeep->setEnabled(answer.alwaysKeep != Keep::Hidden);
             }
             if (freeUp) {
                 freeUp->setVisible(answer.freeUp != Offer::Hidden);
@@ -180,7 +173,7 @@ private:
                 // Why FreeUp() would be refused, in a tooltip's length: the
                 // catalogue's words (crates/konedrive-text, src/menu.rs),
                 // beside those of the refusal itself.
-                const QString why = konedrive::freeUpWhyToolTip(answer.freeUp == Offer::Disabled ? answer.freeUpWhy : Why::NotSaid, answer.blockedBy);
+                const QString why = konedrive::freeUpWhyToolTip(answer.freeUp == Offer::Disabled ? answer.freeUpWhy : Why::NotSaid);
                 if (!why.isEmpty()) {
                     freeUp->setToolTip(why);
                 }

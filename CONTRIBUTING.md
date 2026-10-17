@@ -1,7 +1,7 @@
 # Contributing
 
-Thanks for looking at KOneDrive. This is a young, alpha-stage project (read-only phase — see
-the README), so expect things to move. A few practical notes before you send a change.
+Thanks for looking at KOneDrive. This is a young, alpha-stage project (see the README), so expect
+things to move. A few practical notes before you send a change.
 
 ## Building
 
@@ -23,7 +23,7 @@ cargo build --workspace
 There are three layers; run all of them before sending a change that touches the code they
 cover.
 
-**Rust workspace** (daemon, CLI, helper, the fs and proto crates):
+**Rust workspace** (daemon, CLI and the crates below them):
 
 ```
 cargo test --workspace
@@ -36,34 +36,28 @@ cmake -S app -B build/app -DBUILD_TESTING=ON && cmake --build build/app && ctest
 cmake -S dolphin -B build/dolphin -DBUILD_TESTING=ON && cmake --build build/dolphin && ctest --test-dir build/dolphin --output-on-failure
 ```
 
-**The VM suite** — the fanotify helper needs a real kernel and root, so its end-to-end tests run
-inside a `virtme-ng` VM, never on the host:
+**The VM suite** — a sync folder is a FUSE mount, and nothing is mounted on the host: the tests
+that need a mounted folder run inside a `virtme-ng` VM, on ext4, over the fake OneDrive. Run it
+when a change touches the mount, the steps, the listing or the tasks of a folder's sync:
 
 ```
-tests/vm/run.sh quick   # the routine run: the end-to-end suite on ext4 (one VM)
-tests/vm/run.sh full    # btrfs, ext4 and xfs, three VMs at once: slower; for changes that may
-                         # behave differently per filesystem
+tests/fuse-probe/run.sh                                 # every default group
+tests/fuse-probe/run.sh file_reads                      # one group
+ONLY="<scenario>" tests/fuse-probe/run.sh file_writes   # one scenario
+tests/fuse-probe/run.sh kio_trash                       # by name only: needs Qt 6 and KF 6 development packages
 ```
 
-`scripts/install-helper.sh` has its own test, which neither of those runs. It runs the installer as
-root against a scratch tree and a fake `systemctl`, never the real system. Run it whenever you
-change the installer or the helper's unit:
-
-```
-tests/vm/run.sh tests/vm/install_helper_test.sh
-```
-
-Whenever you change the helper's unit or the syscalls it makes, run `tests/vm/run.sh unit`: it
-boots the VM with systemd and starts the real unit.
+The groups are `service`, `mounted_folder`, `file_writes`, `file_reads`, `daemon_restarts` and
+`cli`. The host needs `vng` (virtme-ng), QEMU and `/dev/kvm`, and no `sudo`:
+[`docs/developing.md`](docs/developing.md), "The VM suite".
 
 **What runs by itself.** A pull request into `dev` runs the daemon's unit tests, the window's and
-the Dolphin plugins' tests and the structure checks; a pull request into `main` runs the suite
-above on btrfs, ext4 and xfs, as root on GitHub's runner (`tests/vm/run.sh host`, which refuses to
-run where `GITHUB_ACTIONS` is not set). A release runs no test of the code: `docs/releasing.md`, "Where the tests run".
+the Dolphin plugins' tests and the structure checks. A release runs no test of the code:
+`docs/releasing.md`, "Where the tests run".
 
-Root is never used outside that VM. If a change needs anything privileged to exercise or debug
-(mounting a filesystem, running as root to poke at fanotify directly), do it inside
-`virtme-ng`, not on your own machine — see `tests/vm/run.sh` for how the suite boots one.
+Nothing of KOneDrive needs root, and no test uses it on the host. If a change needs anything
+privileged to exercise or debug (mounting a filesystem), do it inside `virtme-ng`, not on your own
+machine — see `tests/fuse-probe/run.sh` for how the suite boots one.
 
 ## The structure of the code
 
@@ -80,14 +74,15 @@ These rules hold for every change:
 2. **Tests are never in a source file.** The unit tests of `x.rs` are in `x/tests.rs`, or in
    `x/tests/` by topic. Integration tests stay in `crates/*/tests/`.
 3. **Layers.** In `konedrived`, a directory of `crates/konedrived/src` uses only the
-   directories before it in this order: `config/`, `account/`, `helper/`, `folder/`,
-   `conditions/`, `status/`, `hydration/`, `local/`, `upload/`, `remote/`, `desktop/`, `sync/`,
-   `daemon/`, `dbus/`. And `remote/` does not use `upload/`. Test code is exempt. What a lower
+   directories before it in this order: `config/`, `account/`, `folder/`,
+   `conditions/`, `status/`, `content_source/`, `local/`, `sync_parts/`, `mount/`, `folder_steps/`,
+   `onedrive_steps/`, `listing/`, `desktop/`, `upload_queue/`, `sync_plan_task/`, `sync_tasks/`,
+   `account_folder/`, `daemon/`, `dbus/`. And `listing/` does not use `onedrive_steps/`. Test code is exempt. What a lower
    directory needs from a higher one, it asks through a trait the higher one implements.
 4. **One D-Bus interface, one file** in `crates/konedrived/src/dbus/`, named like its XML in
    `dbus/`.
-5. **Every `impl SyncService` is in `sync/`.** The directories before `sync/` do not know
-   `SyncService`.
+5. **Every `impl SyncService` is in `account_folder/`.** The directories before
+   `account_folder/` do not know `SyncService`.
 6. **A guard**, `scripts/check-structure.sh`, checks rules 1–3 and 7. It runs on every pull request
    (`.github/workflows/structure.yml`); run it yourself before sending a change:
 
@@ -112,15 +107,12 @@ scripts/check-structure.sh
 7. **Locks.** A lock of `std::sync` is taken through `crate::panic::lock`, `read` or `write`,
    which go on after a holder of the lock panicked; never with `.lock().unwrap()` or a
    recovery written out. What is done under such a lock must therefore not be able to leave
-   its data half-changed. `konedrive-graph` and `konedrive-tree` have a function of their own
-   for it. Not asked of test code, test doubles, the helper and the files that hold those
+   its data half-changed. `konedrive-graph` has a function of its own
+   for it. Not asked of test code, test doubles and the files that hold those
    functions. What the guard does with this rule:
 
-   - **Not checked**: `crates/konedrive-helper/`, which has its own `lock` and writes the
-     recovery out in a few more places (code that runs as root is not changed for tidiness);
-     files named `testing.rs` or under `testing/`; and the three files that hold the functions
-     (`konedrived/src/panic.rs`, `konedrive-graph/src/lib.rs`,
-     `konedrive-tree/src/outbox/changes.rs`), where a second lock written with `unwrap` passes.
+   - **Not checked**: files named `testing.rs` or under `testing/`; and the two files that hold the functions
+     (`konedrived/src/panic.rs`, `konedrive-graph/src/lib.rs`), where a second lock written with `unwrap` passes.
    - **Found**: `.lock()`, `.read()` or `.write()` with nothing passed, or `Mutex::lock(…)` and
      the like, followed in the same chain (on the line, or on the next line that is not empty
      or a comment) by `unwrap…`, `expect`, `ok`, `map_err`, `is_ok` or `is_err`.
@@ -187,7 +179,7 @@ and before a release is built.
 kernel, the filesystem, OneDrive or the desktop decides, or removing the limit would give up
 something the project chose to keep. It is written for whoever implements.
 
-- If your change meets such a limit, add an entry: a file named by its id (`F53.md`) and a line
+- If your change meets such a limit, add an entry: a file named by its id (`F296.md`) and a line
   for it in the index, `docs/limitations/README.md`. An entry is a title and four short lines:
   why the limit exists, what follows from it, why it stays, where to look. No retelling of the
   code.
@@ -201,8 +193,8 @@ something the project chose to keep. It is written for whoever implements.
 Look at `git log` before writing a commit message: this project writes commits as
 `type(scope): a plain-language sentence describing what changed`, in the imperative-adjacent,
 descriptive style already in the history (`fix(app): …`, `feat(daemon): …`, `docs(log): …`,
-`test(vm): …`), rather than a terse label. Keep the scope to the part of the tree that changed
-(`app`, `daemon`, `helper`, `dbus`, `docs`, `vm`, …).
+rather than a terse label. Keep the scope to the part of the tree that changed
+(`app`, `daemon`, `dbus`, `docs`, …).
 
 ## Licensing
 

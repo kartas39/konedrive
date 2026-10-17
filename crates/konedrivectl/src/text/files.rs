@@ -34,76 +34,33 @@ pub fn where_here_text(here: &str) -> String {
     format!("It is at {here}.")
 }
 
-/// `sync conflicts`: each local version kept, where it was and where it is
-/// now, and when: moved out of the way, or — in a read-write folder — kept as
-/// a copy beside OneDrive's.
+/// `sync conflicts`: each file changed here and in OneDrive, the copy kept of the local
+/// version beside it, and when.
 pub fn conflicts_text(conflicts: &[Conflict]) -> String {
     if conflicts.is_empty() {
         return "No conflicts.\n".to_owned();
     }
     let mut out = String::new();
-    for conflict in conflicts {
-        let Conflict { at, original, kept: rescued, .. } = conflict;
-        if conflict.is_copy() {
-            out.push_str(&format!(
-                "{original}\n    changed here and in OneDrive: yours is kept beside it as {rescued}, {}\n",
-                local_time(*at)
-            ));
-        } else {
-            out.push_str(&format!("{original}\n    moved to {rescued} on {}\n", local_time(*at)));
-        }
+    for Conflict { at, original, kept, .. } in conflicts {
+        out.push_str(&format!("{original}\n    changed here and in OneDrive: yours is kept beside it as {kept}, {}\n", local_time(*at)));
     }
     out
 }
 
-/// The directories the files `conflicts` lists were rescued to: for each, the rescued path
-/// with the original's place in `folder` taken off its end (`rescued/<id>/<time>`, or a
-/// directory beside a folder on another filesystem), or the file's own directory when that
-/// cannot be told. Each once, in the order first met.
-pub fn rescue_dirs(folder: &str, conflicts: &[Conflict]) -> Vec<String> {
-    use std::path::Path;
-    let mut dirs: Vec<String> = Vec::new();
-    // A copy is in the folder, beside its original, and stays with it.
-    for Conflict { original, kept, .. } in conflicts.iter().filter(|c| !c.is_copy()) {
-        let rescued = Path::new(kept);
-        let within = if folder.is_empty() { None } else { Path::new(original).strip_prefix(folder).ok() };
-        let dir = match within {
-            Some(within) if within.components().next().is_some() && rescued.ends_with(within) => {
-                let mut dir = rescued.to_path_buf();
-                for _ in within.components() {
-                    dir.pop();
-                }
-                dir
-            }
-            _ => rescued.parent().map(Path::to_path_buf).unwrap_or_default(),
-        };
-        let dir = dir.display().to_string();
-        if !dirs.contains(&dir) {
-            dirs.push(dir);
-        }
-    }
-    dirs
-}
-
-/// `sync free-up-space`: "Freed N files (X). M files were in use and kept."
+/// `sync free-up-space`: "Freed N files (X)."
 pub fn free_up_text(freed: &FreedSpace) -> String {
-    let FreedSpace { files, bytes, busy } = *freed;
-    if files == 0 && busy == 0 {
+    let FreedSpace { files, bytes } = *freed;
+    if files == 0 {
         return "Nothing was downloaded, so there was nothing to free up.".to_owned();
     }
-    let mut out = format!("Freed {files} {} ({}).", if files == 1 { "file" } else { "files" }, human_bytes(bytes));
-    if busy > 0 {
-        let were = if busy == 1 { "file was" } else { "files were" };
-        out.push_str(&format!(" {busy} {were} in use and kept."));
-    }
-    out
+    format!("Freed {files} {} ({}).", if files == 1 { "file" } else { "files" }, human_bytes(bytes))
 }
 
 /// `sync hydrate`, done.
 pub const DOWNLOADED: &str = "Downloaded.";
 
 /// `sync dehydrate`, done.
-pub const FREED_UP: &str = "Freed up.";
+pub const FREED_UP: &str = "Freed up: it takes no space on this computer.";
 
 /// How a suggested command starts when the accounts could not be read to name one.
 pub const PLAIN_PREFIX: &str = "konedrivectl";
@@ -125,16 +82,10 @@ pub fn pin_text(queued: u32, prefix: &str) -> String {
     }
 }
 
-/// The path a `NotAllowed` refusal is about, and what pins it: the daemon
-/// says exactly `<path> is pinned by <folder>: unpin it first`, and the
-/// folder is the path or one above it — which tells the two apart even when
-/// a name holds " is pinned by " itself.
-pub(crate) fn pinned_parts(detail: &str) -> Option<(&str, &str)> {
-    const BY: &str = " is pinned by ";
-    let both = detail.strip_suffix(": unpin it first")?;
-    both.match_indices(BY)
-        .map(|(at, _)| (&both[..at], &both[at + BY.len()..]))
-        .find(|(path, by)| std::path::Path::new(path).starts_with(by))
+/// The path a `NotAllowed` refusal is about: the daemon says exactly
+/// `<path> is pinned: unpin it first`.
+pub(crate) fn pinned_path(detail: &str) -> Option<&str> {
+    detail.strip_suffix(" is pinned: unpin it first")
 }
 
 /// The one path a `NotAllowed` or `NotUploaded` refusal of a call on several
@@ -147,7 +98,7 @@ pub fn refused_path(error: &zbus::Error) -> Option<&str> {
 /// [`refused_path`], on the error's name and message.
 fn refused_path_of<'a>(name: &str, detail: &'a str) -> Option<&'a str> {
     match Refusal::parse(name) {
-        Refusal::NotAllowed => pinned_parts(detail).map(|(path, _)| path),
+        Refusal::NotAllowed => pinned_path(detail),
         // "<path> is not uploaded yet, so freeing it up would lose …"
         Refusal::NotUploaded => detail.split_once(" is not uploaded yet").map(|(path, _)| path),
         _ => None,
@@ -157,7 +108,7 @@ fn refused_path_of<'a>(name: &str, detail: &'a str) -> Option<&'a str> {
 /// `sync unpin`: how many pins came off; the files stay.
 pub fn unpin_text(unpinned: u32) -> String {
     match unpinned {
-        0 => "Nothing here had a pin of its own, so nothing changed.".to_owned(),
+        0 => "Nothing here was kept on this device, so nothing changed.".to_owned(),
         1 => "No longer kept on this device. What is downloaded stays; `konedrivectl sync free` frees it.".to_owned(),
         n => format!(
             "{n} items are no longer kept on this device. What is downloaded stays; `konedrivectl sync free` frees it."
@@ -166,7 +117,7 @@ pub fn unpin_text(unpinned: u32) -> String {
 }
 
 /// The keys of `Files.Menu`'s answer, in the order `sync menu` prints them.
-const MENU_KEYS: [&str; 7] = ["paths", "always-keep", "free-up", "free-up-why", "blocked-by", "open-online", "open-online-path"];
+const MENU_KEYS: [&str; 6] = ["paths", "always-keep", "free-up", "free-up-why", "open-online", "open-online-path"];
 
 /// `sync menu`: the answer of `Files.Menu`, one line per key, `key: value`. A list is
 /// its entries, each quoted, with a space between; an empty value leaves the line at
@@ -199,12 +150,11 @@ pub fn menu_text(answer: &std::collections::HashMap<String, zbus::zvariant::Owne
     out
 }
 
-/// `sync free`: what was freed, what was kept because it was in use or
-/// changed here (FreeUp's `busy` counts both), and the downloaded files a pin
-/// of their own — or of a folder below the one freed — kept.
+/// `sync free`: what was freed, and the downloaded files left as they are: being
+/// downloaded, open for writing, or changed here and not uploaded yet.
 pub fn free_text(freed: &Freed) -> String {
-    let Freed { files, bytes, busy, pinned } = *freed;
-    if files == 0 && busy == 0 && pinned == 0 {
+    let Freed { files, bytes, pinned } = *freed;
+    if files == 0 && pinned == 0 {
         return "Nothing here was downloaded, so there was nothing to free up.".to_owned();
     }
     let mut out = if files == 0 {
@@ -212,13 +162,9 @@ pub fn free_text(freed: &Freed) -> String {
     } else {
         format!("Freed {files} {} ({}).", if files == 1 { "file" } else { "files" }, human_bytes(bytes))
     };
-    if busy > 0 {
-        let were = if busy == 1 { "file was" } else { "files were" };
-        out.push_str(&format!(" {busy} {were} in use or changed here, and kept."));
-    }
     if pinned > 0 {
         let were = if pinned == 1 { "file was" } else { "files were" };
-        out.push_str(&format!(" {pinned} {were} kept: a file or folder below is kept on this device."));
+        out.push_str(&format!(" {pinned} {were} kept on this device: being downloaded, open for writing, or changed here and not uploaded yet."));
     }
     out
 }

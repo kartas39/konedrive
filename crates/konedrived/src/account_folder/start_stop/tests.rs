@@ -1,0 +1,141 @@
+use std::path::Path;
+
+use konedrive_tree::RebuildLoss;
+
+use super::*;
+use crate::account_folder::staged_folder::{make_service, read_sync, stage_folder, START, the_cause};
+use crate::account_folder::SyncError;
+
+const FOLDER: &str = "/home/u/OneDrive";
+
+fn taken_down(attempt: u32, next_try_at: Option<i64>) -> Sync {
+    Sync::Stopped(Why::TakenDown { cause: the_cause(), attempt, next_try_at })
+}
+
+fn refusals() -> [StartRefusal; 3] {
+    [StartRefusal::Store("the store".into()), StartRefusal::DriveNotKnown, StartRefusal::Mount("the mount".into())]
+}
+
+#[test]
+fn a_refused_try_after_a_take_down_keeps_the_cause_and_counts_the_try() {
+    // The owner's own try: one more than the starts tried before. The next is due after the pause of the new count.
+    for (tried_before, wait) in [(0, 5 * 60), (1, 30 * 60), (2, 3600), (7, 3600)] {
+        for refusal in refusals() {
+            let own_try = TakeDownTry { attempt: tried_before + 1, started_at: START };
+            let why = decide_refused_sync(&taken_down(tried_before, Some(START)), Some(own_try), &refusal, Path::new(FOLDER), START + 2);
+            assert_eq!(why, Why::TakenDown { cause: the_cause(), attempt: tried_before + 1, next_try_at: Some(START + 2 + wait) }, "{refusal:?}");
+        }
+    }
+}
+
+#[test]
+fn a_refused_refresh_of_a_taken_down_folder_leaves_its_count_and_its_next_try() {
+    for next_try_at in [Some(START + 40), None] {
+        for refusal in refusals() {
+            // The user's try carries the count as it was; a start that is no try at all changes nothing either.
+            for user_try in [Some(TakeDownTry { attempt: 2, started_at: START + 10 }), None] {
+                let why = decide_refused_sync(&taken_down(2, next_try_at), user_try, &refusal, Path::new(FOLDER), START + 10);
+                assert_eq!(why, Why::TakenDown { cause: the_cause(), attempt: 2, next_try_at }, "{refusal:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_start_refused_for_no_drive_waits_for_the_account() {
+    for before in [Sync::Stopped(Why::NotStarted), Sync::Stopped(Why::Interrupted), Sync::Stopped(Why::CannotStart(the_cause())), Sync::Stopped(Why::DriveNotKnown(the_cause()))] {
+        let why = decide_refused_sync(&before, None, &StartRefusal::DriveNotKnown, Path::new(FOLDER), START);
+        assert!(matches!(&why, Why::DriveNotKnown(said) if said.to_string().contains(FOLDER)), "{why:?}");
+    }
+}
+
+#[test]
+fn a_folder_of_an_older_konedrive_says_to_remove_the_account_and_add_it_again() {
+    let why = decide_refused_sync(&Sync::Stopped(Why::NotStarted), None, &StartRefusal::LegacyPlaceholders, Path::new(FOLDER), START);
+    assert_eq!(why, Why::CannotStart(FolderTrouble::LegacyPlaceholders { path: FOLDER.into() }));
+}
+
+#[test]
+fn any_other_refusal_of_a_folder_that_was_not_taken_down_is_said_with_its_cause() {
+    let path = || std::path::PathBuf::from(FOLDER);
+    let cases = [
+        (StartRefusal::Store("the store is locked".into()), FolderTrouble::StoreFailed { path: path(), detail: "the store is locked".into() }),
+        (StartRefusal::Mount("no fuse".into()), FolderTrouble::MountFailed { path: path(), detail: "no fuse".into() }),
+    ];
+    for (refusal, trouble) in cases {
+        let why = decide_refused_sync(&Sync::Stopped(Why::NotStarted), None, &refusal, Path::new(FOLDER), START);
+        assert_eq!(why, Why::CannotStart(trouble), "{refusal:?}");
+    }
+}
+
+#[test]
+fn what_a_rebuild_lost_is_said_only_when_something_the_user_misses_was_lost() {
+    let none = RebuildLoss::default();
+    assert_eq!(SyncService::describe_rebuild_loss(&none), None);
+    // The activity log and the conflicts' list are not said: nothing of the user's work goes with them.
+    assert_eq!(SyncService::describe_rebuild_loss(&RebuildLoss { activity_events: 9, conflicts: 2, ..none }), None);
+    let cases = [
+        (RebuildLoss { pins: 3, ..none }, vec!["3 pin(s)"]),
+        (RebuildLoss { unsent_changes_not_on_disk: 2, ..none }, vec!["2 change(s)"]),
+        (RebuildLoss { open_upload_sessions: 1, ..none }, vec!["1 upload(s)"]),
+        (RebuildLoss { pins: 1, unsent_changes_not_on_disk: 4, open_upload_sessions: 5, ..none }, vec!["1 pin(s)", "4 change(s)", "5 upload(s)"]),
+    ];
+    for (loss, named) in cases {
+        let said = SyncService::describe_rebuild_loss(&loss).expect("something was lost");
+        for words in named {
+            assert!(said.contains(words), "{said}");
+        }
+    }
+}
+
+/// What a rebuild lost reaches the activity log as one event of the folder, whose detail
+/// is the sentence; a rebuild that lost nothing the user misses is no event.
+#[test]
+fn what_a_rebuild_lost_is_an_event_of_the_activity_log_at_the_folders_path() {
+    let none = RebuildLoss::default();
+    assert_eq!(SyncService::make_rebuild_loss_event(Path::new(FOLDER), &RebuildLoss { activity_events: 9, ..none }), None);
+    let loss = RebuildLoss { pins: 3, ..none };
+    let event = SyncService::make_rebuild_loss_event(Path::new(FOLDER), &loss).expect("something was lost");
+    assert_eq!((event.kind, event.path.as_str()), (konedrive_tree::ActivityKind::StoreRebuilt, FOLDER));
+    assert_eq!(Some(event.detail), SyncService::describe_rebuild_loss(&loss));
+    assert_eq!(konedrive_tree::ActivityKind::parse("store-rebuilt"), Some(konedrive_tree::ActivityKind::StoreRebuilt));
+}
+
+/// `Refresh()` of a folder a fault took down tries at once; refused, the folder is taken
+/// down still, with the cause, the count and the time of its next try as they were, and the
+/// refusal says the cause.
+#[tokio::test]
+async fn a_refresh_of_a_taken_down_folder_that_is_refused_leaves_it_as_it_was() {
+    let (service, _clock) = make_service();
+    let folder = tempfile::tempdir().unwrap();
+    stage_folder(&service, folder.path(), taken_down(2, Some(START + 1800)), None).await;
+    let refused = service.refresh().await.unwrap_err();
+    assert!(matches!(&refused, SyncError::NotUp(why) if why.contains("the cause")), "{refused:?}");
+    let (sync, take_down_try) = read_sync(&service, |folder| {
+        let up = folder.up().expect("the folder is up");
+        (matches!(&up.sync, Sync::Stopped(Why::TakenDown { cause, attempt: 2, next_try_at: Some(due) }) if *cause == the_cause() && *due == START + 1800), up.take_down_try)
+    })
+    .await;
+    assert!(sync, "the count and the next try are as they were");
+    assert_eq!(take_down_try, None, "the user's try is over");
+    assert_eq!(service.last_error(), the_cause().to_string(), "the trouble shown is the take-down's cause");
+}
+
+/// A start that is refused says why as the folder's blocking trouble, and `Refresh()`
+/// answers it.
+#[tokio::test]
+async fn a_refused_start_is_the_folders_trouble_and_the_refusal_of_a_refresh() {
+    let (service, _clock) = make_service();
+    let folder = tempfile::tempdir().unwrap();
+    stage_folder(&service, folder.path(), Sync::Stopped(Why::NotStarted), None).await;
+    let refused = service.refresh().await.unwrap_err();
+    assert!(matches!(&refused, SyncError::NotUp(why) if why.contains("no drive is configured")), "{refused:?}");
+    assert!(service.last_error().contains("no drive is configured"), "{}", service.last_error());
+    assert!(read_sync(&service, |folder| matches!(folder.up().map(|up| &up.sync), Some(Sync::Stopped(Why::CannotStart(_))))).await);
+}
+
+#[tokio::test]
+async fn a_refresh_with_no_folder_is_refused() {
+    let (service, _clock) = make_service();
+    assert!(matches!(service.refresh().await, Err(SyncError::NoRoot)));
+}

@@ -1,38 +1,10 @@
 use super::*;
 
-// --- `sync status` and the no-interception mode ---------------------------
-//
-// On a machine without the helper, `no-interception` is the state a folder
-// registered there stays in — and its cost (a file
-// that is not downloaded reads as zeros) must be on screen every time the
-// user asks, in the CLI's own words, not left to a daemon property that
-// happens to restate it or to the user's memory.
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_status_says_plainly_that_nothing_intercepts_opens() {
-    let f = harness_with_helper(false).await;
-    let addr = f._bus.address();
-    let root = f.dir.path().join("OneDrive");
-    std::fs::create_dir(&root).unwrap();
-    f.proxy.folder.register_without_interception(root.to_str().unwrap()).await.unwrap();
-
-    let out = run(addr, &["sync", "status"]);
-    assert!(out.status.success(), "{out:?}");
-    let text = out_text(&out);
-    let opens = text
-        .lines()
-        .find(|line| line.starts_with("Opens:"))
-        .unwrap_or_else(|| panic!("no Opens: line: {text}"));
-    assert!(opens.to_lowercase().contains("not intercepted"), "{text}");
-    assert!(opens.contains("zeros"), "{text}");
-    assert!(opens.contains("konedrivectl sync hydrate"), "say how to get the real bytes: {text}");
-}
-
 /// The daemon has started and not brought the folder up yet: it has its path, its state is
 /// `none`, and nothing has measured it, so no size and no count of pins is printed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_status_of_a_folder_not_brought_up_yet_says_no_size() {
-    let f = harness_with_helper(false).await;
+    let f = harness().await;
     f.service.state().update(|s| s.folder.root_path = "/home/u/OneDrive".into());
 
     let out = run(f._bus.address(), &["sync", "status"]);
@@ -43,31 +15,10 @@ async fn binary_status_of_a_folder_not_brought_up_yet_says_no_size() {
     assert!(!text.contains("On this computer:") && !text.contains("Always on this device:"), "{text}");
 }
 
-/// The contrast: an intercepted folder must not carry the zeros warning, or
-/// the warning becomes noise a user learns to skip.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_status_of_an_intercepted_folder_does_not_warn_of_zeros() {
-    let f = harness().await;
-    let addr = f._bus.address();
-    let root = f.dir.path().join("OneDrive");
-    std::fs::create_dir(&root).unwrap();
-    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
-
-    let out = run(addr, &["sync", "status"]);
-    assert!(out.status.success(), "{out:?}");
-    let text = out_text(&out);
-    let opens = text
-        .lines()
-        .find(|line| line.starts_with("Opens:"))
-        .unwrap_or_else(|| panic!("no Opens: line: {text}"));
-    assert!(opens.contains("intercepted"), "{text}");
-    assert!(!opens.to_lowercase().contains("not intercepted"), "{text}");
-    assert!(!text.contains("zeros"), "{text}");
-}
-
 // --- `sync skipped`, `sync refresh`, and OneDrive-folder `sync status` ---
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_skipped_lists_what_is_not_in_the_folder_and_why() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
@@ -82,10 +33,11 @@ async fn binary_skipped_lists_what_is_not_in_the_folder_and_why() {
     assert!(text.contains("locked separately"), "says why: {text}");
 }
 
-/// The daemon's own wiring (`daemon/manager.rs`, `sync::mode::follow`) makes a
-/// registered OneDrive folder follow `Account.Mode`: read-write takes the read-only lock off,
-/// read-only puts it back. (How `SetMode` turns `Mode` is `konedrived`'s `tests/mode.rs`.)
+/// The daemon's own wiring (`daemon/manager.rs`, `account_folder::mode::watch_account`) makes a
+/// registered OneDrive folder follow `Account.Mode`: read-write makes it take changes,
+/// read-only makes it refuse them. (How `SetMode` turns `Mode` is `konedrived`'s `tests/mode.rs`.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn the_folder_follows_the_accounts_mode() {
     use std::os::unix::fs::PermissionsExt;
     use konedrived::config::Mode;
@@ -114,10 +66,12 @@ async fn the_folder_follows_the_accounts_mode() {
     assert!(!f.proxy.folder.writable().await.unwrap());
 }
 
-/// `sync status` says how the local scan goes: a read-only folder has none.
-/// (How a read-write folder's scan reads is `text::status::local_scan_text`'s test.)
+/// `sync status` says how the local scan goes: for a read-only folder too it is the check at
+/// start, which every start of a sync runs (`sync_tasks::start_order`, stage 3).
+/// (How each state of it reads is `text::status::local_scan_text`'s test.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_status_says_a_read_only_folder_has_no_local_scan() {
+#[ignore = "mounts a filesystem: run in the VM"]
+async fn binary_status_says_when_the_check_at_start_of_a_read_only_folder_finished() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
@@ -125,36 +79,20 @@ async fn binary_status_says_a_read_only_folder_has_no_local_scan() {
     wait_for(|| root.join("docs/f.txt").is_file()).await;
     let text = out_text(&run(f._bus.address(), &["sync", "status"]));
     let line = text.lines().find(|l| l.starts_with("Local scan:")).unwrap_or_else(|| panic!("{text}"));
-    assert_eq!(line, "Local scan:             none — read-only");
+    assert!(line.starts_with("Local scan:             last finished ") && line.contains(" ago (took "), "{line}");
 }
 
 /// `sync skipped` with no folder registered at all: there is nothing to be
 /// signed in about, and nothing OneDrive-related to say either — a plain
 /// statement of the actual reason, not the empty "Nothing is skipped."
 /// that would otherwise print (the silent-looking kind of success of `docs/design/desktop.md`
-/// §10.1, where an unrecognised state shows no emblem).
+/// §11.1, where an unrecognised state shows no emblem).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_skipped_with_no_folder_registered_says_so() {
     let f = harness().await;
     let out = run(f._bus.address(), &["sync", "skipped"]);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(out_text(&out), "No folder is registered.\n");
-}
-
-/// `sync skipped` of a folder filled with `PopulateFrom` (a local folder,
-/// `RootSource = local`): there is no OneDrive listing behind it, so
-/// nothing is "skipped" in the sense this command means, and that has to be
-/// said plainly rather than as an empty list.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_skipped_of_a_local_folder_says_it_is_not_connected_to_onedrive() {
-    let f = harness().await;
-    let root = f.dir.path().join("OneDrive");
-    std::fs::create_dir(&root).unwrap();
-    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
-
-    let out = run(f._bus.address(), &["sync", "skipped"]);
-    assert!(out.status.success(), "{out:?}");
-    assert_eq!(out_text(&out), "This folder is not connected to OneDrive.\n");
 }
 
 /// `sync skipped` asked for while the initial listing is still running: the
@@ -165,6 +103,7 @@ async fn binary_skipped_of_a_local_folder_says_it_is_not_connected_to_onedrive()
 /// subprocess needs to start and call `sync skipped`, so `Folder.State` is
 /// still `listing` for the whole call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_skipped_of_a_onedrive_folder_still_listing_says_the_list_may_be_partial() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -204,6 +143,7 @@ async fn binary_skipped_of_a_onedrive_folder_still_listing_says_the_list_may_be_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_status_of_a_onedrive_folder_counts_its_items_and_says_it_is_read_only() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
@@ -225,33 +165,3 @@ async fn binary_status_of_a_onedrive_folder_counts_its_items_and_says_it_is_read
     assert!(!text.lines().any(|l| l.starts_with("Waiting to upload:")), "nothing uploads from a read-only folder: {text}");
 }
 
-/// `sync status` and `status` say the state of the account as a whole as the daemon decided
-/// it (`Folder.Overall`), with the sentence of `Folder.Trouble`: the line follows the daemon
-/// through a folder at rest, trouble that leaves it running, and a pause.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_status_says_the_overall_state_the_daemon_decided() {
-    use konedrived::status::snapshot::{SyncTrouble, TroubleKind};
-    let f = harness().await;
-    let addr = f._bus.address();
-    let overall = |command: &[&str]| {
-        let text = out_text(&run(addr, command));
-        let line = text.lines().find(|line| line.starts_with("Overall:")).unwrap_or_else(|| panic!("no Overall: line: {text}"));
-        line.trim_start_matches("Overall:").trim().to_owned()
-    };
-    assert_eq!(overall(&["sync", "status"]), "offline — no OneDrive folder yet");
-
-    let root = f.dir.path().join("OneDrive");
-    std::fs::create_dir(&root).unwrap();
-    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
-    assert_eq!(overall(&["sync", "status"]), "ok — up to date");
-    assert_eq!(overall(&["status"]), "ok — up to date");
-
-    // Out of reach by its kind, in a sentence this build has never said.
-    let reworded = "OneDrive does not answer; the next try is in a minute";
-    f.service.state().update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text: reworded.into(), blocking: false, kind: TroubleKind::Unreachable }));
-    assert_eq!(overall(&["sync", "status"]), format!("offline — {reworded}"));
-    assert_eq!(overall(&["status"]), format!("offline — {reworded}"));
-
-    f.service.state().update(|s| s.pause.paused_until = Some(0));
-    assert_eq!(overall(&["sync", "status"]), "paused — you paused syncing");
-}

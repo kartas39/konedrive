@@ -1,5 +1,5 @@
-//! The properties of one account's folder that the daemon announces by itself, in one table
-//! (quality finding `SY10`): under which interface and name each goes out, and how it is read
+//! The properties of one account's folder that the daemon announces by itself, in one table:
+//! under which interface and name each goes out, and how it is read
 //! from the published state. The getter of a property answers through its row
 //! ([`Property::of`]), and `signals` compares and sends by the same rows, so a property
 //! cannot be read one way and announced another.
@@ -8,7 +8,7 @@
 //! decided by `status::overall`, from the published state, the downloads and the account's
 //! sign-in.
 //!
-//! Not here: the properties a call sets and announces itself (`IgnorePatterns`,
+//! Not here: the properties a call sets and announces itself (`IgnorePatterns`, `FreeSpaceReserve`,
 //! `Thumbnails`), `Source`, which is the folder's record and is announced with `Path`, and
 //! `MachineName`, which nothing changes while the daemon runs.
 
@@ -22,15 +22,15 @@ use crate::account::state::SignInState;
 use crate::status::overall;
 use crate::status::snapshot::{published_error, published_state, SyncSnapshot};
 use crate::status::transfers::{large_files, Transfer};
-use crate::sync::SyncService;
+use crate::account_folder::SyncService;
 
 /// What the properties are read from: the published state, the downloads under way, and
 /// where the account's sign-in stands.
 #[derive(Debug, Clone)]
 pub(crate) struct Seen {
-    pub snapshot: SyncSnapshot,
-    pub downloads: BTreeMap<u64, Transfer>,
-    pub sign_in: SignInState,
+    pub(crate) snapshot: SyncSnapshot,
+    pub(crate) downloads: BTreeMap<u64, Transfer>,
+    pub(crate) sign_in: SignInState,
 }
 
 impl Default for Seen {
@@ -53,8 +53,8 @@ impl Seen {
 
 /// One property: where it is on the bus, and its value.
 pub(crate) struct Property<T> {
-    pub interface: &'static str,
-    pub name: &'static str,
+    pub(crate) interface: &'static str,
+    pub(crate) name: &'static str,
     read: fn(&Seen) -> T,
 }
 
@@ -93,7 +93,7 @@ pub(crate) type Changed = BTreeMap<&'static str, HashMap<&'static str, Value<'st
 
 /// The properties of `list` whose value in `new` is not the one in `old`. An interface with
 /// nothing changed is not there.
-pub(crate) fn changed(list: &[&dyn Announced], old: &Seen, new: &Seen) -> Changed {
+pub fn changed(list: &[&dyn Announced], old: &Seen, new: &Seen) -> Changed {
     let mut changed = Changed::new();
     for property in list {
         if let Some(value) = property.changed(old, new) {
@@ -146,7 +146,7 @@ properties! {
     /// (stopped, or not a OneDrive folder).
     LIVE_CHANGES: String = FOLDER, "LiveChanges", |s| s.snapshot.cycle.live_changes.as_str().to_owned();
     /// OneDrive is full: no content goes up.
-    QUOTA_FULL: bool = QUEUE, "QuotaFull", |s| s.snapshot.outbox.quota_full;
+    QUOTA_FULL: bool = QUEUE, "QuotaFull", |s| s.snapshot.upload_queue.quota_full;
 }
 
 properties! {
@@ -157,8 +157,8 @@ properties! {
     OVERALL: konedrive_dbus::overall::Overall = FOLDER, "Overall", |s| overall::reason(s.sign_in, &s.snapshot, s.downloads.len()).into();
     /// The sentence of the trouble there is now, whatever the reason is; or empty.
     TROUBLE: String = FOLDER, "Trouble", |s| overall::trouble(&s.snapshot);
-    /// The failed-update note alone, or empty.
-    NOT_UPDATED: String = FOLDER, "NotUpdated", |s| overall::not_updated(&s.snapshot);
+    /// Always empty: no update of a file waits (`status::overall`).
+    NOT_UPDATED: String = FOLDER, "NotUpdated", |s| overall::overall(s.sign_in, &s.snapshot, s.downloads.len()).not_updated;
 }
 
 properties! {
@@ -179,24 +179,22 @@ properties! {
     /// Conflicts whose kept file is still there.
     CONFLICT_COUNT: u32 = CONFLICTS_INTERFACE_NAME, "Count", |s| s.snapshot.local.conflict_count;
 
-    /// Changes waiting to be uploaded (not blocked, not held).
-    PENDING_COUNT: u32 = QUEUE, "PendingCount", |s| s.snapshot.outbox.pending_count;
+    /// Changes waiting to be uploaded (not blocked).
+    PENDING_COUNT: u32 = QUEUE, "PendingCount", |s| s.snapshot.upload_queue.pending_count;
     /// The size of the files those changes send.
-    PENDING_BYTES: u64 = QUEUE, "PendingBytes", |s| s.snapshot.outbox.pending_bytes;
+    PENDING_BYTES: u64 = QUEUE, "PendingBytes", |s| s.snapshot.upload_queue.pending_bytes;
     /// Changes that need the user to go up.
-    BLOCKED_COUNT: u32 = QUEUE, "BlockedCount", |s| s.snapshot.outbox.blocked_count;
-    /// Removals the mass-delete guard holds for `ConfirmDeletes` or `RestoreDeletes`.
-    HELD_COUNT: u32 = QUEUE, "HeldCount", |s| s.snapshot.outbox.held_count;
-    QUOTA_WAITING_COUNT: u32 = QUEUE, "QuotaWaitingCount", |s| s.snapshot.outbox.space_waiting_count;
-    QUOTA_WAITING_BYTES: u64 = QUEUE, "QuotaWaitingBytes", |s| s.snapshot.outbox.space_waiting_bytes;
-    TOO_BIG_COUNT: u32 = QUEUE, "TooBigCount", |s| s.snapshot.outbox.too_big_count;
+    BLOCKED_COUNT: u32 = QUEUE, "BlockedCount", |s| s.snapshot.upload_queue.blocked_count;
+    QUOTA_WAITING_COUNT: u32 = QUEUE, "QuotaWaitingCount", |s| s.snapshot.upload_queue.space_waiting_count;
+    QUOTA_WAITING_BYTES: u64 = QUEUE, "QuotaWaitingBytes", |s| s.snapshot.upload_queue.space_waiting_bytes;
+    TOO_BIG_COUNT: u32 = QUEUE, "TooBigCount", |s| s.snapshot.upload_queue.too_big_count;
 
     /// Every download under way.
     DOWNLOADS: Vec<rows::Transfer> = MOVING, "Downloads",
         |s| s.downloads.values().map(|t| rows::Transfer { path: t.path.clone(), done: t.done, total: t.total }).collect();
     /// Uploads under way, shaped as `Downloads`.
     UPLOADS: Vec<rows::Transfer> = MOVING, "Uploads",
-        |s| s.snapshot.outbox.uploads.iter().map(|(path, done, total)| rows::Transfer { path: path.clone(), done: *done, total: *total }).collect();
+        |s| s.snapshot.upload_queue.uploads.iter().map(|(path, done, total)| rows::Transfer { path: path.clone(), done: *done, total: *total }).collect();
     /// Bytes a second downloaded, the average of the last 3 s.
     DOWNLOAD_SPEED: u64 = MOVING, "DownloadSpeed", |s| s.snapshot.transfers.throughput.down_speed;
     /// Bytes a second uploaded, the average of the last 3 s.
@@ -204,11 +202,13 @@ properties! {
     /// Files downloading now: the entries of `Downloads`, each file once however many
     /// streams it runs.
     ACTIVE_DOWNLOADS: u32 = MOVING, "ActiveDownloads", |s| count(s.downloads.len());
+    /// Thumbnails being downloaded now: none of them is an entry of `Downloads`.
+    THUMBNAIL_DOWNLOADS: u32 = MOVING, "ThumbnailDownloads", |s| s.snapshot.transfers.thumbnail_downloads;
     /// Files uploading now: the entries of `Uploads`.
-    ACTIVE_UPLOADS: u32 = MOVING, "ActiveUploads", |s| count(s.snapshot.outbox.uploads.len());
+    ACTIVE_UPLOADS: u32 = MOVING, "ActiveUploads", |s| count(s.snapshot.upload_queue.uploads.len());
     /// The large files (100 MiB and up) the sync moves now, each once however many streams
     /// it runs; files being opened left out.
-    LARGE_FILES: u32 = MOVING, "LargeFiles", |s| large_files(&s.downloads, &s.snapshot.outbox.uploads);
+    LARGE_FILES: u32 = MOVING, "LargeFiles", |s| large_files(&s.downloads, &s.snapshot.upload_queue.uploads);
     /// Every slot of the pool held now, all four classes, the opens' reserve included: may
     /// be above `PoolSize`.
     POOL_IN_USE: u32 = MOVING, "PoolInUse", |s| s.snapshot.transfers.throughput.in_use;
@@ -225,8 +225,11 @@ properties! {
     /// Seconds left of OneDrive's `Retry-After` wait, during which no transfer starts; 0
     /// when there is none.
     RETRY_AFTER: u32 = MOVING, "RetryAfter", |s| s.snapshot.transfers.throughput.retry_after;
-    /// Files left to download: the pinned files waiting and every download under way
-    /// (`status::totals`).
+    /// The full path of the file a program was first refused the content of during the
+    /// `Retry-After` that runs; empty when none was, and when no wait runs.
+    RETRY_AFTER_REFUSAL: String = MOVING, "RetryAfterRefusal", |s| s.snapshot.transfers.retry_after_refusal.clone();
+    /// Files left to download: the pinned files whose content is not on this computer yet,
+    /// and each file being opened while its download runs (`status::totals`).
     DOWNLOAD_LEFT_COUNT: u32 = MOVING, "DownloadLeftCount", |s| s.snapshot.transfers.queue.down.left_count;
     /// Their size, less what the downloads under way have received.
     DOWNLOAD_LEFT_BYTES: u64 = MOVING, "DownloadLeftBytes", |s| s.snapshot.transfers.queue.down.left_bytes;
@@ -243,19 +246,12 @@ properties! {
     /// Seconds the uploads left take at the last 30 s's speed; 0 when unknown, and while paused.
     UPLOAD_TIME_LEFT: u32 = MOVING, "UploadTimeLeft", |s| s.snapshot.transfers.queue.up.time_left;
 
-    /// The Full local scan: `running`, `idle`, or `none` for a read-only folder.
+    /// The check of the folder on disk at its start: `running`, `idle`, or `none` before the first.
     SCAN_STATE: String = SCAN, "State", |s| s.snapshot.local.scan.state.as_str().to_owned();
-    /// Why the running (or the last) scan runs: start, read-write, helper-back, overflow,
-    /// ignore-list, periodic.
+    /// Why the running (or the last) check runs: `start`.
     SCAN_REASON: String = SCAN, "Reason", |s| s.snapshot.local.scan.reason.clone();
     /// Unix seconds when it started; 0 before the first.
     SCAN_STARTED: i64 = SCAN, "Started", |s| s.snapshot.local.scan.started;
-    /// Directories it has seen so far.
-    SCAN_DIRECTORIES: u64 = SCAN, "Directories", |s| s.snapshot.local.scan.directories;
-    /// Files (and other entries that are not directories) it has seen so far.
-    SCAN_FILES: u64 = SCAN, "Files", |s| s.snapshot.local.scan.files;
-    /// About how many items it will see: the items the base had placed when it started.
-    SCAN_EXPECTED: u64 = SCAN, "Expected", |s| s.snapshot.local.scan.expected;
     /// Unix seconds when the last scan finished; 0 for none since the daemon started.
     SCAN_FINISHED: i64 = SCAN, "Finished", |s| s.snapshot.local.scan.finished;
     /// How long the last finished scan took, in seconds.

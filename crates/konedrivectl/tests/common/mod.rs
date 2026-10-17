@@ -11,11 +11,9 @@ use std::time::Duration;
 use konedrive_dbus::testing::TestBus;
 
 /// The daemon on `bus`, with `config.toml` and the accounts' files in `dir`, and no account
-/// yet. Its folders are local (no drive), its wallet is in memory, it runs no Baloo
+/// yet. Its accounts have no drive, its wallet is in memory, it runs no Baloo
 /// and fills no thumbnails, and Microsoft is an address where nothing answers: no test
-/// signs in for real. Its helper hub looks for the helper at a socket in `dir`, where
-/// nothing is bound, from before the daemon starts: a test that wants a helper connects a
-/// fake one itself.
+/// signs in for real.
 pub async fn start_daemon(bus: &TestBus, dir: &Path) -> konedrived::daemon::startup::Daemon {
     start_daemon_showing(bus, dir, konedrived::daemon::manager::no_drive()).await
 }
@@ -50,8 +48,7 @@ async fn start_daemon_with(
         drive,
         bus: Arc::new(konedrived::dbus::export::OnBus),
     };
-    let registry = konedrived::sync::registry::Registry::new();
-    registry.hub().set_socket(dir.join("no-helper.sock"));
+    let registry = konedrived::account_folder::registry::Registry::new();
     let paths = konedrived::config::Paths::in_dir(dir);
     konedrived::daemon::startup::start_on(bus.builder(), paths, options, registry).await.unwrap()
 }

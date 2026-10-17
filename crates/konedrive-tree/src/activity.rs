@@ -41,26 +41,39 @@ activity_kinds! {
     /// A file's space was freed up: `Dehydrate`, or `FreeUpSpace` for the
     /// whole folder at once. Detail: how much.
     Freed => "freed",
-    /// Added in OneDrive, placed here by an incremental cycle.
+    /// Added in OneDrive, and shown here.
     Added => "added",
-    /// Changed in OneDrive: a placeholder took the new version, or a
-    /// downloaded file was replaced by it.
+    /// Changed in OneDrive: the file here takes the new content, and a downloaded copy
+    /// goes (`docs/design/decisions.md` §2.8).
     Updated => "updated",
     /// Removed from OneDrive, and so from here.
     Removed => "removed",
     /// Moved or renamed in OneDrive. Detail: where it was.
     Moved => "moved",
-    /// A listing, or a Full reconcile: one event for the whole folder.
-    Listed => "listed",
+    /// The folder began to be filled for the first time: its first listing. One event
+    /// for the whole folder, in place of one per item shown. The path is the folder.
+    FirstSyncBegan => "first-sync-began",
+    /// Every item the first listing named is shown. The path is the folder.
+    FirstSyncEnded => "first-sync-ended",
     /// A local version moved out of the way. The path is where
     /// it was; the detail, where it is now.
     Conflict => "conflict",
-    /// A download that failed: a fill on open, or `Hydrate`. Detail: why —
+    /// A directory could not be removed here because it holds in OneDrive items that
+    /// cannot be shown here: it is to be removed in OneDrive. The path is the directory.
+    // TODO: wording
+    NotRemovedHere => "not-removed-here",
+    /// The folder's store was of an older version and was made anew, and something the
+    /// user misses went with it: pins, changes that were not sent and are not on disk,
+    /// uploads under way. Once, at the start that made it anew. The path is the folder;
+    /// the detail says what was lost.
+    StoreRebuilt => "store-rebuilt",
+    /// A download that failed: one a program's read or open asked for, or `Hydrate`. Detail: why —
     /// exactly "not enough disk space" when the disk is full.
     Failed => "failed",
-    /// A file changed in OneDrive that could not be replaced here (`docs/design/sync.md`
-    /// §9); the old version stays. Detail: why — exactly "not enough disk
-    /// space" when the disk cannot hold both versions.
+    /// A file changed in OneDrive that could not be replaced here; the old version stays.
+    /// Detail: why — exactly "not enough disk space" when the disk cannot hold both
+    /// versions. No step records it: a downloaded copy that OneDrive changed is dropped,
+    /// not replaced (`docs/design/decisions.md` §2.8).
     UpdateFailed => "update-failed",
     /// Content made or changed here went up to OneDrive (a folder made
     /// here too). Detail: its size, or "folder".
@@ -74,10 +87,10 @@ activity_kinds! {
     /// once per change and reason. Detail: the reason.
     UploadFailed => "upload-failed",
     /// OneDrive's version was kept, or put back, where both sides changed
-    /// one item (`docs/design/writes.md` §7). Detail: why.
+    /// one item (`docs/design/sync.md` §6.4). Detail: why.
     Restored => "restored",
     /// Made here, then removed here before its upload finished: it never
-    /// goes up, and its rows leave the outbox. Detail: why.
+    /// goes up. Detail: why.
     NotUploaded => "not-uploaded",
 }
 

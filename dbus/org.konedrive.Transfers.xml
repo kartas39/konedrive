@@ -5,8 +5,13 @@
        the downloads and uploads under way, their speed, the transfer pool
        and the queue totals. -->
   <interface name="org.konedrive.Transfers">
-    <!-- Downloads under way: (full path, bytes done, bytes total). Coalesced
-         to a few changes a second. -->
+    <!-- Downloads under way: (full path, bytes done, bytes total). A download
+         is under way for as long as it holds its slot of the pool: while
+         OneDrive is asked for the file (no byte done yet), while its bytes
+         come, and while the whole content is checked and put in place (all
+         bytes done), until the file is on this computer or the try failed.
+         One that waits for a slot is not listed. Coalesced to a few changes a
+         second. -->
     <property name="Downloads" type="a(stt)" access="read">
       <annotation name="org.qtproject.QtDBus.QtTypeName" value="KonedriveTransferList"/>
     </property>
@@ -20,7 +25,8 @@
          uploaded (the average of the last 3 s); the files downloading and
          uploading now: the entries of Downloads and of Uploads, each file
          once however many streams it runs (no thumbnail is a file
-         downloading); and the account's transfer pool: every slot held now
+         downloading); the thumbnails being downloaded now
+         (ThumbnailDownloads); and the account's transfer pool: every slot held now
          (PoolInUse: downloads, uploads, metadata operations and files being
          opened, the opens' reserve included, so it may be above the size),
          how many requests it has in flight at most now (PoolSize), which
@@ -35,6 +41,7 @@
     <property name="DownloadSpeed" type="t" access="read"/>
     <property name="UploadSpeed" type="t" access="read"/>
     <property name="ActiveDownloads" type="u" access="read"/>
+    <property name="ThumbnailDownloads" type="u" access="read"/>
     <property name="ActiveUploads" type="u" access="read"/>
     <property name="PoolInUse" type="u" access="read"/>
     <property name="PoolSize" type="u" access="read"/>
@@ -43,17 +50,27 @@
     <property name="LargeStreams" type="u" access="read"/>
     <property name="LargeStreamLimit" type="u" access="read"/>
     <property name="RetryAfter" type="u" access="read"/>
+    <!-- While OneDrive's Retry-After runs, a program that reads a file whose
+         content is not on this computer, opens it for writing, or asks for
+         it with Files.Hydrate, is refused at once (the read fails with
+         EAGAIN, "Resource temporarily unavailable") and not kept waiting;
+         the same read succeeds after the wait. The full path of the first
+         file refused so during the wait that runs; empty when none was, and
+         when no wait runs. A client says it once per wait. Coalesced with
+         the counters. -->
+    <property name="RetryAfterRefusal" type="s" access="read"/>
     <!-- The queue totals, each way, updated with the speeds above. Left:
-         files to download — the pinned files waiting and every download
-         under way (a file being opened or a replacement counts only while it
-         runs) — and changes to upload (UploadQueue.PendingCount; a move, a
+         files to download — the pinned files whose content is not on this
+         computer yet, counted from the moment they are pinned and fewer only
+         as files land, and each file being opened while its download runs
+         — and changes to upload (UploadQueue.PendingCount; a move, a
          delete or a new folder is a change of no bytes), with their bytes
          less what is already moved of those under way. Done: bytes moved
          since nothing was last left that way, or since the daemon started; 0
          while nothing is left. Time left: seconds at the speed of the last
          30 s; 0 when unknown — nothing moved for 10 s, OneDrive's
          Retry-After, and for uploads a pause. What is kept back
-         (UploadQueue.BlockedCount, HeldCount, QuotaWaitingCount,
+         (UploadQueue.BlockedCount, QuotaWaitingCount,
          TooBigCount) is not left. Coalesced with the counters. -->
     <property name="DownloadLeftCount" type="u" access="read"/>
     <property name="DownloadLeftBytes" type="t" access="read"/>

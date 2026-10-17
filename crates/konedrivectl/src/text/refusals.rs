@@ -1,20 +1,18 @@
 use konedrive_dbus::Refusal;
 
-use super::formats::sentence;
-
 mod account;
 mod folder;
 
-pub use account::{account_refusal_text, dev_refusal_text, explain_account_error, explain_dev_error, AccountAction};
+#[cfg(test)]
+pub use account::{account_refusal_text, dev_refusal_text};
+pub use account::{explain_account_error, explain_dev_error, AccountAction};
 
 /// The `sync` subcommand a refusal answered, with the path it named — the
 /// context a refusal needs to be explained in terms of *this* user's file.
 #[derive(Debug, Clone, Copy)]
 pub enum SyncAction<'a> {
     Register(&'a str),
-    RegisterWithoutInterception(&'a str),
     Forget,
-    PopulateFrom(&'a str),
     Hydrate(&'a str),
     Dehydrate(&'a str),
     Refresh,
@@ -34,16 +32,15 @@ pub enum SyncAction<'a> {
     /// `account remove`, with the account's label: `Accounts.Remove` forgets the
     /// folder as `Forget` does, and is refused under the same names.
     Remove(&'a str),
-    Outbox,
+    UploadQueue,
     Pause,
     Resume,
     Ignore,
-    /// `sync thumbnails`: an account's own sync setting.
+    /// `sync thumbnails`, `sync free-space`: an account's own sync setting.
     Settings,
     /// `sync anyway`.
     Anyway,
     NotUploaded,
-    Deletes,
 }
 
 impl SyncAction<'_> {
@@ -52,11 +49,7 @@ impl SyncAction<'_> {
     fn doing(&self) -> String {
         match self {
             Self::Register(path) => format!("registering {path}"),
-            Self::RegisterWithoutInterception(path) => {
-                format!("registering {path} without interception")
-            }
             Self::Forget => "forgetting the sync folder".to_owned(),
-            Self::PopulateFrom(dir) => format!("filling the sync folder from {dir}"),
             Self::Hydrate(path) => format!("downloading {path}"),
             Self::Dehydrate(path) => format!("freeing up {path}"),
             Self::Refresh => "asking OneDrive for changes".to_owned(),
@@ -70,22 +63,19 @@ impl SyncAction<'_> {
             Self::Free(paths) => format!("freeing up {paths}"),
             Self::Open(path) => format!("opening {path} in OneDrive"),
             Self::Remove(label) => format!("removing the account {label}"),
-            Self::Outbox => "listing the changes waiting to upload".to_owned(),
+            Self::UploadQueue => "listing the changes waiting to upload".to_owned(),
             Self::Pause => "pausing the sync".to_owned(),
             Self::Resume => "resuming the sync".to_owned(),
             Self::Ignore => "changing the ignore list".to_owned(),
             Self::Settings => "changing the sync settings".to_owned(),
             Self::Anyway => "syncing anyway".to_owned(),
             Self::NotUploaded => "listing what is not uploaded".to_owned(),
-            Self::Deletes => "deciding on the large delete".to_owned(),
         }
     }
 
     fn path(&self) -> &str {
         match self {
             Self::Register(path)
-            | Self::RegisterWithoutInterception(path)
-            | Self::PopulateFrom(path)
             | Self::Hydrate(path)
             | Self::Dehydrate(path)
             | Self::Dismiss(path)
@@ -100,23 +90,34 @@ impl SyncAction<'_> {
             | Self::Conflicts
             | Self::FreeUpSpace
             | Self::Remove(_)
-            | Self::Outbox
+            | Self::UploadQueue
             | Self::Pause
             | Self::Resume
             | Self::Ignore
             | Self::Settings
             | Self::Anyway
-            | Self::NotUploaded
-            | Self::Deletes => "",
+            | Self::NotUploaded => "",
         }
     }
 }
 
+/// Whether `error` is a call the daemon did not answer within [`ANSWER_LIMIT`](crate::ANSWER_LIMIT):
+/// what zbus ends a call with when its connection's limit ran out.
+pub fn is_unanswered(error: &zbus::Error) -> bool {
+    matches!(error, zbus::Error::InputOutput(io) if io.kind() == std::io::ErrorKind::TimedOut)
+}
+
+/// What a command says of a call that [`is_unanswered`].
+pub fn unanswered_text() -> String {
+    format!("konedrived did not answer within {} seconds", crate::ANSWER_LIMIT.as_secs())
+}
+
 /// What a failed call says: the refusal its name names, if it carries a name, and the
-/// message — or, of an error with no message, its name; of an error that is no reply, what
-/// it says of itself. Every `explain_*` reads an error through this, once.
+/// message — or, of an error with no message, its name; of a call that got no answer,
+/// [`unanswered_text`]; of any other error that is no reply, what it says of itself. Every `explain_*` reads an error through this, once.
 fn read_error(error: &zbus::Error) -> (Option<Refusal>, String) {
     let detail = match error {
+        unanswered if is_unanswered(unanswered) => unanswered_text(),
         zbus::Error::MethodError(_, Some(message), _) => message.clone(),
         zbus::Error::MethodError(name, None, _) => name.to_string(),
         other => other.to_string(),
@@ -124,33 +125,15 @@ fn read_error(error: &zbus::Error) -> (Option<Refusal>, String) {
     (Refusal::from_error(error), detail)
 }
 
-/// What to tell a person when a folder call made for `action` failed.
-///
-/// Decides by the D-Bus error **name** ([`Refusal`]), never the
-/// message: every refusal the folder makes arrives under
-/// `konedrive_dbus::ERROR_PREFIX`, and each gets a sentence saying what
-/// happened to the user's file and what they can do about it. `root` is the
-/// registered folder (`Folder.Path`, possibly empty), which two refusals name.
-///
-/// The daemon's own message is kept only where it is the specific part:
-/// `Unsupported` (which filesystem feature is missing) and anything with no
-/// name of its own (`Failed`, or an error from the bus itself), where it is
-/// all there is.
-pub fn explain_sync_error(action: SyncAction<'_>, error: &zbus::Error, root: &str) -> String {
-    let (refusal, detail) = read_error(error);
-    folder::text(&folder::Told { action, detail: &detail, root, prefix: "konedrivectl", several: false }, refusal.as_ref())
-}
-
 /// What the CLI knows of the daemon besides a refusal, read after it: the
 /// folder of the account the refusal is about (`Folder.Path`: the chosen
 /// account's, or for a path, the folder that holds it), what it shows
-/// (`RootSource`), the helper (`Accounts.HelperState`), and for a path, every
-/// account's folder. Any of them may be empty.
+/// (`RootSource`), and for a path, every account's folder. Any of them may be
+/// empty.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Context<'a> {
     pub root: &'a str,
     pub source: &'a str,
-    pub helper: &'a str,
     /// Every account's registered folder, for a path command: a path in none
     /// of them is refused `OutsideRoot` before any account sees it.
     pub folders: &'a [String],
@@ -176,22 +159,33 @@ impl Context<'_> {
     }
 }
 
-/// [`explain_sync_error`], with what [`Context`] adds: a refusal for want
-/// of the helper ends with how to start it (HS4), a folder that shows
-/// OneDrive is not told to populate itself from a directory, a path
-/// in no account's folder is told which folders there are, and a folder
-/// that was another account's is told so.
-pub fn explain_sync_error_in(action: SyncAction<'_>, error: &zbus::Error, context: Context<'_>) -> String {
+/// What to tell a person when a folder call made for `action` failed.
+///
+/// Decides by the D-Bus error **name** ([`Refusal`]), never the
+/// message: every refusal the folder makes arrives under
+/// `konedrive_dbus::ERROR_PREFIX`, and each gets a sentence saying what
+/// happened to the user's file and what they can do about it.
+///
+/// The daemon's own message is kept only where it is the specific part:
+/// `Unsupported` (which filesystem feature is missing) and anything with no
+/// name of its own (`Failed`, or an error from the bus itself), where it is
+/// all there is.
+///
+/// [`Context`] adds what the CLI knows besides: a folder that is not
+/// connected yet is told so, a path in no account's folder is told which
+/// folders there are, and a folder that was another account's is told so.
+pub fn explain_sync_error(action: SyncAction<'_>, error: &zbus::Error, context: Context<'_>) -> String {
     let (refusal, detail) = read_error(error);
     text_in(action, refusal.as_ref(), &detail, context)
 }
 
-/// [`explain_sync_error_in`]'s decision, on the name and message alone.
+/// [`explain_sync_error`]'s decision, on the name and message alone.
+#[cfg(test)]
 pub fn refusal_text_in(action: SyncAction<'_>, name: Option<&str>, detail: &str, context: Context<'_>) -> String {
     text_in(action, name.map(Refusal::parse).as_ref(), detail, context)
 }
 
-/// [`refusal_text_in`], on the refusal read.
+/// [`explain_sync_error`]'s decision, on the refusal read.
 fn text_in(action: SyncAction<'_>, refusal: Option<&Refusal>, detail: &str, context: Context<'_>) -> String {
     use SyncAction::*;
     let path = action.path();
@@ -228,7 +222,7 @@ fn text_in(action: SyncAction<'_>, refusal: Option<&Refusal>, detail: &str, cont
                 ),
             };
         }
-        (Some(Refusal::NotEmpty), Register(_) | RegisterWithoutInterception(_)) if context.foreign => {
+        (Some(Refusal::NotEmpty), Register(_)) if context.foreign => {
             return format!(
                 "{path} holds the files of another OneDrive account's folder, so it cannot be this \
                  account's. Choose an empty folder, or create a new one. If it was this account's own \
@@ -238,21 +232,17 @@ fn text_in(action: SyncAction<'_>, refusal: Option<&Refusal>, detail: &str, cont
         _ => {}
     }
     let text = folder::text(&told, refusal);
-    match (refusal, konedrive_dbus::HelperState::parse(context.helper).and_then(konedrive_dbus::HelperState::advice)) {
+    match refusal {
         // A folder that shows OneDrive downloads from OneDrive; it has no
         // source yet only while it waits to be brought up.
-        (Some(Refusal::NoSource), _) if context.source == "onedrive" => {
-            "the folder is not connected yet; try again in a moment".to_owned()
-        }
-        // The catalogue's sentences end with a full stop; this table's do not.
-        (Some(Refusal::NoHelper), Some(advice)) if text.ends_with('.') => format!("{text} {}", sentence(advice)),
-        (Some(Refusal::NoHelper), Some(advice)) => format!("{text}. {}", sentence(advice)),
+        Some(Refusal::NoSource) if context.source == "onedrive" => "the folder is not connected yet; try again in a moment".to_owned(),
         _ => text,
     }
 }
 
-/// [`explain_sync_error`]'s decision, on the name and message alone — so it
+/// The sentence for `name` refused with `detail`, with nothing [`Context`] adds — so it
 /// can be tested with a name and a message that disagree.
+#[cfg(test)]
 pub fn refusal_text(action: SyncAction<'_>, name: Option<&str>, detail: &str, root: &str) -> String {
     let told = folder::Told { action, detail, root, prefix: "konedrivectl", several: false };
     folder::text(&told, name.map(Refusal::parse).as_ref())

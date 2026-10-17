@@ -1,13 +1,13 @@
-//! What the run checks against OneDrive itself: the service's behaviour that the write design
-//! assumes (`docs/design/writes.md` §13) and the wiremock suites can only take as given. Every write goes through
-//! konedrive's own `DriveClient`, so the requests are the ones the outbox worker sends.
+//! What the run checks against OneDrive itself: the service's behaviour that the uploads
+//! assume (`docs/design/writes.md` §9) and the wiremock suites can only take as given. Every write goes through
+//! konedrive's own `DriveClient`, so the requests are the ones the steps towards OneDrive send.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use konedrive_graph::drive::{
-    ChunkOutcome, DeltaFrom, DeltaNext, DriveClient, DriveError, DriveItem, ItemChange, UploadTarget, WriteError, CHUNK_SIZE,
+    ChunkOutcome, DeltaFrom, DeltaNext, DriveClient, DriveError, DriveItem, ItemChange, UploadTarget, WriteError, CHUNK_SIZE, FRAGMENT_UNIT,
 };
 use konedrive_graph::quickxor::QuickXor;
 use serde_json::{json, Value};
@@ -144,6 +144,9 @@ impl Run {
         check!("names collide whatever their case", self.case_collisions());
         check!("a large file: 10 MiB fragments, and a resume from the session's status", self.large_file());
         check!("an edit in OneDrive during a session, before its last fragment", self.edit_during_a_session());
+        check!("a session opened with the file's time leaves the cTag", self.session_opening_tags());
+        check!("a rename in OneDrive during a session, before its last fragment", self.rename_during_a_session());
+        check!("a content guarded by its cTag passes a rename and is refused after an edit", self.content_guard());
         check!("a delete goes to the recycle bin", self.recycle_bin());
         check!("the token exported after the switch back to read-only cannot write", self.read_only_token());
         check!("delta returns the run's own changes with the eTags they were given", self.delta_echo());
@@ -196,7 +199,7 @@ impl Run {
         Ok(renamed)
     }
 
-    /// §6.1: a new empty file is a `PUT` with `conflictBehavior=fail` in its URL, because a
+    /// `docs/design/writes.md` §4.1: a new empty file is a `PUT` with `conflictBehavior=fail` in its URL, because a
     /// `PUT`'s default is to replace.
     async fn empty_file_name_taken(&mut self) -> Outcome {
         let first = step!("the first PUT", self.put("empty.txt", Vec::new(), T0).await);
@@ -213,7 +216,7 @@ impl Run {
         }
     }
 
-    /// §13, assumed: `If-Match` is honoured on the `PUT` that empties a file.
+    /// `docs/design/writes.md` §9, assumed: `If-Match` is honoured on the `PUT` that empties a file.
     async fn empty_file_if_match(&mut self) -> Outcome {
         let item = step!("the new file", self.put("if-match.txt", Vec::new(), T0).await);
         let old = item.e_tag.clone().unwrap_or_default();
@@ -238,7 +241,7 @@ impl Run {
         }
     }
 
-    /// §6.1: a file up to 10 MiB goes in a session of one fragment, carrying its time.
+    /// `docs/design/writes.md` §4.3: a file up to 10 MiB goes in a session of one fragment, carrying its time.
     async fn small_file(&mut self) -> Outcome {
         let content = self.content(100 * 1024);
         let hash = quickxor(&content);
@@ -267,7 +270,7 @@ impl Run {
         }
     }
 
-    /// §13, assumed: a rename or move onto a name that is taken is refused 409.
+    /// `docs/design/writes.md` §9, assumed: a rename or move onto a name that is taken is refused 409.
     async fn rename_to_taken_name(&mut self) -> Outcome {
         let a = step!("a.txt", self.put("a.txt", b"a".to_vec(), T0).await);
         step!("b.txt", self.put("b.txt", b"b".to_vec(), T0).await);
@@ -278,7 +281,7 @@ impl Run {
         }
     }
 
-    /// §13, assumed: OneDrive treats names without regard to case.
+    /// `docs/design/writes.md` §9, assumed: OneDrive treats names without regard to case.
     async fn case_collisions(&mut self) -> Outcome {
         let one = step!("Case.txt", self.put("Case.txt", b"one".to_vec(), T0).await);
         match self.put("case.txt", b"two".to_vec(), T0).await {
@@ -303,7 +306,7 @@ impl Run {
         }
     }
 
-    /// §6.3: above 10 MiB a session in 10 MiB fragments; after an interruption the session's
+    /// `docs/design/writes.md` §4.3: above 10 MiB a session in 10 MiB fragments; after an interruption the session's
     /// status says where to go on from.
     async fn large_file(&mut self) -> Outcome {
         let total = 3 * CHUNK_SIZE;
@@ -318,7 +321,7 @@ impl Run {
             Ok(ChunkOutcome::Done(_)) => return Fail("the session ended after its first fragment".into()),
             Err(e) => return Fail(format!("the first fragment: {e}")),
         }
-        // What a worker that lost its place does: ask the session.
+        // What an upload that lost its place does: ask the session.
         let status = step!("the session's status", self.drive.upload_status(&session.url).await);
         if status.next != CHUNK_SIZE {
             return Fail(format!("the session's status says to go on from {}, not {CHUNK_SIZE}", status.next));
@@ -344,9 +347,9 @@ impl Run {
         ))
     }
 
-    /// §6.3 and limitations log F80, observed: `If-Match` is checked when a session is created,
-    /// so an edit made in OneDrive before the last fragment is assumed to be superseded (kept in
-    /// the version history). Either answer is safe; the detail records which one OneDrive gives.
+    /// `docs/design/writes.md` §4.3, measured on 2026-10-14: an edit made in OneDrive before the last fragment of a
+    /// session of an existing item ends the session, and the edit stays. The upload reads
+    /// nothing before its last fragment and relies on this.
     async fn edit_during_a_session(&mut self) -> Outcome {
         let item = step!("the file", self.put("window.bin", b"before".to_vec(), T0).await);
         let etag = item.e_tag.clone().unwrap_or_default();
@@ -365,20 +368,77 @@ impl Run {
         match self.drive.upload_chunk(&session.url, CHUNK_SIZE, total, content[half..].to_vec()).await {
             Ok(ChunkOutcome::Done(done)) => {
                 self.note(&done);
-                if done.quick_xor_hash() != Some(hash.as_str()) {
-                    return Fail(format!("the session completed, but OneDrive has hash {:?}", done.quick_xor_hash()));
-                }
-                Pass("the last fragment completed over the edit, which is left only in the version history (F80 holds)".into())
+                Fail(format!("the last fragment completed over the edit (hash {:?}, sent {hash}): the edit is lost", done.quick_xor_hash()))
             }
-            Err(e @ (WriteError::Changed | WriteError::NameExists | WriteError::SessionGone)) => {
-                Pass(format!("OneDrive refused the last fragment after the edit ({e}): F80's window does not exist"))
-            }
+            Err(e @ (WriteError::Changed | WriteError::NameExists | WriteError::SessionGone)) => Pass(format!("OneDrive refused the last fragment after the edit ({e}), and kept the edit")),
             Ok(ChunkOutcome::More(progress)) => Fail(format!("after the last fragment OneDrive expects {}", progress.next)),
             Err(e) => Fail(format!("the last fragment: {e}")),
         }
     }
 
-    /// §13: a delete goes to the recycle bin.
+    /// Measured on 2026-10-14: a session of an existing item opened with the file's time
+    /// raises the item's eTag and leaves its cTag, so a content guarded by its cTag is not
+    /// taken for changed by its own session.
+    async fn session_opening_tags(&mut self) -> Outcome {
+        let item = step!("the file", self.put("opening.bin", b"before".to_vec(), T0).await);
+        let (etag, ctag) = (item.e_tag.clone().unwrap_or_default(), item.c_tag.clone().unwrap_or_default());
+        let target = UploadTarget::Existing { id: &item.id, if_match: &ctag };
+        step!("the session", self.drive.create_upload_session(target, T0 + 60).await);
+        let read = step!("the file after the opening", self.drive.item(&item.id).await);
+        let etag_rose = read.e_tag.as_deref() != Some(etag.as_str());
+        match read.c_tag.as_deref() == Some(ctag.as_str()) {
+            true => Pass(format!("the cTag stayed; the eTag {}", if etag_rose { "rose" } else { "stayed" })),
+            false => Fail(format!("the opening changed the cTag from {ctag} to {:?}: the upload would take its own session for an edit", read.c_tag)),
+        }
+    }
+
+    /// Measured on 2026-10-14: a rename made in OneDrive before the last fragment of a
+    /// session of an existing item is no change of its content: the last fragment is taken.
+    async fn rename_during_a_session(&mut self) -> Outcome {
+        let item = step!("the file", self.put("renamed-during.bin", b"before".to_vec(), T0).await);
+        let ctag = item.c_tag.clone().unwrap_or_default();
+        let total = 2 * FRAGMENT_UNIT;
+        let content = self.content(total as usize);
+        let hash = quickxor(&content);
+        let target = UploadTarget::Existing { id: &item.id, if_match: &ctag };
+        let session = step!("the session", self.drive.create_upload_session(target, T0 + 60).await);
+        let half = FRAGMENT_UNIT as usize;
+        match self.drive.upload_chunk(&session.url, 0, total, content[..half].to_vec()).await {
+            Ok(ChunkOutcome::More(progress)) if progress.next == FRAGMENT_UNIT => {}
+            Ok(other) => return Fail(format!("after the first fragment: {other:?}")),
+            Err(e) => return Fail(format!("the first fragment: {e}")),
+        }
+        // The opening raised the eTag: the rename is guarded by the one read now.
+        let read = step!("the file before the rename", self.drive.item(&item.id).await);
+        step!("the rename in OneDrive meanwhile", self.rename(&read, "renamed-during-renamed.bin").await);
+        match self.drive.upload_chunk(&session.url, FRAGMENT_UNIT, total, content[half..].to_vec()).await {
+            Ok(ChunkOutcome::Done(done)) => {
+                self.note(&done);
+                match done.quick_xor_hash() == Some(hash.as_str()) {
+                    true => Pass("the last fragment was taken after the rename, and the hash matches".into()),
+                    false => Fail(format!("the session completed, but OneDrive has hash {:?}", done.quick_xor_hash())),
+                }
+            }
+            Ok(ChunkOutcome::More(progress)) => Fail(format!("after the last fragment OneDrive expects {}", progress.next)),
+            Err(e) => Fail(format!("the last fragment was refused after a rename: {e}")),
+        }
+    }
+
+    /// Measured on 2026-10-14: OneDrive takes a cTag as `If-Match`. A content guarded by the
+    /// cTag goes in after a rename, which raises the eTag alone, and is refused after an edit.
+    async fn content_guard(&mut self) -> Outcome {
+        let item = step!("the file", self.put("content-guard.bin", b"before".to_vec(), T0).await);
+        let ctag = item.c_tag.clone().unwrap_or_default();
+        step!("the rename", self.rename(&item, "content-guard-renamed.bin").await);
+        let after_rename = step!("the content after the rename, guarded by the cTag", self.replace(&item.id, &ctag, b"after the rename".to_vec(), T0 + 60).await);
+        match self.replace(&item.id, &ctag, b"over the edit".to_vec(), T0 + 120).await {
+            Err(WriteError::Changed) => Pass(format!("the cTag let the content through after a rename, and refused it after a change of the content (now {:?})", after_rename.c_tag)),
+            Ok(_) => Fail("a content guarded by a cTag OneDrive no longer has went in".into()),
+            Err(e) => Fail(format!("the content guarded by an old cTag: expected 412, got: {e}")),
+        }
+    }
+
+    /// `docs/design/writes.md` §9: a delete goes to the recycle bin.
     async fn recycle_bin(&mut self) -> Outcome {
         let name = format!("recycled-{}.txt", self.run_id);
         let content = b"sent to the recycle bin".to_vec();
@@ -421,8 +481,8 @@ impl Run {
         }
     }
 
-    /// §13, assumed: the delta feed returns the run's own changes, each with the eTag its write
-    /// was answered with, so the reconcile finds nothing to do (echo).
+    /// `docs/design/writes.md` §9, assumed: the delta feed returns the run's own changes, each with the eTag its write
+    /// was answered with, so the listing brings no change of OneDrive's (echo).
     async fn delta_echo(&mut self) -> Outcome {
         const ATTEMPTS: u32 = 6;
         for attempt in 1..=ATTEMPTS {
@@ -475,7 +535,7 @@ impl Run {
     }
 }
 
-/// A file's content as the outbox worker sends it: an empty file in one `PUT`, any
+/// A file's content as a step towards OneDrive sends it: an empty file in one `PUT`, any
 /// other in a session of one fragment.
 pub async fn send(drive: &DriveClient, target: UploadTarget<'_>, content: Vec<u8>, time: i64) -> Result<DriveItem, WriteError> {
     if content.is_empty() {

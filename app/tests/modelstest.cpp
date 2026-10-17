@@ -75,23 +75,36 @@ private Q_SLOTS:
         QCOMPARE(at(activity, 1, ActivityModel::TextRole).toString(), QStringLiteral("Changed on both sides: both versions kept"));
         QCOMPARE(at(activity, 1, ActivityModel::IconRole).toString(), QStringLiteral("document-duplicate"));
         QCOMPARE(at(activity, 2, ActivityModel::IconRole).toString(), QStringLiteral("edit-delete"));
-        QCOMPARE(uploadReasonText(QStringLiteral("other-device")), QStringLiteral("On another filesystem mounted inside the folder: never uploaded."));
-        QCOMPARE(uploadReasonText(QStringLiteral("moved-out-not-opened: Resource temporarily unavailable")), QStringLiteral("Moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later (Resource temporarily unavailable)."));
-        QCOMPARE(uploadReasonText(QStringLiteral("unreadable")), QStringLiteral("Cannot be read: not uploaded, nor anything inside it, until KOneDrive may read it."));
-        QCOMPARE(uploadReasonText(QStringLiteral("state-unreadable")), QStringLiteral("The file's KOneDrive state cannot be read: it stays here until the file is replaced."));
+        QCOMPARE(uploadReasonText(QStringLiteral("too-large")), QStringLiteral("Larger than OneDrive takes."));
         QCOMPARE(uploadReasonText(QStringLiteral("paused")), QStringLiteral("Paused with the account: it goes on when the pause ends."));
-        QCOMPARE(uploadReasonText(QStringLiteral("no-guard")), QStringLiteral("KOneDrive's record of this change is incomplete (no-guard): it stays here until the file is changed again."));
+        QCOMPARE(uploadReasonText(QStringLiteral("blocked")), QStringLiteral("KOneDrive's record of this change is incomplete (blocked): it stays here until the file is changed again."));
         QCOMPARE(uploadReasonText(QStringLiteral("not allowed now: the folder is read-only")), QStringLiteral("Uploads are not allowed now: it goes on when they are (the folder is read-only)."));
         for (const QString &kind : {QStringLiteral("uploaded"), QStringLiteral("cloud-moved"), QStringLiteral("cloud-deleted"), QStringLiteral("restored"),
-                                    QStringLiteral("not-uploaded")}) {
+                                    QStringLiteral("not-uploaded"), QStringLiteral("not-removed-here"), QStringLiteral("store-rebuilt"),
+                                    QStringLiteral("first-sync-began"), QStringLiteral("first-sync-ended")}) {
             QVERIFY2(ActivityModel::describe(kind, QString()) != kind, qPrintable(kind));
         }
+        // A store that was made anew and lost something: the folder's row, the daemon's sentence as its detail, a warning.
+        ActivityModel rebuilt;
+        rebuilt.prepend({1, QStringLiteral("store-rebuilt"), QStringLiteral("/d"), QStringLiteral("lost with them: 3 pin(s)")});
+        QCOMPARE(rebuilt.data(rebuilt.index(0), ActivityModel::TextRole).toString(), QStringLiteral("KOneDrive's records of this folder were made anew"));
+        QCOMPARE(rebuilt.data(rebuilt.index(0), ActivityModel::DetailTextRole).toString(), QStringLiteral("lost with them: 3 pin(s)"));
+        QCOMPARE(rebuilt.data(rebuilt.index(0), ActivityModel::IconRole).toString(), QStringLiteral("dialog-warning"));
+        // A directory that cannot be removed here: its row says why, and what to do.
+        ActivityModel notRemoved;
+        notRemoved.prepend({1, QStringLiteral("not-removed-here"), QStringLiteral("/d/Notebooks"), QString()});
+        const QModelIndex row = notRemoved.index(0);
+        QCOMPARE(notRemoved.data(row, ActivityModel::NameRole).toString(), QStringLiteral("Notebooks"));
+        QCOMPARE(notRemoved.data(row, ActivityModel::TextRole).toString(), QStringLiteral("Cannot be removed here"));
+        QCOMPARE(notRemoved.data(row, ActivityModel::DetailTextRole).toString(),
+                 QStringLiteral("It holds items that cannot be shown on this computer. Remove it in OneDrive."));
+        QCOMPARE(notRemoved.data(row, ActivityModel::IconRole).toString(), QStringLiteral("dialog-warning"));
 
         ConflictModel conflicts;
         conflicts.setConflicts({{2, root + QStringLiteral("/Report.docx"), root + QStringLiteral("/Report-fedora.docx"), QStringLiteral("copy")},
-                                {1, root + QStringLiteral("/a.txt"), QStringLiteral("/home/u/.local/share/konedrive/rescued/1/a.txt"), QStringLiteral("rescued")}});
-        QVERIFY(at(conflicts, 0, ConflictModel::IsCopyRole).toBool());
-        QVERIFY(!at(conflicts, 1, ConflictModel::IsCopyRole).toBool());
+                                {1, root + QStringLiteral("/a.txt"), root + QStringLiteral("/a-fedora.txt"), QStringLiteral("copy")}});
+        QCOMPARE(at(conflicts, 0, ConflictModel::CopyNameRole).toString(), QStringLiteral("Report-fedora.docx"));
+        QCOMPARE(at(conflicts, 1, ConflictModel::CopyRole).toString(), root + QStringLiteral("/a-fedora.txt"));
     }
 
     /// Live events go on top; past 50 rows the oldest is removed.
@@ -131,9 +144,9 @@ private Q_SLOTS:
         QCOMPARE(at(model, 0, ActivityModel::NameRole).toString(), QStringLiteral("n70"));
     }
 
-    /// Conflicts are kept by the path the file was moved to, newest first: a
+    /// Conflicts are kept by the path of the copy, newest first: a
     /// refresh inserts what is new and removes what went, each in one step.
-    void conflictsInsertAndRemoveByRescuedPath()
+    void conflictsInsertAndRemoveByTheCopysPath()
     {
         ConflictModel model;
         QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
@@ -143,10 +156,10 @@ private Q_SLOTS:
 
         model.setConflicts({{100, QStringLiteral("/d/a.txt"), QStringLiteral("/r/1/a.txt")}, {300, QStringLiteral("/d/c.txt"), QStringLiteral("/r/3/c.txt")}});
         QCOMPARE(model.count(), 2);
-        QCOMPARE(at(model, 0, ConflictModel::RescuedRole).toString(), QStringLiteral("/r/3/c.txt"));
+        QCOMPARE(at(model, 0, ConflictModel::CopyRole).toString(), QStringLiteral("/r/3/c.txt"));
         QCOMPARE(at(model, 0, ConflictModel::NameRole).toString(), QStringLiteral("c.txt"));
         QCOMPARE(at(model, 0, ConflictModel::OriginalFolderRole).toString(), QStringLiteral("/d"));
-        QCOMPARE(at(model, 0, ConflictModel::RescuedFolderRole).toString(), QStringLiteral("/r/3"));
+        QCOMPARE(at(model, 0, ConflictModel::CopyFolderRole).toString(), QStringLiteral("/r/3"));
 
         inserted.clear();
         model.setConflicts({{200, QStringLiteral("/d/b.txt"), QStringLiteral("/r/2/b.txt")},
@@ -174,7 +187,7 @@ private Q_SLOTS:
         ConflictModel model;
         QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
         const auto conflict = [](int i) {
-            return KonedriveConflict{i, QStringLiteral("/d/%1.txt").arg(i), QStringLiteral("/r/%1.txt").arg(i), QStringLiteral("rescued")};
+            return KonedriveConflict{i, QStringLiteral("/d/%1.txt").arg(i), QStringLiteral("/r/%1.txt").arg(i), QStringLiteral("copy")};
         };
         KonedriveConflictList all;
         for (int i = 0; i < 5000; ++i) {
@@ -222,7 +235,7 @@ private Q_SLOTS:
         all[all.size() - 3].time = 4998;
         model.setConflicts(all);
         QCOMPARE(reset.count(), 1);
-        QCOMPARE(at(model, 4, ConflictModel::RescuedRole).toString(), QStringLiteral("/r/6000.txt"));
+        QCOMPARE(at(model, 4, ConflictModel::CopyRole).toString(), QStringLiteral("/r/6000.txt"));
         QCOMPARE(changed.count(), 0);
     }
 
@@ -240,8 +253,8 @@ private Q_SLOTS:
         QCOMPARE(model.count(), 1);
         model.setConflicts({b, a, b});
         QCOMPARE(model.count(), 2);
-        QCOMPARE(at(model, 0, ConflictModel::RescuedRole).toString(), b.rescued);
-        QCOMPARE(at(model, 1, ConflictModel::RescuedRole).toString(), a.rescued);
+        QCOMPARE(at(model, 0, ConflictModel::CopyRole).toString(), b.copy);
+        QCOMPARE(at(model, 1, ConflictModel::CopyRole).toString(), a.copy);
     }
 
     /// Which failures are which (notifications): the kind says

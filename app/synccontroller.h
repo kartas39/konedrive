@@ -27,7 +27,7 @@ class QTimer;
 
 /// Presents one account's folder (at /org/konedrive/Accounts/<id>) to QML: its
 /// org.konedrive.Folder, Transfers, UploadQueue, Conflicts, LocalScan and
-/// ActivityLog. The helper, which serves every account, is DaemonController's.
+/// ActivityLog.
 /// Never blocks the GUI thread.
 class SyncController : public QObject
 {
@@ -47,11 +47,9 @@ class SyncController : public QObject
     /// Folder.NotUpdated: the failed-update note, or empty.
     Q_PROPERTY(QString notUpdated READ notUpdated NOTIFY syncChanged)
     Q_PROPERTY(qulonglong itemsListed READ itemsListed NOTIFY syncChanged)
-    Q_PROPERTY(qulonglong itemsPlaced READ itemsPlaced NOTIFY syncChanged)
     Q_PROPERTY(qulonglong skippedCount READ skippedCount NOTIFY syncChanged)
     Q_PROPERTY(QVariantList skipped READ skipped NOTIFY skippedChanged)
     Q_PROPERTY(QString actionError READ actionError NOTIFY actionErrorChanged)
-    Q_PROPERTY(QString pendingFolder READ pendingFolder NOTIFY pendingFolderChanged)
     /// Unix seconds of the last successful check with OneDrive; 0 = never.
     Q_PROPERTY(qlonglong lastChecked READ lastChecked NOTIFY syncChanged)
     /// Bytes the folder's files take on this disk.
@@ -65,14 +63,11 @@ class SyncController : public QObject
     /// What the last Free Up Space did, for an inline message; empty when there is nothing to say.
     Q_PROPERTY(QString freeUpResult READ freeUpResult NOTIFY freeUpResultChanged)
     Q_PROPERTY(bool freeingUp READ freeingUp NOTIFY freeUpResultChanged)
-    /// Changes waiting to be uploaded (neither blocked nor held), and the size they send.
+    /// Changes waiting to be uploaded (not blocked), and the size they send.
     Q_PROPERTY(uint pendingCount READ pendingCount NOTIFY syncChanged)
     Q_PROPERTY(qulonglong pendingBytes READ pendingBytes NOTIFY syncChanged)
     /// Changes that need the user before they can go up (see notUploadedSummary).
     Q_PROPERTY(uint blockedCount READ blockedCount NOTIFY syncChanged)
-    /// Removals the mass-delete guard holds (HeldCount), waiting for
-    /// confirmDeletes() or restoreDeletes().
-    Q_PROPERTY(uint heldCount READ heldCount NOTIFY syncChanged)
     /// OneDrive is full (QuotaFull): no content goes up until a Refresh finds space.
     Q_PROPERTY(bool quotaFull READ quotaFull NOTIFY syncChanged)
     /// While full: the changes that wait for space, and the size of their files.
@@ -96,6 +91,9 @@ class SyncController : public QObject
     Q_PROPERTY(QString liveChanges READ liveChanges NOTIFY syncChanged)
     /// The account's own sync setting (Thumbnails).
     Q_PROPERTY(bool thumbnails READ thumbnails NOTIFY syncChanged)
+    /// The account's own sync setting (FreeSpaceReserve): the gigabytes of the disk's
+    /// free space that downloads of files kept on this device leave.
+    Q_PROPERTY(int freeSpaceReserve READ freeSpaceReserve NOTIFY syncChanged)
     /// What a copy of a file changed on both sides is named after: "Report-<machine>.docx".
     Q_PROPERTY(QString machineName READ machineName NOTIFY syncChanged)
     /// Uploads under way (Transfers.Uploads).
@@ -110,6 +108,9 @@ class SyncController : public QObject
     Q_PROPERTY(qulonglong uploadSpeed READ uploadSpeed NOTIFY syncChanged)
     Q_PROPERTY(uint activeDownloads READ activeDownloads NOTIFY syncChanged)
     Q_PROPERTY(uint activeUploads READ activeUploads NOTIFY syncChanged)
+    /// Thumbnails being downloaded now (Transfers.ThumbnailDownloads): none of them is a file
+    /// of activeDownloads.
+    Q_PROPERTY(uint thumbnailDownloads READ thumbnailDownloads NOTIFY syncChanged)
     Q_PROPERTY(uint poolInUse READ poolInUse NOTIFY syncChanged)
     Q_PROPERTY(uint poolSize READ poolSize NOTIFY syncChanged)
     Q_PROPERTY(uint poolCeiling READ poolCeiling NOTIFY syncChanged)
@@ -117,6 +118,9 @@ class SyncController : public QObject
     Q_PROPERTY(uint largeTransfers READ largeTransfers NOTIFY syncChanged)
     Q_PROPERTY(uint largeLimit READ largeLimit NOTIFY syncChanged)
     Q_PROPERTY(uint retryAfter READ retryAfter NOTIFY syncChanged)
+    /// The file a program was first refused the content of during the wait OneDrive asked
+    /// for (Transfers.RetryAfterRefusal): its full path, or empty.
+    Q_PROPERTY(QString retryAfterRefusal READ retryAfterRefusal NOTIFY syncChanged)
     /// The queue totals, each way (Transfers' DownloadLeftCount, DownloadLeftBytes,
     /// DownloadDoneBytes, DownloadTimeLeft and the same four for uploads): files left to
     /// download and changes left to upload, their bytes, the bytes done in this run, and
@@ -129,16 +133,12 @@ class SyncController : public QObject
     Q_PROPERTY(qulonglong uploadLeftBytes READ uploadLeftBytes NOTIFY syncChanged)
     Q_PROPERTY(qulonglong uploadDoneBytes READ uploadDoneBytes NOTIFY syncChanged)
     Q_PROPERTY(uint uploadTimeLeft READ uploadTimeLeft NOTIFY syncChanged)
-    /// The Full local scan (LocalScan's properties): "running", "idle", or "none" for a
-    /// read-only folder; why it runs; when it started (unix seconds); the directories and
-    /// files seen so far; about how many items it will see (the base's count); when the
-    /// last one finished (0: not yet) and how long it took, in seconds.
+    /// The check of the folder on disk at the start of its sync (LocalScan's properties):
+    /// "running", "idle", or "none" before the first; why it runs; when it started (unix
+    /// seconds); when the last one finished (0: not yet) and how long it took, in seconds.
     Q_PROPERTY(QString scanState READ scanState NOTIFY syncChanged)
     Q_PROPERTY(QString scanReason READ scanReason NOTIFY syncChanged)
     Q_PROPERTY(qlonglong scanStarted READ scanStarted NOTIFY syncChanged)
-    Q_PROPERTY(qulonglong scanDirectories READ scanDirectories NOTIFY syncChanged)
-    Q_PROPERTY(qulonglong scanFiles READ scanFiles NOTIFY syncChanged)
-    Q_PROPERTY(qulonglong scanExpected READ scanExpected NOTIFY syncChanged)
     Q_PROPERTY(qlonglong scanFinished READ scanFinished NOTIFY syncChanged)
     Q_PROPERTY(uint scanTook READ scanTook NOTIFY syncChanged)
     /// The last two minutes of each, one sample a second, oldest first: the window keeps
@@ -148,7 +148,7 @@ class SyncController : public QObject
     Q_PROPERTY(QVariantList activeDownloadsHistory READ activeDownloadsHistory NOTIFY historyChanged)
     Q_PROPERTY(QVariantList activeUploadsHistory READ activeUploadsHistory NOTIFY historyChanged)
     /// What is kept back, one entry per reason: {group, reason, count, bytes, why}
-    /// (NotUploadedSummary()), groups in the order one-action, per-file, never, waiting.
+    /// (NotUploadedSummary()), groups in the order one-action, per-file, waiting.
     Q_PROPERTY(QVariantList notUploadedSummary READ notUploadedSummary NOTIFY notUploadedChanged)
     /// Whether the summary has been read since the daemon appeared.
     Q_PROPERTY(bool notUploadedKnown READ notUploadedKnown NOTIFY notUploadedChanged)
@@ -185,11 +185,9 @@ public:
     QString trouble() const { return m_trouble; }
     QString notUpdated() const { return m_notUpdated; }
     qulonglong itemsListed() const { return m_itemsListed; }
-    qulonglong itemsPlaced() const { return m_itemsPlaced; }
     qulonglong skippedCount() const { return m_skippedCount; }
     QVariantList skipped() const { return m_skipped; }
     QString actionError() const { return m_actionError; }
-    QString pendingFolder() const { return m_pendingFolder; }
     qlonglong lastChecked() const { return m_lastChecked; }
     qulonglong localBytes() const { return m_localBytes; }
     uint conflictCount() const { return m_conflictCount; }
@@ -202,7 +200,6 @@ public:
     uint pendingCount() const { return m_pendingCount; }
     qulonglong pendingBytes() const { return m_pendingBytes; }
     uint blockedCount() const { return m_blockedCount; }
-    uint heldCount() const { return m_heldCount; }
     bool quotaFull() const { return m_quotaFull; }
     uint spaceWaitingCount() const { return m_spaceWaitingCount; }
     qulonglong spaceWaitingBytes() const { return m_spaceWaitingBytes; }
@@ -214,12 +211,14 @@ public:
     bool writable() const { return m_writable; }
     QString liveChanges() const { return m_liveChanges; }
     bool thumbnails() const { return m_thumbnails; }
+    int freeSpaceReserve() const { return m_freeSpaceReserve; }
     QString machineName() const { return m_machineName; }
     TransferModel *uploads() const { return m_uploads; }
     qulonglong downloadSpeed() const { return m_downloadSpeed; }
     qulonglong uploadSpeed() const { return m_uploadSpeed; }
     uint activeDownloads() const { return m_activeDownloads; }
     uint activeUploads() const { return m_activeUploads; }
+    uint thumbnailDownloads() const { return m_thumbnailDownloads; }
     uint poolInUse() const { return m_poolInUse; }
     uint poolSize() const { return m_poolSize; }
     uint poolCeiling() const { return m_poolCeiling; }
@@ -227,6 +226,7 @@ public:
     uint largeTransfers() const { return m_largeTransfers; }
     uint largeLimit() const { return m_largeLimit; }
     uint retryAfter() const { return m_retryAfter; }
+    QString retryAfterRefusal() const { return m_retryAfterRefusal; }
     uint downloadLeftCount() const { return m_downloadLeftCount; }
     qulonglong downloadLeftBytes() const { return m_downloadLeftBytes; }
     qulonglong downloadDoneBytes() const { return m_downloadDoneBytes; }
@@ -238,9 +238,6 @@ public:
     QString scanState() const { return m_scanState; }
     QString scanReason() const { return m_scanReason; }
     qlonglong scanStarted() const { return m_scanStarted; }
-    qulonglong scanDirectories() const { return m_scanDirectories; }
-    qulonglong scanFiles() const { return m_scanFiles; }
-    qulonglong scanExpected() const { return m_scanExpected; }
     qlonglong scanFinished() const { return m_scanFinished; }
     uint scanTook() const { return m_scanTook; }
     QVariantList downloadSpeedHistory() const { return m_history[0]; }
@@ -255,15 +252,14 @@ public:
     QVariantMap notUploadedFiles() const { return m_notUploadedFiles; }
     int perFileCap() const { return PerFileCap; }
 
-    /// Folder.Register; a NoHelper refusal is kept as `pendingFolder` for the
-    /// window to prompt about — never registered without interception, since
-    /// an unhydrated file then reads as zeros for good (no-interception stays
-    /// a daemon/CLI-only mode; docs/design/decisions.md).
+    /// Folder.Register; a refusal is actionError.
     Q_INVOKABLE void chooseFolder(const QUrl &folder);
-    /// "Try Again" on the NoHelper prompt: retries Register(pendingFolder).
-    Q_INVOKABLE void retryRegistration();
-    Q_INVOKABLE void cancelPending();
     Q_INVOKABLE void forget();
+    /// Asks UploadQueue.UnsentCount(): how many changes made here are not sent to
+    /// OneDrive, which a Forget or the account's removal leaves only on this computer.
+    /// Answers unsentCountRead; a count that cannot be read is 0, so that nothing waits
+    /// for it.
+    Q_INVOKABLE void readUnsentCount();
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void loadSkipped();
     Q_INVOKABLE void openFolder();
@@ -272,7 +268,7 @@ public:
     /// Conflicts.List() into `conflicts`.
     Q_INVOKABLE void loadConflicts();
     /// Conflicts.Dismiss, then List() again.
-    Q_INVOKABLE void dismissConflict(const QString &rescuedPath);
+    Q_INVOKABLE void dismissConflict(const QString &copyPath);
     /// FreeUpSpace; the outcome lands in `freeUpResult`.
     Q_INVOKABLE void freeUpSpace();
     Q_INVOKABLE void clearFreeUpResult();
@@ -289,14 +285,13 @@ public:
     Q_INVOKABLE void syncAnyway();
     /// SetThumbnails; a refusal lands in actionError.
     Q_INVOKABLE void setThumbnails(bool on);
+    /// SetFreeSpaceReserve; a refusal lands in actionError.
+    Q_INVOKABLE void setFreeSpaceReserve(int gigabytes);
     /// SetIgnorePatterns; a refusal lands in actionError.
     Q_INVOKABLE void setIgnorePatterns(const QStringList &patterns);
     /// The list with `pattern` (trimmed) added, if it is not there yet.
     Q_INVOKABLE void addIgnorePattern(const QString &pattern);
     Q_INVOKABLE void removeIgnorePattern(const QString &pattern);
-    /// The mass-delete guard: the held removals go ahead, or are taken back.
-    Q_INVOKABLE void confirmDeletes();
-    Q_INVOKABLE void restoreDeletes();
     /// NotUploadedSummary() into `notUploadedSummary`, and the files of the
     /// reasons shown into `notUploadedFiles`, quietly; at most once a second
     /// (a call within the second is put off to its end). The pages call it
@@ -314,11 +309,12 @@ public:
     void setCallTimeout(int ms);
 
 Q_SIGNALS:
+    /// readUnsentCount()'s answer.
+    void unsentCountRead(qulonglong count);
     void serviceAvailableChanged();
     void syncChanged();
     void skippedChanged();
     void actionErrorChanged();
-    void pendingFolderChanged();
     void freeUpResultChanged();
     void notUploadedChanged();
     void historyChanged();
@@ -336,13 +332,11 @@ private:
     void applyProperties(const QString &interfaceName, const QVariantMap &properties);
     void setServiceAvailable(bool available);
     void setActionError(const QString &message);
-    void setPendingFolder(const QString &folder);
     /// `resetError` false (loadSkipped, an incidental background reload) means
     /// this call never clears an actionError already showing (M7): only a
     /// user-started action gets to wipe out the previous one.
     void call(const QDBusPendingCall &pending,
               std::function<void(const QDBusPendingCall &)> onSuccess = {},
-              std::function<bool(const QDBusError &)> onError = {},
               bool resetError = true);
     /// A call the user did not ask for (a list refresh): its failure is not shown.
     void quietly(const QDBusPendingCall &pending, std::function<void(const QDBusPendingCall &)> onSuccess);
@@ -366,11 +360,9 @@ private:
     QString m_trouble;
     QString m_notUpdated;
     qulonglong m_itemsListed = 0;
-    qulonglong m_itemsPlaced = 0;
     qulonglong m_skippedCount = 0;
     QVariantList m_skipped;
     QString m_actionError;
-    QString m_pendingFolder;
     qlonglong m_lastChecked = 0;
     qulonglong m_localBytes = 0;
     uint m_conflictCount = 0;
@@ -383,7 +375,6 @@ private:
     uint m_pendingCount = 0;
     qulonglong m_pendingBytes = 0;
     uint m_blockedCount = 0;
-    uint m_heldCount = 0;
     bool m_quotaFull = false;
     uint m_spaceWaitingCount = 0;
     qulonglong m_spaceWaitingBytes = 0;
@@ -396,6 +387,7 @@ private:
     bool m_writable = true;
     QString m_liveChanges = QStringLiteral("off");
     bool m_thumbnails = true;
+    int m_freeSpaceReserve = 10;
     QString m_machineName;
     TransferModel *m_uploads;
     /// Adds one sample to each history (every second).
@@ -404,6 +396,7 @@ private:
     qulonglong m_uploadSpeed = 0;
     uint m_activeDownloads = 0;
     uint m_activeUploads = 0;
+    uint m_thumbnailDownloads = 0;
     uint m_poolInUse = 0;
     uint m_poolSize = 0;
     uint m_poolCeiling = 0;
@@ -411,6 +404,7 @@ private:
     uint m_largeTransfers = 0;
     uint m_largeLimit = 0;
     uint m_retryAfter = 0;
+    QString m_retryAfterRefusal;
     uint m_downloadLeftCount = 0;
     qulonglong m_downloadLeftBytes = 0;
     qulonglong m_downloadDoneBytes = 0;
@@ -422,9 +416,6 @@ private:
     QString m_scanState = QStringLiteral("none");
     QString m_scanReason;
     qlonglong m_scanStarted = 0;
-    qulonglong m_scanDirectories = 0;
-    qulonglong m_scanFiles = 0;
-    qulonglong m_scanExpected = 0;
     qlonglong m_scanFinished = 0;
     uint m_scanTook = 0;
     /// Download speed, upload speed, active downloads, active uploads.

@@ -48,34 +48,6 @@ fn a_missing_directory_is_reported_clearly() {
     assert!(matches!(error, ProbeError::Unusable { .. }), "{error:?}");
 }
 
-/// Both dehydration and startup recovery take a write lease before they
-/// punch a file's blocks away, and only `EAGAIN` out of a refused
-/// `F_SETLEASE` means "try again later" — everything else, including a
-/// filesystem that grants no leases at all, is a hard error there. This
-/// has to be caught at registration, not discovered the first time a
-/// crash-interrupted file exists to recover or a user asks to dehydrate
-/// something.
-///
-/// `probe_dir` itself always works on a fresh, nameless file nothing
-/// else can have open, so a genuine refusal cannot be provoked through
-/// it without root or a real lease-less filesystem — neither available
-/// unprivileged here. `probe_lease` is exercised directly instead,
-/// against an ordinary file held open by a second descriptor: the same
-/// `F_SETLEASE`, the same `Ok(None)` `EAGAIN` refusal
-/// `konedrive_fs::lease`'s own `refused_while_another_descriptor_is_open`
-/// measures, going through the mapping this probe adds.
-#[test]
-fn a_file_a_lease_cannot_be_taken_on_is_reported_unusable() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.bin");
-    std::fs::write(&path, b"data").unwrap();
-    let file = File::options().read(true).write(true).open(&path).unwrap();
-    let _other = File::open(&path).unwrap();
-
-    let error = probe_lease(&file, dir.path()).unwrap_err();
-    assert!(matches!(error, ProbeError::Unusable { .. }), "{error:?}");
-}
-
 // `classify` is exercised directly for both branches below: a genuinely
 // unsupported filesystem is only reproducible with a filesystem type
 // that lacks the feature (vfat, a tmpfs built without

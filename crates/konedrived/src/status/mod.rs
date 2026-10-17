@@ -1,7 +1,10 @@
 pub mod activity;
-pub mod overall;
-pub mod report;
+pub mod folder_trouble;
+pub(crate) mod overall;
+pub(crate) mod report;
 pub mod snapshot;
-pub mod space;
-pub mod totals;
-pub mod transfers;
+pub(crate) mod sync_trouble;
+pub(crate) mod space;
+pub(crate) mod throttle_wait;
+pub(crate) mod totals;
+pub(crate) mod transfers;

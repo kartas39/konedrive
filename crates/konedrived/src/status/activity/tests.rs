@@ -5,10 +5,6 @@ use std::sync::atomic::Ordering::SeqCst;
 use super::*;
 use crate::status::snapshot::SyncSnapshot;
 
-fn event_at(kind: Kind, path: &str) -> Event {
-    Event { at: 1, kind, path: path.into(), detail: String::new() }
-}
-
 /// The end of a cycle looks over the conflicts a batch at a
 /// time, round the list, dropping those whose file is gone; the list on
 /// the bus still looks at every one.
@@ -18,12 +14,12 @@ fn conflicts_are_looked_over_a_batch_at_a_time() {
     let store = konedrive_tree::Store::new(konedrive_tree::TreeStore::open(&dir.path().join("tree.sqlite")).unwrap());
     let rows: Vec<ConflictRow> = (0..450)
         .map(|i| {
-            let rescued = dir.path().join(format!("c{i:03}"));
+            let kept_copy = dir.path().join(format!("c{i:03}"));
             // Every tenth file is gone already.
             if i % 10 != 0 {
-                File::create(&rescued).unwrap();
+                File::create(&kept_copy).unwrap();
             }
-            ConflictRow { at: i, original: format!("/r/c{i:03}"), rescued: rescued.display().to_string(), kind: konedrive_tree::ConflictKind::Rescued }
+            ConflictRow { at: i, original: format!("/r/c{i:03}"), kept_copy: kept_copy.display().to_string() }
         })
         .collect();
     store.call_blocking(move |s| s.add_conflicts(&rows)).unwrap();
@@ -40,27 +36,6 @@ fn conflicts_are_looked_over_a_batch_at_a_time() {
     std::fs::remove_file(dir.path().join("c449")).unwrap();
     assert_eq!(activity.conflicts().unwrap().len(), 404, "the bus's list looks at every one");
     assert_eq!(state.get().local.conflict_count, 404);
-}
-
-/// The cap on its own: the first `per_kind` of each kind in
-/// the order they came, then one "and N more" per kind that had more.
-#[test]
-fn capped_keeps_the_first_of_each_kind_and_counts_the_rest() {
-    let mut events: Vec<Event> = (0..4).map(|n| event_at(Kind::Added, &format!("/r/a{n}"))).collect();
-    events.push(event_at(Kind::Removed, "/r/x"));
-    events.extend((4..6).map(|n| event_at(Kind::Added, &format!("/r/a{n}"))));
-    let out = capped(events, 3, "/r");
-    let shown: Vec<_> = out.iter().map(|e| (e.kind.as_str(), e.path.as_str(), e.detail.as_str())).collect();
-    assert_eq!(
-        shown,
-        vec![
-            ("added", "/r/a0", ""),
-            ("added", "/r/a1", ""),
-            ("added", "/r/a2", ""),
-            ("removed", "/r/x", ""),
-            ("added", "/r", "and 3 more"),
-        ]
-    );
 }
 
 fn in_folder(root: &str) -> SyncStateHandle {

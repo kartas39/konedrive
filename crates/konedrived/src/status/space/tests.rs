@@ -1,7 +1,6 @@
 use std::fs::File;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::SeqCst;
-use std::time::SystemTime;
 
 use super::*;
 use crate::status::report::Report;
@@ -12,16 +11,14 @@ fn in_folder(root: &str) -> SyncStateHandle {
 }
 
 /// `LocalBytes` is what the files occupy (`st_blocks ×
-/// 512`): a placeholder counts as the nothing it takes, a downloaded file
+/// 512`): a file with nothing written counts as the nothing it takes, a downloaded file
 /// as its blocks, and neither konedrive's own `.konedrive-*` entries nor
 /// a symbolic link to a file count at all — the walk passes them by.
 #[test]
 fn local_bytes_count_what_files_occupy_not_their_size() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let handle = File::open(root).unwrap();
-    konedrive_fs::placeholder::create_placeholder(&handle, "online.bin", "P", 1 << 20, SystemTime::UNIX_EPOCH)
-        .unwrap();
+    File::create(root.join("online.bin")).unwrap().set_len(1 << 20).unwrap();
     std::fs::create_dir(root.join("docs")).unwrap();
     std::fs::write(root.join("docs/here.bin"), vec![7u8; 64 * 1024]).unwrap();
     std::fs::create_dir(root.join(".konedrive-holding")).unwrap();
@@ -30,13 +27,27 @@ fn local_bytes_count_what_files_occupy_not_their_size() {
     std::os::unix::fs::symlink(root.join("docs/here.bin"), root.join("link.bin")).unwrap();
 
     let blocks = |rel: &str| std::fs::symlink_metadata(root.join(rel)).unwrap().blocks() * 512;
-    assert!(blocks("online.bin") < 8 * 512, "a placeholder takes next to nothing");
+    assert!(blocks("online.bin") < 8 * 512, "a file with nothing written takes next to nothing");
     assert!(blocks("docs/here.bin") >= 64 * 1024);
     assert_eq!(local_bytes(root), blocks("online.bin") + blocks("docs/here.bin"));
 }
 
-/// A `Report` that reports nowhere — the plain
-/// `serve_hydrations`' — starts no walker, and a walker stopped starts
+/// The backing directory of a mounted folder is walked by the link the kernel keeps for its
+/// descriptor (`BackingDirectory::resolve_root_path`), which is on another filesystem than
+/// the directory: what is in the directories below counts all the same.
+#[test]
+fn local_bytes_of_a_directory_named_by_the_link_of_its_descriptor_count_what_is_below() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("pinned/inner")).unwrap();
+    std::fs::write(dir.path().join("pinned/inner/here.bin"), vec![7u8; 64 * 1024]).unwrap();
+    let descriptor = File::open(dir.path()).unwrap();
+    let link = konedrive_fs::proc_path(&descriptor);
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+    assert!(local_bytes(&link) >= 64 * 1024);
+    assert_eq!(local_bytes(&link), local_bytes(dir.path()));
+}
+
+/// A `Report` that reports nowhere (`Report::nowhere`) starts no walker, and a walker stopped starts
 /// again at the next kick.
 #[tokio::test(start_paused = true)]
 async fn a_report_for_nowhere_starts_no_walker_and_a_stopped_one_starts_again() {

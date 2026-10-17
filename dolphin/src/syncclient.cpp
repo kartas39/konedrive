@@ -63,24 +63,15 @@ MenuAnswer menuAnswerFrom(const QVariantMap &answer)
             result.alwaysKeep = MenuAnswer::AlwaysKeep::Off;
         } else if (keep == QLatin1String("on")) {
             result.alwaysKeep = MenuAnswer::AlwaysKeep::On;
-        } else if (keep == QLatin1String("on-locked")) {
-            result.alwaysKeep = MenuAnswer::AlwaysKeep::OnLocked;
         }
         result.freeUp = offerFrom(answer.value(QStringLiteral("free-up")).toString());
     }
     if (result.freeUp == MenuAnswer::Offer::Disabled) {
         const QString why = answer.value(QStringLiteral("free-up-why")).toString();
-        if (why == QLatin1String("pinned-above")) {
-            result.freeUpWhy = MenuAnswer::FreeUpWhy::PinnedAbove;
-        } else if (why == QLatin1String("no-helper")) {
-            result.freeUpWhy = MenuAnswer::FreeUpWhy::NoHelper;
-        } else if (why == QLatin1String("not-uploaded")) {
+        if (why == QLatin1String("not-uploaded")) {
             result.freeUpWhy = MenuAnswer::FreeUpWhy::NotUploaded;
-        } else if (why == QLatin1String("unknown")) {
-            result.freeUpWhy = MenuAnswer::FreeUpWhy::Unknown;
         }
     }
-    result.blockedBy = answer.value(QStringLiteral("blocked-by")).toString();
     result.openOnlinePath = answer.value(QStringLiteral("open-online-path")).toString();
     if (!result.openOnlinePath.isEmpty()) {
         result.openOnline = offerFrom(answer.value(QStringLiteral("open-online")).toString());
@@ -213,14 +204,6 @@ void SyncClient::start(Operation operation, const QStringList &paths)
             // which is why the timer is only started if it is not already.
             if (!request->timer->isActive()) {
                 request->timer->start();
-            }
-        } else if (operation == Operation::FreeUpSpace) {
-            // FreeUp's `busy` (files, bytes, busy, skipped_pinned) also
-            // folds in files changed here and not uploaded (review #6).
-            const QDBusPendingReply<uint, qulonglong, uint, uint> freeUpReply = *finished;
-            const uint busy = freeUpReply.argumentAt<2>();
-            if (busy > 0) {
-                Q_EMIT freeUpKeptBusy(busy);
             }
         } else if (operation == Operation::OpenOnline) {
             const QDBusPendingReply<QString> urlReply = *finished;

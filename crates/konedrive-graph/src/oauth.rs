@@ -8,13 +8,13 @@ use crate::pkce::Pkce;
 /// What a read-only account asks for: reading its files, its profile, and a refresh token.
 pub const SCOPES: &str = "Files.Read User.Read offline_access";
 
-/// What a read-write account asks for: changing its files too (`docs/design/writes.md` §2).
+/// What a read-write account asks for: changing its files too (`docs/design/accounts.md` §10).
 pub const READ_WRITE_SCOPES: &str = "Files.ReadWrite User.Read offline_access";
 
 /// The scope an account signs in and refreshes with: `read_write` says whether its mode is
 /// read-write. A read-only account keeps
 /// asking for `Files.Read` at every refresh, so its access tokens cannot write even when
-/// its grant is wider (§2.1): Microsoft allows a refresh to ask for "equivalent to or
+/// its grant is wider (`docs/design/writes.md` §2.1): Microsoft allows a refresh to ask for "equivalent to or
 /// a subset of" what was granted, and so keeps enforcing that nothing is written.
 pub fn scopes_for(read_write: bool) -> &'static str {
     if read_write {
@@ -143,7 +143,7 @@ impl OAuthClient {
     /// [`authorize_url`](Self::authorize_url), pinned to one Microsoft account: the sign-in
     /// page asks for that account's password again (`prompt=login`) with its name filled in
     /// (`login_hint`, when it is known), rather than taking whoever the browser is signed in
-    /// as. Every sign-in that asks for `Files.ReadWrite` is pinned (`docs/design/writes.md` §2): a browser
+    /// as. Every sign-in that asks for `Files.ReadWrite` is pinned (`docs/design/writes.md` §2.2): a browser
     /// signed in to another account — the user's real one — cannot consent to write access for
     /// it with one stray click.
     pub fn pinned_authorize_url(&self, redirect_uri: &str, pkce: &Pkce, state: &str, login_hint: Option<&str>) -> Url {

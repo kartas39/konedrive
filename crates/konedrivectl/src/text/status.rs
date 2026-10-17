@@ -2,9 +2,8 @@
 //! printed.
 
 use konedrive_dbus::overall::{Overall, Reason};
-use konedrive_dbus::HelperState;
 
-use super::formats::{checked_text, grouped, human_bytes, local_time, seconds_text};
+use super::formats::{checked_text, human_bytes, local_time, seconds_text};
 use super::transfers::waiting_download_text;
 use super::uploads::{space_waiting_text, waiting_text};
 
@@ -47,6 +46,9 @@ pub struct AccountStatus {
     /// Bytes used and in all.
     pub quota: Option<(u64, u64)>,
     pub last_error: String,
+    /// `Account.ReadOnlyWanted` with `Account.UnsentBeforeReadOnly`: how many changes an
+    /// account that waits to switch to read-only has still to send; `None` with no such wish.
+    pub read_only_wish: Option<u64>,
     /// `Folder.Overall` of the account's folder: the state the account is in as a whole,
     /// and the reason.
     pub overall: Option<Overall>,
@@ -54,6 +56,8 @@ pub struct AccountStatus {
     pub trouble: String,
     /// `Folder.NotUpdated`: the failed-update note, or empty.
     pub not_updated: String,
+    /// `Transfers.RetryAfter`: seconds left of the wait OneDrive asked for; 0 with none.
+    pub retry_after: u32,
 }
 
 /// The `Overall:` line's text, in `status` and `sync status`: the state the daemon decided
@@ -62,8 +66,9 @@ pub struct AccountStatus {
 /// stop it and OneDrive out of reach, `not_updated` (`Folder.NotUpdated`) for files not
 /// updated here. Under any other reason the trouble is not on this line: `sync status` has
 /// it in `Last error:`. Nothing here decides a state: a reason this build does not know is printed as the
-/// daemon spelled it.
-pub fn overall_text(overall: &Overall, trouble: &str, not_updated: &str) -> String {
+/// daemon spelled it. `retry_after` is `Transfers.RetryAfter`, the seconds left of the wait
+/// OneDrive asked for, said under the reason `throttled`.
+pub fn overall_text(overall: &Overall, trouble: &str, not_updated: &str, retry_after: u32) -> String {
     let state = overall.state.as_str();
     // The sentence, or what stands for it when the daemon sent none.
     let or = |sentence: &str, otherwise: &str| if sentence.is_empty() { otherwise.to_owned() } else { sentence.to_owned() };
@@ -78,18 +83,17 @@ pub fn overall_text(overall: &Overall, trouble: &str, not_updated: &str) -> Stri
         Some(Reason::Transferring) => "files are downloading or uploading, or changes wait to upload".to_owned(),
         Some(Reason::Stopped) if trouble.is_empty() => "syncing has stopped".to_owned(),
         Some(Reason::Stopped) => format!("syncing has stopped: {trouble}"),
-        Some(Reason::DeletesHeld) => "deletions made here wait for you: delete them in OneDrive too, or restore them".to_owned(),
         Some(Reason::Conflicts) => "changed files were moved out of the way".to_owned(),
         Some(Reason::QuotaFull) => "OneDrive is full: files wait for space".to_owned(),
         Some(Reason::TooBig) => "files are too big for the space left in OneDrive".to_owned(),
         Some(Reason::Blocked) => "changes cannot be uploaded".to_owned(),
         Some(Reason::NotUpdated) => or(not_updated, "files changed in OneDrive could not be updated here yet"),
-        Some(Reason::HelperUnavailable) => {
-            "the konedrive helper is not available: files are not kept in step, and nothing downloads when it is opened".to_owned()
-        }
         Some(Reason::Trouble) => said("something is wrong"),
         Some(Reason::Paused) => "you paused syncing".to_owned(),
         Some(Reason::HeldBack) => "the account holds back by itself".to_owned(),
+        // TODO: wording
+        Some(Reason::Throttled) if retry_after == 0 => "OneDrive asked to wait".to_owned(),
+        Some(Reason::Throttled) => format!("OneDrive asked to wait: {} left", seconds_text(u64::from(retry_after))),
         Some(Reason::UpToDate) => "up to date".to_owned(),
         None => overall.reason.clone(),
     };
@@ -109,13 +113,16 @@ pub fn status_text(status: &AccountStatus, client_id: Option<&str>) -> String {
         line("State:", state);
     }
     if let Some(overall) = &status.overall {
-        line("Overall:", &overall_text(overall, &status.trouble, &status.not_updated));
+        line("Overall:", &overall_text(overall, &status.trouble, &status.not_updated, status.retry_after));
     }
     if let Some(client_id) = client_id {
         line("Client ID:", if client_id.is_empty() { "(not set)" } else { client_id });
     }
     if let Some(mode) = &status.mode {
-        line("Mode:", mode);
+        match status.read_only_wish {
+            Some(unsent) => line("Mode:", &format!("{mode}, {}", switching_text(unsent))),
+            None => line("Mode:", mode),
+        }
     }
     if status.state.as_deref() == Some("signed-in") {
         if let Some(name) = &status.display_name {
@@ -131,14 +138,86 @@ pub fn status_text(status: &AccountStatus, client_id: Option<&str>) -> String {
     out
 }
 
-/// `account mode` with no mode given: the mode, and `Account.LastError` when it says
-/// something. `tag` is what a success line starts with.
-pub fn mode_shown_text(tag: &str, mode: &str, last_error: &str) -> String {
+/// An account that keeps a wish for read-only, in words.
+// TODO: wording
+fn switching_text(unsent: u64) -> String {
+    match unsent {
+        1 => "switching to read-only: 1 change still to send".to_owned(),
+        unsent => format!("switching to read-only: {unsent} changes still to send"),
+    }
+}
+
+/// The two ways out of a switch to read-only that waits. `prefix` is the command with the
+/// account chosen.
+// TODO: wording
+fn switching_ways_out_text(prefix: &str) -> String {
+    format!(
+        "It switches by itself once they are sent. `{prefix} account mode read-only --force` switches now: what is \
+         not sent stays on this computer, and is sent when the account is read-write again. `{prefix} account mode \
+         read-write` cancels the switch.\n"
+    )
+}
+
+/// `account mode` with no mode given: the mode; of an account that waits to switch to
+/// read-only (`read_only_wish`: how many changes it has still to send), that and the two
+/// ways out; and `Account.LastError` when it says something. `tag` is what a success line
+/// starts with, `prefix` the command with the account chosen.
+pub fn mode_shown_text(tag: &str, prefix: &str, mode: &str, read_only_wish: Option<u64>, last_error: &str) -> String {
     let mut out = format!("{tag}{mode}\n");
+    if let Some(unsent) = read_only_wish {
+        let mut said = switching_text(unsent);
+        said[..1].make_ascii_uppercase();
+        out.push_str(&format!("{said}. {}", switching_ways_out_text(prefix)));
+    }
     if !last_error.is_empty() {
         out.push_str(&format!("{:<12}{last_error}\n", "Last error:"));
     }
     out
+}
+
+/// `account mode read-write` of an account that waited to switch to read-only, done.
+// TODO: wording
+pub const SWITCH_CANCELLED: &str = "Read-write: the switch to read-only is cancelled, and changes go on being uploaded.";
+
+/// What came of `account mode read-only`, as the account says it afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadOnlyAsked {
+    /// The account is read-only.
+    Switched,
+    /// Changes are unsent, and the switch was not forced: the account sends them and
+    /// switches by itself. How many are still to send.
+    Waits { unsent: u64 },
+    /// The account says neither: it is read-write, with no word of a switch.
+    NotSaid,
+}
+
+/// What came of `account mode read-only`, from `Account.Mode` and the account's wish for
+/// read-only (how many changes it has still to send, `None` with no wish), read after
+/// `SetMode` answered.
+pub fn decide_read_only_asked(mode: &str, read_only_wish: Option<u64>) -> ReadOnlyAsked {
+    match (mode, read_only_wish) {
+        ("read-only", _) => ReadOnlyAsked::Switched,
+        (_, Some(unsent)) => ReadOnlyAsked::Waits { unsent },
+        (_, None) => ReadOnlyAsked::NotSaid,
+    }
+}
+
+/// `account mode read-only`, done. `tag` is what a success line starts with, `prefix` the
+/// command with the account chosen.
+// TODO: wording
+pub fn read_only_asked_text(tag: &str, prefix: &str, asked: ReadOnlyAsked) -> String {
+    match asked {
+        ReadOnlyAsked::Switched => format!(
+            "{tag}Read-only: the folder's files are read-only again, and nothing changed in it is uploaded. What was \
+             not sent stays on this computer, and is sent when the account is read-write again.\n"
+        ),
+        ReadOnlyAsked::Waits { unsent } => {
+            let mut said = switching_text(unsent);
+            said[..1].make_ascii_uppercase();
+            format!("{tag}{said}. {}", switching_ways_out_text(prefix))
+        }
+        ReadOnlyAsked::NotSaid => format!("{tag}Read-only was asked for; `{prefix} account mode` shows the mode the account is in.\n"),
+    }
 }
 
 /// One account's folder as its interfaces' properties say it: what `sync status` shows. A
@@ -158,6 +237,8 @@ pub struct FolderStatus {
     pub trouble: String,
     /// `Folder.NotUpdated`: the failed-update note, or empty.
     pub not_updated: String,
+    /// `Transfers.RetryAfter`: seconds left of the wait OneDrive asked for; 0 with none.
+    pub retry_after: u32,
     /// `Folder.Source`: `onedrive`, `local`, or empty.
     pub source: String,
     /// Items in OneDrive, and items in the folder.
@@ -184,13 +265,14 @@ pub struct FolderStatus {
     pub quota_waiting_bytes: u64,
     /// Files refused as too big for the space left.
     pub too_big: u32,
-    /// Removals held for confirmation.
-    pub held_deletes: u32,
     pub paused: bool,
     /// Unix seconds when the pause ends by itself; 0 until resumed.
     pub paused_until: i64,
     /// `Folder.HeldBack`: why the account holds back by itself, or empty.
     pub held_back: String,
+    /// `Transfers.RetryAfterRefusal`: the file a program was first refused the content of
+    /// during the wait OneDrive asked for, or empty.
+    pub retry_after_refusal: String,
     /// What the folder's files take on this disk.
     pub local_bytes: Option<u64>,
     /// Files and folders with a pin of their own.
@@ -205,38 +287,29 @@ pub struct FolderStatus {
 /// and something needs attention; `LastError` then carries the detail and is always printed
 /// with it.
 ///
-/// A registered folder gets an `Opens:` line, saying whether anything fills a file when it is
-/// opened. That matters most for `no-interception`: without the helper, a file that is not
-/// downloaded reads as zeros, and that is on screen every time.
+/// A registered folder gets a `Files:` line, saying what reading a file that is not
+/// downloaded does.
 ///
 /// The `Overall:` line is the state of the account as a whole, as the daemon decided it
 /// ([`overall_text`]); the lines after it are what the daemon counts and measures.
 ///
-/// `helper` is `Accounts.HelperState` when this folder is all `sync status` shows: the
-/// `Helper:` line says how the helper stands and, when it is not connected, what to do. One
-/// helper serves every account, so when `sync status` shows several, it prints that line
-/// once above them and each block is printed with `None`.
-///
 /// The lines about OneDrive are printed for a folder that shows OneDrive; `On this
 /// computer:` and `Always on this device:` for a folder that is up; `Conflicts:` when there
 /// are any. `prefix` is how a suggested command starts.
-pub fn sync_status_text(status: &FolderStatus, helper: Option<&str>, prefix: &str, now: i64) -> String {
+pub fn sync_status_text(status: &FolderStatus, prefix: &str, now: i64) -> String {
     const W: usize = SYNC_STATUS_WIDTH;
     let mut out = String::new();
     let mut line = |label: &str, value: &str| out.push_str(&format!("{label:<W$}{value}\n"));
     let state = status.state.as_deref().unwrap_or_default();
     line("Folder:", if status.path.is_empty() { "(none)" } else { &status.path });
     if let Some(overall) = &status.overall {
-        line("Overall:", &overall_text(overall, &status.trouble, &status.not_updated));
+        line("Overall:", &overall_text(overall, &status.trouble, &status.not_updated, status.retry_after));
     }
     if status.state.is_some() {
         line("State:", state);
     }
-    if let Some(opens) = opens_line(state) {
-        line("Opens:", opens);
-    }
-    if let Some(helper) = helper {
-        line("Helper:", &helper_text(helper));
+    if let Some(files) = files_line(state) {
+        line("Files:", files);
     }
     if !status.last_error.is_empty() {
         line("Last error:", &status.last_error);
@@ -275,22 +348,16 @@ pub fn sync_status_text(status: &FolderStatus, helper: Option<&str>, prefix: &st
             line("Waiting for space:", &space_waiting_text(status.quota_waiting, status.quota_waiting_bytes));
         }
         if status.too_big > 0 {
-            line("Too big for the space:", &format!("{} (see `{prefix} sync outbox`)", status.too_big));
-        }
-        if status.held_deletes > 0 {
-            line(
-                "Held for confirmation:",
-                &format!(
-                    "{} deletions (`{prefix} sync deletes confirm` or `{prefix} sync deletes restore`)",
-                    status.held_deletes
-                ),
-            );
+            line("Too big for the space:", &format!("{} (see `{prefix} sync upload-queue`)", status.too_big));
         }
         if status.paused {
             line("Paused until:", &paused_text(status.paused_until, prefix));
         }
         if !status.held_back.is_empty() {
             line("Paused by itself:", &format!("{} (`{prefix} sync anyway` syncs now)", held_text(&status.held_back)));
+        }
+        if status.retry_after > 0 {
+            line("Asked to wait:", &asked_to_wait_text(status.retry_after, &status.retry_after_refusal));
         }
     }
     // A folder not brought up yet has its path and the state `waiting`: nothing has measured it.
@@ -326,32 +393,23 @@ pub fn mode_text(mode: &str, writable: Option<bool>) -> String {
     }
 }
 
-/// The Full local scan as `LocalScan`'s properties say it.
+/// The check of the folder on disk at its start, as `LocalScan`'s properties say it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LocalScan {
     pub state: String,
     pub reason: String,
     pub started: i64,
-    pub directories: u64,
-    pub files: u64,
-    pub expected: u64,
     pub finished: i64,
     pub took: u32,
 }
 
-/// `sync status`'s `Local scan:` line: `running — 1 234 folders and 45 678 files, of about
-/// 50 000 (2 min, after the switch to read-write)`, `last finished 5 min ago (took 40 s)`,
-/// `not yet since the daemon started`, or `none — read-only`.
+/// `sync status`'s `Local scan:` line: `running (2 min, as syncing started)`,
+/// `last finished 5 min ago (took 40 s)`, or `not yet since the daemon started`.
 pub fn local_scan_text(scan: &LocalScan, now: i64) -> String {
     match scan.state.as_str() {
-        "none" => "none — read-only".to_owned(),
         "running" => {
-            let mut text = format!("running — {} folders and {} files", grouped(scan.directories), grouped(scan.files));
-            if scan.expected > 0 {
-                text.push_str(&format!(", of about {}", grouped(scan.expected)));
-            }
             let running = seconds_text(u64::try_from(now - scan.started).unwrap_or(0));
-            format!("{text} ({running}, {})", scan_reason_text(&scan.reason))
+            format!("running ({running}, {})", scan_reason_text(&scan.reason))
         }
         _ if scan.finished == 0 => "not yet since the daemon started".to_owned(),
         _ => format!("last finished {} (took {})", checked_text(scan.finished, now), seconds_text(u64::from(scan.took))),
@@ -362,11 +420,6 @@ pub fn local_scan_text(scan: &LocalScan, now: i64) -> String {
 pub fn scan_reason_text(reason: &str) -> String {
     match reason {
         "start" => "as syncing started".to_owned(),
-        "read-write" => "after the switch to read-write".to_owned(),
-        "helper-back" => "after the helper came back".to_owned(),
-        "overflow" => "after too many changes at once for the notifications".to_owned(),
-        "ignore-list" => "after the ignore list changed".to_owned(),
-        "periodic" => "the regular scan while part of the folder cannot be watched".to_owned(),
         other => other.to_owned(),
     }
 }
@@ -378,6 +431,18 @@ pub fn paused_text(until: i64, prefix: &str) -> String {
     } else {
         format!("{} (`{prefix} sync resume` ends it now)", local_time(until))
     }
+}
+
+/// `sync status`'s `Asked to wait:` line, while OneDrive's `Retry-After` runs: the time left
+/// (`Transfers.RetryAfter`), what it means for a file that is not downloaded, and the first
+/// file a program was refused meanwhile (`Transfers.RetryAfterRefusal`), when one was.
+// TODO: wording
+pub fn asked_to_wait_text(retry_after: u32, refusal: &str) -> String {
+    let mut said = format!("{} left: OneDrive asked for it; a file that is not downloaded cannot be read until then", seconds_text(u64::from(retry_after)));
+    if !refusal.is_empty() {
+        said.push_str(&format!(" (not read meanwhile: {refusal})"));
+    }
+    said
 }
 
 /// How changes made in OneDrive arrive (`Folder.LiveChanges`), as `sync status` says it;
@@ -400,34 +465,16 @@ pub fn held_text(reason: &str) -> &str {
     }
 }
 
-/// `sync status`'s `Helper:` line ([`helper_text`]).
-pub fn helper_line(helper: &str) -> String {
-    format!("{:<W$}{}\n", "Helper:", helper_text(helper), W = SYNC_STATUS_WIDTH)
-}
-
-/// What happens when something opens a file in a folder in `state`, for the
-/// states where that is known: `ready` (the helper intercepts and fills) and
-/// `no-interception` (nothing does); `waiting` is a folder that is not up yet. `error` can
-/// mean either — `LastError` says which — and `none` has no folder to talk about.
-fn opens_line(state: &str) -> Option<&'static str> {
+/// What reading a file does in a folder in `state`, for the states where that is known:
+/// `ready` (the folder's mount downloads it), `listing`, and `waiting`, a folder that is not
+/// up yet. `error` says nothing of it — `LastError` does — and `none` has no folder to talk
+/// about.
+fn files_line(state: &str) -> Option<&'static str> {
     match state {
-        "ready" => Some("intercepted: a file is downloaded when something opens it"),
-        "no-interception" => Some(
-            "NOT intercepted: a file that is not downloaded reads as zeros until you run \
-             `konedrivectl sync hydrate <file>`",
-        ),
+        "ready" => Some("a file that is not downloaded is read from OneDrive when something reads it"),
         "listing" => Some("the folder is being filled with your OneDrive's items"),
-        "waiting" => Some("not yet: the folder is being brought up, or waits for the helper to connect"),
+        "waiting" => Some("not yet: the folder is being brought up"),
         _ => None,
-    }
-}
-
-/// The `Helper:` line's text (HS4): `HelperState`, and what to do about it
-/// when the helper is not connected — the same words `LastError` uses.
-pub fn helper_text(state: &str) -> String {
-    match HelperState::parse(state).and_then(HelperState::advice) {
-        Some(advice) => format!("{state} — {advice}"),
-        None => state.to_owned(),
     }
 }
 

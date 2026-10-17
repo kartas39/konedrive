@@ -1,8 +1,8 @@
-//! What background work an account runs now (`docs/design/writes.md` §11): the one place
+//! What background work an account runs now (`docs/design/writes.md` §6.3): the one place
 //! that decides it, from the user's pause, the automatic hold (a metered connection, the
 //! battery: [`Conditions`], told by `conditions`) and the settings. Every
-//! reader of the pause — the transfer pool (through `SyncService::show_pause`), the outbox
-//! worker, the poll and the replacements it runs, the thumbnail filler — asks here.
+//! reader of the pause — the transfer pool (through `SyncService::show_pause`), the holds
+//! of sending, the poll, the thumbnail filler — asks here.
 //!
 //! The user's pause is one of the account's settings ([`Settings::paused_until`]), kept in
 //! its section of `config.toml`: it is there whether the account's sync runs or not.
@@ -32,7 +32,7 @@ use crate::config::{AccountConfig, Config, OnBattery};
 /// The clock an account's pause is kept by: the time, and a wait. Everything that asks
 /// whether a timed pause is over, or waits for it to be, has the account's one clock, so
 /// they agree. The daemon's is [`SystemClock`]; a test gives one it moves by hand.
-pub trait Clock: Send + Sync {
+pub(crate) trait Clock: Send + Sync {
     /// The time, in unix seconds.
     fn now(&self) -> i64;
     /// Returns once the clock reads `at` (unix seconds) or later, as far as the clock can
@@ -44,7 +44,7 @@ pub trait Clock: Send + Sync {
 
 /// The machine's wall clock, and the runtime's sleep.
 #[derive(Debug, Default)]
-pub struct SystemClock;
+pub(crate) struct SystemClock;
 
 impl Clock for SystemClock {
     fn now(&self) -> i64 {
@@ -57,25 +57,29 @@ impl Clock for SystemClock {
 }
 
 /// An account's own settings that decide what runs, as its section of `config.toml` gives
-/// them (`Folder.Thumbnails`, `Folder.Paused` and `PausedUntil`).
+/// them (`Folder.Thumbnails`, `Folder.Paused` and `PausedUntil`, `Folder.FreeSpaceReserve`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Settings {
-    pub thumbnails: bool,
-    /// The user's pause (`docs/design/writes.md` §11): paused until then, unix seconds, 0
+pub(crate) struct Settings {
+    pub(crate) thumbnails: bool,
+    /// The user's pause (`docs/design/writes.md` §6.3): paused until then, unix seconds, 0
     /// for until resumed; `None` while not paused. A time that has passed is no pause
     /// ([`Running::user_pause`]).
-    pub paused_until: Option<i64>,
+    pub(crate) paused_until: Option<i64>,
+    /// How many gigabytes of the free space of this computer's disk the downloads of
+    /// pinned files leave (`Folder.FreeSpaceReserve`): one that would leave less is not
+    /// started (`sync_plan_task::disk_space`).
+    pub(crate) free_space_reserve_gb: u64,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { thumbnails: true, paused_until: None }
+        Self { thumbnails: true, paused_until: None, free_space_reserve_gb: crate::config::DEFAULT_FREE_SPACE_RESERVE_GB }
     }
 }
 
 impl Settings {
     pub fn of(account: &AccountConfig) -> Self {
-        Self { thumbnails: account.thumbnails_on(), paused_until: account.paused_until.map(|until| until.max(0)) }
+        Self { thumbnails: account.thumbnails_on(), paused_until: account.paused_until.map(|until| until.max(0)), free_space_reserve_gb: account.free_space_reserve_gb() }
     }
 }
 
@@ -114,7 +118,7 @@ pub struct Conditions {
 
 /// Why an account holds its background work back by itself (`Folder.HeldBack`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Hold {
+pub(crate) enum Hold {
     Metered,
     OnBattery,
     PowerSaver,
@@ -148,7 +152,7 @@ impl Hold {
 
 /// Why background work stops now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stop {
+pub(crate) enum Stop {
     /// The user's pause: until then (unix seconds), 0 for until resumed.
     Paused(i64),
     /// The automatic hold.
@@ -157,7 +161,7 @@ pub enum Stop {
 
 /// One account's decision of what runs. Shared by the account's sync and every task it
 /// starts.
-pub struct Running {
+pub(crate) struct Running {
     /// The account's clock: a timed pause is over by it.
     clock: Arc<dyn Clock>,
     inner: Mutex<Inner>,
@@ -191,12 +195,12 @@ impl Running {
 
     /// One change of the settings at a time, from reading them to taking what was written:
     /// held across the write of `config.toml`, on a blocking thread, and never by a reader.
-    pub fn changing(&self) -> std::sync::MutexGuard<'_, ()> {
+    pub(crate) fn changing(&self) -> std::sync::MutexGuard<'_, ()> {
         crate::panic::lock(&self.changing)
     }
 
     /// The account's clock.
-    pub fn clock(&self) -> &Arc<dyn Clock> {
+    pub(crate) fn clock(&self) -> &Arc<dyn Clock> {
         &self.clock
     }
 
@@ -206,7 +210,7 @@ impl Running {
     /// keeps the time that passed until the next `Pause` or `Resume` writes the section,
     /// and a start reads it as no pause. No lock but the settings' own, no file: callable
     /// from anywhere.
-    pub fn user_pause(&self) -> Option<i64> {
+    pub(crate) fn user_pause(&self) -> Option<i64> {
         let now = self.clock.now();
         let mut inner = crate::panic::lock(&self.inner);
         let until = inner.settings.paused_until?;
@@ -217,12 +221,12 @@ impl Running {
         Some(until)
     }
 
-    pub fn settings(&self) -> Settings {
+    pub(crate) fn settings(&self) -> Settings {
         crate::panic::lock(&self.inner).settings
     }
 
     /// Takes `change` into the settings; a thumbnail setting turned on wakes the filler.
-    pub fn change(&self, change: impl FnOnce(&mut Settings)) {
+    pub(crate) fn change(&self, change: impl FnOnce(&mut Settings)) {
         let (before, after) = {
             let mut inner = crate::panic::lock(&self.inner);
             let before = inner.settings;
@@ -250,7 +254,7 @@ impl Running {
     }
 
     /// What the sources say now; a change ends a `SyncAnyway`. Whether anything changed.
-    pub fn set_conditions(&self, conditions: Conditions) -> bool {
+    pub(crate) fn set_conditions(&self, conditions: Conditions) -> bool {
         let mut inner = crate::panic::lock(&self.inner);
         if inner.conditions == conditions {
             return false;
@@ -261,12 +265,12 @@ impl Running {
     }
 
     /// `SyncAnyway`: the hold is lifted until a source or the hold's settings change.
-    pub fn sync_anyway(&self) {
+    pub(crate) fn sync_anyway(&self) {
         crate::panic::lock(&self.inner).anyway = true;
     }
 
     /// Why the account holds back by itself now, if it does.
-    pub fn held(&self) -> Option<Hold> {
+    pub(crate) fn held(&self) -> Option<Hold> {
         let inner = crate::panic::lock(&self.inner);
         if inner.anyway {
             return None;
@@ -276,22 +280,22 @@ impl Running {
 
     /// Why the account's background work stops now, if it does: the user's pause before
     /// the hold.
-    pub fn stop(&self) -> Option<Stop> {
+    pub(crate) fn stop(&self) -> Option<Stop> {
         self.user_pause().map(Stop::Paused).or_else(|| self.held().map(Stop::Held))
     }
 
     /// Whether the account's background work stops now.
-    pub fn stopped(&self) -> bool {
+    pub(crate) fn stopped(&self) -> bool {
         self.stop().is_some()
     }
 
     /// Whether the thumbnail filler may ask Graph for thumbnails now.
-    pub fn thumbnails_go(&self) -> bool {
+    pub(crate) fn thumbnails_go(&self) -> bool {
         self.settings().thumbnails && !self.stopped()
     }
 
     /// Returns once thumbnails are turned on (at most one wake is kept).
-    pub async fn thumbnails_turned_on(&self) {
+    pub(crate) async fn thumbnails_turned_on(&self) {
         self.thumbnails_on.notified().await
     }
 }

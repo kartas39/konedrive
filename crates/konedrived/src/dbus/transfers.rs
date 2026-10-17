@@ -33,6 +33,11 @@ impl Transfers {
     }
 
     #[zbus(property)]
+    async fn thumbnail_downloads(&self) -> u32 {
+        THUMBNAIL_DOWNLOADS.of(&self.service)
+    }
+
+    #[zbus(property)]
     async fn active_uploads(&self) -> u32 {
         ACTIVE_UPLOADS.of(&self.service)
     }
@@ -70,6 +75,11 @@ impl Transfers {
     #[zbus(property)]
     async fn retry_after(&self) -> u32 {
         RETRY_AFTER.of(&self.service)
+    }
+
+    #[zbus(property)]
+    async fn retry_after_refusal(&self) -> String {
+        RETRY_AFTER_REFUSAL.of(&self.service)
     }
 
     #[zbus(property)]

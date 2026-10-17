@@ -86,14 +86,6 @@ pub fn parse_duration(text: &str) -> Option<u32> {
     u32::try_from(total).ok().filter(|&s| s > 0)
 }
 
-/// `text` with its first letter in capitals, to stand as a sentence of its own.
-pub(crate) fn sentence(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
 
 /// When the folder was last checked with OneDrive, as `sync status` says it:
 /// "20 s ago", "5 min ago", "3 h ago", "2 d ago", or "never"

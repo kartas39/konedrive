@@ -1,40 +1,30 @@
-use super::rescue_dirs;
 use crate::text::accounts::removed_text;
-use konedrive_dbus::rows::Conflict;
+use konedrive_dbus::rows::{Conflict, Freed};
 
-/// `account remove` names where the listed conflicts' files were rescued, and nothing it
-/// cannot know.
+/// `sync conflicts` names the file and the copy kept beside it; `account remove` says what
+/// it deleted and that the folder stays.
 #[test]
-fn removal_says_where_the_listed_rescues_are() {
-    let conflict = |original: &str, kept: &str, how: &str| Conflict { at: 0, original: original.to_owned(), kept: kept.to_owned(), how: how.to_owned() };
-    let rescued = |original: &str, kept: &str| conflict(original, kept, "rescued");
-    let conflicts = [
-        rescued("/home/u/OneDrive/docs/a.txt", "/data/rescued/id/t1/docs/a.txt"),
-        rescued("/home/u/OneDrive/b.txt", "/home/u/.konedrive-rescued-OneDrive/t2/b.txt"),
-        rescued("/home/u/OneDrive/c.txt", "/data/rescued/id/t1/c.txt"),
-        conflict("/home/u/OneDrive/d.txt", "/home/u/OneDrive/d-fedora.txt", "copy"),
-    ];
-    let dirs = rescue_dirs("/home/u/OneDrive", &conflicts);
-    assert_eq!(dirs, ["/data/rescued/id/t1", "/home/u/.konedrive-rescued-OneDrive/t2"], "a copy stays in the folder");
+fn a_conflict_is_listed_with_the_copy_kept_beside_the_file() {
+    let conflicts = [Conflict { at: 0, original: "/home/u/OneDrive/d.txt".to_owned(), kept: "/home/u/OneDrive/d-fedora.txt".to_owned(), how: "copy".to_owned() }];
     let listed = super::conflicts_text(&conflicts);
-    assert!(listed.contains("moved to /data/rescued/id/t1/c.txt"), "{listed}");
-    assert!(listed.contains("changed here and in OneDrive: yours is kept beside it as /home/u/OneDrive/d-fedora.txt"), "{listed}");
-    let said = removed_text("Home", "", &[]);
-    assert!(said.contains("It had no folder.") && !said.contains("Rescued"), "{said}");
+    assert!(listed.starts_with("/home/u/OneDrive/d.txt\n    changed here and in OneDrive: yours is kept beside it as /home/u/OneDrive/d-fedora.txt, "), "{listed}");
+    assert_eq!(super::conflicts_text(&[]), "No conflicts.\n");
+    assert!(removed_text("Home", "").contains("It had no folder."));
+    assert!(removed_text("Home", "/home/u/OneDrive").contains("Kept: the folder /home/u/OneDrive"));
 }
 
-/// The path refused and what pins it travel inside the daemon's sentences (issue #232):
-/// what the daemon writes today is read back here, so a sentence reworded on
+/// The path refused travels inside the daemon's sentences (issue #232):
+/// what the daemon writes is read back here, so a sentence reworded on
 /// one side fails this test.
 #[test]
 fn the_daemons_sentences_are_read_back() {
     use std::path::Path;
 
-    use konedrived::sync::SyncError;
+    use konedrived::account_folder::SyncError;
 
-    let pinned = konedrived::hydration::pin::refusal(Path::new("/f/Docs/a b.txt"), Path::new("/f/Docs"));
-    assert_eq!(pinned, "/f/Docs/a b.txt is pinned by /f/Docs: unpin it first");
-    assert_eq!(super::pinned_parts(&pinned), Some(("/f/Docs/a b.txt", "/f/Docs")));
+    let pinned = konedrived::account_folder::pins::refusal(Path::new("/f/Docs/a b.txt"));
+    assert_eq!(pinned, "/f/Docs/a b.txt is pinned: unpin it first");
+    assert_eq!(super::pinned_path(&pinned), Some("/f/Docs/a b.txt"));
     assert_eq!(super::refused_path_of("org.konedrive.Error.NotAllowed", &pinned), Some("/f/Docs/a b.txt"));
 
     let waiting = SyncError::NotUploaded("/f/B/y".into()).to_string();
@@ -66,8 +56,18 @@ fn an_item_that_is_still_here_says_what_keeps_it() {
     let said = |waits: &str| super::still_here_text(waits).unwrap();
     assert_eq!(super::still_here_text(""), None);
     assert_eq!(said("uploads:1"), "Still on this computer: 1 change in it waits to be uploaded.");
-    assert_eq!(said("changes:/home/u/OneDrive/docs/new.txt"), "Still on this computer: what was done at /home/u/OneDrive/docs/new.txt on this computer has not reached OneDrive yet.");
-    assert_eq!(said("mounted-inside:/home/u/OneDrive/docs/sub"), "Still on this computer: another filesystem is mounted at /home/u/OneDrive/docs/sub. Unmount it.");
-    assert!(said("moved-in-onedrive:/home/u/OneDrive/docs/a.txt").contains("/home/u/OneDrive/docs/a.txt was moved in OneDrive"));
+    assert_eq!(said("open-for-writing:/home/u/OneDrive/docs/new.txt"), "Still on this computer: /home/u/OneDrive/docs/new.txt is open in a program.");
     assert_eq!(said("cycle"), said("a-word-of-a-newer-daemon:x"));
+}
+
+/// `sync free` says what it freed, and why the files it left stayed: never a pin, which the
+/// free-up took off first.
+#[test]
+fn a_free_up_says_what_it_freed_and_why_files_stayed() {
+    assert_eq!(super::free_text(&Freed { files: 0, bytes: 0, pinned: 0 }), "Nothing here was downloaded, so there was nothing to free up.");
+    assert_eq!(super::free_text(&Freed { files: 2, bytes: 2048, pinned: 0 }), "Freed 2 files (2.0 KiB).");
+    assert_eq!(
+        super::free_text(&Freed { files: 0, bytes: 0, pinned: 1 }),
+        "Nothing was freed up. 1 file was kept on this device: being downloaded, open for writing, or changed here and not uploaded yet."
+    );
 }

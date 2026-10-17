@@ -35,7 +35,7 @@ pub async fn watch(accounts: Arc<impl Accounts>) {
 
 /// Calls `on_connected` each time the state becomes "connected" from
 /// anything else.
-pub async fn watch_on(connection: &zbus::Connection, on_connected: impl Fn()) {
+pub(crate) async fn watch_on(connection: &zbus::Connection, on_connected: impl Fn()) {
     let proxy = match NetworkManagerProxy::new(connection).await {
         Ok(proxy) => proxy,
         Err(e) => {

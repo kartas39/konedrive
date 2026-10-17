@@ -19,8 +19,8 @@ FormCard.FormCardPage {
     objectName: "activityPage"
     title: window ? window.accountTitle(i18nc("@title", "Activity")) : i18nc("@title", "Activity")
 
-    /// How many changes have not gone up yet — pending, blocked and held.
-    readonly property int waitingCount: sync ? sync.pendingCount + sync.blockedCount + sync.heldCount : 0
+    /// How many changes have not gone up yet — pending and blocked.
+    readonly property int waitingCount: sync ? sync.pendingCount + sync.blockedCount : 0
     /// Whether the Not Uploaded page lists anything, and how many changes it counts.
     readonly property bool keptBack: sync !== null && sync.notUploadedSummary.length > 0
     readonly property int keptBackCount: sync ? sync.notUploadedSummary.reduce((n, row) => n + row.count, 0) : 0
@@ -350,7 +350,20 @@ FormCard.FormCardPage {
             }
         }
     }
-
+    // The thumbnails being downloaded, under the files, always shown so that nothing moves
+    // when they start or end: their bytes are in the Downloading card's speed, and none of
+    // them is a file it counts.
+    QQC2.Label {
+        objectName: "thumbnailDownloads"
+        Layout.topMargin: Kirigami.Units.largeSpacing
+        Layout.leftMargin: Kirigami.Units.largeSpacing
+        Layout.rightMargin: Kirigami.Units.largeSpacing
+        Layout.fillWidth: true
+        wrapMode: Text.Wrap
+        visible: page.sync !== null
+        opacity: 0.7
+        text: page.sync ? i18ncp("@info thumbnails of images, videos and documents being downloaded now", "%1 thumbnail downloading", "%1 thumbnails downloading", page.sync.thumbnailDownloads) : ""
+    }
 
     FormCard.FormHeader {
         visible: page.sync !== null && page.sync.uploads.count > 0

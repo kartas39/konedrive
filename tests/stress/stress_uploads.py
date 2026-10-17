@@ -9,8 +9,8 @@ read-write, works only
 inside `<folder>/konedrive-stress-<time>/` (plus one temporary directory outside the folder, for
 scenarios that move things out and, mostly, back in) and, by default, leaves everything it made in
 place afterwards, locally and in OneDrive, so a run can be inspected; pass `--cleanup` for the old
-behaviour of deleting it all at the end. Every scenario is checked three ways once the outbox
-drains: no blocked or held rows are left, nothing of this run is stuck in `not-uploaded`, and —
+behaviour of deleting it all at the end. Every scenario is checked three ways once the upload queue
+drains: no blocked rows are left, nothing of this run is stuck in `not-uploaded`, and —
 after `sync refresh` — the local and OneDrive item counts agree; then, read-only against Graph
 itself (`graph_check.py`), the run folder's actual content in OneDrive is compared file by file
 against what is on disk (size and QuickXorHash), because matching counts alone would not catch a
@@ -84,7 +84,7 @@ def preflight(args: argparse.Namespace, ctl: konedrivectl_wrap.Ctl) -> RunContex
         ctl.account = account_guard.test_account_id(config_path, args.account)
     except account_guard.NotATestAccount as e:
         raise Refused(
-            f"{e}. This tool writes real changes and confirms held deletes on its own, so it runs only "
+            f"{e}. This tool writes real changes, deletions among them, so it runs only "
             "against a test account, never a real one."
         ) from e
 
@@ -150,24 +150,16 @@ def teardown(ctx: RunContext) -> None:
 
 
 def wait_for_drain(ctl: konedrivectl_wrap.Ctl, timeout: float, poll: float = 1.0, stable_secs: float = 3.0):
-    """Polls `sync outbox --all` until it says nothing is waiting, stable for `stable_secs`.
-    Confirms any held deletes along the way — this run's own mass deletes are always held for
-    confirmation, and this is the only thing in the tool that releases them (see the README: this
-    is why it is for a test account only). Returns `(drained, last outbox text)`."""
+    """Polls `sync upload-queue --all` until it says nothing is waiting, stable for `stable_secs`.
+    Returns `(drained, last upload queue text)`."""
     deadline = time.monotonic() + timeout
     stable_since = None
     last_text = ""
     while time.monotonic() < deadline:
-        run = ctl.outbox_all()
+        run = ctl.upload_queue_all()
         text = run.stdout if run.ok else last_text or run.combined()
         last_text = text
-        rows = konedrivectl_wrap.parse_outbox(run.stdout) if run.ok else []
-        held = [r for r in rows if r.state == "held"]
-        if held:
-            ctl.deletes_confirm()
-            stable_since = None
-            time.sleep(poll)
-            continue
+        rows = konedrivectl_wrap.parse_upload_queue(run.stdout) if run.ok else []
         if not rows:
             if stable_since is None:
                 stable_since = time.monotonic()
@@ -203,24 +195,24 @@ def _under_run_root(path_str: str, run_root: Path) -> bool:
 
 
 def check_scenario(ctx: RunContext, tag: str = ""):
-    """The four checks every scenario gets, in order: drain, no blocked/held, nothing of this run
+    """The four checks every scenario gets, in order: drain, no blocked rows, nothing of this run
     stuck locally, item counts agree after a refresh, and — read-only against Graph — the run
     folder's actual content matches disk. Returns `(problems, extra CLI output for the report)`."""
     problems: list = []
     extra: dict = {}
     suffix = f" ({tag})" if tag else ""
 
-    drained, outbox_at_end = wait_for_drain(ctx.ctl, timeout=ctx.args.outbox_timeout)
+    drained, queue_at_end = wait_for_drain(ctx.ctl, timeout=ctx.args.upload_queue_timeout)
     if not drained:
-        problems.append(f"timed out waiting for the outbox to drain{suffix}")
-        extra["outbox"] = outbox_at_end
+        problems.append(f"timed out waiting for the upload queue to drain{suffix}")
+        extra["upload_queue"] = queue_at_end
 
-    outbox_run = ctx.ctl.outbox_all()
-    rows = konedrivectl_wrap.parse_outbox(outbox_run.stdout) if outbox_run.ok else []
-    bad = [r for r in rows if r.state in ("blocked", "held")]
+    queue_run = ctx.ctl.upload_queue_all()
+    rows = konedrivectl_wrap.parse_upload_queue(queue_run.stdout) if queue_run.ok else []
+    bad = [r for r in rows if r.state == "blocked"]
     if bad:
-        problems.append(f"{len(bad)} row(s) left blocked or held in the outbox{suffix}")
-        extra["outbox"] = outbox_run.stdout
+        problems.append(f"{len(bad)} row(s) left blocked in the upload queue{suffix}")
+        extra["upload_queue"] = queue_run.stdout
 
     nu_run = ctx.ctl.not_uploaded()
     nu_items = konedrivectl_wrap.parse_not_uploaded(nu_run.stdout) if nu_run.ok else []
@@ -251,7 +243,7 @@ def check_scenario(ctx: RunContext, tag: str = ""):
         act_run = ctx.ctl.activity(limit=200)
         if act_run.ok:
             events = konedrivectl_wrap.parse_activity(act_run.stdout)
-            failed = [e for e in events if e.kind in ("failed", "upload-failed")]
+            failed = [e for e in events if e.kind in ("failed", "update-failed", "upload-failed")]
             if failed:
                 extra["failed_activity"] = "\n".join(
                     f"{e.at}  {e.kind}  {e.path}" + (f"  ({e.detail})" if e.detail else "") for e in failed
@@ -260,15 +252,15 @@ def check_scenario(ctx: RunContext, tag: str = ""):
     return problems, extra
 
 
-def wait_for_outbox_state(ctl: konedrivectl_wrap.Ctl, path: Path, state: str, timeout: float, poll: float = 0.2) -> bool:
-    """Polls `sync outbox` for `path`'s row to reach `state` (used by scenario 5 to catch a big
+def wait_for_queue_state(ctl: konedrivectl_wrap.Ctl, path: Path, state: str, timeout: float, poll: float = 0.2) -> bool:
+    """Polls `sync upload-queue` for `path`'s row to reach `state` (used by scenario 5 to catch a big
     upload while it is `running`)."""
     target = os.path.normpath(str(path))
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        run = ctl.outbox_all()
+        run = ctl.upload_queue_all()
         if run.ok:
-            for row in konedrivectl_wrap.parse_outbox(run.stdout):
+            for row in konedrivectl_wrap.parse_upload_queue(run.stdout):
                 if row.state == state and os.path.normpath(row.path) == target:
                     return True
         time.sleep(poll)
@@ -436,18 +428,18 @@ def scenario_move_while_uploading(ctx: RunContext, problems: list, extra: dict) 
 
     a_path = ctx.run_root / "Alpha" / f"big-move-{big_mb}MB.bin"
     write_new_file(a_path, random_bytes(big_mb * 1024 * 1024))
-    saw_running_a = wait_for_outbox_state(ctx.ctl, a_path, "running", timeout=ctx.args.running_timeout)
+    saw_running_a = wait_for_queue_state(ctx.ctl, a_path, "running", timeout=ctx.args.running_timeout)
     if not saw_running_a:
-        problems.append(f"never saw {a_path} reach 'running' in the outbox within {ctx.args.running_timeout:.0f}s")
+        problems.append(f"never saw {a_path} reach 'running' in the upload queue within {ctx.args.running_timeout:.0f}s")
     a_new = ctx.run_root / "Bravo" / f"big-moved-{big_mb}MB.bin"
     a_new.parent.mkdir(parents=True, exist_ok=True)
     os.rename(a_path, a_new)
 
     b_path = ctx.run_root / "Charlie" / f"big-edit-{big_mb}MB.bin"
     write_new_file(b_path, random_bytes(big_mb * 1024 * 1024))
-    saw_running_b = wait_for_outbox_state(ctx.ctl, b_path, "running", timeout=ctx.args.running_timeout)
+    saw_running_b = wait_for_queue_state(ctx.ctl, b_path, "running", timeout=ctx.args.running_timeout)
     if not saw_running_b:
-        problems.append(f"never saw {b_path} reach 'running' in the outbox within {ctx.args.running_timeout:.0f}s")
+        problems.append(f"never saw {b_path} reach 'running' in the upload queue within {ctx.args.running_timeout:.0f}s")
     with open(b_path, "r+b") as f:
         f.seek(0)
         f.write(random_bytes(min(5 * 1024 * 1024, big_mb * 1024 * 1024)))
@@ -468,9 +460,9 @@ def scenario_move_out_while_uploading(ctx: RunContext, problems: list, extra: di
     write_new_file(path, data)
     before_hash = quickxor.hash_bytes(data)
 
-    saw_running = wait_for_outbox_state(ctx.ctl, path, "running", timeout=ctx.args.running_timeout)
+    saw_running = wait_for_queue_state(ctx.ctl, path, "running", timeout=ctx.args.running_timeout)
     if not saw_running:
-        problems.append(f"never saw {path} reach 'running' in the outbox within {ctx.args.running_timeout:.0f}s")
+        problems.append(f"never saw {path} reach 'running' in the upload queue within {ctx.args.running_timeout:.0f}s")
 
     outside_path = ctx.outside_tmp / path.name
     shutil.move(str(path), str(outside_path))
@@ -498,9 +490,9 @@ def scenario_delete_while_uploading(ctx: RunContext, problems: list, extra: dict
     path = folder / f"delete-while-uploading-{big_mb}MB.bin"
     write_new_file(path, random_bytes(big_mb * 1024 * 1024))
 
-    saw_running = wait_for_outbox_state(ctx.ctl, path, "running", timeout=ctx.args.running_timeout)
+    saw_running = wait_for_queue_state(ctx.ctl, path, "running", timeout=ctx.args.running_timeout)
     if not saw_running:
-        problems.append(f"never saw {path} reach 'running' in the outbox within {ctx.args.running_timeout:.0f}s")
+        problems.append(f"never saw {path} reach 'running' in the upload queue within {ctx.args.running_timeout:.0f}s")
 
     path.unlink()
 
@@ -607,7 +599,7 @@ def scenario_pin_many(ctx: RunContext, problems: list, extra: dict) -> None:
     if not freed.ok:
         problems.append(f"`sync free` failed: {freed.combined()}")
         return
-    deadline = time.monotonic() + ctx.args.outbox_timeout
+    deadline = time.monotonic() + ctx.args.upload_queue_timeout
     while any(_downloaded(path) for path in paths) and time.monotonic() < deadline:
         time.sleep(1.0)
     still = [path for path in paths if _downloaded(path)]
@@ -627,9 +619,8 @@ def scenario_pin_many(ctx: RunContext, problems: list, extra: dict) -> None:
     left = len(paths)
     while time.monotonic() < deadline:
         pool = konedrivectl_wrap.parse_pool(ctx.ctl.transfers().stdout)
-        if pool:
-            largest_pool = max(largest_pool, pool[0])
-            ceiling = pool[1]
+        if pool and pool[0] > largest_pool:
+            largest_pool, ceiling = pool
         left = sum(1 for path in paths if not _downloaded(path))
         if left == 0:
             break
@@ -707,7 +698,7 @@ SCENARIOS = [
 # A long mixed run, on top of the fixed scenarios above: a random mix of small operations inside
 # the run folder for `--soak-minutes` (default 15), so a full run takes at least about that long.
 # Unlike the fixed scenarios, it does not drain and check after every operation — it runs the
-# whole workload continuously, only sampling the outbox (a single, non-blocking `sync outbox`
+# whole workload continuously, only sampling the upload queue (a single, non-blocking `sync upload-queue`
 # call) every ~30s for the report's timeline, and drains and runs the full checks (counts, and the
 # Graph comparison of paths, sizes and hashes) exactly once, at the end. The disk is the truth for
 # what should end up in OneDrive.
@@ -745,9 +736,8 @@ class SoakModel:
 @dataclasses.dataclass
 class SoakSample:
     elapsed_s: float
-    outbox_rows: int
+    queue_rows: int
     blocked: int
-    held: int
 
 
 @dataclasses.dataclass
@@ -979,14 +969,13 @@ def run_soak(ctx: RunContext, args: argparse.Namespace) -> SoakResult:
 
         now = time.monotonic()
         if now - last_sample >= sample_interval:
-            run = ctx.ctl.outbox_all()
-            rows = konedrivectl_wrap.parse_outbox(run.stdout) if run.ok else []
+            run = ctx.ctl.upload_queue_all()
+            rows = konedrivectl_wrap.parse_upload_queue(run.stdout) if run.ok else []
             samples.append(
                 SoakSample(
                     elapsed_s=now - t_start,
-                    outbox_rows=len(rows),
+                    queue_rows=len(rows),
                     blocked=sum(1 for r in rows if r.state == "blocked"),
-                    held=sum(1 for r in rows if r.state == "held"),
                 )
             )
             last_sample = now
@@ -1121,12 +1110,12 @@ def write_report(args, ctx: RunContext, results: list, soak_result, start_dt: da
         for kind in SOAK_OP_KINDS:
             lines.append(f"| {kind} | {soak_result.op_counts.get(kind, 0)} |")
         lines.append("")
-        lines.append("### Outbox timeline (sampled every ~30s, without blocking)")
+        lines.append("### Upload queue timeline (sampled every ~30s, without blocking)")
         lines.append("")
-        lines.append("| At (s) | Outbox rows | Blocked | Held |")
-        lines.append("| ------ | ----------- | ------- | ---- |")
+        lines.append("| At (s) | Queued rows | Blocked |")
+        lines.append("| ------ | ----------- | ------- |")
         for s in soak_result.samples:
-            lines.append(f"| {s.elapsed_s:.0f} | {s.outbox_rows} | {s.blocked} | {s.held} |")
+            lines.append(f"| {s.elapsed_s:.0f} | {s.queue_rows} | {s.blocked} |")
         lines.append("")
         if not soak_result.passed:
             lines.append("### Soak final check — FAIL")
@@ -1192,12 +1181,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     p.add_argument("--large-file-mb", type=int, default=30, help="size in MiB of scenario 1's one large file (default: 30)")
     p.add_argument("--big-file-mb", type=int, default=60, help="size in MiB of scenario 5's two files, moved/edited while uploading (default: 60)")
-    p.add_argument("--outbox-timeout", type=float, default=600.0, help="seconds to wait for the outbox to drain after a scenario (default: 600)")
+    p.add_argument("--upload-queue-timeout", type=float, default=600.0, help="seconds to wait for the upload queue to drain after a scenario (default: 600)")
     p.add_argument(
         "--refresh-timeout", type=float, default=120.0, help="seconds to wait, after `sync refresh`, for the item counts to agree (default: 120)"
     )
     p.add_argument(
-        "--running-timeout", type=float, default=60.0, help="seconds to wait for scenario 5's big files to show 'running' in the outbox (default: 60)"
+        "--running-timeout", type=float, default=60.0, help="seconds to wait for scenario 5's big files to show 'running' in the upload queue (default: 60)"
     )
     p.add_argument(
         "--pin-files", type=int, default=2000, help="small files scenario 5e creates, uploads, frees up and pins (default: 2000; 0 skips it)"

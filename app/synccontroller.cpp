@@ -25,6 +25,9 @@
 
 namespace
 {
+// The most gigabytes of free space to keep the account page's box takes.
+constexpr qulonglong FreeSpaceReserveLimit = 100000;
+
 /// Same sentences as konedrivectl's skip-reason text, each through i18n().
 QString whyText(const QString &reason)
 {
@@ -108,8 +111,9 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
             // a stale row would otherwise look like a download still going.
             m_transfers->setTransfers({});
             m_downloadSpeed = m_uploadSpeed = 0;
-            m_activeDownloads = m_activeUploads = 0;
+            m_activeDownloads = m_activeUploads = m_thumbnailDownloads = 0;
             m_poolInUse = m_largeFiles = m_largeTransfers = m_retryAfter = 0;
+            m_retryAfterRefusal.clear();
             m_downloadLeftCount = m_uploadLeftCount = 0;
             m_downloadLeftBytes = m_downloadDoneBytes = m_uploadLeftBytes = m_uploadDoneBytes = 0;
             m_downloadTimeLeft = m_uploadTimeLeft = 0;
@@ -204,7 +208,6 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         text("Trouble", m_trouble);
         text("NotUpdated", m_notUpdated);
         number("ItemsListed", m_itemsListed);
-        number("ItemsPlaced", m_itemsPlaced);
         number("SkippedCount", m_skippedCount);
         number("LocalBytes", m_localBytes);
         time("LastChecked", m_lastChecked);
@@ -224,6 +227,9 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         if (const auto it = p.constFind(QLatin1String("Thumbnails")); it != p.constEnd()) {
             m_thumbnails = it->toBool();
         }
+        if (const auto it = p.constFind(QLatin1String("FreeSpaceReserve")); it != p.constEnd()) {
+            m_freeSpaceReserve = int(qMin<qulonglong>(it->toULongLong(), FreeSpaceReserveLimit));
+        }
     } else if (interfaceName == TransfersInterface) {
         // A structured value inside a{sv} arrives as a QDBusArgument.
         const auto transfers = [](const QVariant &value) {
@@ -239,6 +245,7 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         number("UploadSpeed", m_uploadSpeed);
         count("ActiveDownloads", m_activeDownloads);
         count("ActiveUploads", m_activeUploads);
+        count("ThumbnailDownloads", m_thumbnailDownloads);
         count("PoolInUse", m_poolInUse);
         count("PoolSize", m_poolSize);
         count("PoolCeiling", m_poolCeiling);
@@ -246,6 +253,7 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         count("LargeStreams", m_largeTransfers);
         count("LargeStreamLimit", m_largeLimit);
         count("RetryAfter", m_retryAfter);
+        text("RetryAfterRefusal", m_retryAfterRefusal);
         count("DownloadLeftCount", m_downloadLeftCount);
         number("DownloadLeftBytes", m_downloadLeftBytes);
         number("DownloadDoneBytes", m_downloadDoneBytes);
@@ -258,7 +266,6 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         count("PendingCount", m_pendingCount);
         number("PendingBytes", m_pendingBytes);
         count("BlockedCount", m_blockedCount);
-        count("HeldCount", m_heldCount);
         if (const auto it = p.constFind(QLatin1String("QuotaFull")); it != p.constEnd()) {
             m_quotaFull = it->toBool();
         }
@@ -272,9 +279,6 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         text("State", m_scanState);
         text("Reason", m_scanReason);
         time("Started", m_scanStarted);
-        number("Directories", m_scanDirectories);
-        number("Files", m_scanFiles);
-        number("Expected", m_scanExpected);
         time("Finished", m_scanFinished);
         count("Took", m_scanTook);
     }
@@ -351,30 +355,18 @@ void SyncController::setActionError(const QString &message)
     Q_EMIT actionErrorChanged();
 }
 
-void SyncController::setPendingFolder(const QString &folder)
-{
-    if (m_pendingFolder == folder) {
-        return;
-    }
-    m_pendingFolder = folder;
-    Q_EMIT pendingFolderChanged();
-}
-
 void SyncController::call(const QDBusPendingCall &pending,
                           std::function<void(const QDBusPendingCall &)> onSuccess,
-                          std::function<bool(const QDBusError &)> onError,
                           bool resetError)
 {
     if (resetError) {
         setActionError(QString());
     }
     auto *watcher = new QDBusPendingCallWatcher(pending, this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, onSuccess, onError](QDBusPendingCallWatcher *w) {
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, onSuccess](QDBusPendingCallWatcher *w) {
         w->deleteLater();
         if (w->isError()) {
-            if (!onError || !onError(w->error())) {
-                setActionError(w->error().message());
-            }
+            setActionError(w->error().message());
             return;
         }
         if (onSuccess) {
@@ -404,48 +396,24 @@ void SyncController::chooseFolder(const QUrl &folder)
     // proxy (whose timeout is shared with every other call on m_folder).
     auto message = QDBusMessage::createMethodCall(ServiceName, m_path, FolderInterface, QStringLiteral("Register"));
     message << path;
-    call(
-        m_bus.asyncCall(message, std::numeric_limits<int>::max()),
-        [this](const QDBusPendingCall &) {
-            // A no-op the first time (pendingFolder is already empty); on a
-            // retry that now succeeds, this is what closes the prompt.
-            setPendingFolder(QString());
-        },
-        [this, path](const QDBusError &error) {
-            if (error.name() == QLatin1String("org.konedrive.Error.NoHelper")) {
-                setPendingFolder(path);
-                return true;
-            }
-            return false;
-        });
-}
-
-void SyncController::retryRegistration()
-{
-    if (m_pendingFolder.isEmpty()) {
-        return;
-    }
-    // Retries Register(path); on the same NoHelper refusal, pendingFolder
-    // simply stays as it was (I3: the window never falls back to
-    // RegisterWithoutInterception on its own).
-    chooseFolder(QUrl::fromLocalFile(m_pendingFolder));
-}
-
-void SyncController::cancelPending()
-{
-    setPendingFolder(QString());
+    call(m_bus.asyncCall(message, std::numeric_limits<int>::max()));
 }
 
 void SyncController::forget()
 {
+    // Never refused for what is unsent: the page warns with readUnsentCount() before it calls.
     // M6: no timeout, as Register and FreeUpSpace have.
     const auto message = QDBusMessage::createMethodCall(ServiceName, m_path, FolderInterface, QStringLiteral("Unregister"));
-    call(m_bus.asyncCall(message, std::numeric_limits<int>::max()), {}, [this](const QDBusError &error) {
-        if (error.name() != QLatin1String("org.konedrive.Error.PendingUploads")) {
-            return false;
-        }
-        setActionError(i18n("The folder was not forgotten: changes made on this computer have not been uploaded yet, and forgetting it now would lose them. Wait until they are uploaded, or turn uploading off for this account and choose not to upload them; then forget it."));
-        return true;
+    call(m_bus.asyncCall(message, std::numeric_limits<int>::max()));
+}
+
+void SyncController::readUnsentCount()
+{
+    auto *watcher = new QDBusPendingCallWatcher(m_queue->UnsentCount(), this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
+        w->deleteLater();
+        const QDBusPendingReply<qulonglong> reply = *w;
+        Q_EMIT unsentCountRead(reply.isError() ? 0 : reply.value());
     });
 }
 
@@ -475,7 +443,6 @@ void SyncController::loadSkipped()
             }
             Q_EMIT skippedChanged();
         },
-        {},
         false);
 }
 
@@ -523,9 +490,9 @@ void SyncController::loadConflicts()
     });
 }
 
-void SyncController::dismissConflict(const QString &rescuedPath)
+void SyncController::dismissConflict(const QString &copyPath)
 {
-    call(m_conflictsIface->Dismiss(rescuedPath), [this](const QDBusPendingCall &) {
+    call(m_conflictsIface->Dismiss(copyPath), [this](const QDBusPendingCall &) {
         loadConflicts();
     });
 }
@@ -545,17 +512,13 @@ void SyncController::freeUpSpace()
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
         w->deleteLater();
         m_freeingUp = false;
-        const QDBusPendingReply<uint, qulonglong, uint> reply = *w;
+        const QDBusPendingReply<uint, qulonglong> reply = *w;
         if (reply.isError()) {
             m_freeUpResult = i18n("Could not free up space: %1", reply.error().message());
         } else {
             const uint files = reply.argumentAt<0>();
             const qulonglong bytes = reply.argumentAt<1>();
-            const uint busy = reply.argumentAt<2>();
             m_freeUpResult = i18np("Freed 1 file (%2).", "Freed %1 files (%2).", files, QLocale().formattedDataSize(qint64(bytes)));
-            if (busy > 0) {
-                m_freeUpResult += QLatin1Char(' ') + i18np("1 file was in use and was kept.", "%1 files were in use and were kept.", busy);
-            }
         }
         Q_EMIT freeUpResultChanged();
     });
@@ -610,6 +573,11 @@ void SyncController::setThumbnails(bool on)
     call(m_folder->SetThumbnails(on));
 }
 
+void SyncController::setFreeSpaceReserve(int gigabytes)
+{
+    call(m_folder->SetFreeSpaceReserve(qulonglong(qMax(gigabytes, 0))));
+}
+
 void SyncController::setIgnorePatterns(const QStringList &patterns)
 {
     // It runs a scan of the whole folder before it answers: no timeout.
@@ -633,16 +601,6 @@ void SyncController::removeIgnorePattern(const QString &pattern)
     if (patterns.removeAll(pattern) > 0) {
         setIgnorePatterns(patterns);
     }
-}
-
-void SyncController::confirmDeletes()
-{
-    call(m_queue->ConfirmDeletes());
-}
-
-void SyncController::restoreDeletes()
-{
-    call(m_queue->RestoreDeletes());
 }
 
 void SyncController::loadNotUploaded()

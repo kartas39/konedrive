@@ -7,15 +7,14 @@ use konedrive_dbus::Refusal;
 use konedrivectl::text::files::refused_path;
 use konedrivectl::text::folder::needs_attention_text;
 use konedrivectl::text::formats::{no_such_path_text, NOT_UTF8_PATH};
-use konedrivectl::text::refusals::{explain_sync_error_in, Context, SyncAction};
+use konedrivectl::text::refusals::{explain_sync_error, is_unanswered, Context, SyncAction};
 
 use crate::daemon::{Chosen, Daemon, Folders};
 
 /// Passes a folder call's result through, turning a refusal into what the person running
-/// this should read (`explain_sync_error_in`): matched by the D-Bus error name, and said in
+/// this should read (`explain_sync_error`): matched by the D-Bus error name, and said in
 /// terms of their own file.
 pub(super) async fn explained<T>(
-    daemon: &Daemon,
     chosen: &Chosen,
     proxy: &FolderProxies<'_>,
     action: SyncAction<'_>,
@@ -25,19 +24,21 @@ pub(super) async fn explained<T>(
         Ok(value) => return Ok(value),
         Err(error) => error,
     };
-    // Two refusals name the registered folder, one depends on what it shows, and one ends
-    // with how to start the helper. If even reading them fails, they simply do not; the
-    // refusal is the thing to report.
-    let root = proxy.folder.path().await.unwrap_or_default();
-    let source = proxy.folder.source().await.unwrap_or_default();
-    let helper = daemon.manager.helper_state().await.unwrap_or_default();
+    // Two refusals name the registered folder, and one depends on what it shows. If even
+    // reading them fails, they simply do not; the refusal is the thing to report. A daemon
+    // that did not answer the call is not asked anything more.
+    let (root, source) = if is_unanswered(&error) {
+        Default::default()
+    } else {
+        (proxy.folder.path().await.unwrap_or_default(), proxy.folder.source().await.unwrap_or_default())
+    };
     let foreign = match action {
-        SyncAction::Register(path) | SyncAction::RegisterWithoutInterception(path) => carries_a_drive(path),
+        SyncAction::Register(path) => carries_a_drive(path),
         _ => false,
     };
     let prefix = chosen.prefix();
-    let context = Context { root: &root, source: &source, helper: &helper, folders: &[], foreign, prefix: &prefix, several: false };
-    Err(anyhow!("{}", explain_sync_error_in(action, &error, context)))
+    let context = Context { root: &root, source: &source, folders: &[], foreign, prefix: &prefix, several: false };
+    Err(anyhow!("{}", explain_sync_error(action, &error, context)))
 }
 
 /// Passes a `Files` call's result on `paths` through, as [`explained`] does. `Files` finds
@@ -54,7 +55,8 @@ pub(super) async fn explained_paths<T>(
         Ok(value) => return Ok(value),
         Err(error) => error,
     };
-    let folders = daemon.folders().await.unwrap_or_default();
+    // A daemon that did not answer the call is not asked for its folders.
+    let folders = if is_unanswered(&error) { Folders::default() } else { daemon.folders().await.unwrap_or_default() };
     let refused = refused_path(&error).map(str::to_owned).or_else(|| {
         let outside = Refusal::from_error(&error) == Some(Refusal::OutsideRoot);
         paths.iter().find(|path| outside && folders.holder(path).is_none()).cloned()
@@ -69,11 +71,10 @@ pub(super) async fn explained_paths<T>(
         Some(folder) => folder.sync.folder.source().await.unwrap_or_default(),
         None => String::new(),
     };
-    let helper = daemon.manager.helper_state().await.unwrap_or_default();
     let roots = folders.roots();
     let prefix = folders.prefix(held_by);
-    let context = Context { root: &root, source: &source, helper: &helper, folders: &roots, foreign: false, prefix: &prefix, several };
-    Err(anyhow!("{}", explain_sync_error_in(action.about(&named), &error, context)))
+    let context = Context { root: &root, source: &source, folders: &roots, foreign: false, prefix: &prefix, several };
+    Err(anyhow!("{}", explain_sync_error(action.about(&named), &error, context)))
 }
 
 /// A `Files` call, for [`explained_paths`].
@@ -116,8 +117,8 @@ fn carries_a_drive(path: &str) -> bool {
 
 /// `Some(detail)` when the folder's state is `error` after the call just made: `LastError`
 /// is the detail. Every command that changes something checks this after its own call went
-/// through: any of them can run while the folder is unhealthy already (a helper that
-/// dropped, a recovery that could not finish), and that must show in the command's exit
+/// through: any of them can run while the folder is unhealthy already (a mount a fault
+/// took down, a start that failed), and that must show in the command's exit
 /// status though the thing it asked for was done.
 pub(super) async fn folder_trouble(proxy: &FolderProxies<'_>) -> anyhow::Result<Option<String>> {
     if proxy.folder.state().await? == "error" {

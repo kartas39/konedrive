@@ -1,8 +1,7 @@
 //! Microsoft Graph's drive API. Reads live here: the delta feed, one item's
 //! metadata, a file's bytes from an offset, and the `/content` redirect.
 //! Writes live in [`mod@write`] (folders, rename, move, delete) and [`upload`]
-//! (upload sessions); nothing calls them until the write phase's outbox
-//! worker does, and the scope stays `Files.Read` until an account is switched
+//! (upload sessions); the daemon's steps towards OneDrive call them, and the scope stays `Files.Read` until an account is switched
 //! to read-write.
 
 mod account;
@@ -58,8 +57,8 @@ pub enum DeltaNext {
     Done(String),
 }
 
-/// A file's bytes, and the offset the first of them belongs at (part 1's
-/// `served_from` contract).
+/// A file's bytes, and the offset the first of them belongs at (`served_from`:
+/// `docs/design/decisions.md` §3.14).
 pub struct Download {
     pub served_from: u64,
     pub stream: Box<dyn AsyncRead + Send + Unpin>,
@@ -121,7 +120,7 @@ struct DriveBody {
     id: String,
 }
 
-/// The drive's quota as Graph gives it (`GET /me/drive`): what the outbox decides a full
+/// The drive's quota as Graph gives it (`GET /me/drive`): what the upload queue decides a full
 /// OneDrive by. `remaining` is Graph's own figure, never `total - used`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct DriveQuota {
@@ -184,15 +183,15 @@ impl DriveClient {
         self
     }
 
-    /// The signed-in account's drive.
+    /// The signed-in account's drive: its id alone is asked for.
     pub async fn drive_id(&self) -> Result<String, DriveError> {
-        let body: DriveBody = self.get_json(self.route("me/drive")?).await?;
+        let body: DriveBody = self.get_json(self.route("me/drive?$select=id")?).await?;
         Ok(body.id)
     }
 
-    /// The signed-in account's quota: one request.
+    /// The signed-in account's quota: one request, which asks for the quota alone.
     pub async fn quota(&self) -> Result<DriveQuota, DriveError> {
-        let body: QuotaBody = self.get_json(self.route("me/drive")?).await?;
+        let body: QuotaBody = self.get_json(self.route("me/drive?$select=quota")?).await?;
         Ok(body.quota)
     }
 
@@ -473,7 +472,7 @@ fn content_range_start(headers: &header::HeaderMap) -> Option<u64> {
     range.split('-').next()?.trim().parse().ok()
 }
 
-/// Which `410` Graph answered (`docs/design/writes.md` §9): the two resync codes
+/// Which `410` Graph answered (`docs/design/sync.md` §5.4): the two resync codes
 /// Microsoft names are told apart by the body; anything else is the plain
 /// resync.
 async fn resync(response: reqwest::Response) -> DriveError {

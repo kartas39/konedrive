@@ -23,8 +23,8 @@ FileState readFileState(const QString &path)
         return FileState::NotAFile;
     }
 
-    // The longest value is "online-only" / "dehydrating"; anything that does
-    // not fit is not a state this plugin knows.
+    // The longest value is "online-only"; anything that does not fit is not
+    // a state this plugin knows.
     char value[32];
     const ssize_t size = ::lgetxattr(native.constData(), StateAttribute, value, sizeof value);
     if (size < 0) {
@@ -42,9 +42,6 @@ FileState readFileState(const QString &path)
     }
     if (state == "hydrated") {
         return FileState::Hydrated;
-    }
-    if (state == "dehydrating") {
-        return FileState::Dehydrating;
     }
     return FileState::Unrecognised;
 }
@@ -150,34 +147,6 @@ std::optional<QString> rootOf(const QString &dir, const RootMarkReader &hasMark)
     return findRoot(physical, hasMark);
 }
 
-std::optional<QString> pinnedBy(const QString &path, const QString &root, const PinMarkReader &hasPin)
-{
-    // The item itself, as Dolphin spelled it: a placeholder is never a
-    // symbolic link, so this is also its physical path.
-    if (hasPin(path)) {
-        return path;
-    }
-    // Physical from here on -- the same resolution `root` itself was found
-    // with (rootOf), so a directory reached through a symbolic link is
-    // compared correctly against it.
-    QString dir = physicalDirectory(parentDirectory(path));
-    while (!dir.isEmpty()) {
-        if (hasPin(dir)) {
-            return dir;
-        }
-        if (dir == root) {
-            break;
-        }
-        dir = parentDirectory(dir);
-    }
-    return std::nullopt;
-}
-
-bool isEffectivelyPinned(const QString &path, const QString &root, const PinMarkReader &hasPin)
-{
-    return pinnedBy(path, root, hasPin).has_value();
-}
-
 Emblem emblemFor(FileState state, bool pinned)
 {
     switch (state) {
@@ -186,7 +155,6 @@ Emblem emblemFor(FileState state, bool pinned)
         // that finishes it looks exactly like a file already downloading.
         return pinned ? Emblem::Syncing : Emblem::Cloud;
     case FileState::Hydrating:
-    case FileState::Dehydrating:
         return Emblem::Syncing;
     case FileState::Hydrated:
         return pinned ? Emblem::CheckFilled : Emblem::CheckOutline;
@@ -202,7 +170,7 @@ QStringList overlayNames(Emblem emblem)
 {
     // Breeze names, checked against /usr/share/icons/breeze{,-dark}:
     //   - status/*/cloudstatus.svg (online-only);
-    //   - status/*/state-sync.svg (hydrating, dehydrating, or pinned and
+    //   - status/*/state-sync.svg (hydrating, or pinned and
     //     still online-only -- the sweep is filling it);
     //   - actions/*/dialog-ok.svg, a bare check with no fill behind it, for
     //     a hydrated file nobody asked to keep (the OUTLINE case). Not
@@ -212,7 +180,7 @@ QStringList overlayNames(Emblem emblem)
     //     dialog-ok.svg is the same bare glyph under a name that exists
     //     nowhere else in the theme;
     //   - emblems/*/emblem-checked.svg, the same check filled solid, for one
-    //     that is effectively pinned (the FILLED case) -- this is the icon
+    //     that a pin holds for (the FILLED case) -- this is the icon
     //     "hydrated" alone used before pinning existed;
     //   - status/*/state-error.svg, for an item whose upload is blocked
     //     (state-sync, above, serves one waiting to be uploaded too).
@@ -297,14 +265,14 @@ Emblem emblemForItem(FileState state, bool isDir, bool pinned, UploadState uploa
     return emblemFor(state, pinned);
 }
 
-Emblem itemEmblem(const QString &path, const QString &root, const PinMarkReader &hasPin)
+Emblem itemEmblem(const QString &path, const PinMarkReader &hasPin)
 {
     // An item with changes waiting to be uploaded needs nothing else read.
     const UploadState upload = readUploadState(path);
     if (upload != UploadState::None) {
         return emblemForItem(FileState::NotAFile, false, false, upload);
     }
-    return emblemForItem(readFileState(path), isDirectory(path), isEffectivelyPinned(path, root, hasPin));
+    return emblemForItem(readFileState(path), isDirectory(path), hasPin(path));
 }
 
 bool anyInSyncFolder(const QStringList &paths, const RootMarkReader &hasRoot)

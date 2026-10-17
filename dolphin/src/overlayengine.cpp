@@ -66,7 +66,7 @@ QStringList OverlayEngine::overlays(const QUrl &url)
         return {};
     }
 
-    const Emblem emblem = itemEmblem(path, *root, m_hasPin);
+    const Emblem emblem = itemEmblem(path, m_hasPin);
     if (directory) {
         directory->files.insert(name, emblem);
     }
@@ -252,8 +252,9 @@ void OverlayEngine::resolveAgain(const QStringList &dirs, Changes &changes)
         }
         // Every cached file here is rechecked even when `directory.root`
         // itself did not change: a pin set or removed on `path` -- or on one
-        // of the other directories named in `dirs` -- can change what every
-        // file below it draws without ever changing who its root is.
+        // of the other directories named in `dirs` -- changes what the mount
+        // answers for every file below it, and the daemon announces only the
+        // directory whose mark changed.
         const QStringList names = directory.files.keys();
         for (const QString &name : names) {
             recheck(path, name, changes);
@@ -275,7 +276,7 @@ void OverlayEngine::recheck(const QString &dir, const QString &name, Changes &ch
         return;
     }
     const QString path = joinPath(dir, name);
-    const Emblem now = itemEmblem(path, *it->second.root, m_hasPin);
+    const Emblem now = itemEmblem(path, m_hasPin);
     if (now == file.value()) {
         return;
     }

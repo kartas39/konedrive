@@ -1,6 +1,6 @@
 //! What the commands read of the daemon into the types `text/` prints.
 
-use konedrive_dbus::accounts::FolderProxies;
+use konedrive_dbus::accounts::{AccountProxy, FolderProxies};
 use konedrive_dbus::Refusal;
 use konedrivectl::text::accounts::AccountRow;
 use konedrivectl::text::status::{AccountStatus, FolderStatus, LocalScan};
@@ -44,10 +44,19 @@ async fn decided<T>(read: impl std::future::Future<Output = zbus::Result<T>>) ->
     }
 }
 
+/// How many changes an account that waits to switch to read-only has still to send
+/// (`Account.ReadOnlyWanted`, `Account.UnsentBeforeReadOnly`); `None` with no such wish.
+pub(crate) async fn read_only_wish(account: &AccountProxy<'_>) -> zbus::Result<Option<u64>> {
+    if !said(account.read_only_wanted()).await? {
+        return Ok(None);
+    }
+    Ok(Some(said(account.unsent_before_read_only()).await?))
+}
+
 /// The account at `path`, as `status` shows it.
 pub(crate) async fn account_status(daemon: &Daemon, path: &OwnedObjectPath) -> zbus::Result<AccountStatus> {
     let account = daemon.account(path).await?;
-    let FolderProxies { folder, .. } = daemon.sync(path).await?;
+    let FolderProxies { folder, transfers, .. } = daemon.sync(path).await?;
     Ok(AccountStatus {
         label: served(account.label()).await?,
         state: served(account.state()).await?,
@@ -56,9 +65,11 @@ pub(crate) async fn account_status(daemon: &Daemon, path: &OwnedObjectPath) -> z
         email: said(account.email()).await?,
         quota: both(account.quota_used(), account.quota_total()).await?,
         last_error: said(account.last_error()).await?,
+        read_only_wish: read_only_wish(&account).await?,
         overall: decided(folder.overall()).await?,
         trouble: decided(folder.trouble()).await?.unwrap_or_default(),
         not_updated: decided(folder.not_updated()).await?.unwrap_or_default(),
+        retry_after: decided(transfers.retry_after()).await?.unwrap_or_default(),
     })
 }
 
@@ -86,9 +97,6 @@ pub(crate) async fn folder_status(daemon: &Daemon, path: &OwnedObjectPath) -> zb
             state,
             reason: said(scan.reason()).await?,
             started: said(scan.started()).await?,
-            directories: said(scan.directories()).await?,
-            files: said(scan.files()).await?,
-            expected: said(scan.expected()).await?,
             finished: said(scan.finished()).await?,
             took: said(scan.took()).await?,
         }),
@@ -100,6 +108,7 @@ pub(crate) async fn folder_status(daemon: &Daemon, path: &OwnedObjectPath) -> zb
         overall: served(folder.overall()).await?,
         trouble: said(folder.trouble()).await?,
         not_updated: said(folder.not_updated()).await?,
+        retry_after: said(transfers.retry_after()).await?,
         source: said(folder.source()).await?,
         items: both(folder.items_listed(), folder.items_placed()).await?,
         skipped: said(folder.skipped_count()).await?,
@@ -115,17 +124,17 @@ pub(crate) async fn folder_status(daemon: &Daemon, path: &OwnedObjectPath) -> zb
         quota_waiting: said(queue.quota_waiting_count()).await?,
         quota_waiting_bytes: said(queue.quota_waiting_bytes()).await?,
         too_big: said(queue.too_big_count()).await?,
-        held_deletes: said(queue.held_count()).await?,
         paused: said(folder.paused()).await?,
         paused_until: said(folder.paused_until()).await?,
         held_back: said(folder.held_back()).await?,
+        retry_after_refusal: said(transfers.retry_after_refusal()).await?,
         local_bytes: served(folder.local_bytes()).await?,
         pinned: served(folder.pinned_count()).await?,
         conflicts: said(conflicts.count()).await?,
     })
 }
 
-/// What `sync transfers` and `sync outbox` say first, from `Transfers`.
+/// What `sync transfers` and `sync upload-queue` say first, from `Transfers`.
 pub(crate) async fn transfer_summary(proxy: &FolderProxies<'_>) -> zbus::Result<TransferSummary> {
     let transfers = &proxy.transfers;
     Ok(TransferSummary {
@@ -137,6 +146,7 @@ pub(crate) async fn transfer_summary(proxy: &FolderProxies<'_>) -> zbus::Result<
             done_bytes: transfers.download_done_bytes().await?,
             time_left: transfers.download_time_left().await?,
         },
+        thumbnail_downloads: transfers.thumbnail_downloads().await?,
         active_uploads: transfers.active_uploads().await?,
         upload_speed: transfers.upload_speed().await?,
         uploads: QueueTotals {

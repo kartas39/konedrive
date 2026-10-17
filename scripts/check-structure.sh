@@ -6,12 +6,12 @@
 #      and nothing more;
 #   2. no Rust source file holds tests;
 #   3. in konedrived, a directory uses only the directories before it in the
-#      layer order, and remote/ does not use upload/. Test code is exempt.
+#      layer order, and listing/ does not use onedrive_steps/. Test code is exempt.
 #   7. a lock of std::sync is taken through the one function that goes on
 #      after a panic (konedrived: panic::lock, read, write), never with
 #      `.lock().unwrap()` or a recovery written out. Test code is exempt.
 #
-# It reads the files git tracks, prints one line for each thing against a rule
+# It reads the files git tracks, except the vendored crates (vendor/), prints one line for each thing against a rule
 # and exits with 1 if there is any. A file over the advised size is printed too,
 # and does not change the exit status. Run from anywhere in the checkout:
 #
@@ -31,7 +31,7 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-git ls-files -- '*.rs' '*.cpp' '*.h' '*.qml' '*.sh' '*.py' '*.md' | LC_ALL=C awk '
+git ls-files -- '*.rs' '*.cpp' '*.h' '*.qml' '*.sh' '*.py' '*.md' ':!vendor' | LC_ALL=C awk '
 BEGIN {
     SOURCE_MAX = 1000
     TEST_MAX = 1500
@@ -39,7 +39,7 @@ BEGIN {
 
     # The daemon: its directories in layer order.
     DAEMON = "crates/konedrived/src/"
-    count = split("config account helper folder conditions status hydration local upload remote desktop sync daemon dbus", order, " ")
+    count = split("config account folder conditions status content_source local sync_parts mount folder_steps onedrive_steps listing desktop upload_queue sync_plan_task sync_tasks account_folder daemon sentences dbus", order, " ")
     for (i = 1; i <= count; i++)
         layer[order[i]] = i
 }
@@ -87,7 +87,7 @@ function uses(file, number, line, own, top,    text, name) {
         sub(/^(crate|super)::/, "", name)
         if (!(name in layer))
             continue
-        if (layer[name] > layer[own] || (own == "remote" && name == "upload")) {
+        if (layer[name] > layer[own] || (own == "listing" && name == "onedrive_steps")) {
             found++
             found_file[found] = file
             found_text[found] = file ":" number ": " own "/ uses " name "/ (rule 3: the layer order)"
@@ -96,15 +96,12 @@ function uses(file, number, line, own, top,    text, name) {
 }
 
 # Whether rule 7 is asked of a file: not of the files that hold the one
-# function, not of test doubles (`testing.rs`, `testing/`), and not of the helper
-# (it has its own `lock`, and root code is not changed for tidiness):
+# function and not of test doubles (`testing.rs`, `testing/`):
 # CONTRIBUTING.md, rule 7.
 function locks_checked(file) {
-    if (file == DAEMON "panic.rs" || file == "crates/konedrive-graph/src/lib.rs" || file == "crates/konedrive-tree/src/outbox/changes.rs")
+    if (file == DAEMON "panic.rs" || file == "crates/konedrive-graph/src/lib.rs")
         return 0
-    if (file ~ /(^|\/)testing(\.rs$|\/)/)
-        return 0
-    return index(file, "crates/konedrive-helper/") != 1
+    return file !~ /(^|\/)testing(\.rs$|\/)/
 }
 
 # A lock, a read or a write taken with nothing passed (or as `Mutex::lock(…)`),

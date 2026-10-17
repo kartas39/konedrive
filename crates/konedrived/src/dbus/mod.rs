@@ -3,38 +3,38 @@
 //! exercised with no bus at all.
 //!
 //! - `/org/konedrive/Accounts`: `org.konedrive.Accounts` (the accounts, the settings they
-//!   share, the helper's state) and `org.konedrive.Files` (the per-file calls, routed by
+//!   share) and `org.konedrive.Files` (the per-file calls, routed by
 //!   path), over the `daemon::manager::AccountManager`; `org.konedrive.DevTools` too in a
 //!   development build.
 //! - `/org/konedrive/Accounts/<id>`: one account's `org.konedrive.Account` (and
 //!   `TokenExport` in a development build), over its `account::AccountService`; and the
 //!   interfaces of its folder — `Folder`, `Transfers`, `UploadQueue`, `Conflicts`,
-//!   `LocalScan`, `ActivityLog` — over its `sync::SyncService`.
+//!   `LocalScan`, `ActivityLog` — over its `account_folder::SyncService`.
 //!
 //! `export` puts them on the bus, `signals` announces what changes by itself
 //! (`properties` is the table of it), and `fault` is how every call is refused.
 
 pub mod account;
-pub mod accounts;
-pub mod activity_log;
+pub(crate) mod accounts;
+pub(crate) mod activity_log;
 pub mod conflicts;
 #[cfg(feature = "dev-tools")]
-pub mod dev_tools;
+pub(crate) mod dev_tools;
 pub mod export;
-pub mod fault;
-pub mod files;
-pub mod folder;
-pub mod local_scan;
+pub(crate) mod fault;
+pub(crate) mod files;
+pub(crate) mod folder;
+pub(crate) mod local_scan;
 mod properties;
-pub mod signals;
+pub(crate) mod signals;
 #[cfg(feature = "dev-tools")]
-pub mod token_export;
-pub mod transfers;
+pub(crate) mod token_export;
+pub(crate) mod transfers;
 pub mod upload_queue;
 
 use std::sync::Arc;
 
-use crate::sync::SyncService;
+use crate::account_folder::SyncService;
 
 /// The interfaces of one account's folder, each over the same `SyncService`
 /// (definitions: `dbus/org.konedrive.{Folder,Transfers,UploadQueue,Conflicts,LocalScan,ActivityLog}.xml`).

@@ -56,8 +56,6 @@ pub enum Reason {
     Transferring,
     /// The folder's syncing has stopped on an error; `Folder.Trouble` says it.
     Stopped,
-    /// Deletions wait for the user's decision.
-    DeletesHeld,
     /// Changed files were moved out of the way.
     Conflicts,
     /// OneDrive is full and files wait for space.
@@ -68,21 +66,23 @@ pub enum Reason {
     Blocked,
     /// Files changed in OneDrive could not be updated here yet; `Folder.NotUpdated` says it.
     NotUpdated,
-    /// The helper is in trouble, for a folder it intercepts.
-    HelperUnavailable,
     /// Any other trouble that does not stop the folder; `Folder.Trouble` says it.
     Trouble,
     /// The user paused the account.
     Paused,
     /// The account holds back by itself (metered, battery, power-saver).
     HeldBack,
+    /// OneDrive asked the account to wait (`429` or `503` with a `Retry-After`): nothing
+    /// is asked of it until the wait is over. `Transfers.RetryAfter` says the seconds
+    /// left.
+    Throttled,
     /// None of the others.
     UpToDate,
 }
 
 impl Reason {
     /// Every reason.
-    pub const ALL: [Reason; 19] = [
+    pub const ALL: [Reason; 18] = [
         Self::SigningIn,
         Self::SignedOut,
         Self::NoFolder,
@@ -91,16 +91,15 @@ impl Reason {
         Self::Listing,
         Self::Transferring,
         Self::Stopped,
-        Self::DeletesHeld,
         Self::Conflicts,
         Self::QuotaFull,
         Self::TooBig,
         Self::Blocked,
         Self::NotUpdated,
-        Self::HelperUnavailable,
         Self::Trouble,
         Self::Paused,
         Self::HeldBack,
+        Self::Throttled,
         Self::UpToDate,
     ];
 
@@ -115,16 +114,15 @@ impl Reason {
             Self::Listing => "listing",
             Self::Transferring => "transferring",
             Self::Stopped => "stopped",
-            Self::DeletesHeld => "deletes-held",
             Self::Conflicts => "conflicts",
             Self::QuotaFull => "quota-full",
             Self::TooBig => "too-big",
             Self::Blocked => "blocked",
             Self::NotUpdated => "not-updated",
-            Self::HelperUnavailable => "helper-unavailable",
             Self::Trouble => "trouble",
             Self::Paused => "paused",
             Self::HeldBack => "held-back",
+            Self::Throttled => "throttled",
             Self::UpToDate => "up-to-date",
         }
     }
@@ -140,15 +138,13 @@ impl Reason {
             Self::SigningIn | Self::SignedOut | Self::NoFolder | Self::Unreachable => State::Offline,
             Self::Starting | Self::Listing | Self::Transferring => State::Syncing,
             Self::Stopped
-            | Self::DeletesHeld
             | Self::Conflicts
             | Self::QuotaFull
             | Self::TooBig
             | Self::Blocked
             | Self::NotUpdated
-            | Self::HelperUnavailable
             | Self::Trouble => State::Warning,
-            Self::Paused | Self::HeldBack => State::Paused,
+            Self::Paused | Self::HeldBack | Self::Throttled => State::Paused,
             Self::UpToDate => State::Ok,
         }
     }

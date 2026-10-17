@@ -65,15 +65,16 @@ async fn sync_anyway_lasts_until_a_source_or_the_holds_settings_change() {
     assert_eq!(running.stop(), Some(Stop::Paused(0)), "the user's pause is said first");
 }
 
-/// Thumbnails from the account's section, the hold's settings from the global keys,
+/// Thumbnails and the free space kept from the account's section, the hold's settings from the global keys,
 /// each with its default when absent; an unknown `on_battery` falls back.
 #[test]
 fn settings_read_config_toml_with_their_defaults() {
     let mut account: AccountConfig = toml::from_str("id = \"a\"\nlabel = \"A\"\n").unwrap();
-    assert_eq!(Settings::of(&account), Settings { thumbnails: true, paused_until: None });
+    assert_eq!(Settings::of(&account), Settings { thumbnails: true, paused_until: None, free_space_reserve_gb: 10 });
     account.thumbnails = Some(false);
     account.paused_until = Some(0);
-    assert_eq!(Settings::of(&account), Settings { thumbnails: false, paused_until: Some(0) });
+    account.free_space_reserve_gb = Some(0);
+    assert_eq!(Settings::of(&account), Settings { thumbnails: false, paused_until: Some(0), free_space_reserve_gb: 0 });
 
     let read = |text: &str| HoldSettings::of(&toml::from_str::<Config>(&format!("config_version = 2\n{text}")).unwrap());
     assert_eq!(read(""), HoldSettings { pause_on_metered: true, on_battery: OnBattery::PowerSaver });

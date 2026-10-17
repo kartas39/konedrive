@@ -12,12 +12,10 @@ pub struct Paths {
     pub state_dir: PathBuf,
     /// The cached name and quota of version 1, where the migration finds them. Per account:
     /// [`Paths::account`].
-    pub account_cache: PathBuf,
+    pub(crate) account_cache: PathBuf,
     /// The tree store of version 1, where the migration finds it. Per account:
     /// [`Paths::account`].
-    pub tree_db: PathBuf,
-    /// Where files are rescued to: version 1 directly below it, each account in `<id>/`.
-    pub rescue_dir: PathBuf,
+    pub(crate) tree_db: PathBuf,
     /// The freedesktop thumbnail cache, shared by every account (keyed by file URI).
     pub thumbnails: PathBuf,
 }
@@ -26,29 +24,29 @@ pub struct Paths {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountPaths {
     /// `accounts/<id>/` under the state directory: everything in it goes with the account.
-    pub dir: PathBuf,
+    pub(crate) dir: PathBuf,
     /// Its cached name and quota.
     pub account_cache: PathBuf,
     /// Its tree store, activity log and conflicts.
-    pub tree_db: PathBuf,
-    /// `rescued/<id>/`: kept when the account is removed.
-    pub rescue_dir: PathBuf,
+    pub(crate) tree_db: PathBuf,
 }
+
+/// The tree store's file. Not the name an older konedrive kept its store under: that one
+/// described a folder of placeholders, and is never read.
+pub(crate) const TREE_DB: &str = "fuse.sqlite";
 
 impl Paths {
     /// Standard XDG locations for the current user.
     pub fn from_xdg() -> anyhow::Result<Self> {
         let config = dirs::config_dir().ok_or_else(|| anyhow::anyhow!("no XDG config directory"))?;
         let state = dirs::state_dir().ok_or_else(|| anyhow::anyhow!("no XDG state directory"))?;
-        let data = dirs::data_dir().ok_or_else(|| anyhow::anyhow!("no XDG data directory"))?;
         let cache = dirs::cache_dir().ok_or_else(|| anyhow::anyhow!("no XDG cache directory"))?;
         let state = state.join("konedrive");
         Ok(Self {
             config_file: config.join("konedrive").join("config.toml"),
             account_cache: state.join("account.json"),
-            tree_db: state.join("tree.sqlite"),
+            tree_db: state.join(TREE_DB),
             state_dir: state,
-            rescue_dir: data.join("konedrive").join("rescued"),
             thumbnails: cache.join("thumbnails"),
         })
     }
@@ -59,8 +57,7 @@ impl Paths {
             config_file: dir.join("config.toml"),
             state_dir: dir.to_owned(),
             account_cache: dir.join("account.json"),
-            tree_db: dir.join("tree.sqlite"),
-            rescue_dir: dir.join("rescued"),
+            tree_db: dir.join(TREE_DB),
             thumbnails: dir.join("thumbnails"),
         }
     }
@@ -75,9 +72,8 @@ impl Paths {
         let dir = self.state_dir.join("accounts").join(id.as_str());
         Some(AccountPaths {
             account_cache: dir.join("account.json"),
-            tree_db: dir.join("tree.sqlite"),
+            tree_db: dir.join(TREE_DB),
             dir,
-            rescue_dir: self.rescue_dir.join(id.as_str()),
         })
     }
 }

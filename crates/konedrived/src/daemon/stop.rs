@@ -1,13 +1,12 @@
 //! The daemon's stop: on SIGTERM or SIGINT nothing new is sent,
 //! and the requests in flight get up to [`STOP_BOUND`] to return — an opened
 //! upload session to be persisted, a fragment to be answered — before the
-//! process exits. What is still in flight then is cut, as before: the
+//! process exits. What is still in flight then is cut: the
 //! recorded place of a new file's session covers it
-//! (`docs/design/writes.md` §6.1). A second signal exits at once.
+//! (`docs/design/writes.md` §4.3). A second signal exits at once.
 //!
 //! The daemon stops the same way, and exits with a failure, when one of the
-//! tasks it runs for its whole life is gone ([`Tasks`], quality finding
-//! `SY11`): systemd then starts it again (`Restart=on-failure`).
+//! tasks it runs for its whole life is gone ([`Tasks`]): systemd then starts it again (`Restart=on-failure`).
 
 use std::future::Future;
 use std::time::Duration;
@@ -77,9 +76,9 @@ pub enum Need {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Died {
     /// What the task was, in words.
-    pub name: &'static str,
+    pub(crate) name: &'static str,
     /// The panic's message, or `None` for a task that returned.
-    pub panic: Option<String>,
+    pub(crate) panic: Option<String>,
 }
 
 impl std::fmt::Display for Died {

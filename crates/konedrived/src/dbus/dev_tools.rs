@@ -11,7 +11,7 @@ use crate::dbus::fault::Fault;
 /// `org.konedrive.DevTools` (`dbus/org.konedrive.DevTools.xml`), at
 /// `/org/konedrive/Accounts`: only in a development build (the `dev-tools` feature), as
 /// `TokenExport` is. A release build adds an account only by signing in.
-pub struct DevTools {
+pub(crate) struct DevTools {
     pub(crate) manager: Arc<AccountManager>,
 }
 

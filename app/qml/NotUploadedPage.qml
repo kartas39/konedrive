@@ -14,7 +14,6 @@ FormCard.FormCardPage {
     id: page
 
     readonly property var sync: Current.sync
-    readonly property var account: Current.account
     readonly property var window: QQC2.ApplicationWindow.window
     readonly property var summary: sync ? sync.notUploadedSummary : []
     /// The counts the summary was last asked for at.
@@ -24,7 +23,7 @@ FormCard.FormCardPage {
     property bool waitingOpened: false
 
     function countsNow() {
-        return sync ? sync.pendingCount + "/" + sync.blockedCount + "/" + sync.heldCount + "/" + sync.quotaFull + "/" + sync.spaceWaitingCount + "/" + sync.tooBigCount : "";
+        return sync ? sync.pendingCount + "/" + sync.blockedCount + "/" + sync.quotaFull + "/" + sync.spaceWaitingCount + "/" + sync.tooBigCount : "";
     }
 
     /// Loads the summary when the page is shown, when a count changes while
@@ -83,7 +82,7 @@ FormCard.FormCardPage {
 
         FormCard.FormPlaceholderMessageDelegate {
             text: i18n("Nothing is kept back")
-            explanation: i18n("Changes made here that cannot be uploaded — a name OneDrive refuses, a full OneDrive — and what is never uploaded, such as symbolic links, are listed here with the reason.")
+            explanation: i18n("Changes made here that cannot be uploaded — a name OneDrive refuses, a full OneDrive — are listed here with the reason.")
             icon.name: "cloud-upload"
         }
     }
@@ -113,20 +112,11 @@ FormCard.FormCardPage {
                     }
                 }
                 FormCard.FormButtonDelegate {
-                    visible: modelData.reason === "quota-exceeded" || modelData.reason === "waiting-for-space" || modelData.reason === "too-big"
+                    visible: modelData.reason === "quota-exceeded" || modelData.reason === "waiting-for-space" || modelData.reason === "too-big" || modelData.reason === "forbidden"
                     text: i18nc("@action:button", "Refresh")
-                    description: i18n("Once there is room in OneDrive, these go up.")
+                    description: modelData.reason === "forbidden" ? i18n("If OneDrive allows these changes now, they go up.") : i18n("Once there is room in OneDrive, these go up.")
                     icon.name: "view-refresh"
                     onClicked: page.sync.refresh()
-                }
-                FormCard.FormButtonDelegate {
-                    visible: modelData.reason === "forbidden" && page.account !== null
-                    text: i18nc("@action:button", "Sign In Again")
-                    icon.name: "go-next"
-                    onClicked: {
-                        page.account.signIn();
-                        page.window.showPage("account");
-                    }
                 }
             }
         }
@@ -173,24 +163,6 @@ FormCard.FormCardPage {
                     text: i18np("and 1 more", "and %1 more", reasonBlock.total - reasonBlock.items.length)
                     description: i18n("The full list: konedrivectl sync not-uploaded --all")
                 }
-            }
-        }
-    }
-
-    // Never uploaded: one line per reason, nothing to do.
-    FormCard.FormHeader {
-        visible: page.rowsOf("never").length > 0
-        title: i18nc("@title:group", "Never Uploaded")
-    }
-    FormCard.FormCard {
-        objectName: "neverGroup"
-        visible: page.rowsOf("never").length > 0
-
-        Repeater {
-            model: page.rowsOf("never")
-            delegate: FormCard.FormTextDelegate {
-                required property var modelData
-                text: i18np("1 item: %2", "%1 items: %2", modelData.count, modelData.why)
             }
         }
     }

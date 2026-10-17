@@ -1,5 +1,5 @@
 //! The transfer pool: how many requests one account has in flight at once, downloads and
-//! uploads together (`docs/design/hydration.md` §6.4).
+//! uploads together (`docs/design/mount.md` §5.6).
 //!
 //! OneDrive publishes no limit on concurrency; it throttles an account as a whole with `429`
 //! or `503` and a `Retry-After`. So the pool finds its own level, per account:
@@ -7,10 +7,15 @@
 //! - it starts at [`START`] slots and **grows by one on every successful transfer** made while
 //!   work is queued and every slot is busy — about doubling each round of transfers — up to the
 //!   ceiling (`[transfers] max` in `config.toml`, [`DEFAULT_CEILING`]). Latency is not measured:
-//!   only a throttle stops the growth;
+//!   only a throttle stops the growth. Work is queued when a transfer waits here for a slot:
+//!   whoever has more files to move than the pool has slots lets some of them wait here (the
+//!   plan's task starts a few steps beyond the slots), or the pool never learns of them;
 //! - a **`429`/`503`** on any request of the account halves the pool, once per burst, and no slot
-//!   is handed out for the whole `Retry-After`. The size it came at is remembered for
-//!   [`THROTTLE_MEMORY`]: at and above it the pool grows by one per round only.
+//!   is handed out for the whole `Retry-After`. The throttle is remembered until
+//!   [`THROTTLE_MEMORY`] after that wait ended: until then the pool **grows by one per round
+//!   only** — one slot for as many successes as it has slots — from the halved size, through the
+//!   size the throttle came at and above it. The memory is counted from the wait's end, not
+//!   from the throttle, so that a long `Retry-After` does not use it up.
 //!
 //! A **large** sync transfer (a file of [`LARGE_FROM`] or more, of any class but
 //! [`Class::Open`]) fills the link on its own: `[transfers] large` ([`DEFAULT_LARGE`]) limits the
@@ -18,7 +23,7 @@
 //! waiting for that limit lets the small ones behind it go. A file being opened is outside the
 //! limit and its count: it is never marked large, neither waits for the limit nor
 //! takes room in it, and still takes a slot of the pool. A large pinned download in parts holds
-//! one large slot per stream (`hydration::source::parts`): its extra streams take only
+//! one large slot per stream (`content_source::source::parts`): its extra streams take only
 //! slots nothing waits for ([`TransferPool::waiting`]), and give them back when something does.
 //!
 //! Who gets a free slot: a file being opened first — it may also take [`RESERVE`] slots above
@@ -50,7 +55,10 @@ pub const LARGE_FROM: u64 = 100 * 1024 * 1024;
 pub const DEFAULT_LARGE: usize = 4;
 /// Slots above the pool that only a file being opened may take.
 pub const RESERVE: usize = 2;
-/// How long the size a throttle came at is remembered.
+/// How long after the end of a throttle's wait the throttle is remembered, and the pool
+/// grows by one per round only. A choice: OneDrive's longest `Retry-After` seen is 300 s, so
+/// the allowance it counts an account by is taken to span about that long; the pool is
+/// careful for one more such span after it may send again.
 pub const THROTTLE_MEMORY: Duration = Duration::from_secs(300);
 /// A throttle this soon after the last one's wait ended belongs to the same burst.
 pub const BURST_GRACE: Duration = Duration::from_secs(1);
@@ -79,7 +87,7 @@ pub enum Class {
     Open,
     /// `mkdir`, move, delete, and a move out of the folder.
     Metadata,
-    /// Pinned files, replacements of changed files, thumbnails.
+    /// Pinned files, replacements of changed files.
     Download,
     /// Content going up.
     Upload,
@@ -100,7 +108,7 @@ pub enum Size {
 }
 
 impl Size {
-    /// The size class of a file of `bytes`: its placeholder's size, or the local file's.
+    /// The size class of a file of `bytes`: the size of OneDrive's content, or the local file's.
     pub fn of(bytes: u64) -> Self {
         if bytes >= LARGE_FROM {
             Size::Large
@@ -191,7 +199,7 @@ struct Inner {
     ceiling: usize,
     /// Streams of large sync transfers at once; an open is never one.
     large_limit: usize,
-    /// Successes counted towards the next slot of slow growth.
+    /// Successes counted towards the next slot while a throttle is remembered.
     credit: usize,
     held: [usize; 4],
     /// Of those, the streams of large sync transfers.
@@ -205,8 +213,9 @@ struct Inner {
     blocked_until: Option<Instant>,
     /// A task waits for `blocked_until` to hand slots out again.
     unblock_armed: bool,
-    /// The size the last throttle came at, and when.
-    throttle_level: Option<(usize, Instant)>,
+    /// Until when the last throttle is remembered: [`THROTTLE_MEMORY`] after the end of its
+    /// wait. `None` when none is.
+    throttle_remembered_until: Option<Instant>,
     /// Bytes moved per [`BUCKET`], by the bucket's number since `epoch`, for the last
     /// [`AVERAGE_SPAN`].
     moved: VecDeque<(u64, [u64; 2])>,
@@ -259,7 +268,7 @@ impl TransferPool {
                 paused: false,
                 blocked_until: None,
                 unblock_armed: false,
-                throttle_level: None,
+                throttle_remembered_until: None,
                 moved: VecDeque::new(),
                 moved_total: [0; 2],
                 epoch: Instant::now(),
@@ -390,14 +399,13 @@ impl TransferPool {
             let same_burst = inner.blocked_until.is_some_and(|until| now < until + BURST_GRACE);
             let until = now + wait;
             inner.blocked_until = Some(inner.blocked_until.map_or(until, |b| b.max(until)));
+            // From the wait's end, which a later throttle of the same burst may move.
+            inner.throttle_remembered_until = inner.blocked_until.map(|end| end + THROTTLE_MEMORY);
             if !same_burst {
                 let old = inner.size;
                 inner.size = (old / 2).max(1);
                 inner.credit = 0;
-                inner.throttle_level = Some((old, now));
                 tracing::warn!("transfer pool throttled: {old} -> {}", inner.size);
-            } else if let Some((_, at)) = inner.throttle_level.as_mut() {
-                *at = now;
             }
             self.arm_unblock(&mut inner);
         }
@@ -612,26 +620,27 @@ fn grant(inner: &mut Inner, id: u64, wake: &mut Vec<Waker>) {
 }
 
 /// One more slot after a success, when work waits and every slot is busy (the slot that
-/// succeeded still counted as held).
+/// succeeded still counted as held); while a throttle is remembered, one more slot after
+/// as many such successes as the pool has slots.
 fn grow(inner: &mut Inner) {
     let now = Instant::now();
-    if inner.throttle_level.is_some_and(|(_, at)| now.duration_since(at) >= THROTTLE_MEMORY) {
-        inner.throttle_level = None;
+    if inner.throttle_remembered_until.is_some_and(|until| now >= until) {
+        inner.throttle_remembered_until = None;
+        inner.credit = 0;
     }
     let busy = inner.held.iter().sum::<usize>() >= inner.size;
     let queued = inner.waiters.queued();
     if !busy || !queued || inner.size >= inner.ceiling {
         return;
     }
-    match inner.throttle_level {
-        Some((level, _)) if inner.size >= level => {
-            inner.credit += 1;
-            if inner.credit >= inner.size {
-                inner.credit = 0;
-                inner.size += 1;
-            }
-        }
-        _ => inner.size += 1,
+    if inner.throttle_remembered_until.is_none() {
+        inner.size += 1;
+        return;
+    }
+    inner.credit += 1;
+    if inner.credit >= inner.size {
+        inner.credit = 0;
+        inner.size += 1;
     }
 }
 

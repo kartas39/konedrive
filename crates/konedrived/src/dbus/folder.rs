@@ -13,23 +13,8 @@ impl Folder {
         Ok(self.service.register_root(Path::new(path)).await?)
     }
 
-    /// Binds a folder with **nothing intercepting opens inside it**.
-    /// Separate from `Register`, rather than a flag on it, so
-    /// that nobody enters this mode without naming it: a placeholder nobody
-    /// intercepts reads as zeros, which `State = no-interception` and
-    /// `LastError` then say in as many words.
-    async fn register_without_interception(&self, path: &str) -> Result<()> {
-        Ok(self.service.register_root_without_interception(Path::new(path)).await?)
-    }
-
     async fn unregister(&self) -> Result<()> {
         Ok(self.service.unregister_root().await?)
-    }
-
-    /// Mirrors a local directory as placeholders. Part 2 replaces the source
-    /// with the Graph listing; this stays as the offline test path.
-    async fn populate_from_directory(&self, source_dir: &str) -> Result<u64> {
-        Ok(self.service.populate_from_directory(Path::new(source_dir)).await?)
     }
 
     async fn refresh(&self) -> Result<()> {
@@ -40,10 +25,10 @@ impl Folder {
         Ok(self.service.skipped().await?)
     }
 
-    #[zbus(out_args("files", "bytes", "busy"))]
-    async fn free_up_space(&self) -> Result<(u32, u64, u32)> {
+    #[zbus(out_args("files", "bytes"))]
+    async fn free_up_space(&self) -> Result<(u32, u64)> {
         let freed = self.service.free_up_space().await?;
-        Ok((freed.files, freed.bytes, freed.busy))
+        Ok((freed.files, freed.bytes))
     }
 
     /// Nothing is uploaded, and OneDrive is not asked for changes, for
@@ -56,7 +41,7 @@ impl Folder {
         Ok(self.service.resume_syncing().await?)
     }
 
-    /// The account's ignore list from now on; a Full local scan follows.
+    /// The account's ignore list from now on; the rows' flags of ignored names are gone over.
     async fn set_ignore_patterns(
         &self,
         patterns: Vec<String>,
@@ -66,10 +51,17 @@ impl Folder {
         self.ignore_patterns_changed(&emitter).await.map_err(Fault::ZBus)
     }
 
-    /// Whether Graph's thumbnails of images and videos are fetched; written to `config.toml`.
+    /// Whether Graph's thumbnails of images, videos and documents are fetched; written to `config.toml`.
     async fn set_thumbnails(&self, on: bool, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<()> {
         self.service.change_run_settings(move |s| s.thumbnails = on).await?;
         self.thumbnails_changed(&emitter).await.map_err(Fault::ZBus)
+    }
+
+    /// How many gigabytes of the free space of this computer's disk the downloads of
+    /// pinned files leave; written to `config.toml`.
+    async fn set_free_space_reserve(&self, gigabytes: u64, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<()> {
+        self.service.set_free_space_reserve(gigabytes).await?;
+        self.free_space_reserve_changed(&emitter).await.map_err(Fault::ZBus)
     }
 
     /// Lifts the automatic hold now, until a source or the global `Accounts.PauseOnMetered` /
@@ -171,6 +163,11 @@ impl Folder {
     #[zbus(property)]
     async fn thumbnails(&self) -> bool {
         self.service.run_settings().thumbnails
+    }
+
+    #[zbus(property)]
+    async fn free_space_reserve(&self) -> u64 {
+        self.service.run_settings().free_space_reserve_gb
     }
 
     #[zbus(property)]

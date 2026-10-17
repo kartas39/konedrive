@@ -298,18 +298,29 @@ private Q_SLOTS:
     /// The outline check becomes the filled one, without asking again, when
     /// the file itself is pinned; and a pin set on a directory Dolphin has
     /// browsed (so it is cached here) reaches every hydrated file below it,
-    /// not just the ones directly in it.
+    /// not just the ones directly in it: the daemon announces only the
+    /// directory, and the mount then answers the pin on each file below it
+    /// but the one excepted from it.
     void pinChangesTheCheckEmblemLiveOnTheFileAndOnAnAncestor()
     {
         Tree tree;
         QVERIFY(tree.root(QStringLiteral("OneDrive")));
         QVERIFY(tree.file(QStringLiteral("OneDrive/a.bin"), "hydrated"));
         QVERIFY(tree.file(QStringLiteral("OneDrive/sub/b.bin"), "hydrated"));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/sub/excepted.bin"), "hydrated"));
         const QString a = tree.path(QStringLiteral("OneDrive/a.bin"));
+        const QString sub = tree.path(QStringLiteral("OneDrive/sub"));
         const QString b = tree.path(QStringLiteral("OneDrive/sub/b.bin"));
-        OverlayEngine engine;
+        const QString excepted = tree.path(QStringLiteral("OneDrive/sub/excepted.bin"));
+        // What the mount answers: a pin on the directory holds for every file below it but
+        // the excepted one, which carries no mark of its own on disk here.
+        auto answered = [sub, excepted](const QString &path) {
+            return hasPinMark(path) || (path.startsWith(sub + QLatin1Char('/')) && path != excepted && hasPinMark(sub));
+        };
+        OverlayEngine engine(nullptr, OverlayEngine::DefaultDirectoryLimit, hasRootMark, answered);
         QCOMPARE(engine.overlays(url(a)), CheckOutline);
         QCOMPARE(engine.overlays(url(b)), CheckOutline);
+        QCOMPARE(engine.overlays(url(excepted)), CheckOutline);
 
         QSignalSpy changed(&engine, &OverlayEngine::overlaysChanged);
         QVERIFY(testsupport::pin(a));
@@ -318,8 +329,9 @@ private Q_SLOTS:
         // "sub" is watched too (Dolphin asked about b.bin, which is inside
         // it), so pinning it is announced without engine.overlays(b) being
         // called again.
-        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/sub"))));
+        QVERIFY(testsupport::pin(sub));
         QTRY_COMPARE(changedOverlaysFor(changed, url(b)), CheckFilled);
+        QCOMPARE(engine.overlays(url(excepted)), CheckOutline);
     }
 
     /// The upload state the daemon writes, and its removal at the commit,

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::config::ids::{drive_or_none, drives, is_account_id};
-use crate::config::{AccountId, DriveId};
+use crate::config::{AccountHold, AccountId, DriveId};
 
 /// The version of `config.toml` this build reads and writes.
 pub const CONFIG_VERSION: u32 = 2;
@@ -25,14 +25,14 @@ pub struct Config {
     #[serde(default)]
     pub client_id: String,
     /// The drives the development build may hand a read-write token out for
-    /// (`TokenExport.ReadWrite`; `docs/design/writes.md` §2.3, §12.1): the test accounts'. It decides
+    /// (`TokenExport.ReadWrite`; `docs/design/desktop.md` §2.11, `docs/design/writes.md` §8.1): the test accounts'. It decides
     /// nothing else — an account's mode is the user's choice, whatever its drive. Empty, the
     /// default, hands none out: the developer install sets it to the test account's drive by
     /// hand, and nothing in the daemon writes it.
     #[serde(default, deserialize_with = "drives", skip_serializing_if = "Vec::is_empty")]
     pub write_test_drive_ids: Vec<DriveId>,
     /// Whether every account holds its background work back on a metered connection
-    /// (`docs/design/writes.md` §11); `None` for yes. One setting for the
+    /// (`docs/design/writes.md` §6.3); `None` for yes. One setting for the
     /// machine, not per account.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_on_metered: Option<bool>,
@@ -57,20 +57,34 @@ pub struct TransfersConfig {
     /// account's separately; [`konedrive_graph::pool::DEFAULT_CEILING`] when missing. Clamped into
     /// 1–256.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max: Option<i64>,
+    pub(crate) max: Option<i64>,
     /// The streams of large sync transfers (files of [`konedrive_graph::pool::LARGE_FROM`] and up; a
     /// download in parts runs several) one account runs at once; a file being opened is outside
     /// the limit and its count. [`konedrive_graph::pool::DEFAULT_LARGE`] when missing.
     /// Clamped into 1…`max`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub large: Option<i64>,
+    pub(crate) large: Option<i64>,
+    /// A folder served through FUSE: how many bytes of a file that is not downloaded may be read
+    /// before the whole file is downloaded. Up to there each read fetches its own bytes from
+    /// OneDrive, so a program that only looks at the start of a file (a file manager finding
+    /// its type) downloads nothing more. 0 downloads the file at its first read.
+    /// [`DOWNLOAD_AFTER`] when missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) download_after: Option<i64>,
 }
+
+/// `[transfers] download_after` when `config.toml` does not say: 1 MiB.
+pub const DOWNLOAD_AFTER: u64 = 1 << 20;
+
+/// How many gigabytes of the free space of the disk an account's folder is on the
+/// downloads of its pinned files leave, when its section names none.
+pub const DEFAULT_FREE_SPACE_RESERVE_GB: u64 = 10;
 
 impl Config {
     /// Each account's transfer pool ceiling: `[transfers] max`, clamped into
     /// [`konedrive_graph::pool::CEILING_MIN`]–[`konedrive_graph::pool::CEILING_MAX`] with a warning when it is
     /// outside, or [`konedrive_graph::pool::DEFAULT_CEILING`].
-    pub fn transfer_ceiling(&self) -> usize {
+    pub(crate) fn transfer_ceiling(&self) -> usize {
         use konedrive_graph::pool::{CEILING_MAX, CEILING_MIN, DEFAULT_CEILING};
         let Some(max) = self.transfers.as_ref().and_then(|t| t.max) else { return DEFAULT_CEILING };
         let clamped = max.clamp(CEILING_MIN as i64, CEILING_MAX as i64) as usize;
@@ -80,11 +94,16 @@ impl Config {
         clamped
     }
 
+    /// `[transfers] download_after`, in bytes; a negative number counts as 0.
+    pub(crate) fn download_after(&self) -> u64 {
+        self.transfers.as_ref().and_then(|t| t.download_after).map_or(DOWNLOAD_AFTER, |bytes| bytes.max(0) as u64)
+    }
+
     /// Each account's large-stream limit (the streams of large sync transfers, never an
     /// open): `[transfers] large`, clamped into 1…the ceiling
     /// ([`transfer_ceiling`](Self::transfer_ceiling)) with a warning when it is outside, or
     /// [`konedrive_graph::pool::DEFAULT_LARGE`] (never above the ceiling).
-    pub fn transfer_large(&self) -> usize {
+    pub(crate) fn transfer_large(&self) -> usize {
         let ceiling = self.transfer_ceiling();
         let Some(large) = self.transfers.as_ref().and_then(|t| t.large) else {
             return konedrive_graph::pool::DEFAULT_LARGE.min(ceiling);
@@ -99,7 +118,7 @@ impl Config {
 
 impl Config {
     /// `pause_on_metered`, absent meaning on.
-    pub fn pauses_on_metered(&self) -> bool {
+    pub(crate) fn pauses_on_metered(&self) -> bool {
         self.pause_on_metered.unwrap_or(true)
     }
 
@@ -129,11 +148,11 @@ impl Default for Config {
 pub struct AccountConfig {
     pub id: AccountId,
     /// What people see and type; see [`check_label`]. Nothing on disk is named after it.
-    pub label: String,
+    pub(crate) label: String,
     #[serde(default)]
     pub mode: Mode,
     #[serde(default)]
-    pub origin: Origin,
+    pub(crate) origin: Origin,
     /// The Graph drive id: the account's identity, recorded at its first sign-in or its
     /// first `GET /me/drive`, and never changed. `None` until then.
     #[serde(default, deserialize_with = "drive_or_none", skip_serializing_if = "Option::is_none")]
@@ -145,42 +164,53 @@ pub struct AccountConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub login_hint: String,
     /// Set only until the refresh token of version 1 is moved to this account's own
-    /// Secret Service item (`docs/design/accounts.md` §8.4).
+    /// Secret Service item (`docs/design/accounts.md` §9).
     #[serde(default, skip_serializing_if = "is_false")]
-    pub legacy_token: bool,
-    /// Set only until `account.json` and `tree.sqlite` of version 1 are moved into this
+    pub(crate) legacy_token: bool,
+    /// Set only until `account.json` and the store of version 1 are moved into this
     /// account's directory ([`crate::config::migrate::finish_file_moves`]).
     #[serde(default, skip_serializing_if = "is_false")]
-    pub migrate_files: bool,
+    pub(crate) migrate_files: bool,
     /// The account's registered folder; `None` when it has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root: Option<RootConfig>,
-    /// Names of local files that are never uploaded (`docs/design/writes.md` §4.2 rule 3), shell globs;
-    /// `None` for the defaults (`local::DEFAULT_PATTERNS`).
+    pub(crate) root: Option<RootConfig>,
+    /// Names of local files that are never uploaded (`docs/design/writes.md` §3), shell globs;
+    /// `None` for the defaults (`local::ignore::DEFAULT_PATTERNS`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ignore: Option<Vec<String>>,
-    /// The name a conflict copy carries (`docs/design/writes.md` §7); empty for the host's
+    pub(crate) ignore: Option<Vec<String>>,
+    /// The name a conflict copy carries (`docs/design/writes.md` §5); empty for the host's
     /// (`local::names::default_machine_name`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub machine_name: String,
-    /// Whether Graph's thumbnails of the account's images and videos are fetched;
+    pub(crate) machine_name: String,
+    /// Whether Graph's thumbnails of the account's images, videos and documents are fetched;
     /// `None` for yes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thumbnails: Option<bool>,
-    /// The user's pause of the account (`Folder.Pause`, `docs/design/writes.md` §11):
+    pub(crate) thumbnails: Option<bool>,
+    /// The user's pause of the account (`Folder.Pause`, `docs/design/writes.md` §6.3):
     /// paused until then, unix seconds, 0 for until resumed; absent while not paused. A
     /// time that has passed is no pause, and stays here until the section is written again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub paused_until: Option<i64>,
+    pub(crate) paused_until: Option<i64>,
+    /// How many gigabytes of the free space of the disk the account's folder is on the
+    /// downloads of pinned files leave; `None` for
+    /// [`DEFAULT_FREE_SPACE_RESERVE_GB`]. 0 keeps nothing free.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) free_space_reserve_gb: Option<u64>,
+    /// The user asked for read-only while changes were unsent: the account stays read-write
+    /// until nothing is unsent and then switches by itself (`account::mode`,
+    /// `keep_read_only_wish`). Absent while no such wish stands, and in every file written
+    /// before the wish was kept: both read as none.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub read_only_wanted: bool,
     /// `pause_on_metered` as an account had it before it became one setting for the whole
     /// app: read only to be moved to [`Config::pause_on_metered`]
     /// ([`crate::config::migrate::move_hold_settings`]), and gone from the file once moved.
     #[serde(default, rename = "pause_on_metered", skip_serializing_if = "Option::is_none")]
-    pub old_pause_on_metered: Option<bool>,
+    pub(crate) old_pause_on_metered: Option<bool>,
     /// `on_battery` as an account had it before issue #95; see
     /// [`old_pause_on_metered`](Self::old_pause_on_metered).
     #[serde(default, rename = "on_battery", skip_serializing_if = "Option::is_none")]
-    pub old_on_battery: Option<String>,
+    pub(crate) old_on_battery: Option<String>,
 }
 
 impl AccountConfig {
@@ -201,14 +231,21 @@ impl AccountConfig {
             machine_name: String::new(),
             thumbnails: None,
             paused_until: None,
+            free_space_reserve_gb: None,
+            read_only_wanted: false,
             old_pause_on_metered: None,
             old_on_battery: None,
         }
     }
 
     /// `thumbnails`, absent meaning on.
-    pub fn thumbnails_on(&self) -> bool {
+    pub(crate) fn thumbnails_on(&self) -> bool {
         self.thumbnails.unwrap_or(true)
+    }
+
+    /// `free_space_reserve_gb`, absent meaning [`DEFAULT_FREE_SPACE_RESERVE_GB`].
+    pub(crate) fn free_space_reserve_gb(&self) -> u64 {
+        self.free_space_reserve_gb.unwrap_or(DEFAULT_FREE_SPACE_RESERVE_GB)
     }
 }
 
@@ -219,7 +256,7 @@ pub struct HoldSettings {
     pub on_battery: OnBattery,
 }
 
-/// What every account does on battery (`docs/design/writes.md` §11).
+/// What every account does on battery (`docs/design/writes.md` §6.3).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OnBattery {
     /// The battery changes nothing.
@@ -232,7 +269,7 @@ pub enum OnBattery {
 }
 
 impl OnBattery {
-    pub fn parse(text: &str) -> Option<Self> {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
         match text {
             "sync" => Some(Self::Sync),
             "power-saver" => Some(Self::PowerSaver),
@@ -243,7 +280,7 @@ impl OnBattery {
 
     /// `on_battery` as `config.toml` has it: absent is `power-saver`, and so is any value
     /// this version does not know, with a warning in the log.
-    pub fn read(text: Option<&str>) -> Self {
+    pub(crate) fn read(text: Option<&str>) -> Self {
         match text {
             None => Self::default(),
             Some(text) => Self::parse(text).unwrap_or_else(|| {
@@ -254,7 +291,7 @@ impl OnBattery {
     }
 
     /// How strict the choice is: `pause` over `power-saver` over `sync`.
-    pub fn strictness(self) -> u8 {
+    pub(crate) fn strictness(self) -> u8 {
         match self {
             Self::Sync => 0,
             Self::PowerSaver => 1,
@@ -279,49 +316,28 @@ fn is_false(value: &bool) -> bool {
 /// `sync_root_*`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootConfig {
-    pub path: PathBuf,
-    /// The root id the folder carried when it was registered (`user.konedrive.root`), the
-    /// name the helper holds an intercepted root under. Empty when carried over from a
-    /// configuration older than it; the folder's own attribute stands in for it then.
+    pub(crate) path: PathBuf,
+    /// The root id the folder carried when it was registered (`user.konedrive.root`). Empty
+    /// when carried over from a configuration older than it; the folder's own attribute
+    /// stands in for it then.
     #[serde(default)]
-    pub id: String,
-    /// Whether the root is the ordinary intercepted kind. A missing key reads as `true`,
-    /// the fail-closed mode: a root wrongly restored as intercepted refuses to come up
-    /// without a helper, one wrongly restored as un-intercepted would serve zeros.
-    #[serde(default = "yes")]
-    pub intercepted: bool,
-    /// `"onedrive"` (listed from the account's drive) or `"local"` (filled with
-    /// `PopulateFromDirectory`). A missing key reads as `"local"`; any other value is kept
-    /// as it is, and the folder is not brought up (`SyncService`).
+    pub(crate) id: String,
+    /// `"onedrive"`: listed from the account's drive. A missing key reads as `"local"`,
+    /// what an older konedrive wrote for a folder filled by hand; any value but
+    /// `"onedrive"` is kept as it is, and the folder is not brought up (`SyncService`).
     #[serde(default = "local_source")]
-    pub source: String,
+    pub(crate) source: String,
     /// Whether this daemon excluded the folder from Baloo, so a Forget takes off only an
     /// exclusion it added.
     #[serde(default)]
-    pub baloo_excluded: bool,
-    /// Whether a root registered without interception switches to interception when the
-    /// helper connects; see [`RootConfig::upgrades_when_helper`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub upgrade_when_helper: Option<bool>,
-}
-
-fn yes() -> bool {
-    true
+    pub(crate) baloo_excluded: bool,
 }
 
 fn local_source() -> String {
     "local".into()
 }
 
-impl RootConfig {
-    /// `upgrade_when_helper`, with a missing value read so: a root without
-    /// interception switches, and an intercepted root has nothing to switch.
-    pub fn upgrades_when_helper(&self) -> bool {
-        self.upgrade_when_helper.unwrap_or(!self.intercepted)
-    }
-}
-
-/// An account's mode (`docs/design/writes.md` §2): read-only, the default, or read-write. The mode in
+/// An account's mode (`docs/design/writes.md` §2.1): read-only, the default, or read-write. The mode in
 /// `config.toml` is the one the user chose; the account runs read-write only while its token
 /// carries `Files.ReadWrite` and reaches the drive recorded for it (`AccountService::mode`).
 /// A value this version does not know loads as
@@ -467,28 +483,28 @@ impl Config {
         self.accounts.iter_mut().find(|a| a.id == *id)
     }
 
-    /// Whether `TokenExport.ReadWrite` may hand out a token for `drive` (`docs/design/writes.md`
-    /// §2.3): only for a drive listed in `write_test_drive_ids`, and for none while the list
+    /// Whether `TokenExport.ReadWrite` may hand out a token for `drive` (`docs/design/desktop.md`
+    /// §2.11): only for a drive listed in `write_test_drive_ids`, and for none while the list
     /// is empty, as it is by default. It is asked for nothing else: the list does not decide
     /// an account's mode.
     pub fn read_write_export_allowed(&self, drive: &DriveId) -> bool {
         self.write_test_drive_ids.contains(drive)
     }
 
-    /// The validation at load (`docs/design/accounts.md` §4.1): one entry per account, in file order, `Some`
+    /// The validation at load (`docs/design/accounts.md` §4.2): one entry per account, in file order, `Some`
     /// with the reason when the account is *held*. An account is held when its id is not
     /// an account id (it would not fit an object path or a file path), or when it repeats
     /// an earlier account's id, label (whatever the case) or drive, or its folder has an
     /// earlier folder's root id, or is, is inside or contains an earlier folder. One held
     /// for its id is not loaded at all; any other is loaded, but its folder is not brought
     /// up (`AccountManager::load`). Nothing is rewritten.
-    pub fn holds(&self) -> Vec<Option<String>> {
+    pub(crate) fn holds(&self) -> Vec<Option<AccountHold>> {
         self.accounts
             .iter()
             .enumerate()
             .map(|(i, account)| {
                 if !account.id.is_valid() {
-                    return Some(format!("its id {:?} is not 12 lowercase hexadecimal characters", account.id));
+                    return Some(AccountHold::BadId { id: account.id.clone() });
                 }
                 self.accounts[..i].iter().find_map(|earlier| conflict(earlier, account))
             })
@@ -497,29 +513,25 @@ impl Config {
 }
 
 /// Why `later` cannot be brought up beside `earlier`, if it cannot.
-fn conflict(earlier: &AccountConfig, later: &AccountConfig) -> Option<String> {
-    let other = &earlier.label;
+fn conflict(earlier: &AccountConfig, later: &AccountConfig) -> Option<AccountHold> {
+    let other = earlier.label.clone();
     if earlier.id == later.id {
-        return Some(format!("its id is also the id of {other:?}"));
+        return Some(AccountHold::SameId { other });
     }
     if earlier.label.to_lowercase() == later.label.to_lowercase() {
-        return Some(format!("its label is also the label of {other:?}"));
+        return Some(AccountHold::SameLabel { other });
     }
     if later.drive_id.is_some() && earlier.drive_id == later.drive_id {
-        return Some(format!("it is the same Microsoft account as {other:?}"));
+        return Some(AccountHold::SameDrive { other });
     }
     let (Some(a), Some(b)) = (&earlier.root, &later.root) else {
         return None;
     };
     if !b.id.is_empty() && a.id == b.id {
-        return Some(format!("its folder has the root id of the folder of {other:?}"));
+        return Some(AccountHold::SameRoot { other });
     }
     if a.path.starts_with(&b.path) || b.path.starts_with(&a.path) {
-        return Some(format!(
-            "its folder {} is, is inside, or contains the folder of {other:?}, {}",
-            b.path.display(),
-            a.path.display()
-        ));
+        return Some(AccountHold::NestedFolder { folder: b.path.clone(), other, other_folder: a.path.clone() });
     }
     None
 }

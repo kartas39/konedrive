@@ -1,29 +1,28 @@
 # KOneDrive
 
-A OneDrive client for KDE Plasma on Linux, with Windows' "Files On-Demand" and no FUSE: your
-OneDrive is a folder of real files at their real sizes, and a file downloads the moment something
-opens it.
+A OneDrive client for KDE Plasma on Linux, with Windows' "Files On-Demand": your OneDrive is a
+folder of files at their real sizes, and a file downloads when something reads it.
 
 ## Features
 
-- **Files on demand.** Every file is there from the start and takes no space until it is opened;
+- **Files on demand.** Every file is there from the start and takes no space until it is read;
   then it downloads by itself, and the program that opened it just reads it.
 - **Always keep on this device** and **Free up space**, for files and folders.
 - **Uploads.** What you change, move or delete in the folder goes back to OneDrive. Off until you
-  turn it on, account by account; until then the folder is read-only.
+  turn it on, account by account; until then the folder is read-only. What you delete goes to
+  OneDrive's recycle bin; there is no second trash on this computer.
 - **Several accounts**, each with its own folder.
 - **Nothing is lost in a conflict.** A file changed on both sides is kept twice, and listed.
 - **Dolphin.** An emblem on every file — online-only, downloading, downloaded, kept — and a
-  right-click menu: keep, free up, open in OneDrive's web interface. Previews of images and videos
-  come from OneDrive without downloading the file.
+  right-click menu: keep, free up, open in OneDrive's web interface. Previews of images, videos, PDFs
+  and office documents come from OneDrive without downloading the file.
 - **A window and a tray icon** — one icon per account — with the state of each account, what is
   being transferred, recent activity, conflicts, and what could not be synced and why.
 - **Pause**, for a few hours or until resumed; and by itself on a metered connection or on battery,
   if you want.
 - **Notifications and progress** in Plasma, and an entry per account in Places.
 - **Everything from the command line too**: `konedrivectl` does whatever the window does.
-- **Little runs as root.** A small helper intercepts the opens; it has no network and no
-  credentials. Everything else runs as you.
+- **Nothing runs as root.** The folder is a FUSE mount the daemon serves as you.
 
 ## Screenshots
 
@@ -41,8 +40,8 @@ school accounts are not supported yet.
 
 ## Install
 
-Needs Linux 6.0 or later (6.14 for exact error messages when a download fails), KDE Plasma 6, Qt
-6.8+ and KDE Frameworks 6.8+.
+Needs FUSE 3 (`fuse3`, which the package asks for), KDE Plasma 6, Qt 6.8+ and KDE Frameworks
+6.21+.
 
 Download the two RPMs of the latest release for your Fedora (`.fc44` or `.fc45` in the name) from
 the Releases page — `konedrive` and `konedrive-kde` (the Dolphin plugins), not the `.src.rpm` — and
@@ -58,31 +57,36 @@ repository yet. Upgrading, removing and the details: [the user guide](docs/user-
 ## How it works
 
 ```
-   fanotify pre-content events                  D-Bus (org.konedrive.*)
-┌───────────────────┐   permission events   ┌───────────────┐   status, actions   ┌──────────┐
-│ konedrive-helper   │ ───────────────────► │ konedrived     │ ──────────────────► │ KOneDrive│
-│ (root, tiny)       │ ◄─────────────────── │ (your user)    │ ◄────────────────── │ window   │
-└───────────────────┘    fill/allow/deny    └───────────────┘                     └──────────┘
+        the folder: a FUSE mount                D-Bus (org.konedrive.*)
+┌───────────────────┐   reads, changes     ┌───────────────┐   status, actions   ┌──────────┐
+│ your programs      │ ───────────────────► │ konedrived     │ ──────────────────► │ KOneDrive│
+│                    │ ◄─────────────────── │ (your user)    │ ◄────────────────── │ window   │
+└───────────────────┘      the files       └───────────────┘                     └──────────┘
 ```
 
-- **The helper** (`konedrive-helper`) is the only part that runs as root, and is kept small. It
-  uses the kernel's fanotify pre-content events to suspend an open of a file that is not
-  downloaded yet, and hands it to the daemon.
-- **The daemon** (`konedrived`) runs as you. It talks to Microsoft Graph, keeps the local index,
-  fills the file the helper asked about, uploads your changes, and serves the D-Bus API.
+- **The daemon** (`konedrived`) runs as you. It talks to Microsoft Graph, keeps a store with one
+  row per item, and serves the sync folder as a FUSE mount over a backing directory: every name
+  comes from the store, a file's content is fetched when it is read, and the backing directory
+  holds the downloaded copies and what you made here. It sends your changes to OneDrive and
+  serves the D-Bus API. Nothing runs as root. While it is not running the folder shows only what
+  is on disk, and cannot be changed.
 - **The window** (`konedrive`) and `konedrivectl` only talk to the daemon; closing the window does
   not stop syncing.
 
 ## Documentation
 
-- [User guide](docs/user-guide.md) — installing, accounts, the window, the command line,
-  uploading, Dolphin, troubleshooting.
-- [Design](docs/design/README.md) — how the pieces fit together and why.
+- [User guide](docs/user-guide.md) — installing, the first steps, the window, the tray, Dolphin,
+  uploading, troubleshooting.
+- [Command line](docs/command-line.md) — the same with `konedrivectl`.
+- [Design](docs/design/README.md) — how the pieces fit together and why. It describes the
+  mechanism before the mount and is being rewritten; where it differs, the code map and the code
+  are right.
+- [Code map](docs/code-map.md) — where everything is in the code.
 - [Limitations](docs/limitations/README.md) — what does not work and cannot simply be fixed. Read
   it before filing a bug.
 - [Developing](docs/developing.md) and [CONTRIBUTING.md](CONTRIBUTING.md) — building, a
   development install, the tests, the checklist for a change.
-- [SECURITY.md](SECURITY.md) — what runs as root, what it can do, and how to report a
+- [SECURITY.md](SECURITY.md) — what runs with which rights, the credentials, and how to report a
   vulnerability privately.
 
 ## Roadmap

@@ -23,11 +23,6 @@ ActivityFailure classifyFailure(const QString &kind, const QString &detail)
     return update ? ActivityFailure::Update : ActivityFailure::Download;
 }
 
-bool isConflictCopy(const QString &original, const QString &other)
-{
-    return !original.isEmpty() && !other.isEmpty() && QFileInfo(original).path() == QFileInfo(other).path();
-}
-
 ActivityModel::ActivityModel(QObject *parent)
     : QAbstractListModel(parent)
 {
@@ -59,12 +54,26 @@ QString ActivityModel::describe(const QString &kind, const QString &detail)
     if (kind == QLatin1String("moved")) {
         return i18nc("@info activity", "Moved in OneDrive");
     }
-    if (kind == QLatin1String("listed")) {
-        return i18nc("@info activity", "Listed");
+    if (kind == QLatin1String("first-sync-began")) {
+        // The path is the folder: one row for its first filling, none per item.
+        return i18nc("@info activity", "First sync started");
+    }
+    if (kind == QLatin1String("first-sync-ended")) {
+        return i18nc("@info activity", "First sync finished");
+    }
+    if (kind == QLatin1String("store-rebuilt")) {
+        // The path is the folder; the detail says what was lost with the old records.
+        // TODO: wording
+        return i18nc("@info activity", "KOneDrive's records of this folder were made anew");
+    }
+    if (kind == QLatin1String("not-removed-here")) {
+        // The path is the directory; DetailTextRole says why and what to do.
+        // TODO: wording
+        return i18nc("@info activity", "Cannot be removed here");
     }
     if (kind == QLatin1String("conflict")) {
-        // A rescue; a copy (TextRole, isConflictCopy) has its own words.
-        return i18nc("@info activity", "Your changed version was moved");
+        // A file changed on both sides: the detail is the copy kept beside it.
+        return i18nc("@info activity", "Changed on both sides: both versions kept");
     }
     if (kind == QLatin1String("uploaded")) {
         return i18nc("@info activity", "Uploaded");
@@ -116,22 +125,23 @@ QVariant ActivityModel::data(const QModelIndex &index, int role) const
     case DetailRole:
         return row.detail;
     case TextRole:
-        if (row.kind == QLatin1String("conflict") && isConflictCopy(row.path, row.detail)) {
-            return i18nc("@info activity", "Changed on both sides: both versions kept");
-        }
         return describe(row.kind, row.detail);
     case DetailTextRole:
         if (row.kind == QLatin1String("cloud-moved") && !row.detail.isEmpty()) {
             // Its detail is where it was.
             return i18nc("@info activity detail: where a moved file was", "was %1", row.detail);
         }
+        if (row.kind == QLatin1String("not-removed-here")) {
+            // TODO: wording
+            return i18nc("@info activity detail", "It holds items that cannot be shown on this computer. Remove it in OneDrive.");
+        }
         return row.kind == QLatin1String("upload-failed") ? uploadReasonText(row.detail) : row.detail;
     case IconRole:
-        if (row.kind == QLatin1String("conflict") && isConflictCopy(row.path, row.detail)) {
+        if (row.kind == QLatin1String("conflict")) {
             return QStringLiteral("document-duplicate");
         }
-        if (row.kind == QLatin1String("failed") || row.kind == QLatin1String("update-failed") || row.kind == QLatin1String("conflict")
-            || row.kind == QLatin1String("upload-failed")) {
+        if (row.kind == QLatin1String("failed") || row.kind == QLatin1String("update-failed")
+            || row.kind == QLatin1String("upload-failed") || row.kind == QLatin1String("not-removed-here") || row.kind == QLatin1String("store-rebuilt")) {
             return QStringLiteral("dialog-warning");
         }
         if (row.kind == QLatin1String("uploaded") || row.kind == QLatin1String("cloud-moved")) {
@@ -149,8 +159,11 @@ QVariant ActivityModel::data(const QModelIndex &index, int role) const
         if (row.kind == QLatin1String("removed")) {
             return QStringLiteral("edit-delete");
         }
-        if (row.kind == QLatin1String("listed")) {
-            return QStringLiteral("view-list-details");
+        if (row.kind == QLatin1String("first-sync-began")) {
+            return QStringLiteral("view-refresh");
+        }
+        if (row.kind == QLatin1String("first-sync-ended")) {
+            return QStringLiteral("checkmark");
         }
         return QStringLiteral("cloud-download");
     }

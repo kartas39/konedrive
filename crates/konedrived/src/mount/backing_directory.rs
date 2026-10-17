@@ -1,0 +1,143 @@
+//! The backing directory: the directory on disk the mount lies over.
+//!
+//! [`BackingDirectory`] owns the descriptor opened on the directory before the mount, and
+//! everything in it is reached through that descriptor, never through the mount. It knows the
+//! disk and nothing else: not the store, not the kernel's node ids, not the upload queue, not the
+//! mount. Which file or directory of OneDrive an entry on disk belongs to is told by the
+//! OneDrive id the entry is marked with, and whoever asks brings the id.
+//!
+//! What it answers for, each in a module of its own:
+//!
+//! - [`disk_metadata`]: what the filesystem says of an entry: its kind, size, blocks and time;
+//! - [`disk_marks`]: the marks an entry carries — the OneDrive id it belongs to, and whether it
+//!   is that file's downloaded copy;
+//! - [`file_operations`]: the files and directories a change makes and removes;
+//! - [`write_bits`]: the write bits of the folder on disk, removed while no mount lies over
+//!   it and restored for the daemon or the user;
+//! - [`legacy_placeholders`]: a directory that holds an older konedrive's placeholders, which
+//!   is never opened.
+//!
+//! A path is always relative to the backing directory (`rel`); the directory itself is the
+//! empty path.
+
+use std::fs::{self, File};
+use std::io;
+use std::os::fd::AsRawFd;
+use std::path::{Path, PathBuf};
+
+mod disk_marks;
+mod disk_metadata;
+mod file_operations;
+mod legacy_placeholders;
+mod write_bits;
+
+pub(super) use disk_marks::DiskMarks;
+pub(super) use disk_metadata::DiskMetadata;
+pub(crate) use disk_metadata::EntryKind;
+pub(crate) use write_bits::restore_write_bits;
+pub(super) use write_bits::{to_mode_bits, remove_write_bits, WriteBits};
+
+/// Where an earlier build built its downloads, inside the backing directory: removed when the
+/// directory is opened. A download is built in a file without a name now.
+const LEGACY_STAGING_DIRECTORY: &str = ".konedrive-staging";
+
+/// Why a folder was not opened as a backing directory.
+#[derive(Debug)]
+pub(in crate::mount) enum OpenRefusal {
+    /// It holds an older konedrive's placeholders ([`legacy_placeholders`]): that
+    /// konedrive's folders are not supported, and its account is removed and added again.
+    LegacyPlaceholders,
+    /// The directory could not be opened.
+    Io(io::Error),
+}
+
+/// The backing directory, by the descriptor opened on it before the mount.
+pub(crate) struct BackingDirectory {
+    descriptor: File,
+}
+
+impl BackingDirectory {
+    /// Opens `folder`, which no mount lies over: afterwards its path is the mount, and this
+    /// is the one way to what it holds. A mount a daemon that died left on it is the
+    /// caller's to take off first ([`crate::mount::stale_mount`]). A directory an older
+    /// konedrive kept is refused.
+    pub(super) fn open(folder: &Path) -> Result<Self, OpenRefusal> {
+        if legacy_placeholders::holds_legacy_placeholders(folder) {
+            return Err(OpenRefusal::LegacyPlaceholders);
+        }
+        // `fusermount3` mounts only where its user may write; its write bits were removed
+        // when the daemon last ended.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(folder, fs::Permissions::from_mode(to_mode_bits(EntryKind::Directory, WriteBits::Present)));
+        }
+        let backing_directory = BackingDirectory { descriptor: File::open(folder).map_err(OpenRefusal::Io)? };
+        let _ = fs::remove_dir_all(backing_directory.resolve_path(Path::new(LEGACY_STAGING_DIRECTORY)));
+        Ok(backing_directory)
+    }
+
+    /// The path of the backing directory itself, through the descriptor: for what walks it
+    /// without going through the mount. It is the link the kernel keeps for the descriptor,
+    /// which whoever opens or walks it follows; one who looks at the path without following
+    /// links sees the link ([`resolve_root_directory_path`](Self::resolve_root_directory_path)
+    /// names the directory).
+    pub(crate) fn resolve_root_path(&self) -> PathBuf {
+        konedrive_fs::proc_path(&self.descriptor)
+    }
+
+    /// A path that names the backing directory itself, and not the link to it: the link of
+    /// the descriptor with a slash after it, which the kernel resolves to the directory also
+    /// for one who does not follow links. For what looks at the directory before it walks
+    /// it — the write bits are set by such a walk — and for what makes a file in it.
+    pub(super) fn resolve_root_directory_path(&self) -> PathBuf {
+        konedrive_fs::proc_path(&self.descriptor).join("")
+    }
+
+    /// The path of `rel` in the backing directory: through the descriptor, never through the
+    /// mount. Good for as long as this lives.
+    pub(super) fn resolve_path(&self, rel: &Path) -> PathBuf {
+        konedrive_fs::proc_path(&self.descriptor).join(rel)
+    }
+
+    /// One more descriptor of the backing directory, for what in the daemon opens the folder
+    /// by its path: that path is the mount.
+    pub(super) fn clone_descriptor(&self) -> io::Result<File> {
+        self.descriptor.try_clone()
+    }
+
+    /// The space of the filesystem the backing directory is on.
+    pub(super) fn measure_space(&self) -> io::Result<libc::statvfs> {
+        // SAFETY: a plain structure the call fills.
+        let mut v: libc::statvfs = unsafe { std::mem::zeroed() };
+        // SAFETY: the backing directory's own descriptor.
+        match unsafe { libc::fstatvfs(self.descriptor.as_raw_fd(), &mut v) } {
+            0 => Ok(v),
+            _ => Err(io::Error::last_os_error()),
+        }
+    }
+
+    /// What the filesystem the backing directory is on has free for the daemon, in bytes:
+    /// the blocks a process that is not root may take.
+    pub(super) fn measure_free_space(&self) -> io::Result<u64> {
+        let space = self.measure_space()?;
+        Ok((space.f_bavail as u64).saturating_mul(space.f_frsize as u64))
+    }
+
+    /// The extended attribute `name` of the folder itself: what its registration and its
+    /// first cycle wrote on the backing directory.
+    pub(super) fn read_folder_attribute(&self, name: &str) -> Option<String> {
+        xattr::FileExt::get_xattr(&self.descriptor, name).ok().flatten().map(|v| String::from_utf8_lossy(&v).into_owned())
+    }
+
+    /// The extended attribute `name` of the entry at `rel`; of the folder itself for the
+    /// empty path ([`read_folder_attribute`](Self::read_folder_attribute)).
+    pub(super) fn read_attribute(&self, rel: &Path, name: &str) -> Option<String> {
+        if rel.as_os_str().is_empty() {
+            return self.read_folder_attribute(name);
+        }
+        xattr::get(self.resolve_path(rel), name).ok().flatten().map(|v| String::from_utf8_lossy(&v).into_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests;

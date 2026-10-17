@@ -86,8 +86,8 @@ inline bool markRoot(const QString &dir)
     return setAttribute(dir, "user.konedrive.root", QByteArrayLiteral("1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d"));
 }
 
-/// "Always keep on this device", set the way the daemon's Pin() does: by
-/// path, on a file or a folder.
+/// "Always keep on this device": `user.konedrive.pin` as the mount answers it
+/// on a file or a folder a pin holds for.
 inline bool pin(const QString &path)
 {
     return setAttribute(path, "user.konedrive.pin", QByteArrayLiteral("1"));
@@ -212,10 +212,9 @@ public:
         uint queued = 0;
         /// Unpin's `unpinned`.
         uint unpinned = 0;
-        /// FreeUp's `files`, `bytes`, `busy`, `skipped_pinned`.
+        /// FreeUp's `files`, `bytes`, `skipped_pinned`.
         uint files = 0;
         qulonglong bytes = 0;
-        uint busy = 0;
         uint skippedPinned = 0;
     };
 
@@ -254,7 +253,6 @@ public:
     static QVariantMap menuOf(const QStringList &paths,
                               const QString &alwaysKeep,
                               const QString &freeUp,
-                              const QString &blockedBy = QString(),
                               const QString &openOnline = QStringLiteral("hidden"),
                               const QString &openOnlinePath = QString(),
                               const QString &freeUpWhy = QString())
@@ -263,7 +261,6 @@ public:
                 {QStringLiteral("always-keep"), alwaysKeep},
                 {QStringLiteral("free-up"), freeUp},
                 {QStringLiteral("free-up-why"), freeUpWhy},
-                {QStringLiteral("blocked-by"), blockedBy},
                 {QStringLiteral("open-online"), openOnline},
                 {QStringLiteral("open-online-path"), openOnlinePath}};
     }
@@ -321,8 +318,7 @@ public Q_SLOTS:
         answer(QStringLiteral("FreeUp"),
                paths,
                message,
-               {QVariant::fromValue(defaultAnswer.files), QVariant::fromValue(defaultAnswer.bytes), QVariant::fromValue(defaultAnswer.busy),
-                QVariant::fromValue(defaultAnswer.skippedPinned)});
+               {QVariant::fromValue(defaultAnswer.files), QVariant::fromValue(defaultAnswer.bytes), QVariant::fromValue(defaultAnswer.skippedPinned)});
     }
 
     void WebUrl(const QString &path, const QDBusMessage &message)
@@ -343,7 +339,7 @@ public Q_SLOTS:
         const bool one = paths.size() == 1;
         const QVariantMap said = menuAnswer
             ? *menuAnswer
-            : menuOf(paths, QStringLiteral("off"), QStringLiteral("enabled"), QString(), one ? QStringLiteral("enabled") : QStringLiteral("hidden"), one ? paths.first() : QString());
+            : menuOf(paths, QStringLiteral("off"), QStringLiteral("enabled"), one ? QStringLiteral("enabled") : QStringLiteral("hidden"), one ? paths.first() : QString());
         const QDBusMessage reply = menuErrorName.isEmpty() ? message.createReply(QVariant(said)) : message.createErrorReply(menuErrorName, QStringLiteral("refused"));
         if (menuDelayMs == 0) {
             QDBusConnection(connectionName()).send(reply);

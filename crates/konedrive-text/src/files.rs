@@ -133,15 +133,12 @@ const OUTSIDE: Sentence = Each {
     command_line: "{file}: only files and folders inside the sync folder{folder} can be kept on this device or freed up — not symbolic links, or anything outside it.",
 };
 
-// The daemon refuses the whole call if any path it was given is pinned by a
-// folder above, and its message names that path and the folder. The plugin
-// shows the message as it is, with no file name in front: the failure may be
-// any path of the call. The command line reads the message for the two paths
-// and names the command to run, in its own table.
+// The plugin shows the daemon's message as it is, with no file name in front:
+// the failure may be any path of the call.
 const NOT_ALLOWED_KEPT: Sentence = Desktop("Could not change what is kept on this device: {detail}");
 
 /// Every name of [`Refusal`], in its order.
-pub static REFUSALS: [RefusalText; 29] = [
+pub static REFUSALS: [RefusalText; 27] = [
     as_failed(Refusal::NotEmpty),
     as_failed(Refusal::Unsupported),
     every_listed(
@@ -151,28 +148,6 @@ pub static REFUSALS: [RefusalText; 29] = [
     ),
     // The command line says how to register a folder, as for any of its commands.
     every(Refusal::NoRoot, Desktop("The folder holding “{file}” is no longer registered with KOneDrive, so nothing was done with it.")),
-    RefusalText {
-        refusal: Refusal::NoHelper,
-        sentence: ByOperation {
-            // The command line has no sentence for `sync pin` and `sync unpin`
-            // without the helper: it says what it says of a registration.
-            keep: Some(Desktop(
-                "The konedrive helper is not connected, so nothing was changed. Keeping “{file}” on this device must first have the helper stop letting its opens through unchecked — a download that failed partway would otherwise leave it reading as zeros. Try again once the helper is back (“konedrivectl sync status” shows when it is).",
-            )),
-            unpin: Some(Desktop(
-                "The konedrive helper is not connected, so nothing was changed. Unpinning “{file}” needs the helper too, the same as any other change under KOneDrive's watch. Try again once KOneDrive is connected to the helper again — it reconnects on its own.",
-            )),
-            // `sync free` takes several paths, and may have freed some.
-            free_up: Some(Each {
-                desktop: "The konedrive helper is not connected, so nothing was changed. Freeing up “{file}” must first have the helper take off any mark that lets the file's opens through unchecked, or the emptied file could read as zeros from then on. Try again once KOneDrive is connected to the helper again — it reconnects on its own.",
-                command_line: "The konedrive helper is not connected, so nothing more was freed up. Freeing up a file must first have the helper take off any mark that lets the file's opens through unchecked, or the emptied file could read as zeros from then on; try again once the daemon is connected to the helper again — it reconnects on its own.",
-            }),
-            // WebUrl needs no helper.
-            open_online: None,
-        },
-        without_detail: None,
-        several: OF_ONE,
-    },
     RefusalText {
         refusal: Refusal::NotManaged,
         sentence: ByOperation {
@@ -192,8 +167,8 @@ pub static REFUSALS: [RefusalText; 29] = [
     },
     every_listed(
         Refusal::NotHydrated,
-        Same("“{file}” is not downloaded, so there is no space to free — it already takes none."),
-        "{files}: one of these is not downloaded, so there is no space to free — it already takes none.",
+        Same("“{file}” is being downloaded, so its space cannot be freed yet: try again once it is downloaded."),
+        "{files}: one of these is being downloaded, so its space cannot be freed yet: try again once it is downloaded.",
     ),
     RefusalText {
         refusal: Refusal::ModifiedLocally,
@@ -244,8 +219,8 @@ pub static REFUSALS: [RefusalText; 29] = [
     every(
         Refusal::NoSource,
         Each {
-            desktop: "KOneDrive does not know where to download “{file}” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).",
-            command_line: "KOneDrive does not know where to download {file} from yet. Run `{prefix} sync populate-from <dir>` first; the daemon does not remember that directory across a restart, so run it again after one (files already there are left alone).",
+            desktop: "The folder is not connected to OneDrive yet, so “{file}” cannot be downloaded. Try again in a moment.",
+            command_line: "The folder is not connected to OneDrive yet, so {file} cannot be downloaded. Try again in a moment.",
         },
     ),
     as_failed(Refusal::NoConflict),
@@ -269,17 +244,16 @@ pub static REFUSALS: [RefusalText; 29] = [
             unpin: None,
             free_up: Some(Each {
                 desktop: "“{file}” is not uploaded yet, so freeing it up would lose the changes made here. It was left exactly as it is.",
-                command_line: "{file} is not uploaded yet, so freeing up its space would lose the changes made here. It was left as it is; its space can be freed once it is uploaded (`{prefix} sync outbox`).",
+                command_line: "{file} is not uploaded yet, so freeing up its space would lose the changes made here. It was left as it is; its space can be freed once it is uploaded (`{prefix} sync upload-queue`).",
             }),
             open_online: Some(Each {
                 desktop: "“{file}” is not uploaded yet, so it has no page in OneDrive.",
-                command_line: "{file} is not uploaded yet, so it has no page in OneDrive. It can be opened there once it is uploaded (`{prefix} sync outbox`).",
+                command_line: "{file} is not uploaded yet, so it has no page in OneDrive. It can be opened there once it is uploaded (`{prefix} sync upload-queue`).",
             }),
         },
         without_detail: None,
         several: OF_ONE,
     },
-    as_failed(Refusal::PendingUploads),
     // "Open in OneDrive" asks OneDrive each time. The daemon's message is the
     // cause (no network, a locked secret storage, an answer that cannot be read).
     RefusalText {

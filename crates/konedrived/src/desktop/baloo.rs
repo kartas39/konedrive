@@ -1,6 +1,6 @@
 //! Keeps KDE's file indexer out of a OneDrive folder: Baloo
-//! reads every file's content to index it, and a read of a placeholder
-//! downloads it — the whole drive, in the background, the moment Baloo
+//! reads every file's content to index it, and a read of a file that is not
+//! on disk downloads it — the whole drive, in the background, the moment Baloo
 //! walks it.
 //!
 //! A OneDrive folder is excluded (`config add excludeFolders`) only after
@@ -21,7 +21,7 @@
 //! cost, in the log: no Baloo file-name search inside the folder, so KRunner
 //! and Dolphin's own search do not find files there.
 //!
-//! A folder's wiring (`sync::Wiring::new`) starts with [`Baloo::disabled`]
+//! A folder's wiring (`account_folder::Wiring::new`) starts with [`Baloo::disabled`]
 //! (no program, no settings file), which runs and reads nothing at all — a
 //! test that says nothing of Baloo must never reach the real
 //! `~/.config/baloofilerc`. Only `main` gives [`Baloo::default`]
@@ -42,13 +42,13 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct Baloo {
     /// `None` runs nothing (see the module doc). `Some` is the program to
     /// run — `balooctl6` normally, a fake shell script in tests.
-    pub program: Option<PathBuf>,
+    pub(crate) program: Option<PathBuf>,
     /// Baloo's settings file, read to learn what is excluded already. `None`
     /// reads nothing, and nothing counts as excluded.
-    pub settings: Option<PathBuf>,
+    pub(crate) settings: Option<PathBuf>,
     /// How long one call is allowed to run — `DEFAULT_TIMEOUT` normally;
     /// settable in tests, so a hang can be exercised in well under a second.
-    pub timeout: Duration,
+    pub(crate) timeout: Duration,
 }
 
 impl Default for Baloo {
@@ -61,7 +61,7 @@ impl Default for Baloo {
 /// `${XDG_CONFIG_HOME:-$HOME/.config}/baloofilerc`, where KConfig keeps
 /// Baloo's settings; an `XDG_CONFIG_HOME` that is empty or relative is
 /// ignored, as the XDG spec says.
-pub fn settings_file(xdg_config_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+pub(crate) fn settings_file(xdg_config_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
     let config = match xdg_config_home.map(PathBuf::from).filter(|dir| dir.is_absolute()) {
         Some(dir) => dir,
         None => PathBuf::from(home.filter(|home| !home.is_empty())?).join(".config"),
@@ -82,7 +82,7 @@ impl Baloo {
     /// nothing is assumed about settings that cannot be read, so the caller
     /// falls through to trying `exclude` — which is exactly as harmless to
     /// ask twice.
-    pub async fn is_excluded(&self, folder: &Path) -> bool {
+    pub(crate) async fn is_excluded(&self, folder: &Path) -> bool {
         let Some(settings) = &self.settings else { return false };
         let text = match tokio::fs::read_to_string(settings).await {
             Ok(text) => text,
@@ -100,13 +100,13 @@ impl Baloo {
     /// because of this call — `false` for a missing, failing or hung
     /// program, and for a disabled `Baloo` — which is what the caller
     /// persists to decide whether a later Forget should take it off again.
-    pub async fn exclude(&self, folder: &Path) -> bool {
+    pub(crate) async fn exclude(&self, folder: &Path) -> bool {
         self.run(&["config", "add", "excludeFolders"], folder).await
     }
 
     /// Takes the exclusion back off. Best-effort like `exclude`: search
     /// settings are not worth anything failing over, including a Forget.
-    pub async fn include_again(&self, folder: &Path) {
+    pub(crate) async fn include_again(&self, folder: &Path) {
         self.run(&["config", "rm", "excludeFolders"], folder).await;
     }
 

@@ -5,7 +5,7 @@ use std::time::Duration;
 /// Graph's Socket.IO endpoint speaks it. Every connection gets the open packet, has its
 /// namespace joins answered, gets a ping every [`PING_INTERVAL`], and a `notification` event
 /// in the namespace `/notifications` whenever the drive changes.
-pub struct FakeSockets {
+pub(crate) struct FakeSockets {
     /// Bumped with every change of the drive.
     changes: tokio::sync::watch::Sender<u64>,
     /// Bumped to drop every open connection, as a network failure would.
@@ -19,20 +19,8 @@ pub struct FakeSockets {
     open: std::sync::atomic::AtomicUsize,
 }
 
-/// What the fake's socket does right after the open packet, to play a service that
-/// accepts a connection and drops it at once.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Early {
-    /// Nothing: the connection goes on as usual.
-    Nothing = 0,
-    /// Refuses the namespace (`44/notifications,{…}`).
-    Refuse = 1,
-    /// Closes the websocket.
-    Close = 2,
-}
-
 /// The fake's Engine.IO ping interval; its `pingTimeout` is the same.
-pub const PING_INTERVAL: Duration = Duration::from_secs(25);
+pub(crate) const PING_INTERVAL: Duration = Duration::from_secs(25);
 
 impl FakeSockets {
     pub(super) fn new() -> Self {
@@ -48,32 +36,6 @@ impl FakeSockets {
 
     pub(super) fn changed(&self) {
         self.changes.send_modify(|n| *n += 1);
-    }
-
-    /// Every open connection is dropped, without a close.
-    pub fn drop_all(&self) {
-        self.drops.send_modify(|n| *n += 1);
-    }
-
-    /// From now on (`true`), a connection is closed as soon as it opens; the endpoint still
-    /// answers.
-    pub fn refuse(&self, refuse: bool) {
-        self.refuse.store(refuse, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// From now on, what a connection gets right after the open packet.
-    pub fn early(&self, early: Early) {
-        self.early.store(early as u8, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// Connections accepted so far.
-    pub fn accepted(&self) -> usize {
-        self.accepted.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    /// Connections open now.
-    pub fn open(&self) -> usize {
-        self.open.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub(super) async fn listen(self: Arc<Self>, listener: tokio::net::TcpListener) {

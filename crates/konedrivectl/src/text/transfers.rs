@@ -16,7 +16,7 @@ pub struct QueueTotals {
 }
 
 /// What `sync transfers` says first: the files moving each way and the account's transfer
-/// pool (`Transfers`' `ActiveDownloads`, `DownloadSpeed`, `ActiveUploads`, `UploadSpeed`,
+/// pool (`Transfers`' `ActiveDownloads`, `DownloadSpeed`, `ThumbnailDownloads`, `ActiveUploads`, `UploadSpeed`,
 /// `PoolInUse`, `PoolSize`, `LargeFiles`, `LargeStreams`, `LargeStreamLimit`, `RetryAfter`)
 /// and the queue totals.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -25,6 +25,8 @@ pub struct TransferSummary {
     pub active_downloads: u32,
     pub download_speed: u64,
     pub downloads: QueueTotals,
+    /// Thumbnails being downloaded now, none of them a file of `downloads`.
+    pub thumbnail_downloads: u32,
     pub active_uploads: u32,
     pub upload_speed: u64,
     pub uploads: QueueTotals,
@@ -73,7 +75,7 @@ pub fn time_left_text(seconds: u32) -> String {
     }
 }
 
-/// One direction's summary line of `sync transfers` (and of `sync outbox`, for uploads):
+/// One direction's summary line of `sync transfers` (and of `sync upload-queue`, for uploads):
 /// `Downloading: 12 now, 1 234 files left (48.2 GiB, about 12 min), 3.1 GiB done, 8.4 MiB/s`.
 /// What is left, and what is done, only while anything is left; the time only when known.
 fn direction_line(label: &str, active: u32, totals: &QueueTotals, noun: (&str, &str), speed: u64) -> String {
@@ -107,6 +109,11 @@ pub fn uploading_line(summary: &TransferSummary) -> String {
     direction_line("Uploading:", summary.active_uploads, &summary.uploads, ("change", "changes"), summary.upload_speed)
 }
 
+/// The `Thumbnails:` line, 0 when none is being downloaded: `Thumbnails:   2 now`.
+pub fn thumbnails_line(summary: &TransferSummary) -> String {
+    format!("{:<12} {:>2} now", "Thumbnails:", summary.thumbnail_downloads)
+}
+
 /// `sync status`'s `Waiting to download:` line: `1 234 files (48.2 GiB)`.
 pub fn waiting_download_text(count: u32, bytes: u64) -> String {
     match count {
@@ -116,11 +123,11 @@ pub fn waiting_download_text(count: u32, bytes: u64) -> String {
     }
 }
 
-/// `sync transfers`: how many files go each way now, what is left and done, how fast, and
-/// the pool; then one line per download and upload under way — its direction, path, how
+/// `sync transfers`: how many files go each way now, what is left and done, how fast, the
+/// thumbnails being downloaded, and the pool; then one line per download and upload under way — its direction, path, how
 /// far, and the whole size.
 pub fn transfers_text(summary: &TransferSummary, downloads: &[Transfer], uploads: &[Transfer]) -> String {
-    let mut out = format!("{}\n{}\n{}\n", downloading_line(summary), uploading_line(summary), pool_text(summary));
+    let mut out = format!("{}\n{}\n{}\n{}\n", downloading_line(summary), uploading_line(summary), thumbnails_line(summary), pool_text(summary));
     if downloads.is_empty() && uploads.is_empty() {
         out.push_str("Nothing is downloading or uploading.\n");
         return out;

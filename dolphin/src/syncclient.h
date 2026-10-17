@@ -2,7 +2,7 @@
 // without ever waiting for it.
 //
 // Pin, Unpin and FreeUp each take the whole selection in one D-Bus call
-// (the Files interface's `Pin(as) -> u`, `Unpin(as) -> u` and `FreeUp(as) -> (u,t,u,u)`
+// (the Files interface's `Pin(as) -> u`, `Unpin(as) -> u` and `FreeUp(as) -> (u,t,u)`
 // at `/org/konedrive/Accounts`, routed by path to the right account), unlike
 // the old per-file Hydrate/Dehydrate this replaced: one call, one
 // aggregate answer. The call
@@ -59,8 +59,6 @@ struct MenuAnswer {
         Hidden,
         Off,
         On,
-        /// Checked, and it cannot be unchecked.
-        OnLocked,
     };
     enum class Offer {
         Hidden,
@@ -72,12 +70,7 @@ struct MenuAnswer {
     enum class FreeUpWhy {
         /// Not disabled, or for a reason this plugin does not know.
         NotSaid,
-        /// A folder above keeps an item pinned: `blockedBy`.
-        PinnedAbove,
-        NoHelper,
         NotUploaded,
-        /// The daemon cannot tell now whether a change waits to be uploaded.
-        Unknown,
     };
 
     /// What Pin(), Unpin() or FreeUp() is called with.
@@ -85,9 +78,6 @@ struct MenuAnswer {
     AlwaysKeep alwaysKeep = AlwaysKeep::Hidden;
     Offer freeUp = Offer::Hidden;
     FreeUpWhy freeUpWhy = FreeUpWhy::NotSaid;
-    /// The folder above that keeps an item pinned, when that is why
-    /// `alwaysKeep` is OnLocked or `freeUp` is Disabled; empty otherwise.
-    QString blockedBy;
     Offer openOnline = Offer::Hidden;
     /// What WebUrl() is called with.
     QString openOnlinePath;
@@ -147,11 +137,6 @@ Q_SIGNALS:
     /// A message for the user about files the daemon did not do what was
     /// asked for. Nothing is emitted for files it did.
     void failed(const QString &message);
-    /// FreeUp succeeded, and `busy` of the paths it was given were in use or
-    /// changed here (not uploaded yet) and so were kept, not freed --
-    /// FreeUp's own `busy` count, which folds in both. Not emitted when it
-    /// is 0.
-    void freeUpKeptBusy(uint busy);
     /// WebUrl(path) answered: `url` is the address of `path`'s page in
     /// OneDrive, for whoever asked to open it.
     void webUrlReady(const QString &path, const QString &url);

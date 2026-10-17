@@ -1,7 +1,7 @@
 //! The quota of one account's drive: one copy, served by `org.konedrive.Account`
 //! (`QuotaUsed`, `QuotaTotal`, `QuotaRemaining`, `QuotaState`), whoever reads it — the
 //! account's info (a sign-in, `RefreshInfo`) or the uploads' space check (`Folder.Refresh`, a
-//! refused upload, the check every 30 minutes, `upload::space`). Between two reads the
+//! refused upload, the check every 30 minutes, `sync_parts::onedrive_space`). Between two reads the
 //! bytes uploaded come off `QuotaRemaining` and are added to `QuotaUsed`. Its figures
 //! ([`QuotaFigures`]) are kept in the account's state ([`AccountSnapshot`]), and cached in
 //! `account.json` at every read.
@@ -40,7 +40,7 @@ pub struct QuotaFigures {
 impl QuotaFigures {
     /// `quota`, read at `at`: `used` and `total` when Graph gave them (a total of 0 is none
     /// given), `remaining` and `state` likewise.
-    pub fn read(&mut self, quota: &DriveQuota, at: i64) {
+    pub(crate) fn read(&mut self, quota: &DriveQuota, at: i64) {
         if quota.total > 0 {
             self.total = quota.total;
             self.used = quota.used;
@@ -64,7 +64,7 @@ impl QuotaFigures {
     }
 
     /// The figures as a read gives them.
-    pub fn as_drive_quota(&self) -> DriveQuota {
+    pub(crate) fn as_drive_quota(&self) -> DriveQuota {
         DriveQuota {
             total: self.total,
             used: self.used,
@@ -76,7 +76,7 @@ impl QuotaFigures {
 
 /// What a read writes beside the state: the account's cache, which keeps the quota across
 /// restarts. `None` keeps it nowhere (a test, a tool).
-pub type Keep = Arc<dyn Fn(&AccountSnapshot) + Send + Sync>;
+pub(crate) type Keep = Arc<dyn Fn(&AccountSnapshot) + Send + Sync>;
 
 /// The account's one quota. Cheap to clone: every clone is the same quota.
 #[derive(Clone)]
@@ -92,23 +92,24 @@ impl Quota {
     }
 
     /// A quota of its own, kept nowhere: for a folder with no account (tests).
-    pub fn detached() -> Self {
+    #[cfg(test)]
+    pub(crate) fn detached() -> Self {
         Self::new(StateHandle::new(AccountSnapshot::default()), None)
     }
 
     /// The account state the quota is kept in.
-    pub fn state(&self) -> &StateHandle {
+    pub(crate) fn state(&self) -> &StateHandle {
         &self.state
     }
 
     /// A read of the quota, now: every figure it gave replaces the last one, and what it did
     /// not give keeps its last value.
-    pub fn read(&self, quota: &DriveQuota) {
+    pub(crate) fn read(&self, quota: &DriveQuota) {
         self.read_at(quota, unix_now());
     }
 
     /// As [`read`](Self::read), made at `at` (unix seconds).
-    pub fn read_at(&self, quota: &DriveQuota, at: i64) {
+    pub(crate) fn read_at(&self, quota: &DriveQuota, at: i64) {
         self.state.update(|s| s.quota.read(quota, at));
         if let Some(keep) = &self.keep {
             keep(&self.state.get());
@@ -117,14 +118,14 @@ impl Quota {
 
     /// The last read, if it was made within `seconds` of now: what a refusal of another
     /// upload may use instead of asking again. Its figures are the quota's now.
-    pub fn read_within(&self, seconds: i64) -> Option<DriveQuota> {
+    pub(crate) fn read_within(&self, seconds: i64) -> Option<DriveQuota> {
         let quota = self.state.get().quota;
         (quota.read_at > 0 && unix_now() - quota.read_at < seconds).then(|| quota.as_drive_quota())
     }
 
     /// `bytes` went up: they come off what is left and are added to what is used, once a read
     /// has said what is left.
-    pub fn uploaded(&self, bytes: u64) {
+    pub(crate) fn uploaded(&self, bytes: u64) {
         if bytes == 0 {
             return;
         }

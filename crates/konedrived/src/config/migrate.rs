@@ -1,4 +1,4 @@
-//! Version 1 of `config.toml`, and its migration to version 2 (`docs/design/accounts.md` §8).
+//! Version 1 of `config.toml`, and its migration to version 2 (`docs/design/accounts.md` §9).
 //!
 //! [`V1Config`] is the single-account file of before; only the migration reads it.
 
@@ -11,42 +11,29 @@ use serde::Deserialize;
 use crate::config::atomic::write_atomic;
 use crate::config::store::write_config;
 use crate::config::{
-    AccountConfig, AccountId, Config, ConfigError, ConfigStore, DriveId, HoldSettings, Origin, Paths, RootConfig, CONFIG_VERSION,
-    MIGRATED_LABEL,
+    AccountConfig, AccountId, Config, ConfigError, ConfigStore, ConfigTrouble, DriveId, HoldSettings, Origin, Paths, RootConfig,
+    CONFIG_VERSION, MIGRATED_LABEL,
 };
 
 /// `config.toml`, version 1: no `config_version`, one account, one folder. Only read.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct V1Config {
+pub(crate) struct V1Config {
     #[serde(default)]
-    pub client_id: String,
-    /// The registered sync root, empty when none. It has to be
-    /// "persisted, so it survives a restart" — and
-    /// without it the startup recovery walk never runs at a startup at
-    /// all, since nothing else re-registers the folder.
+    pub(crate) client_id: String,
+    /// The registered sync root, empty when none.
     #[serde(default)]
-    pub sync_root: String,
-    /// Whether that root is the ordinary intercepted kind. Defaults to
-    /// `true` when the key is missing, so the fail-closed mode is what an
-    /// older or hand-edited config restores: a root wrongly restored as
-    /// intercepted refuses to come up without a helper, while one wrongly
-    /// restored as un-intercepted would come up silently serving zeros.
-    #[serde(default = "intercepted_by_default")]
-    pub sync_root_intercepted: bool,
-    /// The root id the folder carried when it was registered — the name the
-    /// helper holds an intercepted root under. Recorded so that a root
-    /// restored at startup can be held, forgotten and told apart before the
-    /// helper is back, without reading anything from the folder. Empty in a
+    pub(crate) sync_root: String,
+    /// The root id the folder carried when it was registered. Empty in a
     /// config written before it existed; the folder's own
     /// `user.konedrive.root` stands in for it then.
     #[serde(default)]
-    pub sync_root_id: String,
+    pub(crate) sync_root_id: String,
     /// What the folder shows: `"onedrive"` — listed from the
-    /// signed-in drive, locked, kept in step — or `"local"`, filled with
-    /// `PopulateFromDirectory` as in part 1. A config written before this
-    /// existed describes a local folder.
+    /// signed-in drive — or `"local"`, a folder filled by hand, which is
+    /// not brought up. A config written before this existed describes a
+    /// local folder.
     #[serde(default = "local_source")]
-    pub sync_root_source: String,
+    pub(crate) sync_root_source: String,
     /// Whether *this daemon* excluded the root from KDE's Baloo indexer
     /// — `false` when the folder was already excluded (the
     /// user's own doing, or a parent directory's), since a Forget must never
@@ -55,26 +42,15 @@ pub struct V1Config {
     /// removed from Baloo's settings that this daemon cannot be sure it put
     /// there.
     #[serde(default)]
-    pub sync_root_baloo_excluded: bool,
-    /// Whether a root registered without interception switches to
-    /// interception when the helper connects: `true` when it was
-    /// registered that way because no helper was connected, `false` when a
-    /// helper was and the mode was a choice. Missing in a config written
-    /// before this existed.
-    #[serde(default)]
-    pub sync_root_upgrade_when_helper: Option<bool>,
+    pub(crate) sync_root_baloo_excluded: bool,
     /// The drive a OneDrive folder was listed from, recorded
     /// when its sync first learns it, so the check that the account signed
     /// in is still that drive's survives a tree store rebuilt empty.
-    /// Empty until then, for a local folder, and in a
+    /// Empty until then, and in a
     /// config written before it existed. It goes with `sync_root_id`: a
     /// different root never inherits it.
     #[serde(default)]
-    pub sync_root_drive_id: String,
-}
-
-fn intercepted_by_default() -> bool {
-    true
+    pub(crate) sync_root_drive_id: String,
 }
 
 fn local_source() -> String {
@@ -82,7 +58,7 @@ fn local_source() -> String {
 }
 
 /// Where the version-1 file is kept once migrated: `config.toml.v1`, the way back by hand.
-pub fn v1_copy(config_file: &Path) -> PathBuf {
+pub(crate) fn v1_copy(config_file: &Path) -> PathBuf {
     with_suffix(config_file, ".v1")
 }
 
@@ -97,7 +73,7 @@ fn present(path: &Path) -> bool {
     !matches!(path.try_exists(), Ok(false))
 }
 
-/// Version 1 as version 2 (§8.2 steps 2 and 3). Account #1 — `Personal`, read-only,
+/// Version 1 as version 2 (`docs/design/accounts.md` §9, steps 2 and 3). Account #1 — `Personal`, read-only,
 /// migrated, the folder's drive as its identity, both migration flags set, the folder when
 /// there is one — when there is anything to carry over: a folder, the cached account or the
 /// tree store at version 1's paths, or the version-1 refresh token in the wallet
@@ -107,10 +83,8 @@ async fn to_v2(v1: V1Config, paths: &Paths, legacy_token: impl Future<Output = b
     let root = (!v1.sync_root.is_empty()).then(|| RootConfig {
         path: PathBuf::from(&v1.sync_root),
         id: v1.sync_root_id,
-        intercepted: v1.sync_root_intercepted,
         source: v1.sync_root_source,
         baloo_excluded: v1.sync_root_baloo_excluded,
-        upgrade_when_helper: v1.sync_root_upgrade_when_helper,
     });
     let accounts = if carry {
         vec![AccountConfig {
@@ -126,7 +100,7 @@ async fn to_v2(v1: V1Config, paths: &Paths, legacy_token: impl Future<Output = b
     Config { config_version: CONFIG_VERSION, client_id: v1.client_id, accounts, ..Config::default() }
 }
 
-/// §8.2 step 4: `text` (the version-1 file) is copied to `config.toml.v1`, then version 2 is
+/// `docs/design/accounts.md` §9, step 4: `text` (the version-1 file) is copied to `config.toml.v1`, then version 2 is
 /// written atomically — the commit point. Before it the old layout is untouched; after it,
 /// [`finish_file_moves`] finishes the job. `Err` when either write failed.
 pub(crate) async fn migrate(
@@ -165,9 +139,9 @@ enum Moved {
     Failed(String),
 }
 
-/// §8.3, at every start, after [`ConfigStore::open`] and before any account's services open
+/// `docs/design/accounts.md` §9, at every start, after [`ConfigStore::open`] and before any account's services open
 /// a file: for each account whose `migrate_files` is set, moves version 1's `account.json`
-/// and `tree.sqlite` into the account's own directory, then clears the flag. Every step is
+/// and the store into the account's own directory, then clears the flag. Every step is
 /// idempotent — a source that is gone means the step is done — so a crash anywhere is
 /// finished by the next start. A file that cannot be moved safely is left where it is and
 /// logged. An unexpected error keeps the flag, for the next start to try again, and is
@@ -197,9 +171,7 @@ pub fn finish_file_moves(store: &ConfigStore, paths: &Paths) {
             Err(ConfigError::Write(failed.join("; ")))
         };
         if let Err(e) = done {
-            let message = format!("moving the files of account {:?} failed: {e}", account.label);
-            tracing::error!("{message}");
-            store.note_error(message);
+            store.note_trouble(ConfigTrouble::FilesNotMoved { label: account.label.clone(), detail: e.to_string() });
         }
     }
 }
@@ -227,11 +199,7 @@ pub fn move_hold_settings(store: &ConfigStore) {
              pause_on_metered = {pause_on_metered}, on_battery = {:?}",
             on_battery.as_str()
         ),
-        Err(e) => {
-            let message = format!("moving the accounts' pause_on_metered and on_battery failed: {e}");
-            tracing::error!("{message}");
-            store.note_error(message);
-        }
+        Err(e) => store.note_trouble(ConfigTrouble::HoldSettingsNotMoved { detail: e.to_string() }),
     }
 }
 

@@ -6,17 +6,18 @@
   <interface name="org.konedrive.Conflicts">
     <!-- Local versions kept because the file changed or was removed in
          OneDrive: (unix time, original full path, full path of the kept
-         version, how it was kept). The kind is "rescued": moved out of the
-         way, out of the folder; or "copy": in a read-write folder, a file
-         changed on both sides kept as a copy beside the original, and
-         uploaded. One whose kept file is gone is dropped. -->
+         version, how it was kept). The kind is "copy": a file changed on
+         both sides, whose local version was renamed to a copy's name
+         beside the original (see MachineName) and is uploaded as a file of
+         its own. One whose kept file is gone is dropped. -->
     <method name="List">
       <arg name="conflicts" type="a(xsss)" direction="out"/>
       <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveConflictList"/>
     </method>
-    <!-- Removes a conflict from the list; the file itself is not touched. -->
+    <!-- Removes a conflict from the list, by the full path of the kept
+         version; the file itself is not touched. -->
     <method name="Dismiss">
-      <arg name="rescued_path" type="s" direction="in"/>
+      <arg name="kept_path" type="s" direction="in"/>
     </method>
     <property name="Count" type="u" access="read"/>
     <!-- What a copy of a file changed on both sides is named after:

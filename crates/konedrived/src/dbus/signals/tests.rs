@@ -58,7 +58,8 @@ async fn the_overall_state_is_sent_when_it_changes_and_not_again_when_it_does_no
     use konedrive_dbus::FOLDER_INTERFACE_NAME;
 
     use crate::account::state::{SignInState, StateHandle};
-    use crate::status::snapshot::{RootState, SyncTrouble, TroubleKind};
+    use crate::status::snapshot::RootState;
+    use crate::status::sync_trouble::{CycleError, SyncTrouble};
 
     let state = SyncStateHandle::new(SyncSnapshot::default());
     let account = StateHandle::new(AccountSnapshot::default());
@@ -97,7 +98,6 @@ async fn the_overall_state_is_sent_when_it_changes_and_not_again_when_it_does_no
     state.update(|s| {
         s.folder.root_path = "/home/u/OneDrive".into();
         s.folder.root_state = RootState::Ready;
-        s.folder.helper_state = HelperState::Connected;
     });
     settle().await;
     assert!(since(&sent).is_empty(), "still signed out");
@@ -127,25 +127,25 @@ async fn the_overall_state_is_sent_when_it_changes_and_not_again_when_it_does_no
     settle().await;
     assert!(since(&sent).is_empty(), "still transferring");
     // A change waits to upload as the last download ends: transferring for another cause.
-    state.update(|s| s.outbox.pending_count = 1);
+    state.update(|s| s.upload_queue.pending_count = 1);
     drop(second);
     settle().await;
     assert!(since(&sent).is_empty(), "the same state for the same reason");
 
     // Trouble: the reason and its sentence in one message; a reworded sentence alone
     // sends `Trouble` only.
-    let trouble = |text: &str| Some(SyncTrouble { text: text.into(), blocking: false, kind: TroubleKind::Unreachable });
-    state.update(|s| s.cycle.sync_trouble = trouble("cannot reach OneDrive (timed out); trying again"));
+    let trouble = |detail: &str| Some(SyncTrouble::Cycle(CycleError::Offline(detail.into())));
+    state.update(|s| s.cycle.sync_trouble = trouble("timed out"));
     settle().await;
     assert_eq!(since(&sent), [vec![overall(Reason::Unreachable), ("Trouble", Value::from("cannot reach OneDrive (timed out); trying again"))]]);
-    state.update(|s| s.cycle.sync_trouble = trouble("cannot reach OneDrive (refused); trying again"));
+    state.update(|s| s.cycle.sync_trouble = trouble("refused"));
     settle().await;
     assert_eq!(since(&sent), [vec![("Trouble", Value::from("cannot reach OneDrive (refused); trying again"))]]);
 
     // Back to what it was, each change by itself.
     state.update(|s| s.cycle.sync_trouble = None);
     settle().await;
-    state.update(|s| s.outbox.pending_count = 0);
+    state.update(|s| s.upload_queue.pending_count = 0);
     settle().await;
     assert_eq!(since(&sent), [vec![overall(Reason::Transferring), ("Trouble", Value::from(""))], vec![overall(Reason::UpToDate)]]);
 }
@@ -165,7 +165,6 @@ async fn a_reason_is_not_sent_ahead_of_the_count_it_speaks_of() {
     state.update(|s| {
         s.folder.root_path = "/home/u/OneDrive".into();
         s.folder.root_state = RootState::Ready;
-        s.folder.helper_state = HelperState::Connected;
     });
     let account = StateHandle::new(AccountSnapshot::default());
     account.update(|s| s.state = SignInState::SignedIn);

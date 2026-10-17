@@ -1,8 +1,8 @@
 // What a file in the sync folder is, read from its extended attributes alone.
 //
 // Everything here answers by path, with lstat(2), lgetxattr(2) and getxattr(2).
-// None of them opens anything: in this project opening a placeholder
-// downloads it, so a plugin that opened files to decide what to draw would
+// None of them opens anything: reading a file that is not on this computer
+// downloads it, so a plugin that opened files to decide what to draw could
 // download every file Dolphin shows.
 
 #pragma once
@@ -19,12 +19,13 @@ namespace konedrive
 /// The attribute names, as `crates/konedrive-fs/src/placeholder.rs` defines them.
 inline constexpr char StateAttribute[] = "user.konedrive.state";
 inline constexpr char RootAttribute[] = "user.konedrive.root";
-/// "Always keep on this device": set on the pinned file or folder itself.
-/// An item is *effectively* pinned when it or any ancestor up to the sync
-/// root carries this (isEffectivelyPinned / pinnedBy below).
+/// "Always keep on this device": the mount answers it on every item a pin
+/// holds for -- the pinned file or folder and everything below it, but an
+/// item excepted from a folder's pin (`docs/design/pinning.md`). The item's
+/// own answer is the whole of it: nothing above the item is read.
 inline constexpr char PinAttribute[] = "user.konedrive.pin";
 /// Written by the daemon on an item with changes waiting to be uploaded
-/// (an outbox row, `docs/design/writes.md` §5.4): "pending", "uploading" or "blocked";
+/// (an unsent change, `docs/design/writes.md` §7): "pending", "uploading" or "blocked";
 /// removed once the upload is committed.
 inline constexpr char SyncAttribute[] = "user.konedrive.sync";
 
@@ -34,7 +35,6 @@ enum class FileState {
     OnlineOnly,
     Hydrating,
     Hydrated,
-    Dehydrating,
     /// The attribute holds a value this plugin does not know.
     Unrecognised,
     /// A directory, a symbolic link, anything else that is not a regular
@@ -56,7 +56,7 @@ enum class UploadState {
 
 /// Windows-like, following the design: a cloud for online-only, an outline
 /// check for a hydrated file nobody asked to keep, a filled check for one
-/// that is effectively pinned, and the syncing glyph for a file moving
+/// that a pin holds for, and the syncing glyph for a file moving
 /// between states, for one pinned but not yet downloaded, and for one
 /// waiting to be uploaded; an error sign for one whose upload is blocked.
 enum class Emblem {
@@ -104,18 +104,9 @@ bool hasPinMark(const QString &path);
 
 using PinMarkReader = std::function<bool(const QString &path)>;
 
-/// The nearest item at or above `path`, up to and including `root`, that
-/// carries the pin: `path` itself first, then its physical ancestors
-/// (physicalDirectory, the same resolution `root` itself was found with).
-/// `std::nullopt` if none of them does.
-std::optional<QString> pinnedBy(const QString &path, const QString &root, const PinMarkReader &hasPin = hasPinMark);
-
-/// Whether `path` is pinned, itself or through an ancestor (pinnedBy).
-bool isEffectivelyPinned(const QString &path, const QString &root, const PinMarkReader &hasPin = hasPinMark);
-
-/// `state`'s emblem, following `pinned` (whether the item is effectively
-/// pinned) for the two hydrated cases and for an online-only file the sweep
-/// has queued.
+/// `state`'s emblem, following `pinned` (whether a pin holds for the item)
+/// for the two hydrated cases and for an online-only file the sweep has
+/// queued.
 Emblem emblemFor(FileState state, bool pinned);
 
 /// Whether `path`, by lstat(2) without following it, is a directory.
@@ -123,14 +114,14 @@ bool isDirectory(const QString &path);
 
 /// The emblem for an item that may be a directory. An upload waiting or
 /// under way shows the syncing glyph and a blocked one the error sign,
-/// whatever else holds. Otherwise a directory shows the filled check when it
-/// is effectively pinned, and nothing else (it has no `FileState` of its
+/// whatever else holds. Otherwise a directory shows the filled check when a
+/// pin holds for it, and nothing else (it has no `FileState` of its
 /// own); anything else follows `emblemFor`.
 Emblem emblemForItem(FileState state, bool isDir, bool pinned, UploadState upload = UploadState::None);
 
-/// `path`'s emblem inside `root`, from its attributes alone: its upload
-/// state first, and only without one its state and pin.
-Emblem itemEmblem(const QString &path, const QString &root, const PinMarkReader &hasPin = hasPinMark);
+/// `path`'s emblem, from its own attributes alone: its upload state first,
+/// and only without one its state and pin.
+Emblem itemEmblem(const QString &path, const PinMarkReader &hasPin = hasPinMark);
 
 /// The overlay icon names Dolphin draws for `emblem`; empty for `Emblem::None`.
 QStringList overlayNames(Emblem emblem);

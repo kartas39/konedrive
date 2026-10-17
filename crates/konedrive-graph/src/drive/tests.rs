@@ -320,14 +320,14 @@ async fn a_network_error_on_a_download_carries_no_url() {
 }
 
 #[tokio::test]
-async fn the_drive_id_comes_from_me_drive() {
+async fn the_drive_id_comes_from_me_drive_which_is_asked_for_it_alone() {
     let server = MockServer::start().await;
     let calls = Arc::new(AtomicU32::new(0));
     let seen = Arc::clone(&calls);
-    Mock::given(method("GET")).and(path("/me/drive"))
+    Mock::given(method("GET")).and(path("/me/drive")).and(query_param("$select", "id"))
         .respond_with(move |_: &Request| {
             seen.fetch_add(1, Ordering::SeqCst);
-            ResponseTemplate::new(200).set_body_json(json!({"id": "D9", "quota": {"used": 1, "total": 2}}))
+            ResponseTemplate::new(200).set_body_json(json!({"id": "D9"}))
         })
         .mount(&server).await;
     assert_eq!(client(&server).drive_id().await.unwrap(), "D9");
@@ -335,10 +335,10 @@ async fn the_drive_id_comes_from_me_drive() {
 }
 
 #[tokio::test]
-async fn the_quota_is_graphs_remaining_and_state() {
+async fn the_quota_is_graphs_remaining_and_state_and_me_drive_is_asked_for_it_alone() {
     let server = MockServer::start().await;
-    Mock::given(method("GET")).and(path("/me/drive"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "D9", "quota": {"used": 90, "total": 100, "remaining": 4, "state": "critical", "deleted": 6}})))
+    Mock::given(method("GET")).and(path("/me/drive")).and(query_param("$select", "quota"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"quota": {"used": 90, "total": 100, "remaining": 4, "state": "critical", "deleted": 6}})))
         .mount(&server).await;
     let quota = client(&server).quota().await.unwrap();
     assert_eq!(quota, DriveQuota { total: 100, used: 90, remaining: Some(4), state: "critical".into() });

@@ -1,150 +1,140 @@
 # Packaging
 
 KOneDrive installs on Fedora as two RPM packages, built from one spec
-(`packaging/rpm/konedrive.spec`) by `scripts/build-rpm.sh`: on the user's own machine, or, for a
+(`packaging/rpm/konedrive.spec`) by `scripts/build-rpm.sh`: on the developer's machine, or, for a
 release, by the release workflow, which publishes them on GitHub Releases (`docs/releasing.md`).
-There is no package repository yet: a COPR one needs a Fedora account and comes later. "Install" in
-`docs/user-guide.md` and "Switching from the developer install to the packages" in
-`docs/developing.md` are the user's side of this page.
+There is no package repository. "Install" and "Upgrading and removing" in `docs/user-guide.md`
+and "Switching from the developer install to the packages" in `docs/developing.md` are the user's
+side of this page.
 
-## The two packages
+## 1. The two packages
 
 | Package | Contents | Relations |
 |---|---|---|
-| `konedrive` | `/usr/bin/konedrived`, `/usr/bin/konedrivectl`, `/usr/bin/konedrive` (the window); `/usr/libexec/konedrive-helper`; the system unit `/usr/lib/systemd/system/konedrive-helper.service` and its preset `/usr/lib/systemd/system-preset/80-konedrive.preset`; the user unit `/usr/lib/systemd/user/konedrived.service`; the D-Bus activation file `/usr/share/dbus-1/services/org.konedrive.Daemon.service`; the launcher entry `/usr/share/applications/org.konedrive.KOneDrive.desktop`; the notification events `/usr/share/knotifications6/konedrive.notifyrc`; README, SECURITY.md, LICENSE and `docs/` | `Recommends: konedrive-kde` of the same version and release; `Requires:` the Kirigami, Kirigami Addons, KQuickCharts and Qt Quick QML modules and the desktop style of Qt Quick Controls (`kf6-qqc2-desktop-style`), which no library dependency pulls in |
+| `konedrive` | `/usr/bin/konedrived`, `/usr/bin/konedrivectl`, `/usr/bin/konedrive` (the window); the user unit `/usr/lib/systemd/user/konedrived.service`; the D-Bus activation file `/usr/share/dbus-1/services/org.konedrive.Daemon.service`; the launcher entry `/usr/share/applications/org.konedrive.KOneDrive.desktop`; the notification events `/usr/share/knotifications6/konedrive.notifyrc`; README, SECURITY.md, LICENSE and `docs/` | `Requires: fuse3`, since every folder is mounted with `fusermount3`; `Requires: kf6-kio-core >= 6.21` (K34); `Requires:` the Kirigami, Kirigami Addons, KQuickCharts and Qt Quick QML modules and the desktop style of Qt Quick Controls (`kf6-qqc2-desktop-style`), which no library dependency pulls in; `Recommends: konedrive-kde` of the same version and release |
 | `konedrive-kde` | the Dolphin plugins, `/usr/lib64/qt6/plugins/kf6/overlayicon/konedriveoverlay.so` and `/usr/lib64/qt6/plugins/kf6/kfileitemaction/konedriveactions.so`; LICENSE | `Requires: dolphin`; not `konedrive` |
 
-There are no icons of our own: the launcher entry and the autostart entry use the theme's
-`folder-cloud`, and the tray shows the theme's icon for the state it reports.
+Nothing is installed as a system service and nothing runs as root: the daemon is a user service,
+and `fusermount3`, the setuid program of `fuse3`, is the only privileged program involved.
 
-**Why the helper is in the main package.** The daemon and the helper cannot work without each other.
-Without the helper a OneDrive folder is not kept in step at all, and a placeholder opened without it
-reads as zeros; without the daemon the helper has no one to hand an open to. A separate helper
-package would only add a way to install half of the client.
+There are no icons of our own: the launcher entry, the autostart entry and the tray menu use the
+theme's `folder-cloud`, and the tray shows the theme's icon for each state.
 
 **Why the Dolphin plugins are separate.** They are the one part that belongs to another program.
-They load into Dolphin, so their package requires Dolphin, and they need nothing from `konedrive` to
-load: the emblems come from each file's extended attribute and work with the daemon stopped, and the
-menu actions say plainly when the daemon is not there. `konedrive` recommends them, so `dnf`
-installs them by default, and `sudo dnf remove konedrive-kde` takes them away alone. The name leaves
-room for other KDE integration later.
+They load into Dolphin, so their package requires Dolphin, and they need nothing from `konedrive`
+to load: the emblems come from the attributes of the files, and the menu hides its section when the
+daemon is not there ([desktop.md](desktop.md) §11). `konedrive` recommends them, so `dnf` installs
+them by default, and `sudo dnf remove konedrive-kde` takes them away alone.
 
-## What the build does
+## 2. What the build does
 
 `scripts/build-rpm.sh` runs as the user and builds under `target/rpm/` (rpmbuild's `_topdir`), which
-it empties first so that the output directories hold this build alone. Only `cargo vendor` reaches
+it empties first, so that the output directories hold this build alone. Only `cargo vendor` reaches
 outside it: it fetches the crates from the network, through the user's cargo home.
 
 1. **Source0** is `git archive` of `HEAD`: the committed tree, never the working tree.
-2. **Source1** holds the crates of that tree's `Cargo.lock` (`cargo vendor`, run on an unpacked copy
-   of Source0) and the `.cargo/config.toml` that `cargo vendor` prints, which points cargo at them.
-   The spec unpacks it into the source tree.
-3. `rpmbuild -ba` builds the binary packages and the source RPM.
+2. **Source1** holds the crates of that tree's `Cargo.lock` (`cargo vendor --locked`, into
+   `crates-io/`, since the tree has a `vendor/` of its own for `vendor/fuser`) and the
+   `.cargo/config.toml` that `cargo vendor` prints, which points cargo at them. The spec unpacks it
+   into the source tree.
+3. `rpmbuild -ba` builds the binary packages and the source RPM. A local build keeps Cargo's output
+   in `target/rpm-cargo/`, outside the emptied directory, so that only what changed is compiled
+   again; a release's build compiles everything anew.
 
-The version is the one in `Cargo.toml` (`[workspace.package]`; `scripts/version.sh`,
-`docs/releasing.md`): a release's `X.Y.Z` is given with `--version`, which must be the file's, and
-any other build takes the file's version with a suffix that sorts below it and grows with the
-history (`0.1.2~dev.57`). The script writes it into the copies of `Cargo.toml`, `Cargo.lock` and the
-spec (`Version:`, the `commit` and `build_version` globals that `%build` hands to Cargo and CMake,
-and a `%changelog` entry) that Source0 and the source RPM hold; the spec's `Version:` in git is a
-placeholder. It stops if a line it rewrites is not there, and `cargo vendor --locked` stops it if
-the rewritten lock file does not fit.
+**The version** is the one in `Cargo.toml` (`[workspace.package]`; `scripts/version.sh`,
+`docs/releasing.md`). A release's `X.Y.Z` is given with `--version`, and must be the file's. Any
+other build takes the file's version with a suffix that sorts below it and grows with the history
+(`0.1.2~dev.57`). The script writes it into the copies of `Cargo.toml`, `Cargo.lock` and the spec
+that Source0 holds — the spec's `Version:`, the `commit` and `build_version` globals that `%build`
+hands to Cargo and CMake, and a `%changelog` entry — and stops if a line it rewrites is not there;
+`cargo vendor --locked` stops it if the rewritten lock file does not fit. The spec's `Version:` in
+git is `0.0.0`, which every build writes over.
 
-Releases are built the same way by `.github/workflows/release.yml`, in a `fedora:44` and a `fedora:45` container, each then installed in a clean one, and
-published on GitHub Releases.
+**Inside the spec:**
 
-Inside the spec:
-
-- **Rust.** `cargo build --release --offline --locked` for `konedrived`, `konedrivectl` and
-  `konedrive-helper`, with Fedora's `RUSTFLAGS`, cargo's home and output inside the build directory,
-  and no `--features`. The `fault-injection` features are the VM suite's alone: the build stops if
-  the helper contains a `KONEDRIVE_FAULT_` string, the same check `scripts/install-helper.sh` makes.
-  `scripts/build-rpm.sh --dev-tools`, never with `--version`, adds the `dev-tools` features (the
-  token export); any other build stops if `konedrived` contains them.
+- **Rust.** `cargo build --release --offline --locked -p konedrived -p konedrivectl`, with Fedora's
+  `RUSTFLAGS`, and cargo's home and output inside the build directory. The `fault-injection`
+  feature is the VM suite's alone and is never packaged. `--dev-tools` (`rpmbuild --with
+  dev_tools`), never together with `--version`, builds a local development package whose daemon
+  serves the token export ([desktop.md](desktop.md) §2.11); the build checks the binary both ways,
+  and stops if a release build's `konedrived` holds `org.konedrive.TokenExport` or a `--dev-tools`
+  build's does not.
 - **C++.** `app/` and `dolphin/` are configured with Fedora's `%cmake_kf6` (installed under `/usr`,
   KDE's system directories, tests off), each in its own build directory, and installed with their
-  own CMake install rules. That is what puts the plugins under `%{_qt6_plugindir}/kf6/`.
-- **The units and the activation file** come from `packaging/`, where they serve the developer
-  install: the daemon runs from `~/.local/bin`, the helper from `/usr/local/libexec`, and the D-Bus
-  file's `Exec=` is `/bin/false`, leaving the start to systemd (`SystemdService=`). `%install`
-  rewrites each of those lines to the packaged program (`/usr/bin/konedrived`,
-  `/usr/libexec/konedrive-helper`) and stops if a line it expects is not there, so the two installs
-  keep one set of files and cannot drift apart silently. The helper's hardening (SECURITY.md) is
-  therefore the same in both.
+  own CMake install rules. The window is given the version and the commit it shows.
+- **The unit and the activation file** come from `packaging/`, where they serve the developer
+  install: the unit runs `%h/.local/bin/konedrived`, and the D-Bus file's `Exec=` is `/bin/false`,
+  leaving the start to systemd (`SystemdService=konedrived.service`). `%install` rewrites
+  `ExecStart=`, `ExecStopPost=` and `Exec=` to `/usr/bin/konedrived`, and stops if a line it expects
+  is not there, so the two installs keep one set of files and cannot drift apart silently.
 - **`%check`** runs `desktop-file-validate` on the launcher entry. The test suites do not run in the
-  package build: they are run in development (CONTRIBUTING.md), and the helper's need root and a VM.
-- **No debuginfo packages.** The RPMs are installed with a glob over the output directory, which the
-  debuginfo and debugsource packages would match too, and the debugsource one would carry every
-  vendored crate.
+  package build: they run in development (`CONTRIBUTING.md`), and the VM suite needs a VM.
+- **No debuginfo packages** (`%global debug_package %{nil}`): the RPMs are installed with a glob over
+  the output directory, which the debuginfo and debugsource packages would match too, and the
+  debugsource one would carry every vendored crate.
 
-## Install, upgrade and removal
+Releases are built the same way by `.github/workflows/release.yml`, in a `fedora:44` and a
+`fedora:45` container; each pair is then installed in a clean container of the same Fedora, where
+every program must find its libraries and `konedrived --version` and `konedrivectl --version` must
+run, before the tag and the release are made.
 
-The helper's scriptlets are the systemd macros, plus one start. The daemon's are the user-unit
-macros.
+## 3. The daemon's unit
 
-| When | The helper (`konedrive-helper.service`) | The daemon (`konedrived.service`, per user) |
-|---|---|---|
-| First install | the preset enables it (`%systemd_post`), and `%post` starts it at once | `%systemd_user_post`, which starts nothing: D-Bus starts it on demand, when the window or `konedrivectl` first calls it |
-| Upgrade | restarted when the transaction ends (`%systemd_postun_with_restart`), if it was running | restarted when the transaction ends, for every logged-in user whose daemon runs (`%systemd_user_postun_with_restart`) |
-| Removal | stopped and disabled (`%systemd_preun`) | stopped and disabled for every logged-in user (`%systemd_user_preun`) |
+`konedrived.service` is a user unit of `Type=dbus` with `BusName=org.konedrive.Daemon`:
 
-**Why the helper is enabled and started on install.** A OneDrive folder can only be registered while
-the helper runs, and is kept in step only while it runs, so an installed but stopped helper is a
-broken install. Fedora leaves services off unless a preset enables them, so the package carries its
-own preset. It also starts the helper at once, on first install only and where systemd runs, rather
-than at the next boot: the user can then sign in and register a folder straight away. The daemon
-connects to it within half a minute (`konedrivectl sync status` then says `Helper: connected`). The
-start runs in `%post`, before systemd's end-of-transaction reload, so `%post` reloads systemd first;
-a start that fails says so in `dnf`'s output, naming `systemctl status konedrive-helper`, and does
-not fail the install. No test installs the RPMs: the scriptlets first run on the user's machine.
+- **`Restart=on-failure`**, `RestartSec=5`: the daemon exits with a failure when a task it needs is
+  gone, and each start brings every folder up again, so a failure that comes back is tried every few
+  seconds, not in a tight loop.
+- **`ExecStopPost=konedrived --tidy`**, after the daemon's end however it ended: the tidy step takes
+  off a mount the daemon left on a folder and leaves the folder a plain directory without its write
+  bits that shows the downloaded files, and tells KDE's programs to read it again
+  ([mount.md](mount.md) §8; [desktop.md](desktop.md) §10).
+- **`LimitNOFILE=16384`**, well clear of anything the daemon needs.
+- `WantedBy=default.target`; the package enables nothing: D-Bus starts the daemon on demand.
 
-**What an upgrade costs.** The helper is restarted so that the new binary runs, and the daemons with
-it, so that the two sides always run the same version. The helper, stopped by systemd with
-`SIGTERM`, answers every open still waiting for a download with an error before it closes its
-fanotify group ([hydration.md](hydration.md) §13): a program that waits for a file at that moment
-gets `EIO` from its `open`, which it can see and try again, and that download is cut off. Between
-the old helper's exit and the new one's start nothing is intercepted, and a file that is not
-downloaded reads as zeros if it is opened then (limitations log Z1). `scripts/install-helper.sh`
-warns before it restarts the helper; the package cannot, as `dnf` asks once for the whole
-transaction. Upgrade when nothing is opening files in the folder.
+## 4. Install, upgrade and removal
 
-The first upgrade from a single-account version to one with multiple accounts also migrates each
-user's configuration, when the restarted daemon starts ([accounts.md](accounts.md) §8), and moves
-the daemon's D-Bus objects: a KOneDrive window or a Dolphin that was running across it has to be
-restarted. There is no way back to the older version, except restoring `config.toml.v1` by hand.
+The scriptlets are the systemd user-unit macros alone.
 
-**What removal leaves.** The helper's list of registered folders (`/var/lib/konedrive/roots.json`)
-and each user's settings, tree stores, KWallet entries and sync folders stay. A folder still
-registered when the helper stops reads as zeros where its files are not downloaded, and
-`konedrivectl` goes with the package, so `konedrivectl --account <account> sync forget` comes first,
-for every account's folder (limitations log R3). Unlike `scripts/install-helper.sh --uninstall`, the
-package does not refuse.
+| When | `konedrived.service`, per user |
+|---|---|
+| First install | `%systemd_user_post`, which starts nothing: D-Bus starts the daemon on the first call of the window or `konedrivectl` |
+| Upgrade | restarted when the transaction ends, for every logged-in user whose daemon runs (`%systemd_user_postun_with_restart`) |
+| Removal | stopped and disabled for every logged-in user (`%systemd_user_preun`) |
 
-## The developer install and the packages
+**What an upgrade costs.** The daemon is restarted so that the new binary runs. While it restarts
+the folder is not served (F296): the stopping daemon takes its mount off, and until the new one has
+mounted the folder again it is the backing directory, which shows only what is on disk and takes
+nothing. A program that held a file of the folder open gets an error from it. The new daemon mounts
+the folder again and tells KDE's programs to list it again. A running window restarts itself as the
+installed program once the daemon is back ([desktop.md](desktop.md) §4, "After an update"). `dnf`
+asks once for the whole transaction, so the package cannot warn first: the user guide says to close
+programs that have files of the folder open before upgrading.
 
-The two must not be installed together. Each file of the developer install takes precedence over the
-package's:
+**What removal leaves.** Each user's `config.toml`, stores, KWallet entries and folders stay. The
+daemon is stopped, so each folder is left the backing directory without its write bits, showing the
+downloaded files, and `konedrivectl`, which could forget it and give the write bits back, goes with
+the package. So `konedrivectl --account <account> sync forget` comes first, for every account's
+folder; the package cannot refuse (R3).
+
+## 5. The developer install and the packages
+
+`scripts/dev-install.sh` builds with the `dev-tools` feature and installs for the user alone. The
+two installs must not be used together: each file of the developer install takes precedence over
+the package's.
 
 | Developer install | Takes precedence over |
 |---|---|
-| `~/.config/systemd/user/konedrived.service` | `/usr/lib/systemd/user/konedrived.service` |
+| `~/.config/systemd/user/konedrived.service`, running `~/.local/bin/konedrived` | `/usr/lib/systemd/user/konedrived.service` |
 | `~/.local/share/dbus-1/services/org.konedrive.Daemon.service` | `/usr/share/dbus-1/services/org.konedrive.Daemon.service` |
 | `~/.local/bin/konedrive*`, ahead of `/usr/bin` on the usual `PATH` | `/usr/bin/konedrive*` |
-| `/etc/systemd/system/konedrive-helper.service` (from `scripts/install-helper.sh`), running `/usr/local/libexec/konedrive-helper` | `/usr/lib/systemd/system/konedrive-helper.service` |
+| `~/.local/share/applications/org.konedrive.KOneDrive.desktop`, `~/.local/share/knotifications6/konedrive.notifyrc` | the package's in `/usr/share` |
 | Dolphin plugins installed for the user by hand, with `QT_PLUGIN_PATH` | the `konedrive-kde` plugins |
 
-So the switch removes the developer install first (`docs/developing.md`, "Switching from the developer install to the packages"):
-
-1. `scripts/dev-uninstall.sh`, as the user, removes exactly the files `scripts/dev-install.sh`
-   installs, stops the daemon, then reloads the user's systemd and D-Bus. It leaves the settings,
-   the tree store, the refresh token and the sync folder alone, so the packaged daemon starts where
-   this one stopped. It points the "Start at login" entry at `/usr/bin/konedrive`, and points out
-   per-user Dolphin plugins without removing them.
-2. `sudo scripts/install-helper.sh --uninstall --force` removes the old helper and its `/etc` unit.
-   `--force` because a folder is registered: its record in `/var/lib/konedrive/roots.json` stays,
-   and the packaged helper, which keeps its state in the same place, marks that folder again when it
-   starts. Until then, the folder is not intercepted.
-3. `sudo dnf install` of both RPMs.
-
-The package's `%post` warns when `/etc/systemd/system/konedrive-helper.service` exists. It cannot
-see the per-user files.
+So the switch removes the developer install first. `scripts/dev-uninstall.sh`, as the user,
+disables the user unit, removes exactly the files `scripts/dev-install.sh` installs, stops the
+daemon, and reloads the user's systemd and D-Bus. It leaves the settings, the stores, the refresh
+tokens and the folders alone, so the packaged daemon starts where this one stopped. It points the
+"Start at login" entry at `/usr/bin/konedrive`, points out per-user Dolphin plugins without removing
+them, and says to restart a window that still runs the removed program. Then `sudo dnf install` of
+both RPMs. Nothing of the developer install needs root to remove.

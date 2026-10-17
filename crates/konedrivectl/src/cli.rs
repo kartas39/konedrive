@@ -95,28 +95,32 @@ pub(crate) enum AccountCmd {
     },
     /// Remove an account: forget its folder, sign it out, delete its token and cached data
     ///
-    /// Asks nothing. Deleted: the refresh token, the cached name and quota, the list of
-    /// OneDrive items, the activity and the conflicts list. Kept: the folder's files, as they
-    /// are (a file that was never downloaded stays as an empty placeholder, which reads as
-    /// zeros), and rescued files. Refused, changing nothing, while the folder needs the helper
-    /// to be forgotten and the helper is not connected.
+    /// Asks only when changes were not sent to OneDrive: they stay only on this computer
+    /// (`--yes` skips the question). Deleted: the refresh token, the cached name and quota, the list of
+    /// OneDrive items, the activity and the conflicts list. Kept: what the folder holds on
+    /// this computer — the files that were downloaded and your own (a file that was never
+    /// downloaded is not there).
     Remove {
         /// The account: its id, label or email
         #[arg(value_name = "ACCOUNT", allow_hyphen_values = true)]
         named: String,
+        /// Do not ask: go on also with changes that were not sent to OneDrive
+        #[arg(long)]
+        yes: bool,
     },
     /// Show the account's mode, or switch it to read-only or read-write
     ///
     /// read-write signs in again, in the browser as `login` does, asking Microsoft for
     /// permission to change the account's files, and waits; nothing changes until that
-    /// permission is granted. read-only needs no sign-in, and is refused while changes wait
-    /// to be uploaded, unless --force.
+    /// permission is granted. read-only needs no sign-in; while changes made here are not
+    /// sent, the account sends them first and switches by itself, unless --force.
+    /// read-write cancels a switch to read-only that waits.
     Mode {
         /// read-only or read-write; without it, the mode is shown
         #[arg(value_parser = ["read-only", "read-write"])]
         mode: Option<String>,
-        /// Switch to read-only even while changes wait to be uploaded: they stay here, and
-        /// are not uploaded
+        /// Switch to read-only now, also while changes are not sent: they stay on this
+        /// computer, and are sent when the account is read-write again
         #[arg(long, requires = "mode")]
         force: bool,
     },
@@ -142,12 +146,10 @@ pub(crate) enum SettingsCmd {
 #[derive(Subcommand)]
 pub(crate) enum DevCmd {
     /// Add an account under a label, signed out and with no folder yet, which never has to
-    /// sign in: for a folder that shows a local directory (`sync
-    /// register-without-interception`, `sync populate-from`)
+    /// sign in
     // The rule is the daemon's sentence, so the help says what the daemon takes.
     #[command(long_about = format!(
-        "Add an account under a label, signed out and with no folder yet, which never has to sign in: for a \
-         folder that shows a local directory\n\n{}.",
+        "Add an account under a label, signed out and with no folder yet, which never has to sign in\n\n{}.",
         konedrive_dbus::LABEL_RULE
     ))]
     AddAccount {
@@ -184,20 +186,15 @@ pub(crate) enum SyncCmd {
 pub(crate) enum FolderCmd {
     /// Bind an empty folder to the account
     Register { path: String },
-    /// The developer's mode: bind a local folder with NOTHING intercepting opens inside it
-    ///
-    /// The folder is filled from a directory with `populate-from`. Without
-    /// the helper, files that are not downloaded read as zeros until you
-    /// `hydrate` them by hand. It never shows OneDrive: that takes `register`
-    /// and the helper. Named after the D-Bus method it calls
-    /// (`Folder.RegisterWithoutInterception`) rather than something shorter, on
-    /// purpose: the cost this mode carries belongs in the word you type, not
-    /// just in a warning you might scroll past.
-    RegisterWithoutInterception { path: String },
     /// Forget the account's folder (local files are left as they are)
-    Forget,
-    /// Fill the account's folder with placeholders mirroring a local directory
-    PopulateFrom { source_dir: String },
+    ///
+    /// Changes that were not sent to OneDrive stay only on this computer: with any, it
+    /// says how many and asks whether to go on.
+    Forget {
+        /// Do not ask: go on also with changes that were not sent
+        #[arg(long)]
+        yes: bool,
+    },
     /// List what is in OneDrive but not in the folder, and why
     Skipped,
     /// Ask OneDrive for changes now
@@ -212,7 +209,7 @@ pub(crate) enum FolderCmd {
     /// Show the downloads and uploads under way
     Transfers,
     /// Show the changes waiting to be uploaded, and why each waits
-    Outbox {
+    UploadQueue {
         /// Show every change, not only the first 50
         #[arg(long)]
         all: bool,
@@ -234,12 +231,17 @@ pub(crate) enum FolderCmd {
         #[arg(long)]
         all: bool,
     },
-    /// Show or change whether OneDrive's thumbnails of images and videos are downloaded.
-    /// Off, Dolphin downloads a cloud-only file in full to show its preview while its
-    /// previews are on
+    /// Show or change whether OneDrive's thumbnails of images, videos, PDFs and office
+    /// documents are downloaded. Off, Dolphin downloads a cloud-only file in full to show its
+    /// preview while its previews are on
     Thumbnails {
         #[arg(value_parser = ["on", "off"])]
         state: Option<String>,
+    },
+    /// Show or change how many GiB of this computer's disk stay free: a file kept
+    /// on this device is not downloaded while its download would leave less
+    FreeSpace {
+        gigabytes: Option<u64>,
     },
     /// Show or change the names of local files that are never uploaded (shell
     /// globs, matched against a name)
@@ -254,11 +256,6 @@ pub(crate) enum FolderCmd {
         /// reason that needs something done to each file
         #[arg(long)]
         all: bool,
-    },
-    /// Decide on a large delete held for confirmation
-    Deletes {
-        #[command(subcommand)]
-        action: DeletesCmd,
     },
     /// List your changed versions that were kept when the file changed or was
     /// removed in OneDrive: moved out of the way, or kept as a copy beside it
@@ -289,14 +286,15 @@ pub(crate) enum PathCmd {
         paths: Vec<String>,
     },
     /// Stop always keeping files or folders on this device; what is
-    /// downloaded stays downloaded. The paths decide the accounts
+    /// downloaded stays downloaded. A file or folder inside a folder that is always kept
+    /// stops being kept on its own, and the folder stays kept. The paths decide the accounts
     Unpin {
         #[arg(required = true)]
         paths: Vec<String>,
     },
-    /// Free up space for files or folders: a file or folder you pinned stops
-    /// being kept on this device, and everything in it is freed up. The paths decide the
-    /// accounts
+    /// Free up space for files or folders: a file or folder stops being kept on this
+    /// device, also one inside a folder that is always kept, and everything in it is freed
+    /// up. The paths decide the accounts
     Free {
         #[arg(required = true)]
         paths: Vec<String>,
@@ -328,10 +326,3 @@ pub(crate) enum IgnoreCmd {
     Remove { pattern: String },
 }
 
-#[derive(Subcommand)]
-pub(crate) enum DeletesCmd {
-    /// Delete them in OneDrive too
-    Confirm,
-    /// Keep them in OneDrive: they come back here
-    Restore,
-}

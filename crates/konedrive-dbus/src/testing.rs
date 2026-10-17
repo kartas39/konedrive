@@ -5,8 +5,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 /// How long a call on [`TestBus::connect`]'s connection waits for its reply. A call that gets
-/// none then fails where it was made, with the test's name, instead of waiting for ever
-/// (quality finding `SY13`); it is long, so that a busy machine does not run it out.
+/// none then fails where it was made, with the test's name, instead of waiting for ever;
+/// it is long, so that a busy machine does not run it out.
 pub const METHOD_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The bus's configuration: the session bus's own (`/usr/share/dbus-1/session.conf`) without
@@ -14,8 +14,7 @@ pub const METHOD_TIMEOUT: Duration = Duration::from_secs(120);
 /// `session.d`, `/etc/dbus-1/session.d`, `/etc/dbus-1/session-local.conf`, the SELinux
 /// contexts) and without the two limits on starting services (`service_start_timeout`,
 /// `max_pending_service_starts`). A bus that reads no service directory can start no
-/// program: not an installed `konedrived`, which would run on the real `~/.config` (quality
-/// finding `DB2`).
+/// program: not an installed `konedrived`, which would run on the real `~/.config`.
 const CONFIG: &str = r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
 <busconfig>

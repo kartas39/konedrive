@@ -21,14 +21,14 @@ fn on_the_bus<I: Interface>(interface: &I) -> BTreeSet<String> {
 /// here, with who announces them. And no row names a property that is not there.
 #[tokio::test]
 async fn every_property_on_the_bus_is_a_row_of_the_table() {
-    let service = crate::sync::testing::wiring().build();
+    let service = crate::account_folder::testing::wiring().build();
     let rows = |interface: &str| -> BTreeSet<String> {
         AT_ONCE.iter().chain(COALESCED).chain(DECIDED).filter(|row| row.interface() == interface).map(|row| row.name().to_owned()).collect()
     };
     let with = |rows: BTreeSet<String>, others: &[&str]| -> BTreeSet<String> { rows.into_iter().chain(others.iter().map(|name| (*name).to_owned())).collect() };
 
-    // `Source` goes out with `Path`; the two settings by the call that sets them.
-    assert_eq!(on_the_bus(&Folder::new(service.clone())), with(rows(FOLDER), &["Source", "IgnorePatterns", "Thumbnails"]));
+    // `Source` goes out with `Path`; the three settings by the call that sets them.
+    assert_eq!(on_the_bus(&Folder::new(service.clone())), with(rows(FOLDER), &["Source", "IgnorePatterns", "Thumbnails", "FreeSpaceReserve"]));
     assert_eq!(on_the_bus(&UploadQueue::new(service.clone())), rows(QUEUE));
     assert_eq!(on_the_bus(&Transfers::new(service.clone())), rows(MOVING));
     assert_eq!(on_the_bus(&LocalScan::new(service.clone())), rows(SCAN));
@@ -45,7 +45,7 @@ fn what_changed_is_announced_with_its_value_under_its_interface() {
     let old = Seen::default();
     let mut new = old.clone();
     new.snapshot.cycle.items_listed = 7;
-    new.snapshot.outbox.pending_count = 2;
+    new.snapshot.upload_queue.pending_count = 2;
     new.snapshot.pause.paused_until = Some(0);
 
     let coalesced = changed(COALESCED, &old, &new);

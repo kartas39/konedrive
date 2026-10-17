@@ -16,13 +16,14 @@ fn a_status_alone_decides_when_graph_names_no_code() {
     assert_eq!(kind(410, ""), Kind::Gone);
     assert_eq!(kind(408, ""), Kind::Timeout);
     assert_eq!(kind(416, ""), Kind::RangeNotSatisfiable);
-    // What a write tells apart (`docs/design/writes.md` §6.2).
+    // What a write tells apart (`docs/design/writes.md` §4.6).
     assert_eq!(kind(412, ""), Kind::Changed);
     assert_eq!(kind(409, ""), Kind::NameExists);
     assert_eq!(kind(507, ""), Kind::QuotaExceeded);
     assert_eq!(kind(423, ""), Kind::Locked);
     assert_eq!(kind(403, ""), Kind::Forbidden);
     assert_eq!(kind(400, ""), Kind::BadRequest);
+    assert_eq!(kind(413, "invalidRequest"), Kind::TooLarge);
     // The service failing, but not asking to wait and not full.
     for status in [500, 502, 504, 509, 599] {
         assert_eq!(kind(status, ""), Kind::Server, "{status}");

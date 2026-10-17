@@ -8,13 +8,9 @@ use super::files::{skip_reason_text, still_here_text, where_here_text};
 use super::formats::local_time;
 use super::status::held_text;
 
-/// `sync register` and `sync register-without-interception`, done.
-pub fn registered_text(path: &str, intercepted: bool) -> String {
-    if intercepted {
-        format!("Folder registered: {path}")
-    } else {
-        format!("Folder registered without interception: {path}")
-    }
+/// `sync register`, done.
+pub fn registered_text(path: &str) -> String {
+    format!("Folder registered: {path}")
 }
 
 /// A registration that went through and left the folder in `error`: `detail` is its
@@ -34,13 +30,76 @@ pub fn needs_attention_text(root: &str, detail: &str) -> String {
     }
 }
 
+/// What `sync forget` and `account remove` say before they go on of the changes made here
+/// that were not sent to OneDrive: `count` of them, or why the count cannot be read.
+/// `None` for none: nothing is said, and nothing is asked.
+// TODO: wording
+pub fn unsent_warning_text(count: Result<u64, &str>) -> Option<String> {
+    match count {
+        Ok(0) => None,
+        Ok(1) => Some("1 change was not sent to OneDrive and will stay only on this computer.".to_owned()),
+        Ok(count) => Some(format!("{count} changes were not sent to OneDrive and will stay only on this computer.")),
+        Err(why) => Some(format!("Could not read how many changes were not sent to OneDrive ({why}); any that were not will stay only on this computer.")),
+    }
+}
+
+/// What follows the warning of unsent changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsentQuestion {
+    /// The command was given `--yes`: it goes on unasked.
+    Skipped,
+    /// The question is asked on the terminal.
+    Asked,
+    /// There is no terminal to ask on (a script, a pipe, a loop that reads a list):
+    /// nothing is read from the input, and the command fails with [`NO_TERMINAL_TO_ASK`].
+    NoTerminal,
+}
+
+/// What follows the warning: `--yes` skips the question, whatever the input is; without
+/// it the question is asked of a terminal alone. Pure.
+pub fn decide_unsent_question(is_asking_skipped: bool, is_input_terminal: bool) -> UnsentQuestion {
+    match (is_asking_skipped, is_input_terminal) {
+        (true, _) => UnsentQuestion::Skipped,
+        (false, true) => UnsentQuestion::Asked,
+        (false, false) => UnsentQuestion::NoTerminal,
+    }
+}
+
+/// What was answered to the question whether to go on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsentAnswer {
+    /// "y" or "yes", in any case: the command goes on.
+    GoOn,
+    /// Anything else, the empty line among it: nothing is changed.
+    Declined,
+    /// The input ended with no line: the command fails with [`QUESTION_NOT_ANSWERED`].
+    NotAnswered,
+}
+
+/// What `line` answers, the line read after the question; `None` when the input ended
+/// before one. Pure.
+pub fn decide_unsent_answer(line: Option<&str>) -> UnsentAnswer {
+    match line.map(|line| line.trim().to_ascii_lowercase()).as_deref() {
+        None => UnsentAnswer::NotAnswered,
+        Some("y" | "yes") => UnsentAnswer::GoOn,
+        Some(_) => UnsentAnswer::Declined,
+    }
+}
+
+/// The question after the warning of unsent changes.
+pub const GO_ON_QUESTION: &str = "Go on? [y/N] ";
+
+/// The question was declined.
+pub const NOTHING_CHANGED: &str = "Nothing was changed.";
+
+/// The question cannot be asked: the command fails with this.
+pub const NO_TERMINAL_TO_ASK: &str = "Nothing was changed: there is no terminal to ask on. Pass --yes to go on without being asked.";
+
+/// The input ended before the question was answered: the command fails with this.
+pub const QUESTION_NOT_ANSWERED: &str = "Nothing was changed: the question was not answered. Pass --yes to go on without being asked.";
+
 /// `sync forget`, done.
 pub const FORGOTTEN: &str = "Folder forgotten. Local files were left untouched.";
-
-/// `sync populate-from`, done.
-pub fn populated_text(created: u64) -> String {
-    format!("Created {created} placeholders.")
-}
 
 /// `sync skipped` with no folder.
 pub const NO_FOLDER: &str = "No folder is registered.";
@@ -107,9 +166,18 @@ pub const NOTHING_TO_LIFT: &str = "No account is paused by itself: nothing to li
 /// `sync thumbnails`' answer.
 pub fn thumbnails_text(on: bool) -> &'static str {
     if on {
-        "Thumbnails: on — OneDrive's previews of images and videos are downloaded."
+        "Thumbnails: on — OneDrive's previews of images, videos, PDFs and office documents are downloaded."
     } else {
         "Thumbnails: off — Dolphin downloads a cloud-only file in full to show its preview while its previews are on."
+    }
+}
+
+/// `sync free-space`' answer.
+pub fn free_space_text(gigabytes: u64) -> String {
+    // TODO: wording
+    match gigabytes {
+        0 => "Free space: nothing is kept free — files kept on this device are downloaded until the disk is full.".to_owned(),
+        _ => format!("Free space: {gigabytes} GiB stay free — a file kept on this device is not downloaded while its download would leave less."),
     }
 }
 
@@ -133,39 +201,37 @@ pub fn not_ignored_text(pattern: &str, prefix: &str) -> String {
     format!("`{pattern}` is not on the list (`{prefix} sync ignore list`)")
 }
 
-/// `sync deletes confirm`, done: how many held removals went ahead.
-pub fn deletes_confirmed_text(count: u32) -> String {
-    match count {
-        0 => NO_DELETE_WAITS.to_owned(),
-        n => format!("Confirmed: {n} change(s) go to OneDrive's recycle bin."),
-    }
-}
-
-/// `sync deletes restore`, done: how many held removals were dropped.
-pub fn deletes_restored_text(count: u32) -> String {
-    match count {
-        0 => NO_DELETE_WAITS.to_owned(),
-        n => format!("Restored: {n} change(s) dropped; the items come back from OneDrive."),
-    }
-}
-
-const NO_DELETE_WAITS: &str = "No delete is waiting for confirmation.";
-
 /// `sync dismiss`, done.
 pub const DISMISSED: &str = "Dismissed. The file was left where it is.";
 
 /// After `sync free-up-space` in a folder with pins.
 pub const PINS_LEFT: &str = "Files kept on this device (`konedrivectl sync pin`) were left as they are.";
 
+/// What `sync activity` says in the place of the detail for a kind whose events carry
+/// none and need a sentence; `None` for every other kind. (`store-rebuilt` carries its
+/// sentence as its detail: what was lost with the old records.)
+// TODO: wording
+fn activity_kind_sentence(kind: &str) -> Option<&'static str> {
+    match kind {
+        "not-removed-here" => Some("cannot be removed here: it holds items that cannot be shown on this computer. Remove it in OneDrive."),
+        _ => None,
+    }
+}
+
 /// `sync activity`: one line per event, newest first — time, kind, full
-/// path, and the detail in parentheses when there is one.
+/// path, and the detail in parentheses when there is one; for a directory that could
+/// not be removed here, why and what to do.
 pub fn activity_text(events: &[Event]) -> String {
     if events.is_empty() {
         return "Nothing has happened yet.\n".to_owned();
     }
     let mut out = String::new();
     for Event { at, kind, path, detail } in events {
-        let detail = if detail.is_empty() { String::new() } else { format!("  ({detail})") };
+        let detail = match activity_kind_sentence(kind) {
+            Some(sentence) => format!("  ({sentence})"),
+            None if detail.is_empty() => String::new(),
+            None => format!("  ({detail})"),
+        };
         out.push_str(&format!("{}  {kind:<10}  {path}{detail}\n", local_time(*at)));
     }
     out

@@ -8,12 +8,13 @@
 use std::time::Duration;
 
 use konedrive_graph::drive::DriveClient;
-use konedrive_graph::loopback::{Callback, LoopbackError, LoopbackListener};
+use konedrive_graph::loopback::{Answer, Callback, LoopbackError, LoopbackListener};
 use konedrive_graph::oauth::{scopes_for, Endpoints, OAuthClient, TokenResponse};
 use konedrive_graph::pkce::{random_token, Pkce};
 use konedrive_graph::token::StaticToken;
 use tokio::sync::oneshot;
 
+use crate::account::account_trouble::SignInFailure;
 use crate::config::{DriveId, Mode};
 
 /// What a sign-in is refused with when Graph names no drive.
@@ -30,7 +31,7 @@ pub(crate) fn http_client() -> reqwest::Result<reqwest::Client> {
 
 /// A client asking for `mode`'s scope, for the authorization, the code exchange or a
 /// refresh.
-pub(crate) fn oauth_client(http: reqwest::Client, endpoints: Endpoints, client_id: &str, mode: Mode) -> OAuthClient {
+pub fn oauth_client(http: reqwest::Client, endpoints: Endpoints, client_id: &str, mode: Mode) -> OAuthClient {
     OAuthClient::new(http, endpoints, client_id.to_owned()).with_scope(scopes_for(mode == Mode::ReadWrite))
 }
 
@@ -46,8 +47,8 @@ pub(crate) struct Attempt {
 
 impl Attempt {
     /// Binds the loopback listener the browser answers on. `Err` says why it cannot be.
-    pub(crate) async fn bind(oauth: OAuthClient) -> Result<Self, String> {
-        let listener = LoopbackListener::bind().await.map_err(|e| format!("cannot listen on localhost: {e}"))?;
+    pub(crate) async fn bind(oauth: OAuthClient) -> Result<Self, SignInFailure> {
+        let listener = LoopbackListener::bind().await.map_err(|e| SignInFailure::CannotListen { detail: e.to_string() })?;
         let redirect_uri = listener.redirect_uri();
         Ok(Self { oauth, listener, redirect_uri, pkce: Pkce::new(), csrf: random_token() })
     }
@@ -63,33 +64,36 @@ impl Attempt {
         self.oauth.picker_authorize_url(&self.redirect_uri, &self.pkce, &self.csrf).to_string()
     }
 
-    /// Waits for the browser, for at most `timeout`, and exchanges the code. `Err` says
-    /// why there are no tokens; empty when `cancel` ended the wait.
-    pub(crate) async fn tokens(self, timeout: Duration, cancel: oneshot::Receiver<()>) -> Result<TokenResponse, String> {
+    /// Waits for the browser, for at most `timeout`, and exchanges the code. The tokens
+    /// come with the browser's request, still unanswered: whoever decides what the tokens
+    /// lead to says it there. `Err` says why there are no tokens, and a browser that
+    /// asked was told the same; `Cancelled` when `cancel` ended the wait.
+    pub(crate) async fn tokens(self, timeout: Duration, cancel: oneshot::Receiver<()>) -> Result<(TokenResponse, Answer), SignInFailure> {
         let Attempt { oauth, listener, redirect_uri, pkce, csrf } = self;
         let callback = tokio::select! {
             result = listener.wait(&csrf, timeout) => result,
-            _ = cancel => return Err(String::new()),
+            _ = cancel => return Err(SignInFailure::Cancelled),
         };
-        let code = match callback {
-            Ok(Callback::Code(code)) => code,
-            Ok(Callback::Error { error, .. }) if error == "access_denied" => {
-                return Err("Access was denied in the browser.".into())
-            }
-            Ok(Callback::Error { error, description }) => {
-                return Err(format!("Microsoft reported an error: {error}: {description}"))
-            }
-            Err(LoopbackError::TimedOut) => {
-                return Err("Timed out waiting for the browser. If Microsoft showed an error page, \
-                            check the app registration: client ID and redirect URI http://localhost."
-                    .into())
-            }
-            Err(e) => return Err(e.to_string()),
+        let (callback, browser) = match callback {
+            Ok(answered) => answered,
+            Err(LoopbackError::TimedOut) => return Err(SignInFailure::BrowserTimedOut),
+            Err(e) => return Err(SignInFailure::Browser { detail: e.to_string() }),
         };
-        oauth
-            .exchange_code(&code, &pkce.verifier, &redirect_uri)
-            .await
-            .map_err(|e| format!("Sign-in failed: {e}"))
+        let tokens = match callback {
+            Callback::Code(code) => oauth
+                .exchange_code(&code, &pkce.verifier, &redirect_uri)
+                .await
+                .map_err(|e| SignInFailure::CodeNotExchanged { detail: e.to_string() }),
+            Callback::Error { error, .. } if error == "access_denied" => Err(SignInFailure::AccessDenied),
+            Callback::Error { error, description } => Err(SignInFailure::MicrosoftRefused { error, description }),
+        };
+        match tokens {
+            Ok(tokens) => Ok((tokens, browser)),
+            Err(why) => {
+                browser.say(&why.to_string());
+                Err(why)
+            }
+        }
     }
 }
 
@@ -107,34 +111,16 @@ pub(crate) struct SignedIn {
     pub(crate) identity: Identity,
 }
 
-/// Why a token response is no sign-in.
-pub(crate) enum Unconfirmed {
-    /// It carries no refresh token.
-    NoRefreshToken,
-    /// Graph did not say which drive the token is for: why.
-    Unidentified(String),
-}
-
 /// A token response as a sign-in: its refresh token, and whose it is, asked of `graph`
 /// with the new access token. Only the drive is needed: it is the check (§6.2). The email
 /// names the account and its wallet item.
-pub(crate) async fn confirm(tokens: TokenResponse, graph: &DriveClient) -> Result<SignedIn, Unconfirmed> {
-    let Some(refresh_token) = tokens.refresh_token.clone() else { return Err(Unconfirmed::NoRefreshToken) };
+pub(crate) async fn confirm(tokens: TokenResponse, graph: &DriveClient) -> Result<SignedIn, SignInFailure> {
+    let Some(refresh_token) = tokens.refresh_token.clone() else { return Err(SignInFailure::NoRefreshToken) };
     let (drive, profile) = tokio::join!(graph.drive(&tokens.access_token), graph.profile(&tokens.access_token));
     let drive = drive.map_err(|e| e.to_string()).and_then(|drive| DriveId::new(drive.id).ok_or_else(|| NO_DRIVE.to_owned()));
-    let drive = drive.map_err(Unconfirmed::Unidentified)?;
+    let drive = drive.map_err(|detail| SignInFailure::Unidentified { detail })?;
     let identity = Identity { drive, email: profile.ok().map(|p| p.email).filter(|e| !e.is_empty()) };
     Ok(SignedIn { tokens, refresh_token, identity })
-}
-
-impl Unconfirmed {
-    /// As a sign-in says it.
-    pub(crate) fn sentence(&self) -> String {
-        match self {
-            Unconfirmed::NoRefreshToken => "Microsoft did not return a refresh token.".into(),
-            Unconfirmed::Unidentified(why) => format!("Could not check which account this is ({why}); try again."),
-        }
-    }
 }
 
 /// A Graph client for an attempt that belongs to no account: every question

@@ -87,8 +87,9 @@ private Q_SLOTS:
     {
         start();
         for (const QString &kind : {QStringLiteral("downloaded"), QStringLiteral("freed"), QStringLiteral("added"), QStringLiteral("updated"),
-                                    QStringLiteral("removed"), QStringLiteral("moved"), QStringLiteral("listed"), QStringLiteral("uploaded"),
-                                    QStringLiteral("cloud-moved"), QStringLiteral("cloud-deleted"), QStringLiteral("restored")}) {
+                                    QStringLiteral("removed"), QStringLiteral("moved"), QStringLiteral("uploaded"),
+                                    QStringLiteral("cloud-moved"), QStringLiteral("cloud-deleted"), QStringLiteral("restored"),
+                                    QStringLiteral("first-sync-began"), QStringLiteral("first-sync-ended")}) {
             report(kind, QStringLiteral("a.txt"), QString());
         }
         QCOMPARE(m_sink.sent.size(), 0);
@@ -111,6 +112,19 @@ private Q_SLOTS:
         QCOMPARE(m_sink.sent.first().event, QStringLiteral("downloadFailed"));
         QVERIFY(m_sink.sent.first().text.contains(QStringLiteral("a.txt")));
         QVERIFY(m_sink.sent.first().text.contains(QStringLiteral("the connection was reset")));
+    }
+
+    /// A directory that cannot be removed here is told once, with why and what to do,
+    /// and offers nothing to press.
+    void aDirectoryNotRemovedHereNotifies()
+    {
+        start();
+        report(QStringLiteral("not-removed-here"), QStringLiteral("Notebooks"), QString());
+        QCOMPARE(m_sink.sent.size(), 1);
+        QCOMPARE(m_sink.sent.first().event, QStringLiteral("notRemovedHere"));
+        QCOMPARE(m_sink.sent.first().text,
+                 QStringLiteral("Notebooks cannot be removed here: it holds items that cannot be shown on this computer. Remove it in OneDrive."));
+        QCOMPARE(m_sink.sent.first().showPath, QString());
     }
 
     /// A replacement that failed is its own kind, `update-failed`.
@@ -140,19 +154,6 @@ private Q_SLOTS:
         report(QStringLiteral("failed"), QStringLiteral("a.txt"), QStringLiteral("could not be updated: the connection was reset"));
         QCOMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.first().event, QStringLiteral("downloadFailed"));
-    }
-
-    /// "Your changed version of X was moved to Y", with "Show in Folder" on the moved file.
-    void aConflictNotifiesWithWhereTheFileWent()
-    {
-        start();
-        const QString rescued = QStringLiteral("/home/u/.local/share/konedrive/rescued/20260924T101500/doc.odt");
-        report(QStringLiteral("conflict"), QStringLiteral("doc.odt"), rescued);
-        QCOMPARE(m_sink.sent.size(), 1);
-        const Notice &notice = m_sink.sent.first();
-        QCOMPARE(notice.event, QStringLiteral("conflict"));
-        QCOMPARE(notice.text, QStringLiteral("Your changed version of doc.odt was moved to ") + rescued);
-        QCOMPARE(notice.showPath, rescued);
     }
 
     /// A file changed on both sides keeps a copy beside it: its own words,
@@ -200,51 +201,32 @@ private Q_SLOTS:
         QCOMPARE(m_sink.sent.size(), 1);
     }
 
-    /// Removals the mass-delete guard holds notify once when they appear
-    /// (not those already held when the window first looked), with Restore
-    /// first and as what a click on the notification does.
-    void heldDeletesNotifyWithRestoreAsTheDefault()
+    /// A file refused while OneDrive asks to wait notifies once for the wait, with the
+    /// file and the minutes; the seconds counting down and the wait ending say nothing,
+    /// and the next wait has its own notice.
+    void aFileRefusedWhileOneDriveAsksToWaitNotifiesOncePerWait()
     {
         start();
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(290)}});
+        QTRY_COMPARE(m_sync->retryAfter(), 290u);
         QCOMPARE(m_sink.sent.size(), 0);
-
-        m_daemon->sync->holdDeletes(Root + QStringLiteral("/old"), 2);
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfterRefusal"), QString(Root + QStringLiteral("/budget.xlsx"))}});
         QTRY_COMPARE(m_sink.sent.size(), 1);
-        const Notice notice = m_sink.sent.first();
-        QCOMPARE(notice.event, QStringLiteral("massDelete"));
-        QCOMPARE(notice.text, QStringLiteral("2 items deleted in /home/u/OneDrive are not deleted in OneDrive yet. Restore them here, or delete them in OneDrive too?"));
-        QCOMPARE(notice.actions.size(), 2);
-        QCOMPARE(notice.actions.at(0).label, QStringLiteral("Restore Them"));
-        QCOMPARE(notice.actions.at(1).label, QStringLiteral("Delete in OneDrive"));
-        QVERIFY(notice.defaultAction);
+        QCOMPARE(m_sink.sent.at(0).event, QStringLiteral("throttled"));
+        QCOMPARE(m_sink.sent.at(0).title, QStringLiteral("OneDrive asked to wait"));
+        QCOMPARE(m_sink.sent.at(0).text, QStringLiteral("OneDrive asked this computer to wait about 5 minutes. budget.xlsx opens after that."));
 
-        // More held while some already are: nothing new.
-        m_daemon->sync->holdDeletes(Root + QStringLiteral("/older"), 1);
-        QTRY_COMPARE(m_sync->heldCount(), 3u);
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(289)}});
+        QTRY_COMPARE(m_sync->retryAfter(), 289u);
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(0)}, {QStringLiteral("RetryAfterRefusal"), QString()}});
+        QTRY_COMPARE(m_sync->retryAfter(), 0u);
         QCOMPARE(m_sink.sent.size(), 1);
 
-        notice.defaultAction();
-        QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("RestoreDeletes")));
-        QVERIFY(!m_daemon->sync->calls.contains(QStringLiteral("ConfirmDeletes")));
-        notice.actions.at(1).run();
-        QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("ConfirmDeletes")));
-    }
-
-    /// M3: past the cap, the daemon's own "and N more" conflict event (path
-    /// = the root) is a count, not a rescued path.
-    void aCappedConflictSummaryCountsRatherThanNamingAPath()
-    {
-        start();
-        // report() always appends "/name" to Root; this event's path is the
-        // root itself, so it is emitted directly.
-        QSignalSpy arrived(m_sync.get(), &SyncController::activityAdded);
-        m_daemon->sync->activity(1758700000, QStringLiteral("conflict"), Root, QStringLiteral("and 7 more"));
-        QVERIFY(arrived.wait(5000));
-        QCOMPARE(m_sink.sent.size(), 1);
-        const Notice &notice = m_sink.sent.first();
-        QCOMPARE(notice.event, QStringLiteral("conflict"));
-        QCOMPARE(notice.text, QStringLiteral("7 more of your changed files were moved out of the way."));
-        QCOMPARE(notice.showPath, QString());
+        m_nowMs += Notifier::WindowMs + 1;
+        m_notifier->flushDue();
+        m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(30)}, {QStringLiteral("RetryAfterRefusal"), QString(Root + QStringLiteral("/notes.docx"))}});
+        QTRY_COMPARE(m_sink.sent.size(), 2);
+        QCOMPARE(m_sink.sent.at(1).text, QStringLiteral("OneDrive asked this computer to wait about 1 minute. notes.docx opens after that."));
     }
 
     /// Every notice carries its account, for a click to open the window on

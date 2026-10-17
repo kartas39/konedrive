@@ -1,10 +1,22 @@
-# What KIO opens (measured on KIO 6.30.0-1.fc44, 2026-09-24)
+# What KIO opens, and what it does with the trash
+
+Sections A to C: what KIO opens, measured on KIO 6.30.0-1.fc44 on 2026-09-24, and the PDF of
+section B on KIO 6.31.0 on 2026-10-16. Section D: what KIO does when a file of the sync folder is
+moved to the trash, measured on KIO 6.31.0 on 2026-10-11.
+
+## How A to C were measured
 
 Measured by `tests/kio/kio_probe.cpp`, run through `tests/kio/run.sh` (scratch
 `HOME`/`XDG_*`, private session bus, `QT_QPA_PLATFORM=offscreen`; nothing is
 installed, and the thumbnail cache, configuration and session bus of whoever runs it are never
 touched). `kf6-kio-core-6.30.0-1.fc44.x86_64`; `kf6-kio-gui` and
 `kf6-kio-widgets-libs` at the same version.
+
+The probe runs on a plain directory, not on a sync folder. A "placeholder" below is the probe's own
+stand-in: an empty file with the name, size and time of an image, standing for a file that is not
+on disk. In a sync folder such a file is one the mount shows and the backing directory does not
+hold, and an open of it by KIO makes the daemon fetch it. What KIO does on the mount itself was
+measured only for the trash (section D).
 
 ## A. Cache naming and sizes
 
@@ -75,6 +87,23 @@ then restored to `st.st_mtime` and a final run reproduced the original values sh
 byte-for-byte (modulo the scratch directory's random path in the URI text). This is the
 before/after showing the check can actually fail, not just always report "cached".
 
+**A PDF**, measured on 2026-10-16 on `kf6-kio-core-6.31.0-1.fc45`, with
+`kdegraphics-thumbnailers-26.08.1-1.fc45`, whose `gsthumbnail` draws PDFs. Two more zero-byte
+placeholders, `report.pdf` and `report-nocache.pdf` (of one size and mtime), the first with a
+red thumbnail in `normal` and `large` under its `FullyEncoded` name alone, as the thumbnail filler
+writes it:
+
+```
+RESULT B.cached report.pdf 128: preview, center pixel #ff0000; opened=no
+RESULT B.cached report.pdf 256: preview, center pixel #ff0000; opened=no
+RESULT B.control report-nocache.pdf: preview, center pixel #ffffff; opened=yes
+```
+
+KIO draws the cached thumbnail of a PDF as it draws an image's, without opening the file; without
+one, its PDF previewer opens the file to draw its own. So OneDrive's thumbnail of a PDF spares the
+download as an image's does. The image's lines of the same run were the ones above, unchanged on
+KIO 6.31.
+
 ## C. Type detection
 
 ```
@@ -103,7 +132,7 @@ absent or ambiguous.
 THUMBNAILS: FILL FullyEncoded normal,large,x-large,xx-large
 
 (What was built fills `normal`, `large` and `x-large` only: `xx-large` is left out on purpose.
-See `docs/design/desktop.md` §8 and `docs/limitations/`, K15.)
+See `crates/konedrived/src/desktop/thumbs.rs` and `docs/limitations/`, K1.)
 
 Section B measured the mechanism directly at `normal` (128) and `large` (256): a correctly tagged
 (`Thumb::URI` + matching `Thumb::MTime`) PNG in those directories is drawn without an open.
@@ -114,3 +143,54 @@ for `x-large`/`xx-large` is read the same way B showed for `normal`/`large`. (KI
 to *generate* an `xx-large` thumbnail for two of the four test names, noted in A, is about KIO's
 preview job, not about reading a cache entry the filler writes directly — it does not weaken
 this.)
+
+## D. Moving a file of the sync folder to the trash
+
+Measured by `tests/kio/trash_probe.cpp`, run by the VM suite's group `kio_trash`
+(`tests/fuse-probe/run.sh kio_trash`): on a sync folder that is mounted for real, over the fake
+OneDrive, headless, as an ordinary user whose home, trash and runtime directory are the
+scenario's own. `kf6-kio` 6.31.0, Qt 6.11.2. The folder holds one file that is on disk and one
+that is not; the result is the same for both.
+
+The sync folder has no trash: the mount refuses to make a `.Trash` directory in it. The home's
+trash is on another device than the mount, as on a real machine.
+
+**`KIO::trash` alone**, as a program calls it that asks the user nothing (scenario
+`kio_trash_alone_says_no_trash_is_available_and_leaves_the_file`):
+
+- the job ends with error 180, `ERR_TRASH_NOT_AVAILABLE`: "A trash folder could not be found or
+  created for this location.";
+- the file stays, and the folder is as it was;
+- the home's trash is empty, and no `.Trash` directory exists anywhere;
+- nothing is read from OneDrive and no removal is sent.
+
+**The job Dolphin starts**, `KIO::DeleteOrTrashJob` with the default confirmation, the user's
+answers given by a stand-in that says yes (scenario
+`dolphins_move_to_trash_asks_to_delete_instead_and_downloads_nothing`):
+
+- the user is asked `askUserDelete(…, Trash)`, and after the trash job's error 180,
+  `askUserDelete(…, DeleteNoTrashAvailable)`;
+- on yes the job ends with no error, and the file is gone from the folder;
+- it went nowhere on this computer: the home's trash is empty, no `.Trash` directory exists;
+- nothing is read from OneDrive, also for the file that was not on disk;
+- OneDrive received the removal, and its recycle bin holds the file.
+
+**Why, by KIO's source** (`src/kioworkers/trash/trashimpl.cpp`, read at the tags v6.31.0 and
+v6.20.0; only 6.31 was run):
+
+- 6.31: the home trash is used only for a file on the home's device. For any other, KIO tries
+  `$topdir/.Trash/$uid` and then makes `$topdir/.Trash-$uid`; when that fails it answers
+  `ERR_TRASH_NOT_AVAILABLE`. Which errno the refusal carries does not matter: a read-only
+  folder's refusal gives the same answer.
+- 6.20: the same failure fell back to the home trash, and the file was moved there with
+  `KIO::moveAs`, which across devices is a copy and a removal. A file that is not on disk is then
+  downloaded whole.
+- `ERR_TRASH_NOT_AVAILABLE` and `DeleteNoTrashAvailable` are documented "since 6.21" in KIO's
+  headers.
+
+**Not measured**: the dialog Dolphin itself shows (the run was headless, with the probe's own
+stand-in for the user), and whether a "do not ask again" setting skips its second question; KIO
+before 6.21 on a real run; GTK programs (`gio trash`, Nautilus).
+
+**What follows**: KDE Frameworks 6.21 is the least supported version (`docs/limitations/`, K34).
+Shift+Delete in Dolphin is a plain delete on any version.

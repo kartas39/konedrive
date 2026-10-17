@@ -115,38 +115,6 @@ private Q_SLOTS:
         QCOMPARE(model.at(0)->status()->text(), QStringLiteral("The KOneDrive service is not running"));
     }
 
-    /// HelperState (dbus/org.konedrive.Accounts.xml) reaches the window and
-    /// drives helperTrouble (what StatusPage's helper card and every
-    /// account's status key off) and helperInstruction (what that card and
-    /// the NoHelper prompt say to do about it).
-    void helperStateDrivesTroubleAndItsInstruction()
-    {
-        start({QStringLiteral("Personal")});
-        DaemonController controller;
-        QTRY_VERIFY(controller.serviceAvailable());
-        QCOMPARE(controller.helperState(), QStringLiteral("connected"));
-        QVERIFY(!controller.helperTrouble());
-        QCOMPARE(controller.helperInstruction(), QString());
-
-        m_daemon->manager->set({{QStringLiteral("HelperState"), QStringLiteral("not-installed")}});
-        QTRY_VERIFY(controller.helperTrouble());
-        QVERIFY2(controller.helperInstruction().contains(QStringLiteral("install-helper.sh")), qPrintable(controller.helperInstruction()));
-
-        m_daemon->manager->set({{QStringLiteral("HelperState"), QStringLiteral("stopped")}});
-        QTRY_VERIFY(controller.helperInstruction().contains(QStringLiteral("systemctl start")));
-
-        m_daemon->manager->set({{QStringLiteral("HelperState"), QStringLiteral("failed")}});
-        QTRY_VERIFY(controller.helperInstruction().contains(QStringLiteral("systemctl status")));
-
-        m_daemon->manager->set({{QStringLiteral("HelperState"), QStringLiteral("unknown")}});
-        QTRY_VERIFY(controller.helperTrouble());
-        QVERIFY(!controller.helperInstruction().isEmpty());
-
-        m_daemon->manager->set({{QStringLiteral("HelperState"), QStringLiteral("connected")}});
-        QTRY_VERIFY(!controller.helperTrouble());
-        QCOMPARE(controller.helperInstruction(), QString());
-    }
-
     void theClientIdIsTheManagers()
     {
         start({});
@@ -549,8 +517,7 @@ private Q_SLOTS:
         QTRY_COMPARE(model.count(), 2);
         QSignalSpy removed(&model, &AccountsModel::accountRemoved);
 
-        // Refused (an intercepted folder with no helper): nothing changes,
-        // and it says why, for that account only, and that the helper is the way.
+        // Refused: nothing changes, and it says why, for that account only.
         m_daemon->manager->refuseRemove = true;
         model.removeAccount(fake::FirstAccount);
         QCOMPARE(daemon.removing(), fake::FirstAccount);
@@ -559,8 +526,7 @@ private Q_SLOTS:
         QTRY_COMPARE(daemon.removing(), QString());
         QCOMPARE(m_daemon->manager->calls.count(QStringLiteral("Remove:") + fake::FirstAccount), 1);
         QCOMPARE(daemon.removeFailedPath(), fake::FirstAccount);
-        QVERIFY(daemon.removeError().contains(QStringLiteral("helper")));
-        QVERIFY(daemon.removeNeedsHelper());
+        QCOMPARE(daemon.removeError(), QStringLiteral("config.toml cannot be written"));
         QCOMPARE(daemon.actionError(), QString());
         QCOMPARE(model.count(), 2);
 
@@ -569,7 +535,6 @@ private Q_SLOTS:
         QTRY_COMPARE(model.count(), 1);
         QCOMPARE(removed.count(), 1);
         QCOMPARE(daemon.removeFailedPath(), QString());
-        QVERIFY(!daemon.removeNeedsHelper());
         QCOMPARE(labels(model), QStringList{QStringLiteral("Family")});
     }
 

@@ -3,7 +3,7 @@
 
 use super::{banner, i18nc, literal};
 use crate::files::{ByOperation, Operation, ALREADY_WAITING, FAILED, NOT_RUNNING, REFUSALS, STOPPED, TOO_MANY_WAITING, WAS_NOT};
-use crate::menu::{FREE_UP_WHY, KEPT_BY_A_FOLDER, NOT_IN_ONEDRIVE};
+use crate::menu::{FREE_UP_WHY, NOT_IN_ONEDRIVE};
 use crate::Client;
 
 const SOURCES: &str = "src/files.rs, src/menu.rs";
@@ -25,7 +25,6 @@ fn place(name: &str) -> &'static str {
         "detail" => "detail",
         "was not" => "wasNotWords(operation)",
         "count" => "count",
-        "by" => "blockedBy",
         other => panic!("no place {{{other}}} in a sentence of the plugin"),
     }
 }
@@ -39,7 +38,7 @@ fn tooltip(sentence: &str) -> String {
 }
 
 /// The plugin's name of a code of `free-up-why` (`MenuAnswer::FreeUpWhy`,
-/// `dolphin/src/syncclient.h`): `pinned-above` is `PinnedAbove`.
+/// `dolphin/src/syncclient.h`): `not-uploaded` is `NotUploaded`.
 fn why_enumerator(why: &str) -> String {
     let name: String = why
         .split('-')
@@ -127,12 +126,9 @@ QString alreadyWaitingSentence(const QString &file);
 /// The file was not sent: `count` calls wait already.
 QString tooManyWaitingSentence(Operation operation, const QString &file, int count);
 
-/// Why "Free up space" is disabled, in a tooltip's length; `blockedBy` is the
-/// folder above that keeps the item. Empty when no reason is said.
-QString freeUpWhyToolTip(MenuAnswer::FreeUpWhy why, const QString &blockedBy);
-
-/// "Always keep on this device" is checked and cannot be unchecked.
-QString keptByAFolderToolTip(const QString &blockedBy);
+/// Why "Free up space" is disabled, in a tooltip's length. Empty when no
+/// reason is said.
+QString freeUpWhyToolTip(MenuAnswer::FreeUpWhy why);
 
 /// "Open in OneDrive" is disabled.
 QString notInOneDriveToolTip();
@@ -195,13 +191,11 @@ QString failedSentence(Operation operation, const QString &file, const QString &
     out.push_str(&format!("    return {};\n", info(ALREADY_WAITING)));
     out.push_str("}\n\nQString tooManyWaitingSentence(Operation operation, const QString &file, int count)\n{\n");
     out.push_str(&format!("    return {};\n", info(TOO_MANY_WAITING)));
-    out.push_str("}\n\nQString freeUpWhyToolTip(MenuAnswer::FreeUpWhy why, const QString &blockedBy)\n{\n    switch (why) {\n");
+    out.push_str("}\n\nQString freeUpWhyToolTip(MenuAnswer::FreeUpWhy why)\n{\n    switch (why) {\n");
     for text in &FREE_UP_WHY {
         out.push_str(&format!("    case {}:\n        return {};\n", why_enumerator(text.why), tooltip(text.tooltip)));
     }
     out.push_str("    case MenuAnswer::FreeUpWhy::NotSaid:\n        break;\n    }\n    return QString();\n");
-    out.push_str("}\n\nQString keptByAFolderToolTip(const QString &blockedBy)\n{\n");
-    out.push_str(&format!("    return {};\n", tooltip(KEPT_BY_A_FOLDER)));
     out.push_str("}\n\nQString notInOneDriveToolTip()\n{\n");
     out.push_str(&format!("    return {};\n", tooltip(NOT_IN_ONEDRIVE)));
     out.push_str("}\n\n} // namespace konedrive\n");

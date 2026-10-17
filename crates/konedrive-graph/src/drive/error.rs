@@ -108,9 +108,9 @@ pub enum DriveError {
     NotFound,
     #[error("the change feed has expired and the drive must be listed again")]
     ResyncRequired,
-    /// `410` with `resyncChangesUploadDifferences` (`docs/design/writes.md` §9): listed
-    /// again, and what the new listing leaves out is uploaded rather than
-    /// removed. Only a read-write folder tells it from [`Self::ResyncRequired`].
+    /// `410` with `resyncChangesUploadDifferences`, the resync code Microsoft names apart
+    /// from the plain one. The listing begins a full listing for either
+    /// (`docs/design/sync.md` §5.4).
     #[error("the change feed has expired and the drive must be listed again, keeping what it no longer has")]
     ResyncUpload,
     #[error("the download link has expired")]
@@ -167,6 +167,11 @@ pub(crate) enum Kind {
     BadRequest,
     /// `408`.
     Timeout,
+    /// `413`: the file is larger than OneDrive takes. Answered to the first fragment of an
+    /// upload session whose total is over the limit, with the inner code
+    /// `maxFileSizeExceeded` (measured on a personal drive, 2026-10-12: 250 GiB is taken,
+    /// one byte more is not; issue #265).
+    TooLarge,
     /// `416`.
     RangeNotSatisfiable,
     /// Any other `5xx`.
@@ -192,6 +197,7 @@ pub(crate) fn classify(status: Status, code: &str) -> Kind {
         (403, _) => Kind::Forbidden,
         (400, _) => Kind::BadRequest,
         (408, _) => Kind::Timeout,
+        (413, _) => Kind::TooLarge,
         (416, _) => Kind::RangeNotSatisfiable,
         (500..=599, _) => Kind::Server,
         _ => Kind::Other,

@@ -22,21 +22,28 @@ FormCard.FormCardPage {
     readonly property bool signingIn: available && account !== null && account.state === "signing-in"
     readonly property bool signedIn: available && account !== null && account.state === "signed-in"
     readonly property bool hasFolder: available && sync !== null && sync.rootPath.length > 0
-    readonly property bool pending: available && sync !== null && sync.pendingFolder.length > 0
     /// A folder that shows OneDrive: the one kind anything is uploaded from.
     readonly property bool oneDrive: hasFolder && sync.rootSource === "onedrive"
     readonly property string accountError: account ? (account.actionError.length > 0 ? account.actionError : account.lastError) : ""
     readonly property var window: QQC2.ApplicationWindow.window
 
     /// "Upload changes made on this computer" turned on or off. On explains
-    /// first, and signs in only once the user goes on; off switches at once,
-    /// and asks only if changes still wait to be uploaded.
+    /// first, and signs in only once the user goes on; off is asked at once.
     function setUploads(on) {
         if (on) {
             uploadDialog.open();
         } else if (account) {
             account.setMode("read-only", false);
         }
+    }
+
+    /// What a Forget and the account's removal say first of `count` changes made here
+    /// that are not sent to OneDrive.
+    function unsentWarning(count) {
+        // TODO: wording
+        return i18np("1 change was not sent to OneDrive and will stay only on this computer.",
+                     "%1 changes were not sent to OneDrive and will stay only on this computer.",
+                     count);
     }
 
     /// Sign In calls this once the account it just added is signed in,
@@ -50,14 +57,8 @@ FormCard.FormCardPage {
     objectName: "accountPage"
     title: window ? window.accountTitle(i18nc("@title", "Account")) : i18nc("@title", "Account")
 
-    Connections {
-        target: page.account
-        function onPendingUploadsRefused() {
-            dropUploadsDialog.open();
-        }
-    }
-
     Kirigami.InlineMessage {
+        objectName: "accountError"
         Layout.fillWidth: true
         Layout.topMargin: Kirigami.Units.largeSpacing
         Layout.leftMargin: Kirigami.Units.largeSpacing
@@ -75,8 +76,7 @@ FormCard.FormCardPage {
         text: page.sync ? page.sync.actionError : ""
         visible: page.available && text.length > 0
     }
-    // A Remove of this account that was refused; one refused for want of
-    // the helper says what to do, and can be tried again.
+    // A Remove of this account that was refused.
     Kirigami.InlineMessage {
         objectName: "removeError"
         Layout.fillWidth: true
@@ -84,25 +84,8 @@ FormCard.FormCardPage {
         Layout.leftMargin: Kirigami.Units.largeSpacing
         Layout.rightMargin: Kirigami.Units.largeSpacing
         type: Kirigami.MessageType.Error
-        text: {
-            if (Daemon.removeNeedsHelper) {
-                return i18n("The account was not removed: its folder can be forgotten only through the konedrive helper, which is not available. %1", Daemon.helperInstruction);
-            }
-            if (Daemon.removeWaitsForUploads) {
-                return i18n("The account was not removed: changes made on this computer have not been uploaded yet, and removing it now would lose them. Wait until they are uploaded, or turn uploading off for this account and choose not to upload them; then remove it.");
-            }
-            return i18n("The account was not removed: %1", Daemon.removeError);
-        }
+        text: i18n("The account was not removed: %1", Daemon.removeError)
         visible: page.available && page.account !== null && Daemon.removeFailedPath === page.account.path
-        actions: [
-            Kirigami.Action {
-                text: i18nc("@action:button", "Try Again")
-                icon.name: "view-refresh"
-                visible: Daemon.removeNeedsHelper
-                enabled: Daemon.removing.length === 0
-                onTriggered: Accounts.removeAccount(page.account.path)
-            }
-        ]
     }
 
     // Daemon not reachable
@@ -198,6 +181,46 @@ FormCard.FormCardPage {
             icon.name: "dialog-cancel"
             onClicked: page.account.cancelModeSwitch()
         }
+        // Read-only was asked for while changes were unsent: the account sends them
+        // and switches by itself. A state of the page, with its two ways out.
+        FormCard.FormDelegateSeparator {
+            visible: switchingToReadOnlyLine.visible
+        }
+        FormCard.FormTextDelegate {
+            id: switchingToReadOnlyLine
+            objectName: "switchingToReadOnlyLine"
+            visible: page.account !== null && page.account.switchingToReadOnly
+            // TODO: wording
+            text: page.account ? i18np("Switching to read-only: 1 change still to send",
+                                       "Switching to read-only: %1 changes still to send",
+                                       page.account.unsentCount) : ""
+            // TODO: wording
+            description: i18n("Uploading turns off by itself once they are sent.")
+            leading: Kirigami.Icon {
+                source: "cloud-upload"
+                implicitWidth: Kirigami.Units.iconSizes.medium
+                implicitHeight: Kirigami.Units.iconSizes.medium
+            }
+        }
+        FormCard.FormButtonDelegate {
+            objectName: "switchToReadOnlyNow"
+            visible: switchingToReadOnlyLine.visible
+            enabled: page.account !== null && page.account.switchingTo.length === 0
+            text: i18nc("@action:button", "Switch Now")
+            // TODO: wording
+            description: i18n("What is not sent stays on this computer, and is sent when uploading is turned on again.")
+            icon.name: "object-locked"
+            onClicked: page.account.setMode("read-only", true)
+        }
+        FormCard.FormButtonDelegate {
+            objectName: "cancelReadOnlySwitch"
+            visible: switchingToReadOnlyLine.visible
+            enabled: page.account !== null && page.account.switchingTo.length === 0
+            text: i18nc("@action:button", "Cancel")
+            description: i18n("Uploading stays on.")
+            icon.name: "dialog-cancel"
+            onClicked: page.account.setMode("read-write", false)
+        }
     }
 
     // The account's own sync setting (issue #80): the daemon's, written to config.toml;
@@ -218,7 +241,7 @@ FormCard.FormCardPage {
             readonly property bool on: page.sync !== null && page.sync.thumbnails
 
             text: i18n("Download thumbnails")
-            description: i18n("Dolphin shows previews of images and videos in OneDrive without downloading them.")
+            description: i18n("Dolphin shows previews of images, videos, PDFs and office documents in OneDrive without downloading them.")
             checked: on
             // The inner switch writes `checked` back, ending the binding: kept in step here.
             onOnChanged: checked = on
@@ -238,6 +261,42 @@ FormCard.FormCardPage {
                 implicitWidth: Kirigami.Units.iconSizes.small
                 implicitHeight: Kirigami.Units.iconSizes.small
             }
+        }
+    }
+
+    // The account's own sync setting (issue #217): how much of the disk's free space
+    // the downloads of files kept on this device leave. The daemon's, written to
+    // config.toml; the box shows what it says, and a change goes through it.
+    FormCard.FormHeader {
+        visible: page.oneDrive
+        title: i18nc("@title:group", "Disk Space")
+    }
+    FormCard.FormCard {
+        objectName: "freeSpaceSettings"
+        visible: page.oneDrive
+
+        FormCard.FormSpinBoxDelegate {
+            id: freeSpaceReserveBox
+            objectName: "freeSpaceReserveBox"
+
+            readonly property int kept: page.sync !== null ? page.sync.freeSpaceReserve : 0
+
+            label: i18n("Free space to keep on this computer's disk, in GiB")
+            from: 0
+            to: 100000
+            value: kept
+            // The inner box writes `value` back, ending the binding: kept in step here.
+            onKeptChanged: value = kept
+            onValueChanged: {
+                if (page.sync !== null && value !== kept) {
+                    page.sync.setFreeSpaceReserve(value);
+                }
+            }
+        }
+        FormCard.FormTextDelegate {
+            objectName: "freeSpaceReserveLine"
+            text: i18n("A file kept on this device is not downloaded while its download would leave less free space than this.")
+            textItem.wrapMode: Text.Wrap
         }
     }
 
@@ -363,67 +422,29 @@ FormCard.FormCardPage {
     // The OneDrive folder: asked for once signed in; a folder already there
     // shows whatever the sign-in.
     FormCard.FormHeader {
-        visible: page.signedIn || page.hasFolder || page.pending
+        visible: page.signedIn || page.hasFolder
         title: i18nc("@title:group", "OneDrive Folder")
     }
     FormCard.FormCard {
-        visible: page.signedIn || page.hasFolder || page.pending
+        visible: page.signedIn || page.hasFolder
 
         FormCard.FormTextDelegate {
-            visible: page.signedIn && !page.hasFolder && !page.pending
+            visible: page.signedIn && !page.hasFolder
             text: i18n("No folder yet")
             description: i18n("Choose an empty folder. Your OneDrive appears in it; files download when you open them.")
         }
         FormCard.FormButtonDelegate {
             objectName: "chooseFolder"
-            visible: page.signedIn && !page.hasFolder && !page.pending
+            visible: page.signedIn && !page.hasFolder
             text: i18nc("@action:button", "Choose Folder…")
             icon.name: "folder-open"
             onClicked: folderDialog.openFor(Current.item)
         }
 
-        // RegisterRoot refused NoHelper: the window never registers a folder
-        // without interception (I3) — an unhydrated file would read as zeros
-        // for good. Try Again retries RegisterRoot; Cancel gives up on it.
-        FormCard.FormTextDelegate {
-            visible: page.pending
-            text: {
-                switch (Daemon.helperState) {
-                case "stopped":
-                    return i18n("The konedrive helper is not running");
-                case "failed":
-                    return i18n("The konedrive helper failed");
-                case "unknown":
-                    return i18n("The konedrive helper is not connected yet");
-                default:
-                    return i18n("The konedrive helper is not installed");
-                }
-            }
-            description: i18n("Without it, nothing downloads a file when a program opens it, so KOneDrive will not add this folder yet.")
-        }
-        FormCard.FormTextDelegate {
-            visible: page.pending && Daemon.helperInstruction.length > 0
-            text: Daemon.helperInstruction
-            textItem.textFormat: Text.PlainText
-            textItem.wrapMode: Text.Wrap
-        }
-        FormCard.FormButtonDelegate {
-            visible: page.pending
-            text: i18nc("@action:button", "Try Again")
-            icon.name: "view-refresh"
-            onClicked: page.sync.retryRegistration()
-        }
-        FormCard.FormButtonDelegate {
-            visible: page.pending
-            text: i18nc("@action:button", "Cancel")
-            icon.name: "dialog-cancel"
-            onClicked: page.sync.cancelPending()
-        }
-
         FormCard.FormTextDelegate {
             visible: page.hasFolder
             text: page.sync ? page.sync.rootPath : ""
-            description: page.sync && page.sync.rootSource === "onedrive" ? i18n("Shows your OneDrive") : i18n("Filled from a local folder")
+            description: i18n("Shows your OneDrive")
             leading: Kirigami.Icon {
                 source: "folder-cloud"
                 implicitWidth: Kirigami.Units.iconSizes.medium
@@ -435,7 +456,8 @@ FormCard.FormCardPage {
             text: i18nc("@action:button", "Forget Folder")
             description: i18n("The files stay where they are; KOneDrive stops keeping them in step.")
             icon.name: "edit-delete-remove"
-            onClicked: page.sync.forget()
+            // Never refused for what is unsent: asked first only when something is.
+            onClicked: forgetDialog.ask()
         }
     }
 
@@ -637,49 +659,73 @@ FormCard.FormCardPage {
         }
     }
 
-    // A switch to read-only refused because changes still wait to be uploaded.
+    // A Forget while changes made here are not sent: they stay only on this computer.
+    // With none unsent, or a count that cannot be read, the folder is forgotten unasked.
     Kirigami.PromptDialog {
-        id: dropUploadsDialog
-        objectName: "dropUploadsDialog"
+        id: forgetDialog
+        objectName: "forgetDialog"
 
-        /// The account it was opened for (an AccountItem); null once that account is gone.
+        /// The account whose folder is to be forgotten (an AccountItem), from the click
+        /// until its count is read or the question is answered; null otherwise.
         property QtObject item: null
+        property double unsentCount: 0
+
+        function ask() {
+            item = Current.item;
+            if (item) {
+                item.sync.readUnsentCount();
+            }
+        }
 
         function confirm() {
             if (item) {
-                item.account.setMode("read-only", true);
+                item.sync.forget();
             }
             close();
         }
 
-        title: i18nc("@title:window", "Stop Uploading?")
-        subtitle: item && item.sync.pendingCount > 0
-            ? i18np("1 change made on this computer has not been uploaded yet. If you turn uploading off now, it never will be: the file stays here as it is, but OneDrive does not get the change.",
-                    "%1 changes made on this computer have not been uploaded yet. If you turn uploading off now, they never will be: the files stay here as they are, but OneDrive does not get these changes.",
-                    item.sync.pendingCount)
-            : i18n("Some changes made on this computer have not been uploaded yet. If you turn uploading off now, they never will be: the files stay here as they are, but OneDrive does not get these changes.")
-        onAboutToShow: item = Current.item
+        title: i18nc("@title:window", "Forget Folder?")
+        subtitle: page.unsentWarning(unsentCount)
+        onClosed: item = null
         dialogType: Kirigami.PromptDialog.Warning
         maximumWidth: Math.min(absoluteMaximumWidth, Kirigami.Units.gridUnit * 30)
         standardButtons: Kirigami.Dialog.NoButton
         customFooterActions: [
             Kirigami.Action {
-                text: i18nc("@action:button", "Turn Off Without Uploading")
-                icon.name: "process-stop"
-                enabled: dropUploadsDialog.item !== null
-                onTriggered: dropUploadsDialog.confirm()
+                text: i18nc("@action:button", "Forget Folder")
+                icon.name: "edit-delete-remove"
+                enabled: forgetDialog.item !== null
+                onTriggered: forgetDialog.confirm()
             },
             Kirigami.Action {
-                text: i18nc("@action:button", "Keep Uploading")
+                text: i18nc("@action:button", "Cancel")
                 icon.name: "dialog-cancel"
-                onTriggered: dropUploadsDialog.close()
+                onTriggered: forgetDialog.close()
             }
         ]
 
         Connections {
+            target: forgetDialog.item ? forgetDialog.item.sync : null
+            function onUnsentCountRead(count) {
+                if (forgetDialog.visible) {
+                    return;
+                }
+                if (count > 0) {
+                    forgetDialog.unsentCount = count;
+                    forgetDialog.open();
+                } else {
+                    forgetDialog.item.sync.forget();
+                    forgetDialog.item = null;
+                }
+            }
+        }
+
+        // Another account shown, or this one gone: not the question asked.
+        Connections {
             target: Current
             function onChanged() {
-                dropUploadsDialog.close();
+                forgetDialog.item = null;
+                forgetDialog.close();
             }
         }
     }
@@ -698,11 +744,31 @@ FormCard.FormCardPage {
             close();
         }
 
+        /// How many changes made here are not sent to OneDrive (UnsentCount), read when
+        /// the question is asked; 0 until it is answered, and when it cannot be read.
+        property double unsentCount: 0
+
         title: item ? i18nc("@title:window", "Remove %1?", item.account.label) : ""
-        subtitle: item && item.sync.rootPath.length > 0
-            ? i18n("Your files stay in %1. Files that were never downloaded are left as empty placeholders.", item.sync.rootPath)
-            : i18n("KOneDrive signs out of this account and forgets it on this computer. Nothing in OneDrive is deleted.")
-        onAboutToShow: item = Current.item
+        subtitle: {
+            const stays = item && item.sync.rootPath.length > 0
+                ? i18n("The files that were downloaded, and your own, stay in %1. Files that were never downloaded are not on this computer.", item.sync.rootPath)
+                : i18n("KOneDrive signs out of this account and forgets it on this computer. Nothing in OneDrive is deleted.");
+            return unsentCount > 0 ? page.unsentWarning(unsentCount) + "\n\n" + stays : stays;
+        }
+        onAboutToShow: {
+            item = Current.item;
+            unsentCount = 0;
+            if (item) {
+                item.sync.readUnsentCount();
+            }
+        }
+
+        Connections {
+            target: removeDialog.item ? removeDialog.item.sync : null
+            function onUnsentCountRead(count) {
+                removeDialog.unsentCount = count;
+            }
+        }
         dialogType: Kirigami.PromptDialog.Warning
         maximumWidth: Math.min(absoluteMaximumWidth, Kirigami.Units.gridUnit * 30)
         standardButtons: Kirigami.Dialog.NoButton

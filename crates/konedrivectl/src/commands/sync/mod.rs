@@ -2,7 +2,7 @@
 //! commands that take a path (`path.rs`).
 
 mod explain;
-mod folder;
+pub(crate) mod folder;
 mod path;
 
 use anyhow::anyhow;
@@ -10,7 +10,7 @@ use konedrive_dbus::Refusal;
 use konedrivectl::choice::NoChoice;
 use konedrivectl::text::folder::{anyway_text, NOTHING_TO_LIFT};
 use konedrivectl::text::formats::unix_now;
-use konedrivectl::text::status::{account_block, helper_line, sync_status_text};
+use konedrivectl::text::status::{account_block, sync_status_text};
 
 use crate::cli::{FolderCmd, SyncCmd};
 use crate::daemon::Daemon;
@@ -30,23 +30,22 @@ pub(crate) async fn sync(daemon: &Daemon, option: Option<&str>, command: SyncCmd
 }
 
 async fn sync_status(daemon: &Daemon, option: Option<&str>) -> anyhow::Result<()> {
-    let helper = daemon.manager.helper_state().await?;
     let shown = daemon.shown(option).await?;
     if shown.alone {
         let account = &shown.accounts[0];
         let status = read::folder_status(daemon, &account.path).await?;
-        print!("{}", sync_status_text(&status, Some(&helper), &shown.prefix(account), unix_now()));
+        print!("{}", sync_status_text(&status, &shown.prefix(account), unix_now()));
         return Ok(());
     }
     daemon.check_loaded(&shown.accounts).await?;
-    let mut out = helper_line(&helper);
+    let mut out = String::new();
     if shown.accounts.is_empty() {
         out.push_str(&format!("{}\n", NoChoice::NoAccountYet));
     }
     for account in &shown.accounts {
         match read::folder_status(daemon, &account.path).await {
             Ok(status) => {
-                let block = sync_status_text(&status, None, &shown.prefix(account), unix_now());
+                let block = sync_status_text(&status, &shown.prefix(account), unix_now());
                 out.push_str(&account_block(&account.label, &block));
             }
             // Removed while this ran.
@@ -54,12 +53,13 @@ async fn sync_status(daemon: &Daemon, option: Option<&str>) -> anyhow::Result<()
             Err(e) => return Err(e.into()),
         }
     }
-    print!("{out}");
+    // Each block starts with an empty line, which separates it from the one before.
+    print!("{}", out.strip_prefix('\n').unwrap_or(&out));
     Ok(())
 }
 
 /// `sync anyway --all`: the hold of every account that holds back by itself and is not paused
-/// by the user is lifted — the tray's Sync Anyway (`docs/design/writes.md` §11).
+/// by the user is lifted — the tray's Sync Anyway (`docs/design/writes.md` §6.3).
 async fn sync_anyway_all(daemon: &Daemon) -> anyhow::Result<()> {
     let accounts = daemon.accounts().await?;
     let several = accounts.len() > 1;

@@ -1,30 +1,5 @@
 use super::*;
 
-/// Why the identity guard ([`AccountService::claim`], [`claim_new`]) refuses a sign-in.
-#[derive(Debug)]
-pub(crate) enum Refused {
-    /// Another account has the drive: that account.
-    AlreadyConnected { id: AccountId, label: String },
-    /// Any other refusal, as it is said.
-    Other(String),
-}
-
-impl From<ConfigError> for Refused {
-    fn from(error: ConfigError) -> Self {
-        Refused::Other(error.to_string())
-    }
-}
-
-impl Refused {
-    /// The sentence `LastError` shows.
-    fn sentence(&self) -> String {
-        match self {
-            Refused::AlreadyConnected { label, .. } => format!("This Microsoft account is already connected as '{label}'."),
-            Refused::Other(sentence) => sentence.clone(),
-        }
-    }
-}
-
 /// What the identity guard refuses whichever account signs in (`docs/design/accounts.md` §6.2): a drive that an
 /// account other than `me` has, and a drive that one of `unsettled` — the others that may
 /// be this drive without saying so ([`settle`]) — cannot be told apart from.
@@ -34,9 +9,17 @@ fn drive_is_free(config: &Config, me: Option<&AccountId>, drive: &DriveId, unset
         return Err(Refused::AlreadyConnected { id: other.id.clone(), label: other.label.clone() });
     }
     if others().any(|a| a.drive_id.is_none() && unsettled.contains(&a.id)) {
-        return Err(Refused::Other("Could not check which account this is; try again.".into()));
+        return Err(Refused::NotToldApart);
     }
     Ok(())
+}
+
+/// What the browser reads when a sign-in went through: as `email` when Graph said it.
+pub(crate) fn signed_in_sentence(email: Option<&str>) -> String {
+    match email.filter(|email| !email.is_empty()) {
+        Some(email) => format!("Signed in as {email}."),
+        None => "Signed in.".into(),
+    }
 }
 
 /// The identity guard for a sign-in that belongs to no account yet (`Accounts.SignIn`),
@@ -45,7 +28,7 @@ fn drive_is_free(config: &Config, me: Option<&AccountId>, drive: &DriveId, unset
 /// every other, under a fresh id, with the drive, the `email` as its `login_hint`, and
 /// its label ([`crate::config::signed_in_label`]). `Err` says why the sign-in is refused, and nothing was
 /// added.
-pub(crate) fn claim_new(config: &mut Config, drive: &DriveId, email: Option<&str>, unsettled: &[AccountId]) -> Result<AccountConfig, Refused> {
+pub fn claim_new(config: &mut Config, drive: &DriveId, email: Option<&str>, unsettled: &[AccountId]) -> Result<AccountConfig, Refused> {
     drive_is_free(config, None, drive, unsettled)?;
     let id = AccountId::fresh(config.accounts.iter().map(|a| &a.id));
     let label = crate::config::signed_in_label(config, &id, email);
@@ -112,10 +95,12 @@ impl AccountService {
         // A read-write account signing in again asks for Files.ReadWrite again (§10).
         let browser = match Attempt::bind(self.oauth_client(&client_id, self.sign_in_mode())).await {
             Ok(browser) => browser,
-            Err(message) => {
+            Err(failure) => {
+                let trouble = AccountTrouble::SignIn(Refused::Failed(failure));
+                let message = trouble.to_string();
                 self.state.update(|s| {
                     s.state = SignInState::SignedOut;
-                    s.set_error(message.clone());
+                    s.set_error(trouble);
                 });
                 return Err(AccountError::Failed(message));
             }
@@ -196,7 +181,7 @@ impl AccountService {
     /// account stays, so it signs in and changes its mode again. What `retire` did stays
     /// done: a sign-in that was under way is given up, and a sign-in that was deleted is
     /// gone.
-    pub fn unretire(&self) {
+    pub(crate) fn unretire(&self) {
         self.retired.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
@@ -260,8 +245,7 @@ impl AccountService {
         let (profile, drive) = match result {
             Ok(both) => both,
             Err(e) => {
-                self.state
-                    .update(|s| s.set_error(format!("Could not load account info: {e}")));
+                self.state.update(|s| s.set_error(AccountTrouble::ProfileNotRead { detail: e.to_string() }));
                 return;
             }
         };
@@ -309,7 +293,7 @@ impl AccountService {
         // just been recorded, or be another than config.toml's, and the line above cleared the
         // reason. A drive that is not the recorded one turns a read-write account read-only.
         self.recompute_mode();
-        // The folder's outbox decides by the quota just read whether OneDrive is still full.
+        // The folder's upload queue decides by the quota just read whether OneDrive is still full.
         let uploads = crate::panic::lock(&self.uploads).as_ref().and_then(Weak::upgrade);
         if let Some(uploads) = uploads {
             uploads.quota_read(&drive.quota);
@@ -327,8 +311,10 @@ impl AccountService {
         let recorded = self.config.record_drive(&self.id, &drive).map_err(|e| e.to_string())?;
         if recorded != drive {
             tracing::warn!(
-                "account {:?} is signed in to drive {drive}, but drive {recorded} is recorded for it",
-                self.id
+                "account {:?} is signed in to drive {}, but drive {} is recorded for it",
+                self.id,
+                drive.as_str(),
+                recorded.as_str()
             );
         }
         Ok(recorded)
@@ -350,8 +336,7 @@ impl AccountService {
         match self.tokens.access_token().await {
             Ok(token) => Ok(token),
             Err(AuthError::Transient(message)) => {
-                self.state
-                    .update(|s| s.set_error(format!("Could not load account info: {message}")));
+                self.state.update(|s| s.set_error(AccountTrouble::ProfileNotRead { detail: message }));
                 Err(())
             }
             // Wallet locked: the token manager already set `LastError` and the state is
@@ -370,11 +355,7 @@ impl AccountService {
             Err(AuthError::SignedOut) => {
                 self.state.update(|s| {
                     if s.state == SignInState::SignedIn {
-                        s.set_error(if s.client_id.is_empty() {
-                            "Set a client ID first, then sign in again."
-                        } else {
-                            "The stored sign-in was lost. Sign in again."
-                        });
+                        s.set_error(if s.client_id.is_empty() { AccountTrouble::NoClientId } else { AccountTrouble::StoredSignInLost });
                         s.state = SignInState::SignedOut;
                         s.clear_account();
                     }
@@ -387,14 +368,14 @@ impl AccountService {
     async fn finish_sign_in(&self, attempt: SignInAttempt) {
         let (generation, asked) = (attempt.generation, attempt.browser.scope());
         match self.complete_sign_in(attempt).await {
-            Ok(tokens) => self.commit_sign_in(generation, asked, tokens).await,
-            Err(message) => self.abort_sign_in(generation, Refused::Other(message)).await,
+            Ok((tokens, browser)) => self.commit_sign_in(generation, asked, tokens, browser).await,
+            Err(failure) => self.abort_sign_in(generation, Refused::Failed(failure), None).await,
         }
     }
 
     /// Waits for the browser and exchanges the code, without touching shared state: the
     /// caller decides whether the result still applies.
-    pub(super) async fn complete_sign_in(&self, attempt: SignInAttempt) -> Result<TokenResponse, String> {
+    pub(super) async fn complete_sign_in(&self, attempt: SignInAttempt) -> Result<(TokenResponse, Answer), SignInFailure> {
         attempt.browser.tokens(self.sign_in_timeout, attempt.cancel).await
     }
 
@@ -413,12 +394,9 @@ impl AccountService {
     fn claim(&self, drive: &DriveId, email: Option<&str>, unsettled: &[AccountId]) -> Result<bool, Refused> {
         let who = self.who();
         self.config.update(|config| -> Result<bool, Refused> {
-            let mine = config.account(&self.id).ok_or_else(|| Refused::Other("This account was removed.".into()))?;
+            let mine = config.account(&self.id).ok_or(Refused::Removed)?;
             if mine.drive_id.as_ref().is_some_and(|recorded| recorded != drive) {
-                return Err(Refused::Other(format!(
-                    "This account is {who}. You signed in as a different Microsoft account; to \
-                     connect that one, add a new account."
-                )));
+                return Err(Refused::OtherMicrosoftAccount { who: who.clone() });
             }
             drive_is_free(config, Some(&self.id), drive, unsettled)?;
             let mine = config.account_mut(&self.id).expect("found above");
@@ -453,11 +431,14 @@ impl AccountService {
     /// the `signing-in` state, or the guard refused) the tokens are discarded
     /// without ever touching Secret Service. The guard is fail-closed: a drive that cannot
     /// be asked for refuses the sign-in too.
-    async fn commit_sign_in(&self, generation: u64, asked: &'static str, tokens: TokenResponse) {
+    ///
+    /// `browser` is told what came of it: signed in, or the sentence `LastError` gets. A
+    /// sign-in that is dropped says nothing, and the browser reads to look at KOneDrive.
+    async fn commit_sign_in(&self, generation: u64, asked: &'static str, tokens: TokenResponse, browser: Answer) {
         let signed_in = match attempt::confirm(tokens, self.graph()).await {
             Ok(signed_in) => signed_in,
-            Err(unconfirmed) => {
-                self.abort_sign_in(generation, Refused::Other(unconfirmed.sentence())).await;
+            Err(failure) => {
+                self.abort_sign_in(generation, Refused::Failed(failure), Some(browser)).await;
                 return;
             }
         };
@@ -484,7 +465,7 @@ impl AccountService {
             Ok(recorded) => recorded,
             Err(refused) => {
                 drop(session);
-                self.abort_sign_in(generation, refused).await;
+                self.abort_sign_in(generation, refused, Some(browser)).await;
                 return;
             }
         };
@@ -493,22 +474,24 @@ impl AccountService {
                 self.unclaim(&identity.drive);
             }
             drop(session);
-            self.abort_sign_in(generation, Refused::Other(e)).await;
+            self.abort_sign_in(generation, e, Some(browser)).await;
             return;
         }
         drop(session);
+        // Said before the name and the quota are asked for: the sign-in is decided.
+        browser.say(&signed_in_sentence(identity.email.as_deref()));
         self.refresh_account_info().await;
     }
 
     /// Stores the refresh token of `signed_in` and marks the session signed in with its
     /// tokens. Called with the session lock held, once the identity guard has let the drive
     /// into this slot. `Err`: the wallet did not take the token, and nothing changed.
-    async fn keep_sign_in(&self, signed_in: &SignedIn, asked: &'static str) -> Result<(), String> {
+    async fn keep_sign_in(&self, signed_in: &SignedIn, asked: &'static str) -> Result<(), Refused> {
         let SignedIn { tokens, refresh_token, identity } = signed_in;
         if let Some(email) = &identity.email {
             self.secrets.describe(email);
         }
-        self.secrets.store(refresh_token).await.map_err(|e| e.to_string())?;
+        self.secrets.store(refresh_token).await.map_err(|e| Refused::NotStored { detail: e.to_string() })?;
         self.tokens.seed_as(tokens, asked).await;
         self.state.update(|s| {
             s.state = SignInState::SignedIn;
@@ -517,7 +500,7 @@ impl AccountService {
         // What the sign-in granted, and the drive it reached, decide the mode (§10): a
         // read-write account that signed in again with Files.ReadWrite, to its own drive, is
         // read-write again.
-        self.record_live_drive(&identity.drive);
+        self.record_live_drive(identity.drive.as_str());
         self.note_granted(asked, &tokens.granted(asked));
         Ok(())
     }
@@ -526,23 +509,28 @@ impl AccountService {
     /// drive the identity guard let in as the entry in `config.toml` was written
     /// ([`claim_new`]); it is signed in with it, as an account's own sign-in leaves it.
     /// `Err`: the wallet did not take the token, and the account is signed out.
-    pub(crate) async fn start_signed_in(&self, signed_in: &SignedIn, asked: &'static str) -> Result<(), String> {
+    pub(crate) async fn start_signed_in(&self, signed_in: &SignedIn, asked: &'static str) -> Result<(), Refused> {
         let _session = self.session.lock().await;
         self.keep_sign_in(signed_in, asked).await
     }
 
     /// Records a sign-in failure, but only if `generation` is still the current attempt.
-    /// An empty sentence means the user cancelled; `cancel_sign_in` already updated the
-    /// state directly, and said so, so there is nothing left to do here.
-    async fn abort_sign_in(&self, generation: u64, refused: Refused) {
-        let message = refused.sentence();
+    /// A cancel says nothing: `cancel_sign_in` already updated the state directly, and
+    /// said so, so there is nothing left to do here. `browser`, when it still waits for its
+    /// answer, is told the sentence that is recorded.
+    async fn abort_sign_in(&self, generation: u64, refused: Refused, browser: Option<Answer>) {
         let session = self.session.lock().await;
-        if session.generation != generation || message.is_empty() {
+        if session.generation != generation || refused == Refused::Failed(SignInFailure::Cancelled) {
             return;
         }
+        let trouble = AccountTrouble::SignIn(refused);
+        let message = trouble.to_string();
         self.state.update(|s| {
             s.state = SignInState::SignedOut;
-            s.set_error(message.clone());
+            s.set_error(trouble);
         });
+        if let Some(browser) = browser {
+            browser.say(&message);
+        }
     }
 }

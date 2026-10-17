@@ -68,6 +68,8 @@ class FakeAccount : public QDBusAbstractAdaptor
     Q_PROPERTY(QString Mode READ mode)
     Q_PROPERTY(QString State READ state)
     Q_PROPERTY(QString LastError READ lastError)
+    Q_PROPERTY(bool ReadOnlyWanted READ readOnlyWanted)
+    Q_PROPERTY(qulonglong UnsentBeforeReadOnly READ unsentBeforeReadOnly)
     Q_PROPERTY(QString DisplayName READ displayName)
     Q_PROPERTY(QString Email READ email)
     Q_PROPERTY(qulonglong QuotaUsed READ quotaUsed)
@@ -90,6 +92,8 @@ public:
     QString mode() const { return m_properties.value(QStringLiteral("Mode")).toString(); }
     QString state() const { return m_properties.value(QStringLiteral("State")).toString(); }
     QString lastError() const { return m_properties.value(QStringLiteral("LastError")).toString(); }
+    bool readOnlyWanted() const { return m_properties.value(QStringLiteral("ReadOnlyWanted")).toBool(); }
+    qulonglong unsentBeforeReadOnly() const { return m_properties.value(QStringLiteral("UnsentBeforeReadOnly")).toULongLong(); }
     QString displayName() const { return m_properties.value(QStringLiteral("DisplayName")).toString(); }
     QString email() const { return m_properties.value(QStringLiteral("Email")).toString(); }
     qulonglong quotaUsed() const { return m_properties.value(QStringLiteral("QuotaUsed")).toULongLong(); }
@@ -112,8 +116,15 @@ public:
     /// SetMode("read-write") is refused Failed with these words, when not empty: a test that
     /// loads the whole window keeps the sign-in, and so the browser, from starting.
     QString readWriteFails;
-    /// Changes waiting to be uploaded, for SetMode("read-only").
-    uint pendingUploads = 0;
+    /// Changes made here that are not sent: while not 0, an unforced SetMode("read-only")
+    /// keeps the wish, with ReadOnlyWanted and UnsentBeforeReadOnly saying so, as the daemon's does.
+    qulonglong unsentChanges = 0;
+
+    /// The wish for read-only, kept with `unsent` changes still to send, or gone.
+    void setReadOnlyWish(bool wanted, qulonglong unsent = 0)
+    {
+        set({{QStringLiteral("ReadOnlyWanted"), wanted}, {QStringLiteral("UnsentBeforeReadOnly"), QVariant::fromValue<qulonglong>(wanted ? unsent : 0)}});
+    }
 
 public Q_SLOTS:
     QString BeginSignIn()
@@ -147,8 +158,9 @@ public Q_SLOTS:
         set({{QStringLiteral("Label"), label.trimmed()}});
     }
     /// As the daemon's: the sign-in state, for read-write, which
-    /// answers a sign-in URL (grantReadWrite() then ends it); PendingUploads for
-    /// read-only while `pendingUploads` is not 0, unless forced, which drops them.
+    /// answers a sign-in URL (grantReadWrite() then ends it), or takes a wish for
+    /// read-only back; read-only is switched to at once when nothing is unsent
+    /// or it is forced, and is a wish kept otherwise.
     QString SetMode(const QString &mode, bool force, const QDBusMessage &message)
     {
         calls << QStringLiteral("SetMode:%1:%2").arg(mode, force ? QStringLiteral("force") : QStringLiteral("no-force"));
@@ -158,6 +170,10 @@ public Q_SLOTS:
             return QString();
         };
         if (mode == QLatin1String("read-write")) {
+            if (readOnlyWanted()) {
+                setReadOnlyWish(false);
+                return QString();
+            }
             if (state() != QLatin1String("signed-in")) {
                 return refuse(QStringLiteral("org.konedrive.Error.NotSignedIn"), QStringLiteral("sign in first; then switch the account to read-write"));
             }
@@ -168,11 +184,11 @@ public Q_SLOTS:
             return QStringLiteral("https://login.example/authorize?scope=Files.ReadWrite&account=") + id();
         }
         if (mode == QLatin1String("read-only")) {
-            if (pendingUploads > 0 && !force) {
-                return refuse(QStringLiteral("org.konedrive.Error.PendingUploads"),
-                              QStringLiteral("%1 changes made here have not been uploaded yet").arg(pendingUploads));
+            if (unsentChanges > 0 && !force) {
+                setReadOnlyWish(true, unsentChanges);
+                return QString();
             }
-            pendingUploads = 0;
+            setReadOnlyWish(false);
             set({{QStringLiteral("Mode"), QStringLiteral("read-only")}});
             return QString();
         }
@@ -237,6 +253,7 @@ class FakeFolder : public FakeFolderInterface
     Q_PROPERTY(bool Writable READ writable)
     Q_PROPERTY(QString LiveChanges READ liveChanges)
     Q_PROPERTY(bool Thumbnails READ thumbnails)
+    Q_PROPERTY(qulonglong FreeSpaceReserve READ freeSpaceReserve)
 
 public:
     FakeFolder(QObject *parent, FakeSync *sync)
@@ -265,6 +282,7 @@ public:
                                   {QStringLiteral("Writable"), true},
                                   {QStringLiteral("LiveChanges"), QStringLiteral("off")},
                                   {QStringLiteral("Thumbnails"), true},
+                                  {QStringLiteral("FreeSpaceReserve"), qulonglong(10)},
                               })
     {
     }
@@ -289,6 +307,7 @@ public:
     bool writable() const { return value("Writable").toBool(); }
     QString liveChanges() const { return value("LiveChanges").toString(); }
     bool thumbnails() const { return value("Thumbnails").toBool(); }
+    qulonglong freeSpaceReserve() const { return value("FreeSpaceReserve").toULongLong(); }
 
     /// What the daemon decided of the account as a whole: the fake decides nothing, a
     /// test says the state and the reason, with whatever else changes in the same message.
@@ -300,17 +319,17 @@ public:
 
 public Q_SLOTS:
     void Register(const QString &path, const QDBusMessage &message);
-    void RegisterWithoutInterception(const QString &path);
     void Unregister();
     void Refresh(const QDBusMessage &message);
     KonedriveNotInFolderList Skipped();
-    /// Answers (u files, t bytes, u busy) by hand, so that it can be held.
+    /// Answers (u files, t bytes) by hand, so that it can be held.
     void FreeUpSpace(const QDBusMessage &message);
     void Pause(uint seconds);
     void Resume();
     void SetIgnorePatterns(const QStringList &patterns, const QDBusMessage &message);
     void SyncAnyway();
     void SetThumbnails(bool on);
+    void SetFreeSpaceReserve(qulonglong gigabytes);
 };
 
 class FakeTransfers : public FakeFolderInterface
@@ -323,6 +342,7 @@ class FakeTransfers : public FakeFolderInterface
     Q_PROPERTY(qulonglong UploadSpeed READ uploadSpeed)
     Q_PROPERTY(uint ActiveDownloads READ activeDownloads)
     Q_PROPERTY(uint ActiveUploads READ activeUploads)
+    Q_PROPERTY(uint ThumbnailDownloads READ thumbnailDownloads)
     Q_PROPERTY(uint PoolInUse READ poolInUse)
     Q_PROPERTY(uint PoolSize READ poolSize)
     Q_PROPERTY(uint PoolCeiling READ poolCeiling)
@@ -330,6 +350,7 @@ class FakeTransfers : public FakeFolderInterface
     Q_PROPERTY(uint LargeStreams READ largeStreams)
     Q_PROPERTY(uint LargeStreamLimit READ largeStreamLimit)
     Q_PROPERTY(uint RetryAfter READ retryAfter)
+    Q_PROPERTY(QString RetryAfterRefusal READ retryAfterRefusal)
     Q_PROPERTY(uint DownloadLeftCount READ downloadLeftCount)
     Q_PROPERTY(qulonglong DownloadLeftBytes READ downloadLeftBytes)
     Q_PROPERTY(qulonglong DownloadDoneBytes READ downloadDoneBytes)
@@ -349,6 +370,7 @@ public:
                                   {QStringLiteral("UploadSpeed"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("ActiveDownloads"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("ActiveUploads"), QVariant::fromValue<uint>(0)},
+                                  {QStringLiteral("ThumbnailDownloads"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("PoolInUse"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("PoolSize"), QVariant::fromValue<uint>(16)},
                                   {QStringLiteral("PoolCeiling"), QVariant::fromValue<uint>(64)},
@@ -356,6 +378,7 @@ public:
                                   {QStringLiteral("LargeStreams"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("LargeStreamLimit"), QVariant::fromValue<uint>(4)},
                                   {QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(0)},
+                                  {QStringLiteral("RetryAfterRefusal"), QString()},
                                   {QStringLiteral("DownloadLeftCount"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("DownloadLeftBytes"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("DownloadDoneBytes"), QVariant::fromValue<qulonglong>(0)},
@@ -374,6 +397,7 @@ public:
     qulonglong uploadSpeed() const { return value("UploadSpeed").toULongLong(); }
     uint activeDownloads() const { return value("ActiveDownloads").toUInt(); }
     uint activeUploads() const { return value("ActiveUploads").toUInt(); }
+    uint thumbnailDownloads() const { return value("ThumbnailDownloads").toUInt(); }
     uint poolInUse() const { return value("PoolInUse").toUInt(); }
     uint poolSize() const { return value("PoolSize").toUInt(); }
     uint poolCeiling() const { return value("PoolCeiling").toUInt(); }
@@ -381,6 +405,7 @@ public:
     uint largeStreams() const { return value("LargeStreams").toUInt(); }
     uint largeStreamLimit() const { return value("LargeStreamLimit").toUInt(); }
     uint retryAfter() const { return value("RetryAfter").toUInt(); }
+    QString retryAfterRefusal() const { return value("RetryAfterRefusal").toString(); }
     uint downloadLeftCount() const { return value("DownloadLeftCount").toUInt(); }
     qulonglong downloadLeftBytes() const { return value("DownloadLeftBytes").toULongLong(); }
     qulonglong downloadDoneBytes() const { return value("DownloadDoneBytes").toULongLong(); }
@@ -414,7 +439,6 @@ class FakeUploadQueue : public FakeFolderInterface
     Q_PROPERTY(uint PendingCount READ pendingCount)
     Q_PROPERTY(qulonglong PendingBytes READ pendingBytes)
     Q_PROPERTY(uint BlockedCount READ blockedCount)
-    Q_PROPERTY(uint HeldCount READ heldCount)
     Q_PROPERTY(bool QuotaFull READ quotaFull)
     Q_PROPERTY(uint QuotaWaitingCount READ quotaWaitingCount)
     Q_PROPERTY(qulonglong QuotaWaitingBytes READ quotaWaitingBytes)
@@ -429,7 +453,6 @@ public:
                                   {QStringLiteral("PendingCount"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("PendingBytes"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(0)},
-                                  {QStringLiteral("HeldCount"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("QuotaFull"), false},
                                   {QStringLiteral("QuotaWaitingCount"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("QuotaWaitingBytes"), QVariant::fromValue<qulonglong>(0)},
@@ -441,16 +464,14 @@ public:
     uint pendingCount() const { return value("PendingCount").toUInt(); }
     qulonglong pendingBytes() const { return value("PendingBytes").toULongLong(); }
     uint blockedCount() const { return value("BlockedCount").toUInt(); }
-    uint heldCount() const { return value("HeldCount").toUInt(); }
     bool quotaFull() const { return value("QuotaFull").toBool(); }
     uint quotaWaitingCount() const { return value("QuotaWaitingCount").toUInt(); }
     qulonglong quotaWaitingBytes() const { return value("QuotaWaitingBytes").toULongLong(); }
     uint tooBigCount() const { return value("TooBigCount").toUInt(); }
 
 public Q_SLOTS:
-    KonedriveOutboxList Changes(uint limit);
-    uint ConfirmDeletes();
-    uint RestoreDeletes();
+    KonedriveUploadQueueList Changes(uint limit);
+    qulonglong UnsentCount();
     KonedriveSkippedList NotUploaded();
     KonedriveKeptBackList NotUploadedSummary();
     KonedriveSkippedList NotUploadedFiles(const QString &reason, uint limit, uint &total);
@@ -479,7 +500,7 @@ public Q_SLOTS:
     KonedriveConflictList List();
     /// Removes the row and answers; it does not emit Count, so a
     /// test sees whether the window asks again on its own.
-    void Dismiss(const QString &rescued, const QDBusMessage &message);
+    void Dismiss(const QString &copy, const QDBusMessage &message);
 };
 
 class FakeLocalScan : public FakeFolderInterface
@@ -489,9 +510,6 @@ class FakeLocalScan : public FakeFolderInterface
     Q_PROPERTY(QString State READ state)
     Q_PROPERTY(QString Reason READ reason)
     Q_PROPERTY(qlonglong Started READ started)
-    Q_PROPERTY(qulonglong Directories READ directories)
-    Q_PROPERTY(qulonglong Files READ files)
-    Q_PROPERTY(qulonglong Expected READ expected)
     Q_PROPERTY(qlonglong Finished READ finished)
     Q_PROPERTY(uint Took READ took)
 
@@ -504,9 +522,6 @@ public:
                                   {QStringLiteral("State"), QStringLiteral("none")},
                                   {QStringLiteral("Reason"), QString()},
                                   {QStringLiteral("Started"), QVariant::fromValue<qlonglong>(0)},
-                                  {QStringLiteral("Directories"), QVariant::fromValue<qulonglong>(0)},
-                                  {QStringLiteral("Files"), QVariant::fromValue<qulonglong>(0)},
-                                  {QStringLiteral("Expected"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("Finished"), QVariant::fromValue<qlonglong>(0)},
                                   {QStringLiteral("Took"), QVariant::fromValue<uint>(0)},
                               })
@@ -516,9 +531,6 @@ public:
     QString state() const { return value("State").toString(); }
     QString reason() const { return value("Reason").toString(); }
     qlonglong started() const { return value("Started").toLongLong(); }
-    qulonglong directories() const { return value("Directories").toULongLong(); }
-    qulonglong files() const { return value("Files").toULongLong(); }
-    qulonglong expected() const { return value("Expected").toULongLong(); }
     qlonglong finished() const { return value("Finished").toLongLong(); }
     uint took() const { return value("Took").toUInt(); }
 };
@@ -564,16 +576,6 @@ public:
     void setTransfers(const KonedriveTransferList &downloads) { transfers->setDownloads(downloads); }
     void setUploads(const KonedriveTransferList &uploads) { transfers->setUploads(uploads); }
 
-    /// The mass-delete guard trips: `count` removals of `path`'s kind are
-    /// held, in the queue and in HeldCount.
-    void holdDeletes(const QString &path, uint count)
-    {
-        for (uint i = 0; i < count; ++i) {
-            outboxRows << KonedriveOutboxRow{100 + i, QStringLiteral("delete"), path + QString::number(i), QStringLiteral("held"), 0, 0, QStringLiteral("mass-delete"), 0};
-        }
-        queue->set({{QStringLiteral("HeldCount"), QVariant::fromValue<uint>(queue->heldCount() + count)}});
-    }
-
     /// Records an event in Recent() and emits ActivityLog.Added, as the daemon does.
     void activity(qint64 time, const QString &kind, const QString &path, const QString &detail)
     {
@@ -600,7 +602,7 @@ public:
     /// Answers the held FreeUpSpace() call.
     void finishFreeUp()
     {
-        bus.send(heldFreeUp.createReply({QVariant::fromValue(freedFiles), QVariant::fromValue(freedBytes), QVariant::fromValue(busyFiles)}));
+        bus.send(heldFreeUp.createReply({QVariant::fromValue(freedFiles), QVariant::fromValue(freedBytes)}));
         heldFreeUp = QDBusMessage();
     }
 
@@ -614,7 +616,8 @@ public:
     FakeActivityLog *activityLog;
 
     QStringList calls;
-    bool helperMissing = false;
+    /// Register is refused NotEmpty with these words, when not empty.
+    QString registerRefused;
     /// Hold these calls unanswered (until releaseActivity/finishFreeUp; Refresh for ever).
     bool holdActivity = false;
     bool holdFreeUp = false;
@@ -626,10 +629,8 @@ public:
     KonedriveNotInFolderList skippedList{{QStringLiteral("/home/u/OneDrive/Personal Vault"), QStringLiteral("personal-vault"), QString(), QString()}};
     uint freedFiles = 0;
     qulonglong freedBytes = 0;
-    uint busyFiles = 0;
-    /// Changes(), oldest first; Confirm/RestoreDeletes act on its "held" rows
-    /// and set HeldCount to 0. holdDeletes() holds some, as the guard does.
-    KonedriveOutboxList outboxRows;
+    /// Changes(), oldest first.
+    KonedriveUploadQueueList uploadQueueRows;
     /// NotUploaded().
     KonedriveSkippedList notUploadedList;
     /// NotUploadedSummary(), and NotUploadedFiles() by reason.
@@ -661,18 +662,12 @@ inline void FakeFolderInterface::set(const QVariantMap &changes)
 inline void FakeFolder::Register(const QString &path, const QDBusMessage &message)
 {
     m_sync->calls << QStringLiteral("Register:") + path;
-    if (m_sync->helperMissing) {
+    if (!m_sync->registerRefused.isEmpty()) {
         message.setDelayedReply(true);
-        m_sync->bus.send(message.createErrorReply(QStringLiteral("org.konedrive.Error.NoHelper"), QStringLiteral("the konedrive helper is not connected")));
+        m_sync->bus.send(message.createErrorReply(QStringLiteral("org.konedrive.Error.NotEmpty"), m_sync->registerRefused));
         return;
     }
-    set({{QStringLiteral("Path"), path}, {QStringLiteral("State"), QStringLiteral("listing")}, {QStringLiteral("Source"), QStringLiteral("onedrive")}});
-}
-
-inline void FakeFolder::RegisterWithoutInterception(const QString &path)
-{
-    m_sync->calls << QStringLiteral("RegisterWithoutInterception:") + path;
-    set({{QStringLiteral("Path"), path}, {QStringLiteral("State"), QStringLiteral("no-interception")}, {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+    set({{QStringLiteral("Path"), path}, {QStringLiteral("State"), QStringLiteral("ready")}, {QStringLiteral("Source"), QStringLiteral("onedrive")}});
 }
 
 inline void FakeFolder::Unregister()
@@ -736,41 +731,28 @@ inline void FakeFolder::SyncAnyway()
     set({{QStringLiteral("HeldBack"), QString()}});
 }
 
+inline void FakeFolder::SetFreeSpaceReserve(qulonglong gigabytes)
+{
+    m_sync->calls << QStringLiteral("SetFreeSpaceReserve:") + QString::number(gigabytes);
+    set({{QStringLiteral("FreeSpaceReserve"), gigabytes}});
+}
+
 inline void FakeFolder::SetThumbnails(bool on)
 {
     m_sync->calls << QStringLiteral("SetThumbnails:") + (on ? QStringLiteral("on") : QStringLiteral("off"));
     set({{QStringLiteral("Thumbnails"), on}});
 }
 
-inline KonedriveOutboxList FakeUploadQueue::Changes(uint limit)
+inline KonedriveUploadQueueList FakeUploadQueue::Changes(uint limit)
 {
     m_sync->calls << QStringLiteral("Changes");
-    return limit == 0 ? m_sync->outboxRows : m_sync->outboxRows.mid(0, int(limit));
+    return limit == 0 ? m_sync->uploadQueueRows : m_sync->uploadQueueRows.mid(0, int(limit));
 }
 
-inline uint FakeUploadQueue::ConfirmDeletes()
+inline qulonglong FakeUploadQueue::UnsentCount()
 {
-    m_sync->calls << QStringLiteral("ConfirmDeletes");
-    uint released = 0;
-    for (KonedriveOutboxRow &row : m_sync->outboxRows) {
-        if (row.state == QLatin1String("held")) {
-            row.state = QStringLiteral("ready");
-            row.reason.clear();
-            ++released;
-        }
-    }
-    set({{QStringLiteral("HeldCount"), QVariant::fromValue<uint>(0)}});
-    return released;
-}
-
-inline uint FakeUploadQueue::RestoreDeletes()
-{
-    m_sync->calls << QStringLiteral("RestoreDeletes");
-    const auto dropped = m_sync->outboxRows.removeIf([](const KonedriveOutboxRow &row) {
-        return row.state == QLatin1String("held");
-    });
-    set({{QStringLiteral("HeldCount"), QVariant::fromValue<uint>(0)}});
-    return uint(dropped);
+    m_sync->calls << QStringLiteral("UnsentCount");
+    return qulonglong(m_sync->uploadQueueRows.size());
 }
 
 inline KonedriveSkippedList FakeUploadQueue::NotUploaded()
@@ -799,16 +781,16 @@ inline KonedriveConflictList FakeConflicts::List()
     return m_sync->conflictList;
 }
 
-inline void FakeConflicts::Dismiss(const QString &rescued, const QDBusMessage &message)
+inline void FakeConflicts::Dismiss(const QString &copy, const QDBusMessage &message)
 {
-    m_sync->calls << QStringLiteral("Dismiss:") + rescued;
+    m_sync->calls << QStringLiteral("Dismiss:") + copy;
     const auto before = m_sync->conflictList.size();
-    m_sync->conflictList.removeIf([&rescued](const KonedriveConflict &c) {
-        return c.rescued == rescued;
+    m_sync->conflictList.removeIf([&copy](const KonedriveConflict &c) {
+        return c.copy == copy;
     });
     if (m_sync->conflictList.size() == before) {
         message.setDelayedReply(true);
-        m_sync->bus.send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("no conflict at ") + rescued));
+        m_sync->bus.send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("no conflict at ") + copy));
     }
 }
 
@@ -855,7 +837,6 @@ class FakeAccounts : public QDBusAbstractAdaptor
     Q_CLASSINFO("D-Bus Interface", "org.konedrive.Accounts")
     Q_PROPERTY(QList<QDBusObjectPath> List READ accounts)
     Q_PROPERTY(QString ClientId READ clientId)
-    Q_PROPERTY(QString HelperState READ helperState)
     Q_PROPERTY(QString LastError READ lastError)
     Q_PROPERTY(bool PauseOnMetered READ pauseOnMetered)
     Q_PROPERTY(QString OnBattery READ onBattery)
@@ -867,7 +848,6 @@ public:
 
     QList<QDBusObjectPath> accounts() const;
     QString clientId() const { return m_properties.value(QStringLiteral("ClientId")).toString(); }
-    QString helperState() const { return m_properties.value(QStringLiteral("HelperState")).toString(); }
     QString lastError() const { return m_properties.value(QStringLiteral("LastError")).toString(); }
     bool pauseOnMetered() const { return m_properties.value(QStringLiteral("PauseOnMetered")).toBool(); }
     QString onBattery() const { return m_properties.value(QStringLiteral("OnBattery")).toString(); }
@@ -891,7 +871,7 @@ public:
     }
 
     QStringList calls;
-    /// Remove refuses NoHelper, as it does for an intercepted folder with no helper.
+    /// Remove is refused Failed, as when config.toml cannot be written.
     bool refuseRemove = false;
     /// SignIn is refused Failed with this message, when it is not empty.
     QString refuseSignIn;
@@ -938,7 +918,6 @@ private:
     FakeDaemon *m_daemon;
     QVariantMap m_properties{
         {QStringLiteral("ClientId"), QString()},
-        {QStringLiteral("HelperState"), QStringLiteral("connected")},
         {QStringLiteral("LastError"), QString()},
         {QStringLiteral("PauseOnMetered"), true},
         {QStringLiteral("OnBattery"), QStringLiteral("power-saver")},
@@ -1147,7 +1126,7 @@ inline void FakeAccounts::Remove(const QDBusObjectPath &account, const QDBusMess
     calls << QStringLiteral("Remove:") + account.path();
     if (refuseRemove) {
         message.setDelayedReply(true);
-        fake::bus().send(message.createErrorReply(QStringLiteral("org.konedrive.Error.NoHelper"), QStringLiteral("the konedrive helper is not connected")));
+        fake::bus().send(message.createErrorReply(QStringLiteral("org.konedrive.Error.Failed"), QStringLiteral("config.toml cannot be written")));
         return;
     }
     if (!m_daemon->removeAccount(account.path())) {

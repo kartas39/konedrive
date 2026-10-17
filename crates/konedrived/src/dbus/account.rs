@@ -11,7 +11,7 @@ use crate::dbus::fault::Result;
 #[cfg(feature = "dev-tools")]
 use crate::dbus::token_export::TokenExport;
 
-pub struct Account {
+pub(crate) struct Account {
     service: Arc<AccountService>,
 }
 
@@ -39,7 +39,7 @@ impl Account {
         Ok(self.service.set_label(label)?)
     }
 
-    /// Switches the account's mode (`docs/design/writes.md` §2); the URL of the sign-in the switch
+    /// Switches the account's mode (`docs/design/accounts.md` §10); the URL of the sign-in the switch
     /// needs, empty when it needs none.
     #[zbus(out_args("sign_in_url"))]
     async fn set_mode(&self, mode: &str, force: bool) -> Result<String> {
@@ -56,7 +56,7 @@ impl Account {
         self.service.state().get().label
     }
 
-    /// The mode the account runs in (`docs/design/writes.md` §2), not only the one `config.toml` asks
+    /// The mode the account runs in (`docs/design/accounts.md` §10), not only the one `config.toml` asks
     /// for: `LastError` says why the two differ.
     #[zbus(property)]
     async fn mode(&self) -> String {
@@ -71,6 +71,19 @@ impl Account {
     #[zbus(property)]
     async fn last_error(&self) -> String {
         self.service.state().get().published_error()
+    }
+
+    /// The user asked for read-only while changes were unsent: the account is read-write
+    /// still, sends them, and switches by itself when none is left.
+    #[zbus(property)]
+    async fn read_only_wanted(&self) -> bool {
+        self.service.state().get().read_only_wish.is_some()
+    }
+
+    /// While `ReadOnlyWanted`: how many changes are still to send before the switch. 0 otherwise.
+    #[zbus(property)]
+    async fn unsent_before_read_only(&self) -> u64 {
+        self.service.state().get().read_only_wish.map_or(0, |wish| wish.unsent)
     }
 
     #[zbus(property)]
@@ -112,7 +125,7 @@ impl Account {
 /// At startup this runs before the bus name is claimed (`crate::daemon::startup::serve`), and
 /// after the session was restored from the wallet: a D-Bus-activated client's first call is
 /// never answered from stale, pre-restore state.
-pub async fn export(connection: &Connection, path: &ObjectPath<'_>, service: Arc<AccountService>) -> zbus::Result<JoinHandle<()>> {
+pub(crate) async fn export(connection: &Connection, path: &ObjectPath<'_>, service: Arc<AccountService>) -> zbus::Result<JoinHandle<()>> {
     // Captured before the interface is on the bus (not inside the task): otherwise a state
     // change landing in between would be absorbed into this baseline instead of being
     // emitted as a PropertiesChanged signal.
@@ -135,7 +148,7 @@ pub async fn export(connection: &Connection, path: &ObjectPath<'_>, service: Arc
 }
 
 /// Takes one account's `Account` and `TokenExport` off the bus (`Accounts.Remove`).
-pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
+pub(crate) async fn unexport(connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
     use crate::dbus::export::{all_taken_off, take_off};
     all_taken_off([
         #[cfg(feature = "dev-tools")]
@@ -156,6 +169,12 @@ async fn emit_changes(
     }
     if old.published_error() != new.published_error() {
         account.last_error_changed(emitter).await?;
+    }
+    if old.read_only_wish.is_some() != new.read_only_wish.is_some() {
+        account.read_only_wanted_changed(emitter).await?;
+    }
+    if old.read_only_wish.map_or(0, |wish| wish.unsent) != new.read_only_wish.map_or(0, |wish| wish.unsent) {
+        account.unsent_before_read_only_changed(emitter).await?;
     }
     if old.label != new.label {
         account.label_changed(emitter).await?;

@@ -1,9 +1,9 @@
-//! What an upload session's placeholder is in OneDrive (limitations log F172): opening a session
+//! What an upload session's empty file is in OneDrive (limitations log F172): opening a session
 //! for a new file puts an empty file under its name at once, and a session left open (a daemon
 //! stopped mid-opening) leaves it there. These checks record what a read of it shows while the
 //! session is open — whether it carries what the session request gave it, whether the delta feed
 //! or its folder's listing shows it, whether it shows the session's progress — and what frees
-//! its name. They answer what the daemon can tell a placeholder by; each ends `LOOK`.
+//! its name. They answer what the daemon can tell such an empty file by; each ends `LOOK`.
 
 use std::time::Duration;
 
@@ -13,20 +13,20 @@ use serde_json::{json, Value};
 use super::{follow, message, show, Outcome, Run, T0};
 use Outcome::{Fail, Manual};
 
-/// Every field a placeholder might tell something by.
+/// Every field an empty file might tell something by.
 const SELECT: &str = "$select=id,name,size,eTag,cTag,createdDateTime,lastModifiedDateTime,fileSystemInfo,\
 description,createdBy,lastModifiedBy,parentReference,file,pendingOperations";
 
 /// `T0` as Graph writes it.
 const T0_ISO: &str = "2023-11-14T22:13:20Z";
 
-/// What a session request marks its file with, to see whether the placeholder shows it.
+/// What a session request marks its file with, to see whether the empty file shows it.
 const DESCRIPTION: &str = "konedrive write test: made on this machine";
 
-/// How long an open session is left alone before its placeholder is read again.
+/// How long an open session is left alone before its empty file is read again.
 const QUIET: Duration = Duration::from_secs(120);
 
-/// The fields compared between two reads of a placeholder.
+/// The fields compared between two reads of an empty file.
 const WATCHED: [&str; 8] = ["size", "eTag", "cTag", "lastModifiedDateTime", "fileSystemInfo", "description", "file", "pendingOperations"];
 
 struct Opened {
@@ -36,7 +36,7 @@ struct Opened {
 }
 
 impl Run {
-    /// The placeholder checks alone (`--only placeholders`).
+    /// The checks of the empty file alone (`--only placeholders`).
     pub async fn placeholders(&mut self) -> Vec<(&'static str, Outcome)> {
         let mut done = Vec::new();
         macro_rules! check {

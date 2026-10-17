@@ -1,29 +1,11 @@
 use super::{account_refusal_text, dev_refusal_text, refusal_text, refusal_text_in, AccountAction, Context, SyncAction};
 
-/// `account remove` and `sync forget` refused while changes wait say how
-/// to see them and how to drop them.
-#[test]
-fn a_remove_or_forget_refused_while_changes_wait_says_what_to_do() {
-    let detail = "2 change(s) made here have not been uploaded yet";
-    let removed = refusal_text(SyncAction::Remove("Test"), Some("org.konedrive.Error.PendingUploads"), detail, "/home/u/OneDrive");
-    assert!(removed.contains("was not removed") && removed.contains(detail), "{removed}");
-    assert!(removed.contains("`konedrivectl --account Test account mode read-only --force`"), "{removed}");
-    let forgot = refusal_text(SyncAction::Forget, Some("org.konedrive.Error.PendingUploads"), detail, "/home/u/OneDrive");
-    assert!(forgot.contains("still registered") && forgot.contains("`konedrivectl account mode read-only --force`"), "{forgot}");
-}
-
 /// `account mode` and `export-access-token --read-write` explain each refusal by its
-/// name (`docs/design/desktop.md` §2.6): uploads waiting, a read-only account, and, for the token
+/// name (`docs/design/desktop.md` §2.10): a read-only account, and, for the token
 /// alone, a drive `write_test_drive_ids` does not list.
 #[test]
 fn a_refused_mode_is_explained_by_its_name() {
     let prefix = "konedrivectl --account Test";
-    let pending = account_refusal_text(
-        AccountAction::SetMode("Test", "read-only", prefix),
-        Some("org.konedrive.Error.PendingUploads"),
-        "3 changes made here have not been uploaded yet",
-    );
-    assert!(pending.contains("3 changes") && pending.contains("konedrivectl --account Test account mode read-only --force"), "{pending}");
     let signed_out = account_refusal_text(AccountAction::SetMode("Test", "read-write", prefix), Some("org.konedrive.Error.NotSignedIn"), "x");
     assert!(signed_out.contains("`konedrivectl --account Test login`"), "{signed_out}");
     let other = account_refusal_text(AccountAction::SetMode("Test", "read-write", prefix), Some("org.konedrive.Error.Failed"), "no client id");
@@ -49,22 +31,22 @@ fn a_path_in_no_folder_is_told_which_folders_there_are() {
     assert!(text.contains("/home/u/OneDrive, /home/u/Family"), "{text}");
 }
 
-/// An outbox command refused for want of a folder is told to register one; refused because
+/// An upload-queue command refused for want of a folder is told to register one; refused because
 /// the folder is not up, or its sync is not running, it is told why, in the daemon's words,
 /// and where to look.
 #[test]
-fn an_outbox_command_is_told_to_register_only_when_there_is_no_folder() {
+fn an_upload_queue_command_is_told_to_register_only_when_there_is_no_folder() {
     let told = |action, name: &str, detail| {
         refusal_text_in(action, Some(name), detail, Context { root: "/home/u/OneDrive", prefix: "konedrivectl --account Test", ..Context::default() })
     };
-    for action in [SyncAction::Outbox, SyncAction::Pause, SyncAction::Refresh] {
+    for action in [SyncAction::UploadQueue, SyncAction::Pause, SyncAction::Refresh] {
         let none = told(action, "org.konedrive.Error.NoRoot", "no sync root is registered");
         assert!(none.contains("no sync folder is registered") && none.contains("sync register"), "{none}");
-        let waiting = told(action, "org.konedrive.Error.NotUp", "the folder is not up: it waits for the konedrive helper");
+        let waiting = told(action, "org.konedrive.Error.NotUp", "the folder is not up: its mount could not be served");
         assert_eq!(
             waiting,
-            "the sync folder (/home/u/OneDrive) is not up, so the command could not go ahead: it waits for the konedrive \
-             helper. `konedrivectl --account Test sync status` shows its state; `konedrivectl --account Test sync forget` \
+            "the sync folder (/home/u/OneDrive) is not up, so the command could not go ahead: its mount could not be \
+             served. `konedrivectl --account Test sync status` shows its state; `konedrivectl --account Test sync forget` \
              takes the folder away, and leaves its files as they are"
         );
     }
@@ -111,11 +93,11 @@ fn a_refusal_is_explained_by_its_name_not_its_message() {
     let text = refusal_text(
         SyncAction::Dehydrate("/r/doc.bin"),
         Some("org.konedrive.Error.ModifiedLocally"),
-        "the file is not downloaded",
+        "the file is being downloaded",
         "/r",
     );
     assert!(text.contains("lose your edits"), "{text}");
-    assert!(!text.contains("no space to free"), "{text}");
+    assert!(!text.contains("cannot be freed yet"), "{text}");
 
     let text = refusal_text(
         SyncAction::Dehydrate("/r/doc.bin"),
@@ -123,7 +105,7 @@ fn a_refusal_is_explained_by_its_name_not_its_message() {
         "the file was modified locally",
         "/r",
     );
-    assert!(text.contains("no space to free"), "{text}");
+    assert!(text.contains("cannot be freed yet"), "{text}");
     assert!(!text.contains("lose your edits"), "{text}");
 }
 
@@ -140,69 +122,11 @@ fn only_names_under_the_konedrive_prefix_are_ours() {
     assert_eq!(text, "downloading /r/doc.bin failed: something else entirely");
 }
 
-/// A Forget of a folder registered with the helper now
-/// needs the helper, and is refused `NoHelper` without one. The generic
-/// `NoHelper` text was written for registering — "… and  was not
-/// registered … `register-without-interception `" with an empty path —
-/// which reads as nonsense after `sync forget`, and says nothing about
-/// the folder still being registered.
-#[test]
-fn a_forget_refused_for_want_of_the_helper_says_the_folder_is_still_registered() {
-    let text = refusal_text(
-        SyncAction::Forget,
-        Some("org.konedrive.Error.NoHelper"),
-        "the konedrive helper is not connected",
-        "/home/u/OneDrive",
-    );
-    assert!(text.contains("/home/u/OneDrive"), "{text}");
-    assert!(text.contains("still registered"), "{text}");
-    assert!(text.contains("once the helper is back"), "{text}");
-    assert!(!text.contains("was not registered"), "{text}");
-    assert!(!text.contains("register-without-interception"), "{text}");
-}
-
-/// follow-up: `Hydrate` of a file that may carry an ignore
-/// mark — one a cancelled "free up space" left half done, or one labelled
-/// downloaded with nothing to prove it — needs the helper to clear that
-/// mark first, and is refused `NoHelper` without one. The generic text
-/// talks about registering a folder.
-#[test]
-fn a_download_refused_for_want_of_the_helper_says_nothing_changed() {
-    let text = refusal_text(
-        SyncAction::Hydrate("/home/u/OneDrive/doc.bin"),
-        Some("org.konedrive.Error.NoHelper"),
-        "the konedrive helper is not connected",
-        "/home/u/OneDrive",
-    );
-    assert!(text.contains("/home/u/OneDrive/doc.bin"), "{text}");
-    assert!(text.contains("nothing was changed"), "{text}");
-    assert!(text.contains("once the helper is back"), "{text}");
-    assert!(!text.contains("was not registered"), "{text}");
-}
-
-/// a populate source that overlaps the sync
-/// folder is refused `Unsupported`, whose text was written for a folder
-/// that cannot be registered.
-#[test]
-fn a_populate_source_refused_as_unsupported_is_not_called_a_sync_folder() {
-    let text = refusal_text(
-        SyncAction::PopulateFrom("/home/u/OneDrive/src"),
-        Some("org.konedrive.Error.Unsupported"),
-        "/home/u/OneDrive/src is inside the sync folder /home/u/OneDrive, and a folder \
-         cannot be filled from itself",
-        "/home/u/OneDrive",
-    );
-    assert!(!text.contains("cannot be used as the sync folder"), "{text}");
-    assert!(text.contains("cannot be filled from itself"), "{text}");
-}
-
-/// The same folder asked for again — which is what a restored folder
-/// waiting for its helper now answers `AlreadyRegistered` to — is not
-/// "use this one instead".
+/// The same folder asked for again is not "use this one instead".
 #[test]
 fn registering_the_folder_that_is_already_registered_says_so() {
     let text = refusal_text(
-        SyncAction::RegisterWithoutInterception("/home/u/OneDrive"),
+        SyncAction::Register("/home/u/OneDrive"),
         Some("org.konedrive.Error.AlreadyRegistered"),
         "a sync root is already registered; forget it first",
         "/home/u/OneDrive",
@@ -211,7 +135,7 @@ fn registering_the_folder_that_is_already_registered_says_so() {
     assert!(!text.contains("instead"), "{text}");
 
     let text = refusal_text(
-        SyncAction::RegisterWithoutInterception("/home/u/Other"),
+        SyncAction::Register("/home/u/Other"),
         Some("org.konedrive.Error.AlreadyRegistered"),
         "a sync root is already registered; forget it first",
         "/home/u/OneDrive",
@@ -257,7 +181,7 @@ fn a_file_operation_is_told_in_the_catalogues_words() {
         told(SyncAction::Free("/r/a.bin"), "InUse", "x"),
         "“/r/a.bin” is open in another program, so its space cannot be freed right now. Close it there and try again."
     );
-    assert_eq!(told(SyncAction::Free("/r/a.bin"), "NotHydrated", "x"), "“/r/a.bin” is not downloaded, so there is no space to free — it already takes none.");
+    assert_eq!(told(SyncAction::Free("/r/a.bin"), "NotHydrated", "x"), "“/r/a.bin” is being downloaded, so its space cannot be freed yet: try again once it is downloaded.");
     assert_eq!(
         told(SyncAction::Open("/r/own.txt"), "NotManaged", "x"),
         "“/r/own.txt” is not a OneDrive file: it is a file of your own in the sync folder, so it has no page in OneDrive."
@@ -270,7 +194,7 @@ fn a_file_operation_is_told_in_the_catalogues_words() {
     // The command line's own: the command for this account, and the folder.
     assert_eq!(
         told(SyncAction::Open("/r/new.txt"), "NotUploaded", "x"),
-        "/r/new.txt is not uploaded yet, so it has no page in OneDrive. It can be opened there once it is uploaded (`konedrivectl --account Test sync outbox`)."
+        "/r/new.txt is not uploaded yet, so it has no page in OneDrive. It can be opened there once it is uploaded (`konedrivectl --account Test sync upload-queue`)."
     );
     assert_eq!(
         told(SyncAction::Open("/r/a.bin"), "NotSignedIn", "x"),
@@ -279,7 +203,7 @@ fn a_file_operation_is_told_in_the_catalogues_words() {
     assert_eq!(
         told(SyncAction::Free("/r/new.txt"), "NotUploaded", "/r/new.txt is not uploaded yet, so freeing it up would lose the changes made here"),
         "/r/new.txt is not uploaded yet, so freeing up its space would lose the changes made here. It was left as it is; its space can be freed once it is \
-         uploaded (`konedrivectl --account Test sync outbox`)."
+         uploaded (`konedrivectl --account Test sync upload-queue`)."
     );
     assert_eq!(
         told(SyncAction::Pin("/r/link"), "OutsideRoot", "x"),
@@ -296,30 +220,14 @@ fn a_file_operation_is_told_in_the_catalogues_words() {
 }
 
 /// Where the catalogue has no sentence for the command line, a file operation is told as
-/// this table tells its other commands: a folder above that keeps the file, no folder, no
-/// helper.
+/// this table tells its other commands: no folder. And a file a pin keeps is not freed up
+/// by `sync dehydrate`, which names the command that lets it go.
 #[test]
 fn a_file_operation_the_catalogue_leaves_to_the_command_line_keeps_its_own_words() {
     let told = |action, refusal: &str, detail: &str| refusal_text(action, Some(&named(refusal)), detail, "/r");
-    let pinned = "/r/Docs/a.bin is pinned by /r/Docs: unpin it first";
-    assert!(told(SyncAction::Unpin("/r/Docs/a.bin"), "NotAllowed", pinned).ends_with("`konedrivectl sync unpin /r/Docs` stops keeping the folder"));
-    assert!(told(SyncAction::Free("/r/Docs/a.bin"), "NotAllowed", pinned).contains("free up the folder first: `konedrivectl sync free /r/Docs`"));
+    let pinned = "/r/Docs/a.bin is pinned: unpin it first";
+    assert!(told(SyncAction::Dehydrate("/r/Docs/a.bin"), "NotAllowed", pinned).ends_with("`konedrivectl sync free /r/Docs/a.bin` stops keeping it and frees it up"));
     assert!(told(SyncAction::Pin("/r/a.bin"), "NoRoot", "x").starts_with("no sync folder is registered. Register one first"));
-    assert!(told(SyncAction::Pin("/r/a.bin"), "NoHelper", "x").contains("so /r/a.bin was not registered"));
-}
-
-/// `sync free` without the helper: several paths may have been given and some freed, so
-/// the command line has its own sentence, and how to start the helper follows it.
-#[test]
-fn a_free_up_without_the_helper_says_nothing_more_was_freed() {
-    let context = Context { root: "/r", helper: "stopped", ..Context::default() };
-    let text = refusal_text_in(SyncAction::Free("/r/a.bin"), Some(&named("NoHelper")), "x", context);
-    assert!(text.starts_with("The konedrive helper is not connected, so nothing more was freed up. Freeing up a file must first"), "{text}");
-    assert!(
-        text.ends_with("it reconnects on its own. The konedrive helper is not running: start it with `sudo systemctl start konedrive-helper`"),
-        "{text}"
-    );
-    assert_eq!(refusal_text(SyncAction::FreeUpSpace, Some(&named("NoHelper")), "x", "/r"), refusal_text(SyncAction::Free("/r/a.bin"), Some(&named("NoHelper")), "x", "/r"));
 }
 
 /// `sync pin`, `unpin` and `free` take several paths. A sentence about one file is said of
@@ -338,7 +246,7 @@ fn several_paths_are_never_put_inside_one_files_quotes() {
         (SyncAction::Unpin(two), "NotManaged", format!("{two}: {not_managed}, so it was never pinned.")),
         (SyncAction::Free(two), "NotManaged", format!("{two}: {not_managed}, and KOneDrive never frees the space of a file it could not download again.")),
         (SyncAction::Free(two), "InUse", format!("{two}: one of these is open in another program, so its space cannot be freed right now. Close it there and try again.")),
-        (SyncAction::Free(two), "NotHydrated", format!("{two}: one of these is not downloaded, so there is no space to free — it already takes none.")),
+        (SyncAction::Free(two), "NotHydrated", format!("{two}: one of these is being downloaded, so its space cannot be freed yet: try again once it is downloaded.")),
         (
             SyncAction::Pin(two),
             "ModifiedLocally",
@@ -365,7 +273,7 @@ fn several_paths_are_never_put_inside_one_files_quotes() {
         (SyncAction::Pin(one), "NotManaged", "“/r/own.txt” is not a OneDrive file: it is a file of your own in the sync folder, so there is nothing for KOneDrive to keep downloaded."),
         (SyncAction::Free(one), "NotManaged", "“/r/own.txt” is not a OneDrive file: it is a file of your own in the sync folder, and KOneDrive never frees the space of a file it could not download again."),
         (SyncAction::Free(one), "InUse", "“/r/own.txt” is open in another program, so its space cannot be freed right now. Close it there and try again."),
-        (SyncAction::Free(one), "NotHydrated", "“/r/own.txt” is not downloaded, so there is no space to free — it already takes none."),
+        (SyncAction::Free(one), "NotHydrated", "“/r/own.txt” is being downloaded, so its space cannot be freed yet: try again once it is downloaded."),
         (SyncAction::Unpin(one), "ModifiedLocally", "“/r/own.txt” was changed here and has not been uploaded, so freeing its space would lose your edits. It was left exactly as it is."),
         (SyncAction::Unpin(one), "Failed", "Unpinning “/r/own.txt” failed: disk full"),
     ];
@@ -377,4 +285,15 @@ fn several_paths_are_never_put_inside_one_files_quotes() {
         told(SyncAction::Pin(two), "OutsideRoot", true),
         format!("{two}: only files and folders inside the sync folder (/r) can be kept on this device or freed up — not symbolic links, or anything outside it.")
     );
+}
+
+/// A call the daemon did not answer within the limit is said so, whatever the command
+/// was doing; any other error that is no reply says what it says of itself.
+#[test]
+fn a_call_that_got_no_answer_is_said_so() {
+    let unanswered = zbus::Error::InputOutput(std::sync::Arc::new(std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out")));
+    assert!(super::is_unanswered(&unanswered));
+    assert_eq!(super::explain_sync_error(SyncAction::Pause, &unanswered, Context::default()), "pausing the sync failed: konedrived did not answer within 25 seconds");
+    let closed = zbus::Error::InputOutput(std::sync::Arc::new(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed")));
+    assert!(!super::is_unanswered(&closed));
 }
