@@ -3,7 +3,7 @@ use std::path::Path;
 
 use konedrive_fs::placeholder::{State, XATTR_ROOT, XATTR_STATE};
 
-use super::{remove_write_bits, BackingDirectory, LEGACY_STAGING_DIRECTORY};
+use super::{remove_write_bits, BackingDirectory, OpenRefusal, LEGACY_STAGING_DIRECTORY};
 
 /// A directory on disk with nothing in it, opened as a mount's backing directory is.
 pub(super) fn empty_backing_directory() -> (tempfile::TempDir, BackingDirectory) {
@@ -54,7 +54,7 @@ fn a_directory_that_holds_an_older_konedrives_placeholder_is_not_opened() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("a.txt"), b"").unwrap();
     xattr::set(dir.path().join("a.txt"), XATTR_STATE, State::OnlineOnly.as_str().as_bytes()).unwrap();
-    assert!(BackingDirectory::open(dir.path()).is_err());
+    assert!(matches!(BackingDirectory::open(dir.path()), Err(OpenRefusal::LegacyPlaceholders)));
 }
 
 /// The write bits of the directory were removed when the daemon last ended; with the mount over it, it is the daemon's.

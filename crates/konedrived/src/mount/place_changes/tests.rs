@@ -401,6 +401,9 @@ fn a_file_is_opened_to_read() {
     f.write("a", "x");
     let (mut file, ()) = f.place_changes.open_at_row_path(|| Ok(Some((PathBuf::from("a"), ())))).unwrap().unwrap();
     assert!(file.write_all(b"z").is_err());
+    let mut content = String::new();
+    file.read_to_string(&mut content).unwrap();
+    assert_eq!(content, "x");
 }
 
 #[test]

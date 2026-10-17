@@ -91,9 +91,9 @@ fn the_wait_for_a_queued_job_ends_when_the_thread_is_stopped() {
     let tree_lock = Arc::new(tokio::sync::Mutex::new(()));
     let write_operation_thread = WriteOperationThread::start(Arc::clone(&tree_lock)).unwrap();
     let held = tree_lock.try_lock().unwrap();
-    let answer = write_operation_thread.run_and_wait(|| 7);
+    let mut answer = write_operation_thread.run_and_wait(|| 7);
     write_operation_thread.stop();
-    assert!(answer.blocking_recv().is_err());
+    assert_eq!(answer.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed), "the wait ended with the stop");
     drop(held);
 }
 
