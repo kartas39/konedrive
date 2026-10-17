@@ -471,7 +471,7 @@ The task of a folder's sync plan: one per folder, in either access mode.
   of a reading (`decide_window`) and the count of what will not be sent by itself. `[tests]`
 - `missing_pinned_files.rs` — `MissingPinnedFiles`: whether a pinned file may be missing its
   content, which is when a plan's reading scans below the pinned directories. `[tests]`
-- `step_choice.rs` — `decide_steps_to_start`: which steps of a plan start now.
+- `step_choice.rs` — `decide_steps_to_start`: which steps of a plan start now. `[tests]`
 - `step_runners.rs` — the three runners as the task takes them: one seam.
 - `row_steps.rs` — the runner of the steps of the rows alone, among them the hash of a local
   content.
