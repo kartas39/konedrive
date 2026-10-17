@@ -1082,7 +1082,7 @@ dependencies = [
 
 [[package]]
 name = "konedrive-dbus"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "konedrive-dbus",
  "serde",
@@ -1093,7 +1093,7 @@ dependencies = [
 
 [[package]]
 name = "konedrive-fs"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "nix",
@@ -1104,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "konedrive-graph"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1126,11 +1126,11 @@ dependencies = [
 
 [[package]]
 name = "konedrive-reason"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "konedrive-text"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "konedrive-dbus",
  "konedrive-reason",
@@ -1138,7 +1138,7 @@ dependencies = [
 
 [[package]]
 name = "konedrive-tree"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "icu_normalizer",
  "konedrive-fs",
@@ -1154,7 +1154,7 @@ dependencies = [
 
 [[package]]
 name = "konedrive-write-test"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "clap",
@@ -1176,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "konedrivectl"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1200,7 +1200,7 @@ dependencies = [
 
 [[package]]
 name = "konedrived"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
