@@ -23,6 +23,8 @@
 // test: the_first_cause_in_the_order_of_the_cases_is_the_one_shown
 // test: a_throttle_holds_no_download_and_a_pause_does
 // test: a_read_only_folder_holds_what_is_sent_and_no_download_and_is_shown_after_the_accounts_refusal
+// test: a_download_is_held_by_a_pause_that_is_not_the_hold_shown
+// test: a_read_only_folder_that_still_sends_what_was_unsent_is_not_held_for_being_read_only
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

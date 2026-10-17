@@ -97,6 +97,13 @@
 // test: a_step_whose_commit_may_not_begin_writes_nothing
 // test: each_written_step_answers_its_event_with_the_path_of_its_commit
 // test: a_step_that_sends_no_content_holds_a_metadata_slot_for_its_request
+// test: a_404_of_a_removal_is_its_confirmation
+// test: a_record_whose_request_never_left_goes_and_the_step_is_sent_again
+// test: a_directory_of_the_name_that_no_row_is_bound_to_is_adopted_only_when_it_is_empty
+// test: a_move_whose_name_is_taken_answers_the_holder_as_onedrive_spells_it
+// test: a_move_to_where_the_rows_say_onedrive_has_the_item_sends_nothing
+// test: a_step_that_names_an_item_of_another_drive_sends_nothing
+// test: a_directorys_removal_is_not_sent_once_the_rows_say_onedrive_has_more_in_it
 // A 412 is answered `ItemChanged` and waits for a listing to write the item's eTag or cTag
 // (`SendContent`, `SendMove`, `SendFileRemoval`). That is enough: OneDrive moves an eTag with no change
 // of content (an image's moved twice within a minute of its upload), and the delta names an item whose

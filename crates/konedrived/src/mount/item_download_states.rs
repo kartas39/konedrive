@@ -50,6 +50,8 @@
 // test: the_count_of_bytes_read_as_ranges_starts_over_once_it_reached_the_threshold
 // test: no_more_than_the_latest_contents_onedrive_answered_with_another_are_remembered
 // test: the_failure_of_a_download_onedrive_did_not_answer_is_kept_with_what_is_remembered_of_its_key
+// test: a_handle_kept_after_the_abort_aborts_its_own_task_and_leaves_the_next_download_of_the_key
+// test: the_unfinished_files_are_those_of_the_running_downloads_that_are_not_whole_and_of_the_failed_ones
 
 use std::collections::HashMap;
 use std::fs::File;

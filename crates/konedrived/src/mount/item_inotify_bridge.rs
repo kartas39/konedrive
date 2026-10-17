@@ -17,8 +17,8 @@
 // kernel looks up each directory above it, and a first listing announces one name per
 // item.
 //!
-//! **Tested without the rest**: the queue by itself (the last three); the thread with the
-//! mount replaced by a directory the test watches (the first):
+//! **Tested without the rest**: the queue by itself, and the thread with the mount replaced
+//! by a directory the test watches:
 // test: an_appearing_is_a_name_created_and_a_vanishing_a_name_removed_by_path
 // test: the_announcement_being_performed_is_what_the_bridges_own_lookup_is_answered_from
 // test: announcements_are_performed_in_the_order_they_were_queued
@@ -28,6 +28,7 @@
 // test: a_changed_content_is_a_touch_of_the_file_by_path
 // test: the_kernels_pages_of_a_changed_content_are_dropped_before_the_file_is_touched
 // test: an_announcement_in_a_directory_the_folder_no_longer_shows_is_skipped_and_the_next_performed
+// test: a_change_of_the_marks_touches_a_file_and_a_directory_and_drops_no_cached_page
 
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;

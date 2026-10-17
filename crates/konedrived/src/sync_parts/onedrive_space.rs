@@ -19,6 +19,11 @@
 // test: a_507_with_no_space_left_makes_onedrive_full
 // test: a_quota_read_with_space_again_ends_full_and_says_how_much_is_free
 // test: a_refresh_reads_the_quota_and_a_due_read_waits_after_one_that_failed
+// test: a_507_whose_quota_cannot_be_read_counts_as_a_full_onedrive
+// test: a_quota_read_less_than_ten_seconds_ago_answers_another_507
+// test: what_is_free_is_what_the_last_quota_applied_said_less_what_went_up_since
+// test: a_quota_with_a_state_and_no_remaining_leaves_nothing_free_to_fit_into
+// test: what_is_free_after_a_507_is_what_the_read_it_made_said
 
 use konedrive_graph::drive::{DriveClient, DriveQuota};
 

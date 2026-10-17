@@ -19,6 +19,8 @@
 // test: an_item_with_neither_has_no_guard
 // test: the_guard_of_a_content_is_the_ctag_of_onedrives_content_else_the_synced_ones_else_the_etag
 // test: a_guard_matches_an_item_by_the_tag_it_names
+// test: the_guard_of_an_answer_is_its_etag_else_its_ctag
+// test: a_name_that_is_not_utf8_is_refused_for_good_and_any_other_is_given_as_it_is
 
 use std::ffi::OsStr;
 

@@ -21,6 +21,7 @@
 // test: a_death_between_the_row_and_the_copys_going_leaves_a_copy_the_check_at_start_reads_as_landed
 // test: a_copy_that_cannot_be_removed_is_on_disk_in_its_row_again
 // test: a_freed_copy_and_a_mended_row_are_announced_and_what_is_left_is_not
+// test: the_decision_of_a_free_up_is_the_first_reason_that_holds
 //!
 //! **A copy that cannot be removed** after its row said not on disk is said on disk again
 //! (`ItemStore::commit_landed_content`): the row never says for long that content is not
