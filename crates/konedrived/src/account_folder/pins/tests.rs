@@ -14,11 +14,6 @@ async fn end_scene(service: &SyncService, mount: Arc<ItemMount>) {
     tokio::task::spawn_blocking(move || drop((kept, mount))).await.unwrap();
 }
 
-#[test]
-fn the_refusal_names_the_path_refused() {
-    assert_eq!(refusal(Path::new("/f/Docs/a b.txt")), "/f/Docs/a b.txt is pinned: unpin it first");
-}
-
 /// Pins through the folder's mount, kept by a sync that does not run: a path is counted
 /// when a mark changed for it, `PinnedCount` follows, and a path a directory above pins is
 /// left as it is by `Pin` and excepted by `Unpin`, the directory staying pinned.

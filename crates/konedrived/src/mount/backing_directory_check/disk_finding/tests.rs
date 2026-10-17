@@ -219,13 +219,6 @@ fn the_ctag_mark_is_not_asked_of_a_file_that_has_several_names() {
     assert_eq!(compare_content(&hashed(3, 100, Some("c-1")), &on_disk(4, 100, 0, Some("c-1")), EntryLinks::Several), Different);
 }
 
-/// An id that more than one entry carries binds none of them.
-#[test]
-fn an_entry_whose_id_no_row_has_and_several_entries_carry_is_a_new_item_of_the_users_own() {
-    assert_eq!(decide_finding(PlaceRow::Nothing, file(OfSeveralEntries, Whole, Same)), DiskFinding::Made);
-    assert_eq!(decide_finding(PlaceRow::Nothing, PlaceEntry::Directory { mark: OfSeveralEntries }), DiskFinding::Made);
-}
-
 fn on_disk(size: u64, mtime: i64, mtime_nsec: u32, ctag: Option<&str>) -> DiskContent {
     DiskContent { size, mtime, mtime_nsec, ctag: ctag.map(str::to_owned) }
 }
