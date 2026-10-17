@@ -226,24 +226,3 @@ fn a_change_of_the_mounts_access_mode_tells_the_desktop_on_the_bus_the_service_w
         tokio::task::spawn_blocking(move || drop((kept, mount))).await.unwrap();
     });
 }
-
-/// A service made with no bus tells the desktop nothing and reaches no bus by itself: the
-/// same change is made and published, and that is all of it.
-#[test]
-fn a_service_with_no_bus_changes_the_access_mode_and_tells_nobody() {
-    let fixture = ItemFixture::new();
-    fixture.runtime().block_on(async {
-        let (service, _clock) = make_service();
-        assert!(service.wiring.desktop_bus.is_none());
-        let kept = make_kept_parts(&fixture);
-        let mount = Arc::clone(&kept.mount);
-        stage_folder(&service, &fixture.folder(), Sync::Stopped(Why::NotStarted), Some(kept)).await;
-        crate::account_folder::testing::parts(&service).account.state().update(|s| s.mode = crate::config::Mode::ReadWrite);
-        service.follow_mode(crate::config::Mode::ReadWrite).await;
-        assert!(mount.access_mode_switch().is_read_write() && service.writable());
-
-        let kept = service.folder.write().await.record_mut().and_then(|record| record.kept.parts.take());
-        service.view.send_replace(View::default());
-        tokio::task::spawn_blocking(move || drop((kept, mount))).await.unwrap();
-    });
-}

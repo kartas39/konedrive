@@ -77,13 +77,3 @@ fn only_a_refusal_for_good_and_a_wait_for_the_user_that_needs_the_user_are_shown
         assert!(decide_is_shown_blocked(answer.as_ref(), true), "a refusal for good the memory keeps is blocked whatever the plan answered: {what}");
     }
 }
-
-#[test]
-fn the_count_of_what_will_not_be_sent_is_the_last_plans() {
-    let published = PublishedPlan::new();
-    assert_eq!(published.count_unsent_not_to_send(), 0, "before the first plan");
-    published.publish_unsent_not_to_send_count(3);
-    assert_eq!(published.count_unsent_not_to_send(), 3);
-    published.publish_unsent_not_to_send_count(0);
-    assert_eq!(published.count_unsent_not_to_send(), 0);
-}

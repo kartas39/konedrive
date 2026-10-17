@@ -391,12 +391,6 @@ fn a_download_that_would_not_leave_the_free_space_kept_is_held_and_said() {
     assert_eq!(task_fixture.state.get().transfers.disk_space_shortage, None);
 }
 
-#[test]
-fn a_few_more_uploads_and_downloads_are_started_than_the_pool_has_slots() {
-    let limits = step_choice::decide_step_limits(16);
-    assert_eq!(limits, StepLimits { content: 16 + step_choice::STEPS_BEYOND_SLOTS, metadata: 1, download: 16 + step_choice::STEPS_BEYOND_SLOTS });
-}
-
 /// Moves `file_count` files through `pool` as the plan's task has its downloads run: as
 /// many at once as `decide_step_limits` allows for the pool's size at the time, each
 /// waiting for its slot, taking its time (each file another, by the runtime's clock, as

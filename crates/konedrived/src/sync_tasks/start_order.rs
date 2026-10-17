@@ -72,7 +72,6 @@
 // test: the_plans_task_is_started_in_a_read_only_folder_too_and_the_access_mode_is_applied_before_its_first_plan
 // test: a_start_over_parts_answers_them_with_its_tasks_and_the_origin_it_was_given
 // test: a_start_whose_store_cannot_be_opened_is_refused_with_nothing_left
-// test: the_runner_of_the_steps_towards_the_folder_is_made_of_the_mounts_own_parts
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

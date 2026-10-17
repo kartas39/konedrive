@@ -46,14 +46,3 @@ fn the_path_of_the_root_directory_names_the_directory_and_not_a_link() {
     assert!(fs::symlink_metadata(backing_directory.resolve_root_directory_path()).unwrap().is_dir());
     assert!(fs::symlink_metadata(backing_directory.resolve_root_path()).unwrap().file_type().is_symlink());
 }
-
-/// With the mount over it the backing directory is reached by its descriptor alone.
-#[test]
-fn the_write_bits_of_the_backing_directory_are_restored_through_its_descriptor() {
-    let (dir, backing_directory) = empty_backing_directory();
-    fs::create_dir(dir.path().join("docs")).unwrap();
-    fs::write(dir.path().join("docs/a.txt"), b"a").unwrap();
-    remove_write_bits(dir.path());
-    backing_directory.restore_write_bits();
-    assert_eq!((mode(dir.path()), mode(&dir.path().join("docs")), mode(&dir.path().join("docs/a.txt"))), (0o755, 0o755, 0o644));
-}

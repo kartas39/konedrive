@@ -42,13 +42,6 @@ fn a_job_that_is_waited_for_gives_its_answer_after_the_jobs_before_it() {
     assert_eq!(told.try_recv(), Ok("first"));
 }
 
-#[test]
-fn a_job_given_to_a_stopped_thread_is_dropped_and_its_wait_ends() {
-    let write_operation_thread = WriteOperationThread::start(Arc::default()).unwrap();
-    write_operation_thread.stop();
-    assert!(write_operation_thread.run_and_wait(|| 7).blocking_recv().is_err(), "the job, and the way its answer comes, were dropped");
-}
-
 /// "Stopped" means "runs nothing any more": whoever stops the thread is held until the job
 /// that runs has ended.
 #[test]

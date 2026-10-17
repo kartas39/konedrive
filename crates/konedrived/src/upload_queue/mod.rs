@@ -80,7 +80,6 @@
 // test: what_is_unsent_in_a_read_only_folder_or_with_no_sync_waits
 // test: what_is_kept_back_is_what_needs_the_user_or_waits_with_a_reason
 // test: a_pause_changes_neither_what_is_kept_back_nor_the_counts
-// test: the_conditions_are_the_hold_shown_and_whether_onedrive_is_full
 // test: changes_lists_every_unsent_item_once_in_its_state_oldest_first
 // test: the_counts_agree_with_the_rows_of_changes
 // test: what_is_kept_back_agrees_with_the_rows_and_the_counts

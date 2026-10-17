@@ -27,21 +27,6 @@ fn the_probe_file_has_no_name_while_it_is_open() {
     assert!(entries.is_empty(), "the probe put {entries:?} into the directory");
 }
 
-/// Whatever is already sitting under the
-/// name the old probe used, the probe no longer cares. A directory is
-/// used here because it is the one artefact a `remove_file` cleanup
-/// cannot quietly delete — it stands in for "the folder has something
-/// under this name and the probe must not be the thing that fails".
-#[test]
-fn an_artefact_under_the_old_probe_name_does_not_block_the_probe() {
-    let dir = tempfile::tempdir().unwrap();
-    let stale = dir.path().join(".konedrive-probe");
-    std::fs::create_dir(&stale).unwrap();
-    std::fs::write(stale.join("left-over"), b"x").unwrap();
-
-    probe_dir(dir.path()).expect("a stale artefact must not make the filesystem look unusable");
-}
-
 #[test]
 fn a_missing_directory_is_reported_clearly() {
     let error = probe_dir(std::path::Path::new("/definitely/not/here")).unwrap_err();

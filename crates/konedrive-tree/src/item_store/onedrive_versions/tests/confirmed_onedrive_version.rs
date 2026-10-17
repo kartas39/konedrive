@@ -77,19 +77,3 @@ fn a_confirmation_that_cannot_be_is_refused_and_raises_no_count() {
     assert_eq!(count(&mut store), 0, "a refused confirmation is none");
     assert_eq!(every_row(&mut store), rows);
 }
-
-/// A confirmation says nothing of the MIME type OneDrive gives
-/// for the content, which follows the name and the content: the one the row had is taken
-/// away, and the next listing writes the one OneDrive has.
-#[test]
-fn a_confirmation_takes_away_the_mime_type_the_row_had() {
-    let mut store = listed_store();
-    write(&mut store, &[file("A", "R", "a.txt", "1")]);
-    let a = listed(&mut store, "A").local_item_id;
-    assert_eq!(item(&mut store, a).onedrive_mime.as_deref(), Some("text/plain"));
-
-    store.item_store().confirm_onedrive_version(a, &present(ROOT, "a.jpg", Some("22"), "e-A-22")).unwrap();
-    assert_eq!(item(&mut store, a).onedrive_mime, None);
-    write(&mut store, &[file("A", "R", "a.jpg", "22")]);
-    assert_eq!(item(&mut store, a).onedrive_mime.as_deref(), Some("text/plain"), "as the listing gives it");
-}

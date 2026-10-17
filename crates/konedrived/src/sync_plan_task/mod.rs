@@ -73,7 +73,6 @@
 // test: the_pinned_files_to_download_are_published_with_the_plan_that_counted_them
 // test: what_a_settlement_wrote_is_announced_and_the_conflicts_counted_again_unless_the_loop_is_stopping
 // test: a_download_that_would_not_leave_the_free_space_kept_is_held_and_said
-// test: a_few_more_uploads_and_downloads_are_started_than_the_pool_has_slots
 // test: the_pool_reaches_its_ceiling_while_there_is_work_beyond_its_slots_and_not_without
 
 use std::collections::{BTreeMap, BTreeSet};

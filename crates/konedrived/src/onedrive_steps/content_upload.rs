@@ -75,7 +75,6 @@
 // test: a_new_file_whose_name_is_taken_is_answered_by_who_holds_it
 // test: a_new_file_made_and_removed_here_before_its_commit_is_removed_in_onedrive
 // test: a_content_the_row_no_longer_has_is_not_sent
-// test: the_hash_of_nothing_is_the_fakes_hash_of_an_empty_file
 
 use std::ffi::OsString;
 use std::sync::Arc;

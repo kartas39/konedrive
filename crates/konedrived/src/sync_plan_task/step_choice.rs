@@ -3,13 +3,12 @@
 //! **State owned:** none: two pure functions over the plan's steps, what runs
 //! (`RunningSteps`) and what holds all sending (`SendingHolds`).
 //!
-//! **Tested without the rest**, a test per case of the choice, and through the task:
+//! **Tested without the rest**, a test per case of the choice:
 // test: each_step_is_of_its_class
 // test: nothing_of_a_held_class_starts_and_every_other_step_does
 // test: no_step_starts_for_a_row_that_a_running_step_or_a_step_started_before_it_carries
 // test: of_a_bounded_class_as_many_start_as_the_limits_leave_beside_what_runs
 // test: the_show_steps_go_apart_and_the_others_keep_the_plans_order
-// test: a_few_more_uploads_and_downloads_are_started_than_the_pool_has_slots (`sync_plan_task/tests.rs`)
 
 use std::collections::BTreeSet;
 

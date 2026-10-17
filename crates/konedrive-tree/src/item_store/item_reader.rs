@@ -23,7 +23,6 @@
 //! below), and the step memory's (`memory_reader`).
 //!
 //! **Tested without the rest**, against a store in memory filled through `ItemStore`:
-// test: a_reader_of_a_store_opened_for_reading_alone_sees_what_the_writer_committed
 // test: a_reader_sees_nothing_of_an_open_write_transaction_and_all_of_it_once_committed
 // test: a_closure_reads_one_moment_though_the_writer_commits_meanwhile
 // test: a_reader_cannot_write
@@ -31,7 +30,6 @@
 // test: the_shared_store_reads_what_its_writer_committed
 // test: the_marks_of_a_path_are_one_for_each_name_the_outermost_first
 // test: an_item_is_found_by_its_path_and_a_path_through_a_file_finds_nothing
-// test: every_reader_answers_what_the_item_stores_reader_of_the_same_name_answers
 // test: a_removed_file_is_found_by_the_place_the_two_sides_agreed_on
 // test: a_removed_file_whose_removal_was_sent_is_not_found_by_its_synced_place
 // test: the_shown_files_below_a_directory_are_read_at_any_depth_and_bounded

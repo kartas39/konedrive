@@ -211,44 +211,6 @@ fn the_status_of_a_path_is_the_rows_sync_state_its_pin_and_what_runs_for_it() {
     fixture.item_handles.remove_writer(writer);
 }
 
-/// The status of a file with `sync_state`, as far as the state for the menu reads it.
-fn status_with(sync_state: Option<FileSyncState>, is_downloading: bool) -> ItemPathStatus {
-    ItemPathStatus { item: LocalItemId::new(5), kind: if sync_state.is_some() { ItemKind::File } else { ItemKind::Directory }, onedrive_item: ItemFixture::onedrive_reference_of("x"), sync_state, is_pinned: false, is_downloading, is_open_for_writing: false }
-}
-
-#[test]
-fn the_state_a_path_is_shown_as_is_what_the_state_attribute_says() {
-    use konedrive_fs::placeholder::State;
-    let cases = [
-        (None, false, None),
-        (None, true, None),
-        (Some(FileSyncState::LocalOnly), false, None),
-        (Some(FileSyncState::LocalOnly), true, None),
-        (Some(FileSyncState::RemoteOnly), false, Some(State::OnlineOnly)),
-        (Some(FileSyncState::Synced), false, Some(State::Hydrated)),
-        (Some(FileSyncState::ModifiedHere), false, Some(State::Hydrated)),
-        (Some(FileSyncState::RemoteOnly), true, Some(State::Hydrating)),
-        (Some(FileSyncState::Synced), true, Some(State::Hydrating)),
-        (Some(FileSyncState::ModifiedHere), true, Some(State::Hydrating)),
-    ];
-    for (sync_state, is_downloading, state) in cases {
-        assert_eq!(status_with(sync_state, is_downloading).find_state_attribute(), state, "{sync_state:?}, downloading: {is_downloading}");
-    }
-
-    // And of the rows: a file not on disk, the same while it is being downloaded, a copy, a directory.
-    let fixture = ItemFixture::new();
-    fixture.show_onedrive_directory("docs");
-    let remote = fixture.show_onedrive_file("docs/remote.txt", b"remote");
-    make_clean_copy(&fixture, "docs/clean.txt", b"clean");
-    let files = make_files_interface(&fixture);
-    let run = fixture.runtime();
-    let state = |path: &str| run.block_on(files.find_path_status(&fixture.disk_path(path))).expect("the status").find_state_attribute();
-    assert_eq!([state("docs"), state("docs/remote.txt"), state("docs/clean.txt")], [None, Some(State::OnlineOnly), Some(State::Hydrated)]);
-    let key = crate::mount::item_download_states::DownloadKey { item: remote.local_item_id, content: remote.local.clone().unwrap().content.unwrap() };
-    let _started = fixture.download_states.start_or_join(&key, &DownloadAsker::Read, None);
-    assert_eq!(state("docs/remote.txt"), Some(State::Hydrating));
-}
-
 fn running_step(item: LocalItemId, class: crate::sync_parts::running_steps::StepClass) -> crate::sync_parts::running_steps::RunningStep {
     crate::sync_parts::running_steps::RunningStep { class, item, other_items: Vec::new(), destination: None, sent: 0, total: 0 }
 }

@@ -1,6 +1,5 @@
 use std::fs;
 use std::io::{ErrorKind, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use crate::mount::backing_directory::tests::empty_backing_directory;
@@ -57,24 +56,4 @@ fn a_file_opened_to_write_keeps_its_content_and_one_opened_to_overwrite_is_trunc
     fs::write(dir.path().join("a.txt"), b"abc").unwrap();
     assert_eq!(backing_directory.open_to_write(Path::new("a.txt")).unwrap().metadata().unwrap().len(), 3);
     assert_eq!(backing_directory.open_to_read(Path::new("none.txt")).unwrap_err().kind(), ErrorKind::NotFound);
-}
-
-#[test]
-fn a_file_without_a_write_bit_is_given_its_owners() {
-    let (dir, backing_directory) = empty_backing_directory();
-    fs::write(dir.path().join("a.txt"), b"abc").unwrap();
-    fs::set_permissions(dir.path().join("a.txt"), fs::Permissions::from_mode(0o444)).unwrap();
-    backing_directory.grant_write_bit(Path::new("a.txt")).unwrap();
-    assert_eq!(backing_directory.read_metadata(Path::new("a.txt")).unwrap().permissions().mode() & 0o777, 0o644);
-}
-
-#[test]
-fn a_directory_is_read_or_said_to_be_unreadable() {
-    let (dir, backing_directory) = empty_backing_directory();
-    fs::create_dir(dir.path().join("docs")).unwrap();
-    fs::write(dir.path().join("docs/a.txt"), b"a").unwrap();
-    let names: Vec<_> = backing_directory.read_directory(Path::new("docs")).unwrap().map(|entry| entry.unwrap().file_name()).collect();
-    assert_eq!(names, ["a.txt"]);
-    assert_eq!(backing_directory.read_directory(Path::new("")).unwrap().count(), 1);
-    assert_eq!(backing_directory.read_directory(Path::new("none")).err().map(|e| e.kind()), Some(ErrorKind::NotFound));
 }

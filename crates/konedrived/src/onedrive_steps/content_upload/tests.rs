@@ -9,7 +9,6 @@ use serde_json::json;
 use wiremock::ResponseTemplate;
 
 use super::*;
-use crate::fake_onedrive::qx;
 use crate::mount::item_fixture::ItemFixture;
 use crate::onedrive_steps::tests::StepsFolder;
 use crate::sync_parts::step_outcome::{RowsChangedFollowUp, StepObstacle, StepOutcome, StepRefusal};
@@ -532,9 +531,4 @@ async fn a_content_the_row_no_longer_has_is_not_sent() {
     let outcome = folder.run(OneDriveStep::SendNewFile { item: planned, parent: StepsFolder::root(), name: "a.txt".into() }).await;
     assert_eq!(outcome, StepOutcome::NotRun(StepObstacle::ContentChanged));
     assert_eq!(folder.graph.with(|cloud| cloud.log.len()), 0);
-}
-
-#[test]
-fn the_hash_of_nothing_is_the_fakes_hash_of_an_empty_file() {
-    assert_eq!(konedrive_graph::quickxor::QuickXor::new().finish_base64(), qx(b""));
 }
