@@ -42,11 +42,14 @@
 //!
 //! **Tested without the rest:**
 // test: a_folder_switched_to_read_only_refuses_changes_at_once_and_sends_nothing_more
-// test: what_was_unsent_at_the_switch_is_still_unsent_after_it_and_is_sent_when_read_write_again
 // test: the_switch_to_read_only_returns_only_when_no_step_towards_onedrive_runs
-// test: a_close_after_the_switch_is_written_and_waits_under_the_hold
-// test: the_switch_stops_neither_task
-// test: a_folder_started_read_only_holds_what_is_unsent_from_its_first_plan
+// test: only_a_step_that_sends_content_or_metadata_is_a_step_towards_onedrive
+// test: a_step_towards_onedrive_that_does_not_end_holds_the_switch_for_its_bound_and_is_said
+// test: a_switch_to_read_only_of_a_mount_whose_thread_is_gone_is_an_error_and_the_hold_stands
+// test: a_mount_whose_take_down_was_asked_is_not_switched_to_read_write
+// test: the_wanted_access_mode_is_the_mounts_and_the_holds_before_any_plan
+// test: a_folder_wanted_read_only_over_a_mount_whose_thread_is_gone_is_refused
+// test: a_change_of_the_ignore_list_goes_over_the_rows_once_and_wakes_the_plan
 
 use crate::config::Mode;
 use crate::mount::ItemMount;

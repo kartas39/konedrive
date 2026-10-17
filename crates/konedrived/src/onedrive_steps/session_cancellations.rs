@@ -18,15 +18,15 @@
 //! **Tested without the rest**, against the fixture's fake OneDrive:
 // test: a_session_to_cancel_is_cancelled_and_forgotten
 // test: a_session_onedrive_no_longer_knows_is_forgotten
-// test: a_cancel_that_fails_leaves_the_session_listed_and_waits_for_its_next_try
-// test: a_session_that_waits_is_passed_over_and_the_one_behind_it_is_cancelled
 // test: the_next_try_is_a_minute_after_the_first_failure_and_doubles_to_an_hour
-// test: a_round_answers_how_many_got_through_how_many_failed_and_how_many_wait
 // test: an_item_an_upload_left_is_removed_while_it_is_unchanged_since_that_upload_and_forgotten
 // test: an_item_an_upload_left_that_another_changed_since_is_left_and_forgotten
 // test: openings_that_name_no_file_go_after_the_time_they_are_kept
-// test: a_record_that_stands_is_settled_and_one_that_cannot_be_read_waits
-// test: a_record_whose_step_runs_is_passed_over
+// test: a_cancel_that_fails_waits_for_its_next_try_and_is_passed_over_meanwhile
+// test: a_throttled_cancel_waits_the_time_onedrive_named
+// test: an_item_an_upload_left_that_is_gone_is_forgotten_and_one_that_cannot_be_read_waits
+// test: a_leftover_removed_by_the_daemon_takes_the_onedrive_version_of_its_listed_row
+// test: a_record_whose_step_runs_is_passed_over_and_one_refused_for_certain_is_left_to_a_listing
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

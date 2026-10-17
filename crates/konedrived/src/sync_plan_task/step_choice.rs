@@ -3,14 +3,7 @@
 //! **State owned:** none: two pure functions over the plan's steps, what runs
 //! (`RunningSteps`) and what holds all sending (`SendingHolds`).
 //!
-//! **Tested without the rest**, a test per case of the choice:
-// test: a_step_of_the_rows_is_started_at_once
-// test: every_step_towards_the_folder_is_started_and_the_show_steps_together
-// test: a_download_takes_a_download_slot_and_is_held_by_a_pause_and_not_by_a_throttle
-// test: one_metadata_step_towards_onedrive_runs_at_a_time_and_content_as_the_slots_allow
-// test: nothing_towards_onedrive_is_started_while_sending_is_held
-// test: a_step_one_of_whose_rows_has_a_running_step_is_not_started
-// test: the_steps_are_started_in_the_order_the_plan_gave_them
+//! **No test of its own**; through the task:
 // test: a_few_more_uploads_and_downloads_are_started_than_the_pool_has_slots (`sync_plan_task/tests.rs`)
 
 use std::collections::BTreeSet;

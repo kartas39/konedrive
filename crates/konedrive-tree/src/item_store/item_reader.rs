@@ -38,8 +38,10 @@
 // test: the_counts_tell_what_onedrive_has_what_is_shown_and_what_cannot_be_shown
 // test: of_what_cannot_be_shown_the_top_item_of_each_part_is_listed_with_its_reason
 // test: the_unsent_total_leaves_out_what_is_left_here_and_sums_the_local_content
-// test: the_items_left_here_are_read_bounded
 // test: the_path_of_an_item_the_folder_does_not_show_is_that_of_its_synced_place
+// test: what_onedrive_has_below_a_directory_that_was_never_shown_is_told_from_what_was_removed_here
+// test: an_item_an_upload_left_below_a_directory_is_none_the_folder_never_showed
+// test: the_shown_directories_are_read_the_root_first_bounded_and_past_rows_with_no_path
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
