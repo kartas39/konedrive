@@ -7,8 +7,8 @@ import org.konedrive.app
 
 /// The settings of the OneDrive chosen in the sidebar — an account, its folder and how it
 /// syncs, as one: its name and Microsoft account, how it syncs, its folder (or another one),
-/// what it keeps on this device, the advanced settings (what is never uploaded, this
-/// device's name for copies, signing out), and disconnecting it.
+/// its previews, the advanced settings (what is never uploaded, this device's name for
+/// copies, signing out), and disconnecting it.
 FormCard.FormCardPage {
     id: page
 
@@ -158,8 +158,10 @@ FormCard.FormCardPage {
                 onClicked: page.sync.openFolder()
             }
         }
+        // A folder that stopped has it on Status, beside what stopped it.
         FormCard.FormButtonDelegate {
             objectName: "anotherFolderButton"
+            visible: page.sync !== null && page.sync.overallReason !== "stopped"
             text: i18nc("@action:button", "Use Another Folder…")
             description: i18n("Your OneDrive moves to another empty folder; this one keeps its files as plain files.")
             icon.name: "folder-open"
@@ -167,10 +169,10 @@ FormCard.FormCardPage {
         }
     }
 
-    // What the folder keeps on this device: the account's own sync settings (issues #80,
-    // #217), the daemon's, written to config.toml; each control shows what it says, and a
-    // change goes through it. Pausing on metered connections and on battery is the whole
-    // app's, on the Settings page (issue #95).
+    // What the folder shows on this device: the account's own sync setting (issue #80), the
+    // daemon's, written to config.toml; the switch shows what it says, and a change goes
+    // through it. The free space it leaves is on Storage; pausing on metered connections and
+    // on battery is the whole app's, on the Settings page (issue #95).
     FormCard.FormHeader {
         visible: page.hasFolder
         title: i18nc("@title:group", "On This Device")
@@ -206,30 +208,6 @@ FormCard.FormCardPage {
                 implicitWidth: Kirigami.Units.iconSizes.small
                 implicitHeight: Kirigami.Units.iconSizes.small
             }
-        }
-        FormCard.FormDelegateSeparator {}
-        FormCard.FormSpinBoxDelegate {
-            id: freeSpaceReserveBox
-            objectName: "freeSpaceReserveBox"
-
-            readonly property int kept: page.sync !== null ? page.sync.freeSpaceReserve : 0
-
-            label: i18n("Keep at least this much free space on this device, in GiB")
-            from: 0
-            to: 100000
-            value: kept
-            // The inner box writes `value` back, ending the binding: kept in step here.
-            onKeptChanged: value = kept
-            onValueChanged: {
-                if (page.sync !== null && value !== kept) {
-                    page.sync.setFreeSpaceReserve(value);
-                }
-            }
-        }
-        FormCard.FormTextDelegate {
-            objectName: "freeSpaceReserveLine"
-            text: i18n("A file always kept on this device is not downloaded while its download would leave less free space than this.")
-            textItem.wrapMode: Text.Wrap
         }
     }
 
@@ -401,69 +379,9 @@ FormCard.FormCardPage {
         ]
     }
 
-    // Another folder: this one is forgotten (its files stay, as plain files), and the
-    // account's Status offers it a new one.
-    Kirigami.PromptDialog {
+    AnotherFolderDialog {
         id: anotherFolderDialog
         objectName: "anotherFolderDialog"
-
-        /// The account it was opened for (an AccountItem); null once that account is gone.
-        property QtObject item: null
-        /// How many changes made here are not uploaded (UnsentCount), read when the question
-        /// is asked; 0 until it is answered, and when it cannot be read.
-        property double unsentCount: 0
-
-        function confirm() {
-            if (item) {
-                item.sync.forget();
-            }
-            close();
-        }
-
-        title: i18nc("@title:window", "Use Another Folder?")
-        subtitle: {
-            const leaves = item && item.sync.rootPath.length > 0
-                ? i18n("KOneDrive stops syncing %1 and leaves the files downloaded so far, and your own, there as plain files. Then you choose an empty folder: your OneDrive shows up there, and files download again when you open them.", item.sync.rootPath)
-                : "";
-            return unsentCount > 0 ? removeDialog.unsentWarning(unsentCount) + "\n\n" + leaves : leaves;
-        }
-        onAboutToShow: {
-            item = Current.item;
-            unsentCount = 0;
-            if (item) {
-                item.sync.readUnsentCount();
-            }
-        }
-        dialogType: Kirigami.PromptDialog.Warning
-        maximumWidth: Math.min(absoluteMaximumWidth, Kirigami.Units.gridUnit * 30)
-        standardButtons: Kirigami.Dialog.NoButton
-        customFooterActions: [
-            Kirigami.Action {
-                text: i18nc("@action:button", "Choose Another Folder…")
-                icon.name: "folder-open"
-                enabled: anotherFolderDialog.item !== null
-                onTriggered: anotherFolderDialog.confirm()
-            },
-            Kirigami.Action {
-                text: i18nc("@action:button", "Cancel")
-                icon.name: "dialog-cancel"
-                onTriggered: anotherFolderDialog.close()
-            }
-        ]
-
-        Connections {
-            target: anotherFolderDialog.item ? anotherFolderDialog.item.sync : null
-            function onUnsentCountRead(count) {
-                anotherFolderDialog.unsentCount = count;
-            }
-        }
-        // Another account shown, or this one gone: not the question asked.
-        Connections {
-            target: Current
-            function onChanged() {
-                anotherFolderDialog.close();
-            }
-        }
     }
 
     DisconnectDialog {

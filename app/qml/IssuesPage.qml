@@ -11,7 +11,7 @@ import org.konedrive.app
 /// needs something, and only once their reason is opened, at most perFileCap of them); the
 /// files whose both versions were kept; and what OneDrive has that can't be shown in the
 /// folder. The last two are counted here and listed on pages of their own. What waits and
-/// goes up by itself is on Activity.
+/// goes up by itself is on Status.
 FormCard.FormCardPage {
     id: page
 

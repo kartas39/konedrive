@@ -5,7 +5,7 @@ import org.kde.kirigami as Kirigami
 import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
-/// The account's mode on the Overview and on OneDrive Settings: two-way sync or read-only,
+/// The account's mode on OneDrive Settings: two-way sync or read-only,
 /// with Change…, and a switch under way with its ways out — the sign-in it waits for in the
 /// browser, or the changes read-only waits to send.
 FormCard.FormCard {
@@ -45,7 +45,7 @@ FormCard.FormCard {
                 return i18n("What you do in the folder is uploaded to OneDrive.");
             }
             if (card.twoWay) {
-                return i18n("Two-way sync is on, but the folder can't be watched right now, so nothing is uploaded. If it stays so, the Overview says why.");
+                return i18n("Two-way sync is on, but the folder can't be watched right now, so nothing is uploaded. If it stays so, Status says why.");
             }
             return i18n("Files can't be changed here, and nothing is uploaded.");
         }

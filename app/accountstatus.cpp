@@ -148,6 +148,7 @@ void AccountStatus::update()
     QString detail;
     Action action = Action::None;
     QString troubleLine;
+    QString issuesLine;
     bool ages = false;
 
     const int downloads = m_sync->transfers()->count();
@@ -209,20 +210,25 @@ void AccountStatus::update()
         // until then, and Transfers.RetryAfter says the seconds left.
         const bool throttled = reason == QLatin1String("throttled");
         const QString heldBack = m_sync->heldBack();
-        // What the folder is doing, in words, from the counts and the times.
+        // What the folder is doing, in words, from the times: the head's, with no count.
+        // The tray's line counts what moves, since nothing else there does.
         QString doing;
+        QString counted;
         if (m_sync->paused()) {
-            doing = m_sync->pausedUntil() > 0 ? i18n("Paused until %1", until(m_sync->pausedUntil())) : i18n("Paused until you resume");
+            doing = counted = m_sync->pausedUntil() > 0 ? i18n("Paused until %1", until(m_sync->pausedUntil())) : i18n("Paused until you resume");
         } else if (!heldBack.isEmpty()) {
-            doing = heldBackText(heldBack);
+            doing = counted = heldBackText(heldBack);
         } else if (downloads + uploads > 0) {
-            doing = i18np("Syncing 1 file", "Syncing %1 files", downloads + uploads);
+            doing = i18n("Syncing");
+            counted = i18np("Syncing 1 file", "Syncing %1 files", downloads + uploads);
         } else if (pending > 0) {
-            doing = i18np("1 change will upload shortly", "%1 changes will upload shortly", pending);
+            doing = i18n("Changes will upload shortly");
+            counted = i18np("1 change will upload shortly", "%1 changes will upload shortly", pending);
         } else {
-            doing = i18n("Up to date");
+            doing = counted = i18n("Up to date");
         }
         const QString doingChecked = checkedText.isEmpty() ? doing : i18nc("@info status: what, then when it last checked", "%1 · %2", doing, checkedText);
+        const QString countedChecked = checkedText.isEmpty() ? counted : i18nc("@info status: what, then when it last checked", "%1 · %2", counted, checkedText);
 
         // The line of the tray: the trouble that does not stop the folder is said first,
         // whatever the reason is (a pause).
@@ -233,13 +239,13 @@ void AccountStatus::update()
         } else if (!trouble.isEmpty()) {
             text = checkedText.isEmpty() ? trouble : i18nc("@info status: what, then when it last checked", "%1 · %2", trouble, checkedText);
         } else {
-            text = doingChecked;
+            text = countedChecked;
         }
         if (!listing && !throttled && !checkedText.isEmpty()) {
             ages = !live;
         }
 
-        // The head of the Overview, by the reason.
+        // The head of Status, by the reason.
         if (throttled) {
             headline = i18n("OneDrive asked to wait");
             detail = m_sync->retryAfter() > 0 ? i18n("%1 left", durationText(m_sync->retryAfter())) : QString();
@@ -250,14 +256,16 @@ void AccountStatus::update()
             headline = i18n("Can't reach OneDrive");
             detail = trouble.isEmpty() ? freshness : trouble;
         } else if (reason == QLatin1String("conflicts") || reason == QLatin1String("quota-full") || reason == QLatin1String("too-big")
-                   || reason == QLatin1String("blocked")) {
+                   || reason == QLatin1String("blocked") || reason == QLatin1String("not-updated") || reason == QLatin1String("trouble")) {
+            // What needs the user is the line under the head, or a sentence of its own there;
+            // the button is what ends a pause, which the folder may be in too.
             headline = i18n("Needs your attention");
             detail = doingChecked;
-            action = Action::Review;
-        } else if (reason == QLatin1String("not-updated") || reason == QLatin1String("trouble")) {
-            // What is wrong is a sentence of its own on the Overview, not a list on Issues.
-            headline = i18n("Needs your attention");
-            detail = doingChecked;
+            if (m_sync->paused()) {
+                action = Action::Resume;
+            } else if (!heldBack.isEmpty()) {
+                action = Action::SyncAnyway;
+            }
         } else if (m_sync->paused()) {
             headline = doing;
             detail = i18n("Nothing syncs in the background. Files still download when you open them, and changes made here wait.");
@@ -274,6 +282,17 @@ void AccountStatus::update()
         if (reason != QLatin1String("unreachable")) {
             troubleLine = trouble;
         }
+        // Changes made here are not uploaded: the account is read-only, or two-way with a
+        // folder that runs read-only for now (Folder.Writable).
+        QString readOnly;
+        if (m_account->mode() == QLatin1String("read-only")) {
+            readOnly = i18nc("@info status: the folder's mode", "Read-only");
+        } else if (!m_sync->writable()) {
+            readOnly = i18nc("@info status: the folder's mode", "Read-only for now");
+        }
+        if (!readOnly.isEmpty()) {
+            detail = detail.isEmpty() ? readOnly : i18nc("@info status: the folder's mode, then the sentence under the head", "%1 · %2", readOnly, detail);
+        }
 
         // Why the account needs attention, where the line does not say it: by the reason.
         if (reason == QLatin1String("conflicts")) {
@@ -287,6 +306,24 @@ void AccountStatus::update()
         } else if (reason == QLatin1String("not-updated")) {
             attention = m_sync->notUpdated();
         }
+    }
+
+    // What Issues lists that needs the user, for a folder there is.
+    if (m_account->serviceAvailable() && m_sync->serviceAvailable() && !m_sync->rootPath().isEmpty()) {
+        QStringList issues;
+        if (m_sync->quotaFull()) {
+            issues << i18np("OneDrive is full: 1 file waits for space", "OneDrive is full: %1 files wait for space", m_sync->spaceWaitingCount());
+        }
+        if (m_sync->tooBigCount() > 0) {
+            issues << i18np("1 file is too big for the space left in OneDrive", "%1 files are too big for the space left in OneDrive", m_sync->tooBigCount());
+        }
+        if (m_sync->blockedCount() > 0) {
+            issues << i18np("1 change can't upload", "%1 changes can't upload", m_sync->blockedCount());
+        }
+        if (m_sync->conflictCount() > 0) {
+            issues << i18np("Kept both versions of 1 file", "Kept both versions of %1 files", m_sync->conflictCount());
+        }
+        issuesLine = issues.join(QStringLiteral(" · "));
     }
 
     // The check of the folder on disk at the start of its sync, while it runs. Once it ended
@@ -309,7 +346,7 @@ void AccountStatus::update()
     }
 
     if (state == m_state && text == m_text && attention == m_attention && scanLine == m_scanLine && headline == m_headline && detail == m_detail
-        && action == m_action && troubleLine == m_troubleLine) {
+        && action == m_action && troubleLine == m_troubleLine && issuesLine == m_issuesLine) {
         return;
     }
     m_state = state;
@@ -320,5 +357,6 @@ void AccountStatus::update()
     m_detail = detail;
     m_action = action;
     m_troubleLine = troubleLine;
+    m_issuesLine = issuesLine;
     Q_EMIT changed();
 }

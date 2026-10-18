@@ -14,8 +14,8 @@ import org.konedrive.app
 Kirigami.ApplicationWindow {
     id: root
 
-    /// The page shown: signIn, overview, issues, activity, oneDriveSettings or settings.
-    property string currentPage: "overview"
+    /// The page shown: signIn, status, issues, activity, storage, oneDriveSettings or settings.
+    property string currentPage: "status"
     /// Wide enough for the sidebar beside a page.
     readonly property bool sidebarFits: width >= Kirigami.Units.gridUnit * 36
     readonly property bool hasService: Daemon.serviceAvailable
@@ -37,12 +37,13 @@ Kirigami.ApplicationWindow {
         switch (name) {
         case "signIn":
             return hasService;
-        case "overview":
+        case "status":
             return !hasService || hasAccount;
         case "issues":
         case "conflicts":
         case "skipped":
         case "activity":
+        case "storage":
         case "oneDriveSettings":
             return hasService && hasFolder;
         case "settings":
@@ -57,9 +58,10 @@ Kirigami.ApplicationWindow {
     function showPage(name) {
         const pages = {
             "signIn": signInPage,
-            "overview": overviewPage,
+            "status": statusPage,
             "issues": issuesPage,
             "activity": activityPage,
+            "storage": storagePage,
             "oneDriveSettings": oneDriveSettingsPage,
             "settings": settingsPage,
         };
@@ -71,7 +73,7 @@ Kirigami.ApplicationWindow {
             return;
         }
         if (!pageShows(name)) {
-            name = hasService && !hasAccount ? "signIn" : "overview";
+            name = hasService && !hasAccount ? "signIn" : "status";
         }
         const sidebarPage = lists[name] ? "issues" : name;
         if (sidebarPage !== currentPage || pageStack.depth === 0 || (!lists[name] && pageStack.depth > 1)) {
@@ -98,7 +100,7 @@ Kirigami.ApplicationWindow {
     }
 
     /// A per-account page's title: with more than one account it names the
-    /// account too ("Overview · Personal"), since a narrow window hides the switcher.
+    /// account too ("Status · Personal"), since a narrow window hides the switcher.
     function accountTitle(title) {
         if (Accounts.count > 1 && Current.account) {
             return i18nc("@title page title, account label", "%1 · %2", title, Current.account.label);
@@ -130,7 +132,7 @@ Kirigami.ApplicationWindow {
         // Sign In named and chose this account: its Status offers it a folder next.
         function onAccountAdded(path) {
             Current.select(path);
-            root.showPage("overview");
+            root.showPage("status");
         }
     }
     Connections {
@@ -143,7 +145,7 @@ Kirigami.ApplicationWindow {
     onHasAccountChanged: reconsiderPage()
     onHasFolderChanged: reconsiderPage()
 
-    Component.onCompleted: showPage(pageShows("overview") ? "overview" : "signIn")
+    Component.onCompleted: showPage(pageShows("status") ? "status" : "signIn")
     pageStack.globalToolBar.showNavigationButtons: Kirigami.ApplicationHeaderStyle.NoNavigationButtons
 
     component SidebarEntry: QQC2.ItemDelegate {
@@ -218,17 +220,18 @@ Kirigami.ApplicationWindow {
         // keeps hold of the hidden ones it had.
         Repeater {
             model: [
-                { name: "overview", text: i18nc("@title sidebar", "Overview"), icon: "" },
+                { name: "status", text: i18nc("@title sidebar", "Status"), icon: "" },
                 { name: "issues", text: i18nc("@title sidebar", "Issues"), icon: "dialog-warning" },
                 { name: "activity", text: i18nc("@title sidebar", "Activity"), icon: "view-history" },
+                { name: "storage", text: i18nc("@title sidebar", "Storage"), icon: "drive-harddisk" },
                 { name: "oneDriveSettings", text: i18nc("@title sidebar", "OneDrive Settings"), icon: "folder-cloud" },
             ]
             delegate: SidebarEntry {
                 required property var modelData
                 name: modelData.name
                 text: modelData.text
-                // The Overview's icon is the account's state.
-                icon.name: modelData.name === "overview" ? (Current.status ? Current.status.iconName : "state-offline") : modelData.icon
+                // Status's icon is the account's state.
+                icon.name: modelData.name === "status" ? (Current.status ? Current.status.iconName : "state-offline") : modelData.icon
                 visible: root.pageShows(modelData.name)
                 // Both versions kept, and the changes that need the user to go up.
                 badge: modelData.name === "issues" && Current.sync ? Current.sync.conflictCount + Current.sync.blockedCount : 0
@@ -262,8 +265,8 @@ Kirigami.ApplicationWindow {
         SignInPage {
             id: signInPage
         }
-        OverviewPage {
-            id: overviewPage
+        StatusPage {
+            id: statusPage
         }
         IssuesPage {
             id: issuesPage
@@ -276,6 +279,9 @@ Kirigami.ApplicationWindow {
         }
         ActivityPage {
             id: activityPage
+        }
+        StoragePage {
+            id: storagePage
         }
         OneDriveSettingsPage {
             id: oneDriveSettingsPage

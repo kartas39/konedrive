@@ -1000,18 +1000,23 @@ Each has its file in `crates/konedrived/src/dbus/`.
 
 - `AccountSwitcher.qml` — the top of the sidebar: the OneDrive the pages show.
 - `SignInPage.qml` — adding a OneDrive: Microsoft's sign-in in the browser, its link, Cancel.
-- `OverviewPage.qml` — the start page: how the folder is doing, what needs the user, what moves
-  now and the space it takes; with no folder, choosing it.
-- `FolderChoiceCard.qml` — the last step of adding a OneDrive, on the Overview: the folder, two-way
-  sync or not, Continue; Cancel disconnects.
-- `DisconnectDialog.qml` — the question before an account is disconnected.
+- `StatusPage.qml` — the start page: what the folder is doing or what stops it, with the one thing
+  to do; a line of what Issues lists; what moves now and what waits; the folder. With no folder,
+  choosing it.
+- `FolderChoiceCard.qml` — the last step of adding a OneDrive, on Status: the folder, two-way sync
+  or not, Continue; Cancel disconnects.
+- `UnsentChangesPrompt.qml` — a question whose answer leaves the folder behind: it says first how
+  many changes made here are not uploaded.
+- `DisconnectDialog.qml` — that question before an account is disconnected.
+- `AnotherFolderDialog.qml` — that question before another folder is used.
 - `IssuesPage.qml` — what needs the user: the changes that can't upload, the files whose both
   versions were kept, what can't be shown in the folder.
 - `ConflictsPage.qml` — the "Kept Both Versions" list.
 - `SkippedPage.qml` — the "Can't Be Shown in the Folder" list.
-- `ActivityPage.qml` — speeds, what is left, what waits to upload, what happened.
-- `OneDriveSettingsPage.qml` — one OneDrive's settings: its account, mode, folder and what it
-  keeps on this device.
+- `ActivityPage.qml` — what happened in the folder.
+- `StoragePage.qml` — the space the OneDrive takes on this device, with Free Up Space and the free
+  space its downloads leave, and in OneDrive.
+- `OneDriveSettingsPage.qml` — one OneDrive's settings: its account, mode, folder and previews.
 - `SettingsPage.qml` — the whole app's settings, and About.
 - `ModeCard.qml` — how the folder syncs, with "Change…" and a switch under way.
 - `ModeDialog.qml` — the choice between two-way sync and read-only.

@@ -9,7 +9,7 @@ class AccountController;
 class SyncController;
 class QTimer;
 
-/// One summary of one account and its folder, for the head of the window's Overview,
+/// One summary of one account and its folder, for the head of the window's Status,
 /// the account switcher and the tray. The state is the daemon's (Folder.Overall);
 /// the reason it gives chooses the words, the one thing to do, and what needs
 /// attention. The one state decided here is "the service is not running". It reads
@@ -33,23 +33,28 @@ class AccountStatus : public QObject
     /// The check of the folder on disk at the start of its sync, one line while it runs:
     /// "Checking local files — started 2 min ago, as syncing started"; empty otherwise.
     Q_PROPERTY(QString scanLine READ scanLine NOTIFY changed)
-    /// The head of the Overview: what the folder is doing or what stops it, in a few words
-    /// ("Up to date", "Paused until 18:00", "Syncing stopped", "Needs your attention"…).
+    /// The head of Status: what the folder is doing or what stops it, in a few words and no
+    /// count ("Up to date", "Syncing", "Paused until 18:00", "Syncing stopped"…): what moves
+    /// and how much is left is Status's Now.
     Q_PROPERTY(QString headline READ headline NOTIFY changed)
-    /// The sentence under the headline: why, or how fresh ("Checked 20 s ago"); may be empty.
+    /// The sentence under the headline: why, or how fresh ("Checked 20 s ago"); first
+    /// "Read-only" while changes made here are not uploaded. May be empty.
     Q_PROPERTY(QString detail READ detail NOTIFY changed)
     /// The one thing to do about the headline.
     Q_PROPERTY(Action action READ action NOTIFY changed)
     /// The trouble that does not stop the folder (Folder.Trouble), when the headline and its
     /// sentence do not say it already: under a pause, say. Empty otherwise.
     Q_PROPERTY(QString troubleLine READ troubleLine NOTIFY changed)
+    /// What Issues lists that needs the user, in one line: "3 changes can't upload · Kept
+    /// both versions of 2 files". Empty when it lists nothing of the kind, and with no folder.
+    Q_PROPERTY(QString issuesLine READ issuesLine NOTIFY changed)
 
 public:
     /// Unix seconds.
     using Clock = std::function<qint64()>;
     static constexpr int TickMs = 10000;
 
-    /// The one thing to do about the headline, as the Overview's button offers it.
+    /// The one thing to do about the headline, as the button of Status's head offers it.
     enum class Action {
         /// Nothing: the folder syncs, or waits by itself.
         None,
@@ -67,8 +72,6 @@ public:
         Resume,
         /// It holds back by itself (metered, battery): sync anyway.
         SyncAnyway,
-        /// Something needs the user, listed on the Issues page.
-        Review,
     };
     Q_ENUM(Action)
 
@@ -83,10 +86,11 @@ public:
     QString detail() const { return m_detail; }
     Action action() const { return m_action; }
     QString troubleLine() const { return m_troubleLine; }
+    QString issuesLine() const { return m_issuesLine; }
 
     /// The icon for a state name.
     static QString iconFor(const QString &state);
-    /// Why the account holds back by itself (HeldBack), as the Overview and the tray say it:
+    /// Why the account holds back by itself (HeldBack), as Status and the tray say it:
     /// "Paused: metered connection", "Paused: on battery"…
     static QString heldBackText(const QString &reason);
 
@@ -117,4 +121,5 @@ private:
     QString m_detail;
     Action m_action = Action::StartService;
     QString m_troubleLine;
+    QString m_issuesLine;
 };

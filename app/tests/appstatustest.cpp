@@ -182,6 +182,8 @@ private Q_SLOTS:
         QTRY_COMPARE(m_status->state(), QStringLiteral("syncing"));
         QCOMPARE(m_status->iconName(), QStringLiteral("state-sync"));
         QCOMPARE(m_status->text(), QStringLiteral("Syncing 1 file · checked 20 s ago"));
+        // The head counts nothing: what moves is Status's Now.
+        QCOMPARE(m_status->headline(), QStringLiteral("Syncing"));
         m_daemon->sync->setTransfers({});
         decide("ok", "up-to-date");
         QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
@@ -547,9 +549,10 @@ private Q_SLOTS:
         QCOMPARE(m_status->action(), AccountStatus::Action::StartService);
     }
 
-    /// The head of the Overview for each reason the daemon gives: a few words, the sentence
-    /// under them, the one thing to do, and the trouble the two do not say already.
-    void theOverviewHeadSaysEachReason_data()
+    /// The head of Status for each reason the daemon gives, for a two-way account: a few
+    /// words, the sentence under them, the one thing to do, and the trouble the two do not
+    /// say already.
+    void theHeadSaysEachReason_data()
     {
         QTest::addColumn<QString>("state");
         QTest::addColumn<QString>("reason");
@@ -574,14 +577,17 @@ private Q_SLOTS:
         QTest::newRow("starting") << "syncing" << "starting" << QVariantMap() << 0u << "Starting…" << QString() << A::None << QString();
         QTest::newRow("listing") << "syncing" << "listing" << QVariantMap{{QStringLiteral("ItemsListed"), QVariant::fromValue<qulonglong>(12)}} << 0u
                                  << "Getting your OneDrive ready" << "12 items so far" << A::None << QString();
-        QTest::newRow("transferring") << "syncing" << "transferring" << QVariantMap() << 3u << "3 changes will upload shortly" << "Checked 20 s ago" << A::None
+        QTest::newRow("transferring") << "syncing" << "transferring" << QVariantMap() << 3u << "Changes will upload shortly" << "Checked 20 s ago" << A::None
                                       << QString();
         QTest::newRow("stopped") << "warning" << "stopped" << QVariantMap{{trouble, QStringLiteral("the folder cannot be mounted")}} << 0u << "Syncing stopped"
                                  << "The folder cannot be mounted" << A::TryAgain << QString();
-        QTest::newRow("conflicts") << "warning" << "conflicts" << QVariantMap() << 0u << "Needs your attention" << checked << A::Review << QString();
-        QTest::newRow("quota-full") << "warning" << "quota-full" << QVariantMap() << 0u << "Needs your attention" << checked << A::Review << QString();
-        QTest::newRow("too-big") << "warning" << "too-big" << QVariantMap() << 0u << "Needs your attention" << checked << A::Review << QString();
-        QTest::newRow("blocked") << "warning" << "blocked" << QVariantMap() << 0u << "Needs your attention" << checked << A::Review << QString();
+        QTest::newRow("conflicts") << "warning" << "conflicts" << QVariantMap() << 0u << "Needs your attention" << checked << A::None << QString();
+        QTest::newRow("conflicts, paused") << "warning" << "conflicts" << QVariantMap{{QStringLiteral("Paused"), true}} << 0u << "Needs your attention"
+                                           << "Paused until you resume · checked 20 s ago" << A::Resume << QString();
+        QTest::newRow("quota-full") << "warning" << "quota-full" << QVariantMap() << 0u << "Needs your attention" << checked << A::None << QString();
+        QTest::newRow("too-big") << "warning" << "too-big" << QVariantMap() << 0u << "Needs your attention" << checked << A::None << QString();
+        QTest::newRow("blocked, held back") << "warning" << "blocked" << QVariantMap{{QStringLiteral("HeldBack"), QStringLiteral("metered")}} << 0u
+                                            << "Needs your attention" << "Paused: metered connection · checked 20 s ago" << A::SyncAnyway << QString();
         QTest::newRow("not-updated") << "warning" << "not-updated" << QVariantMap() << 0u << "Needs your attention" << checked << A::None << QString();
         QTest::newRow("trouble") << "warning" << "trouble" << QVariantMap{{trouble, QStringLiteral("part of the folder is scanned")}} << 0u
                                  << "Needs your attention" << checked << A::None << "Part of the folder is scanned";
@@ -594,7 +600,7 @@ private Q_SLOTS:
         QTest::newRow("up-to-date") << "ok" << "up-to-date" << QVariantMap() << 0u << "Up to date" << "Checked 20 s ago" << A::None << QString();
     }
 
-    void theOverviewHeadSaysEachReason()
+    void theHeadSaysEachReason()
     {
         QFETCH(QString, state);
         QFETCH(QString, reason);
@@ -606,12 +612,49 @@ private Q_SLOTS:
         QFETCH(QString, troubleLine);
 
         startSynced();
+        m_daemon->account->set({{QStringLiteral("Mode"), QStringLiteral("read-write")}});
+        QTRY_COMPARE(m_accounts->at(0)->account()->mode(), QStringLiteral("read-write"));
         m_daemon->sync->queue->set({{QStringLiteral("PendingCount"), QVariant::fromValue(pending)}});
         decide(qPrintable(state), qPrintable(reason), with);
         QTRY_COMPARE(m_status->headline(), headline);
         QTRY_COMPARE(m_status->detail(), detail);
         QCOMPARE(m_status->action(), action);
         QCOMPARE(m_status->troubleLine(), troubleLine);
+    }
+
+    /// While changes made here are not uploaded, the head says so first: a read-only account,
+    /// or a two-way one whose folder runs read-only for now. A folder that stopped says why.
+    void theHeadSaysReadOnly()
+    {
+        startSynced();
+        QTRY_COMPARE(m_status->detail(), QStringLiteral("Read-only · Checked 20 s ago"));
+        m_daemon->account->set({{QStringLiteral("Mode"), QStringLiteral("read-write")}});
+        QTRY_COMPARE(m_status->detail(), QStringLiteral("Checked 20 s ago"));
+        decide("ok", "up-to-date", {{QStringLiteral("Writable"), false}});
+        QTRY_COMPARE(m_status->detail(), QStringLiteral("Read-only for now · Checked 20 s ago"));
+        decide("warning", "stopped", {{QStringLiteral("State"), QStringLiteral("error")}, {QStringLiteral("Trouble"), QStringLiteral("the folder cannot be mounted")}});
+        QTRY_COMPARE(m_status->detail(), QStringLiteral("The folder cannot be mounted"));
+    }
+
+    /// What Issues lists that needs the user is one line, in Issues' order; nothing to list,
+    /// or no folder, is no line.
+    void whatIssuesListsIsOneLine()
+    {
+        startSynced();
+        QVERIFY(m_status->issuesLine().isEmpty());
+        m_daemon->sync->queue->set({{QStringLiteral("QuotaFull"), true},
+                                    {QStringLiteral("QuotaWaitingCount"), QVariant::fromValue<uint>(29)},
+                                    {QStringLiteral("TooBigCount"), QVariant::fromValue<uint>(1)},
+                                    {QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(3)}});
+        m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(2)}});
+        decide("warning", "quota-full");
+        QTRY_COMPARE(m_status->issuesLine(),
+                     QStringLiteral("OneDrive is full: 29 files wait for space · 1 file is too big for the space left in OneDrive · 3 changes can't upload · "
+                                    "Kept both versions of 2 files"));
+        m_daemon->sync->queue->set({{QStringLiteral("QuotaFull"), false}, {QStringLiteral("TooBigCount"), QVariant::fromValue<uint>(0)}});
+        QTRY_COMPARE(m_status->issuesLine(), QStringLiteral("3 changes can't upload · Kept both versions of 2 files"));
+        decide("offline", "no-folder", {{QStringLiteral("Path"), QString()}, {QStringLiteral("State"), QStringLiteral("none")}});
+        QTRY_VERIFY(m_status->issuesLine().isEmpty());
     }
 
     void theTrayShowsTheStateAndTheStatusLine()

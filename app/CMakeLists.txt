@@ -145,13 +145,16 @@ qt_add_library(konedrive_window STATIC)
 set(KONEDRIVE_QML
     Main.qml
     qml/SignInPage.qml
-    qml/OverviewPage.qml
+    qml/StatusPage.qml
     qml/FolderChoiceCard.qml
+    qml/UnsentChangesPrompt.qml
     qml/DisconnectDialog.qml
+    qml/AnotherFolderDialog.qml
     qml/IssuesPage.qml
     qml/ConflictsPage.qml
     qml/SkippedPage.qml
     qml/ActivityPage.qml
+    qml/StoragePage.qml
     qml/OneDriveSettingsPage.qml
     qml/SettingsPage.qml
     qml/AccountSwitcher.qml

@@ -6,8 +6,8 @@ import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
 /// How an account's folder syncs: two-way (what is done in the folder is uploaded) or
-/// read-only. One dialog for the whole window, opened for the account shown from the
-/// Overview and from OneDrive Settings. Two-way goes through the browser, where Microsoft
+/// read-only. One dialog for the whole window, opened for the account shown from OneDrive
+/// Settings. Two-way goes through the browser, where Microsoft
 /// asks to let KOneDrive change the files; read-only first sends what is not sent yet.
 Kirigami.Dialog {
     id: dialog
