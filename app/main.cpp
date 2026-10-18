@@ -18,6 +18,7 @@
 #include "synccontroller.h"
 #include "transfermodel.h"
 #include "trayicon.h"
+#include "windowsection.h"
 
 #include <KAboutData>
 #include <KDBusService>
@@ -100,7 +101,8 @@ int run(int argc, char *argv[], Restart *restart)
     AppStatus appStatus(&accounts);
     PlacesController placesController(&accounts, &placesSettings);
 
-    registerKonedriveQml(&daemon, &accounts, &current, &autostart, &downloadProgressSettings, &placesSettings, &traySettings);
+    ServiceUnit serviceUnit;
+    registerKonedriveQml(&daemon, &accounts, &current, &autostart, &downloadProgressSettings, &placesSettings, &traySettings, &serviceUnit);
 
     QQmlApplicationEngine engine;
     KLocalization::setupLocalizedContext(&engine);
@@ -115,12 +117,17 @@ int run(int argc, char *argv[], Restart *restart)
     tray.setCurrentAccount(&current);
     QObject::connect(&tray, &TrayIcon::quitRequested, &app, &QCoreApplication::quit);
     // A click on an account's own icon shows that account; on the icon of them
-    // all, the one account needing attention when exactly one does.
+    // all, the one account needing attention when exactly one does. Either shows its Status.
     QObject::connect(&tray, &TrayIcon::accountToShow, &current, &CurrentAccount::select);
+    QObject::connect(&tray, &TrayIcon::statusToShow, window, [window] {
+        QMetaObject::invokeMethod(window, "showSection", Q_ARG(QVariant, sectionName(WindowSection::Status)));
+    });
 
-    // A click on a notification opens the window on its account.
-    sink.setOpenWindow([&tray, &current](const QString &account) {
+    // A click on a notification opens the window on its account, where the notice is dealt
+    // with. The account first: another one shown makes its pages anew.
+    sink.setOpenWindow([&tray, &current, window](const QString &account, WindowSection section) {
         current.select(account);
+        QMetaObject::invokeMethod(window, "showSection", Q_ARG(QVariant, sectionName(section)));
         tray.showWindow();
     });
     // Each account notifies and reports its downloads on its own, both going

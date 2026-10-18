@@ -168,7 +168,10 @@ impl SyncService {
             s.local.conflict_count = 0;
         });
         // The pins went with the folder's store.
-        self.state.update(|s| s.local.pinned_count = 0);
+        self.state.update(|s| {
+            s.local.pinned_count = 0;
+            s.local.pinned_bytes = 0;
+        });
         // A Forget drops the activity with the folder's store, which the change has
         // already let go of. Its walker stops too.
         self.let_go_of_activity().await;

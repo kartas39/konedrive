@@ -1,5 +1,7 @@
 #pragma once
 
+#include "windowsection.h"
+
 #include <QHash>
 #include <QList>
 #include <QObject>
@@ -16,13 +18,16 @@ struct Notice {
     /// The event in konedrive.notifyrc: signedOut, diskFull, downloadFailed,
     /// updateFailed, uploadFailed, conflict, notRemovedHere, throttled.
     QString event;
+    /// Where a click on the notification opens the window.
+    WindowSection section = WindowSection::Status;
     QString title;
     QString text;
     /// When set, the notification offers "Show in Folder" for this path.
     QString showPath;
     /// 1 for a single event; for a summary, how many events it stands for.
     int count = 1;
-    /// The account's object path: a click on the notification opens the window on it.
+    /// The account's object path: a click on the notification opens the window on it, at
+    /// `section`.
     QString account = QString();
 };
 
@@ -40,16 +45,17 @@ public:
 class KNotificationSink : public NotificationSink
 {
 public:
+    using OpenWindow = std::function<void(const QString &account, WindowSection section)>;
     /// `openWindow` runs when the user clicks the notification itself, with
-    /// the notice's account.
-    explicit KNotificationSink(std::function<void(const QString &account)> openWindow = {});
+    /// the notice's account and section.
+    explicit KNotificationSink(OpenWindow openWindow = {});
     /// The same, given once the window exists (the sink is made before the
     /// accounts, whose Notifiers point at it).
-    void setOpenWindow(std::function<void(const QString &account)> openWindow) { m_openWindow = std::move(openWindow); }
+    void setOpenWindow(OpenWindow openWindow) { m_openWindow = std::move(openWindow); }
     void send(const Notice &notice) override;
 
 private:
-    std::function<void(const QString &account)> m_openWindow;
+    OpenWindow m_openWindow;
 };
 
 /// Turns what one account's daemon objects report into notifications:

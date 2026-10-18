@@ -6,9 +6,9 @@ import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
 /// The whole app's settings: start at login, download progress, Places,
-/// when every account pauses by itself (metered connections, battery), and
-/// Quit. Each account's own things (its folder, its sign-in, its thumbnails)
-/// are on its Account page.
+/// when every account pauses by itself (metered connections, battery), this
+/// build, and Quit. Each OneDrive's own things (its folder, its sign-in, its
+/// previews) are on its OneDrive Settings page.
 FormCard.FormCardPage {
     id: page
 
@@ -107,21 +107,79 @@ FormCard.FormCardPage {
             }
         }
         FormCard.FormDelegateSeparator {}
-        FormCard.FormComboBoxDelegate {
-            id: batteryCombo
-            objectName: "batteryCombo"
-
-            readonly property string choice: Daemon.onBattery
-            readonly property var choices: ["sync", "power-saver", "pause"]
-
-            text: i18n("On battery")
-            model: [i18nc("@item:inlistbox on battery", "Sync as usual"), i18nc("@item:inlistbox on battery", "Pause in power-saver mode"), i18nc("@item:inlistbox on battery", "Pause")]
+        // A combo box of its own, laid out as FormComboBoxDelegate's, which turns with the
+        // wheel: scrolling the page over it would change the setting.
+        FormCard.AbstractFormDelegate {
+            id: batteryRow
             enabled: page.available
-            currentIndex: Math.max(0, choices.indexOf(choice))
-            onChoiceChanged: currentIndex = Math.max(0, choices.indexOf(choice))
-            onActivated: index => {
-                currentIndex = Math.max(0, choices.indexOf(choice));
-                Daemon.setOnBattery(choices[index]);
+            focusPolicy: Qt.NoFocus
+            background: null
+            contentItem: ColumnLayout {
+                spacing: Kirigami.Units.smallSpacing
+                QQC2.Label {
+                    Layout.fillWidth: true
+                    text: i18n("On battery")
+                    wrapMode: Text.Wrap
+                    color: batteryRow.enabled ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
+                    Accessible.ignored: true
+                }
+                QQC2.ComboBox {
+                    id: batteryCombo
+                    objectName: "batteryCombo"
+
+                    readonly property string choice: Daemon.onBattery
+                    readonly property var choices: ["sync", "power-saver", "pause"]
+
+                    Layout.fillWidth: true
+                    wheelEnabled: false
+                    Accessible.name: i18n("On battery")
+                    model: [i18nc("@item:inlistbox on battery", "Sync as usual"), i18nc("@item:inlistbox on battery", "Pause in power-saver mode"), i18nc("@item:inlistbox on battery", "Pause")]
+                    currentIndex: Math.max(0, choices.indexOf(choice))
+                    onChoiceChanged: currentIndex = Math.max(0, choices.indexOf(choice))
+                    onActivated: index => {
+                        currentIndex = Math.max(0, choices.indexOf(choice));
+                        Daemon.setOnBattery(choices[index]);
+                    }
+                }
+            }
+        }
+    }
+
+    // This build, for bug reports: selectable, to copy.
+    FormCard.FormHeader {
+        title: i18nc("@title:group", "About")
+    }
+    FormCard.FormCard {
+        objectName: "about"
+
+        FormCard.AbstractFormDelegate {
+            background: null
+            contentItem: ColumnLayout {
+                spacing: Kirigami.Units.smallSpacing
+
+                QQC2.TextArea {
+                    objectName: "versionLine"
+                    Layout.fillWidth: true
+                    text: Daemon.versionLine
+                    readOnly: true
+                    selectByMouse: true
+                    wrapMode: TextEdit.Wrap
+                    background: null
+                    padding: 0
+                }
+                // The running service is another build (installed, not restarted).
+                QQC2.TextArea {
+                    objectName: "serviceVersionLine"
+                    Layout.fillWidth: true
+                    visible: text.length > 0
+                    text: Daemon.daemonBuildMismatch
+                    readOnly: true
+                    selectByMouse: true
+                    wrapMode: TextEdit.Wrap
+                    background: null
+                    padding: 0
+                    color: Kirigami.Theme.neutralTextColor
+                }
             }
         }
     }

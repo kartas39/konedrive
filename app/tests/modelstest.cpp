@@ -1,5 +1,6 @@
 #include "activitymodel.h"
 #include "conflictmodel.h"
+#include "timetext.h"
 #include "transfermodel.h"
 #include "uploadreasons.h"
 
@@ -97,7 +98,7 @@ private Q_SLOTS:
         QCOMPARE(notRemoved.data(row, ActivityModel::NameRole).toString(), QStringLiteral("Notebooks"));
         QCOMPARE(notRemoved.data(row, ActivityModel::TextRole).toString(), QStringLiteral("Cannot be removed here"));
         QCOMPARE(notRemoved.data(row, ActivityModel::DetailTextRole).toString(),
-                 QStringLiteral("It holds items that cannot be shown on this computer. Remove it in OneDrive."));
+                 QStringLiteral("It holds items that can't be shown in the folder. Remove it in OneDrive."));
         QCOMPARE(notRemoved.data(row, ActivityModel::IconRole).toString(), QStringLiteral("dialog-warning"));
 
         ConflictModel conflicts;
@@ -107,41 +108,43 @@ private Q_SLOTS:
         QCOMPARE(at(conflicts, 1, ConflictModel::CopyRole).toString(), root + QStringLiteral("/a-fedora.txt"));
     }
 
-    /// Live events go on top; past 50 rows the oldest is removed.
-    void activityPrependsAndDropsTheOldestPastFifty()
+    /// Live events go on top; past Capacity rows the oldest is removed.
+    void activityPrependsAndDropsTheOldestPastCapacity()
     {
+        constexpr int last = ActivityModel::Capacity - 1;
         ActivityModel model;
         QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
         for (int i = 0; i < ActivityModel::Capacity; ++i) {
             model.prepend(downloadedEvent(i, QStringLiteral("f%1").arg(i)));
         }
-        QCOMPARE(model.count(), 50);
-        QCOMPARE(at(model, 0, ActivityModel::NameRole).toString(), QStringLiteral("f49"));
-        QCOMPARE(at(model, 49, ActivityModel::NameRole).toString(), QStringLiteral("f0"));
+        QCOMPARE(model.count(), ActivityModel::Capacity);
+        QCOMPARE(at(model, 0, ActivityModel::NameRole).toString(), QStringLiteral("f%1").arg(last));
+        QCOMPARE(at(model, last, ActivityModel::NameRole).toString(), QStringLiteral("f0"));
 
         QSignalSpy removed(&model, &QAbstractItemModel::rowsRemoved);
-        model.prepend(downloadedEvent(50, QStringLiteral("f50")));
-        QCOMPARE(model.count(), 50);
+        model.prepend(downloadedEvent(ActivityModel::Capacity, QStringLiteral("newest")));
+        QCOMPARE(model.count(), ActivityModel::Capacity);
         QCOMPARE(removed.count(), 1);
-        QCOMPARE(at(model, 0, ActivityModel::NameRole).toString(), QStringLiteral("f50"));
-        QCOMPARE(at(model, 49, ActivityModel::NameRole).toString(), QStringLiteral("f1"));
-        QCOMPARE(at(model, 0, ActivityModel::TimeRole).toLongLong(), 50LL);
+        QCOMPARE(at(model, 0, ActivityModel::NameRole).toString(), QStringLiteral("newest"));
+        QCOMPARE(at(model, last, ActivityModel::NameRole).toString(), QStringLiteral("f1"));
+        QCOMPARE(at(model, 0, ActivityModel::TimeRole).toLongLong(), qint64(ActivityModel::Capacity));
+        QCOMPARE(at(model, 0, ActivityModel::TimeTextRole).toString(), timeText(ActivityModel::Capacity, QDateTime::currentSecsSinceEpoch()));
         QCOMPARE(at(model, 0, ActivityModel::TextRole).toString(), QStringLiteral("Downloaded"));
     }
 
-    /// A RecentActivity() answer replaces the rows, cut to 50.
+    /// A Recent() answer replaces the rows, cut to Capacity.
     void activitySetEventsReplacesAndCaps()
     {
         ActivityModel model;
         QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
         model.prepend(downloadedEvent(1, QStringLiteral("old")));
         KonedriveActivityList answer;
-        for (int i = 70; i > 0; --i) {
-            answer << downloadedEvent(100 + i, QStringLiteral("n%1").arg(i));
+        for (int i = ActivityModel::Capacity + 20; i > 0; --i) {
+            answer << downloadedEvent(1000 + i, QStringLiteral("n%1").arg(i));
         }
         model.setEvents(answer);
-        QCOMPARE(model.count(), 50);
-        QCOMPARE(at(model, 0, ActivityModel::NameRole).toString(), QStringLiteral("n70"));
+        QCOMPARE(model.count(), ActivityModel::Capacity);
+        QCOMPARE(at(model, 0, ActivityModel::NameRole).toString(), QStringLiteral("n%1").arg(ActivityModel::Capacity + 20));
     }
 
     /// Conflicts are kept by the path of the copy, newest first: a
@@ -177,6 +180,41 @@ private Q_SLOTS:
         QCOMPARE(removed.first().at(2).toInt(), 1);
         QCOMPARE(at(model, 0, ConflictModel::TimeRole).toLongLong(), 100LL);
         QCOMPARE(reset.count(), 0);
+    }
+
+    /// The rows Issues takes: each shown row, its roles by name.
+    void conflictRowsByName()
+    {
+        ConflictModel model;
+        model.setConflicts({{100, QStringLiteral("/d/a.txt"), QStringLiteral("/r/1/a-fedora.txt")}, {300, QStringLiteral("/d/c.txt"), QStringLiteral("/r/3/c.txt")}});
+        const QVariantList rows = model.rows();
+        QCOMPARE(rows.size(), 2);
+        const QVariantMap first = rows.at(0).toMap();
+        QCOMPARE(first.value(QStringLiteral("copy")).toString(), QStringLiteral("/r/3/c.txt"));
+        QCOMPARE(rows.at(1).toMap().value(QStringLiteral("copyName")).toString(), QStringLiteral("a-fedora.txt"));
+        QCOMPARE(first.value(QStringLiteral("timeText")).toString(), timeText(300, QDateTime::currentSecsSinceEpoch()));
+    }
+
+    /// A moment of the same day is its time of day; of another day, its date and time.
+    void timeTextByTheDay_data()
+    {
+        QTest::addColumn<QDateTime>("when");
+        QTest::addColumn<QString>("text");
+        const QDate today(2026, 10, 18);
+        QTest::newRow("this morning") << QDateTime(today, QTime(9, 30)) << QLocale().toString(QTime(9, 30), QLocale::ShortFormat);
+        QTest::newRow("just after midnight") << QDateTime(today, QTime(0, 1)) << QLocale().toString(QTime(0, 1), QLocale::ShortFormat);
+        QTest::newRow("just before it") << QDateTime(today.addDays(-1), QTime(23, 59))
+                                        << QLocale().toString(QDateTime(today.addDays(-1), QTime(23, 59)), QLocale::ShortFormat);
+        QTest::newRow("a year ago") << QDateTime(today.addYears(-1), QTime(15, 0))
+                                    << QLocale().toString(QDateTime(today.addYears(-1), QTime(15, 0)), QLocale::ShortFormat);
+    }
+
+    void timeTextByTheDay()
+    {
+        QFETCH(QDateTime, when);
+        QFETCH(QString, text);
+        const qint64 now = QDateTime(QDate(2026, 10, 18), QTime(15, 0)).toSecsSinceEpoch();
+        QCOMPARE(timeText(when.toSecsSinceEpoch(), now), text);
     }
 
     /// Issue #39: 5 000 conflicts are 200 rows and a total; a dismiss is one

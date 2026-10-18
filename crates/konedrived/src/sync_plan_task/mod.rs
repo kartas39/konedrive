@@ -1020,7 +1020,8 @@ impl SyncPlanTask {
             state.cycle.items_listed = counts.in_onedrive;
             state.cycle.items_placed = counts.shown;
             state.cycle.skipped_count = counts.cannot_be_shown;
-            state.local.pinned_count = u32::try_from(counts.pinned).unwrap_or(u32::MAX);
+            state.local.pinned_count = u32::try_from(counts.pinned.count).unwrap_or(u32::MAX);
+            state.local.pinned_bytes = counts.pinned.bytes;
             state.upload_queue.note = note;
         });
 

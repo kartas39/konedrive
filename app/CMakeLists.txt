@@ -91,6 +91,7 @@ add_library(konedrive_core STATIC
     synccontroller.cpp
     accountsmodel.cpp
     currentaccount.cpp
+    folderchoice.cpp
     transfermodel.cpp
     activitymodel.cpp
     conflictmodel.cpp
@@ -110,6 +111,7 @@ add_library(konedrive_core STATIC
     placessettings.cpp
     placescontroller.cpp
     downloadprogresscontroller.cpp
+    serviceunit.cpp
     ${konedrive_dbus_SRCS})
 target_include_directories(konedrive_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(konedrive_core PUBLIC
@@ -142,14 +144,21 @@ qt_policy(SET QTP0004 NEW)
 qt_add_library(konedrive_window STATIC)
 set(KONEDRIVE_QML
     Main.qml
+    qml/SignInPage.qml
     qml/StatusPage.qml
-    qml/ActivityPage.qml
-    qml/ConflictsPage.qml
-    qml/SkippedPage.qml
-    qml/NotUploadedPage.qml
-    qml/AccountPage.qml
+    qml/StorageBar.qml
+    qml/TransferCard.qml
+    qml/FolderChoiceCard.qml
+    qml/UnsentChangesPrompt.qml
+    qml/DisconnectDialog.qml
+    qml/AnotherFolderDialog.qml
+    qml/ListPage.qml
+    qml/FormCardRow.qml
+    qml/IssuesPage.qml
+    qml/OneDriveSettingsPage.qml
     qml/SettingsPage.qml
-    qml/AccountSwitcher.qml)
+    qml/AccountSwitcher.qml
+    qml/ServiceCard.qml)
 qt_add_qml_module(konedrive_window
     URI org.konedrive.app.window
     VERSION 1.0
@@ -194,6 +203,7 @@ if(BUILD_TESTING)
 
     konedrive_test(accountcontrollertest)
     konedrive_test(accountsmodeltest)
+    konedrive_test(folderchoicetest)
     konedrive_test(synccontrollertest)
     konedrive_test(modelstest)
     konedrive_test(reasontextstest)
@@ -203,6 +213,7 @@ if(BUILD_TESTING)
     konedrive_test(downloadprogresssettingstest)
     konedrive_test(placescontrollertest)
     konedrive_test(downloadprogresscontrollertest)
+    konedrive_test(serviceunittest)
 
     # Loads Main.qml as the app does, to see what its dialogs act on.
     konedrive_test(dialogstest)

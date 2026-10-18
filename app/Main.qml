@@ -5,44 +5,65 @@ import org.kde.kirigami as Kirigami
 import org.konedrive.app
 
 /// The window: pages chosen from a sidebar on the left, which folds into a
-/// drawer behind a menu button when the window is narrow. The account
-/// switcher heads the sidebar; the pages under it show the account chosen
-/// there, and Settings, below them, is the whole app's.
+/// drawer behind a menu button when the window is narrow. The OneDrive
+/// switcher heads the sidebar; the pages under it show the OneDrive chosen
+/// there — an account, its folder and how it syncs, as one — and Settings,
+/// below them, is the whole app's. A page shows only when there is something
+/// on it to see or do: with no account, adding one; with no service, its
+/// Status; with no folder, its Status, where the folder is chosen.
 Kirigami.ApplicationWindow {
     id: root
 
-    /// The page shown: status, activity, conflicts, skipped, notUploaded, account or settings.
+    /// The page shown: signIn, status, issues, oneDriveSettings or settings.
     property string currentPage: "status"
     /// Wide enough for the sidebar beside a page.
     readonly property bool sidebarFits: width >= Kirigami.Units.gridUnit * 36
+    readonly property bool hasService: Daemon.serviceAvailable
     /// An account is chosen: the per-account pages have something to show.
     readonly property bool hasAccount: Current.account !== null
+    /// And it has a folder: the pages about the folder have something to show.
+    readonly property bool hasFolder: hasAccount && Current.sync !== null && Current.sync.rootPath.length > 0
 
     title: i18nc("@title:window", "KOneDrive")
     // main.cpp shows the window unless started with --background.
     visible: false
     width: Kirigami.Units.gridUnit * 46
-    height: Kirigami.Units.gridUnit * 34
+    height: Kirigami.Units.gridUnit * 36
     minimumWidth: Kirigami.Units.gridUnit * 20
     minimumHeight: Kirigami.Units.gridUnit * 20
 
-    /// Shows one of the pages, by name. With no account, the per-account
-    /// pages give way to Status, which says how to add one.
+    /// Whether the page `name` has something to show now.
+    function pageShows(name) {
+        switch (name) {
+        case "signIn":
+            return hasService;
+        case "status":
+            return !hasService || hasAccount;
+        case "issues":
+        case "oneDriveSettings":
+            return hasService && hasFolder;
+        case "settings":
+            return true;
+        }
+        return false;
+    }
+
+    /// Shows one of the pages, by name: a sidebar page, or the page that adds a OneDrive. A
+    /// page with nothing to show gives way to the account's Status, or with no account to
+    /// adding one.
     function showPage(name) {
         const pages = {
+            "signIn": signInPage,
             "status": statusPage,
-            "activity": activityPage,
-            "conflicts": conflictsPage,
-            "skipped": skippedPage,
-            "notUploaded": notUploadedPage,
-            "account": accountPage,
+            "issues": issuesPage,
+            "oneDriveSettings": oneDriveSettingsPage,
             "settings": settingsPage,
         };
         if (!pages[name]) {
             return;
         }
-        if (!hasAccount && name !== "settings") {
-            name = "status";
+        if (!pageShows(name)) {
+            name = hasService && !hasAccount ? "signIn" : "status";
         }
         if (name !== currentPage || pageStack.depth === 0) {
             currentPage = name;
@@ -51,6 +72,34 @@ Kirigami.ApplicationWindow {
         }
         if (drawer.modal) {
             drawer.close();
+        }
+    }
+
+    /// Shows where a notification leads, by its name (sectionName() of a WindowSection):
+    /// Status, Status with its History opened, or a section of Issues brought to the top.
+    function showSection(name) {
+        if (name === "history") {
+            showPage("status");
+            if (currentPage === "status") {
+                statusPage.showHistory();
+            }
+            return;
+        }
+        const issuesSections = ["cantUpload", "keptBothVersions", "notInFolder"];
+        if (!issuesSections.includes(name)) {
+            showPage(name);
+            return;
+        }
+        showPage("issues");
+        if (currentPage === "issues") {
+            issuesPage.showSection(name);
+        }
+    }
+
+    /// The page shown again once what it shows changes: one with nothing left to show gives way.
+    function reconsiderPage() {
+        if (!pageShows(currentPage)) {
+            showPage(currentPage);
         }
     }
 
@@ -63,62 +112,28 @@ Kirigami.ApplicationWindow {
         return title;
     }
 
-    /// Straight to Microsoft's sign-in in the browser; the dialog only when no
-    /// client ID is set yet, to ask for it.
-    /// The account an added sign-in still has to choose a folder for.
-    property string folderPickerFor: ""
-
-    /// Opens the folder picker for the account just added, once the window
-    /// shows it: never for whichever account happened to be shown before.
-    function openFolderPickerWhenShown() {
-        if (folderPickerFor.length > 0 && Current.path === folderPickerFor) {
-            folderPickerFor = "";
-            showPage("account");
-            accountPage.openFolderPicker();
-        }
-    }
-
-    function signIn() {
-        if (Accounts.adding) {
-            return;
-        }
-        Accounts.clearAddError();
-        Accounts.addAccount("");
-    }
-
-    /// A unix time as the time of day today, or a short date and time before.
-    function when(unixSeconds) {
-        const date = new Date(unixSeconds * 1000);
-        if (date.toDateString() === new Date().toDateString()) {
-            return date.toLocaleTimeString(Qt.locale(), Locale.ShortFormat);
-        }
-        return date.toLocaleString(Qt.locale(), Locale.ShortFormat);
-    }
-
     Connections {
         target: Accounts
         function onOpenUrlRequested(url) {
             Qt.openUrlExternally(url);
         }
-        // Sign In named and chose this account: its page shows it, and a
-        // sign-in exists to sync something, so the folder picker opens too.
+        // Sign In named and chose this account: its Status offers it a folder next.
         function onAccountAdded(path) {
-            root.folderPickerFor = path;
             Current.select(path);
-            root.openFolderPickerWhenShown();
+            root.showPage("status");
         }
     }
     Connections {
         target: Current
         function onChanged() {
-            root.openFolderPickerWhenShown();
-            if (!root.hasAccount && root.currentPage !== "settings") {
-                root.showPage("status");
-            }
+            root.reconsiderPage();
         }
     }
+    onHasServiceChanged: reconsiderPage()
+    onHasAccountChanged: reconsiderPage()
+    onHasFolderChanged: reconsiderPage()
 
-    Component.onCompleted: pageStack.push(statusPage)
+    Component.onCompleted: showPage(pageShows("status") ? "status" : "signIn")
     pageStack.globalToolBar.showNavigationButtons: Kirigami.ApplicationHeaderStyle.NoNavigationButtons
 
     component SidebarEntry: QQC2.ItemDelegate {
@@ -144,7 +159,7 @@ Kirigami.ApplicationWindow {
                 text: entry.text
                 elide: Text.ElideRight
             }
-            // The count of conflicts, or of changes that cannot be uploaded, when there are any.
+            // How many things need the user, when any do.
             Rectangle {
                 visible: entry.badge > 0
                 radius: height / 2
@@ -177,34 +192,35 @@ Kirigami.ApplicationWindow {
         Component.onCompleted: drawerOpen = !modal
 
         header: AccountSwitcher {
-            onAddRequested: root.signIn()
+            visible: Accounts.count > 0
+            onAddRequested: root.showPage("signIn")
         }
 
-        // The pages of the account chosen above.
+        // With no account: adding one.
+        SidebarEntry {
+            name: "signIn"
+            visible: root.hasService && !root.hasAccount
+            text: i18nc("@title sidebar", "Add OneDrive")
+            icon.name: "list-add-user"
+        }
+        // The pages of the OneDrive chosen above.
+        // The model is fixed: a model that changes makes the delegates anew, and a layout
+        // keeps hold of the hidden ones it had.
         Repeater {
             model: [
-                { name: "status", text: i18nc("@title sidebar", "Status"), icon: Current.status ? Current.status.iconName : "state-offline" },
-                { name: "activity", text: i18nc("@title sidebar", "Activity"), icon: "view-history" },
-                { name: "conflicts", text: i18nc("@title sidebar", "Conflicts"), icon: "document-duplicate" },
-                { name: "skipped", text: i18nc("@title sidebar", "Not in the Folder"), icon: "view-hidden" },
-                { name: "notUploaded", text: i18nc("@title sidebar", "Not Uploaded"), icon: "cloud-upload" },
-                { name: "account", text: i18nc("@title sidebar", "Account"), icon: "im-user" },
+                { name: "status", text: i18nc("@title sidebar", "Status"), icon: "" },
+                { name: "issues", text: i18nc("@title sidebar", "Issues"), icon: "dialog-warning" },
+                { name: "oneDriveSettings", text: i18nc("@title sidebar", "OneDrive Settings"), icon: "folder-cloud" },
             ]
             delegate: SidebarEntry {
                 required property var modelData
                 name: modelData.name
                 text: modelData.text
-                icon.name: modelData.icon
-                enabled: root.hasAccount || modelData.name === "status"
-                badge: {
-                    if (!Current.sync) {
-                        return 0;
-                    }
-                    if (modelData.name === "conflicts") {
-                        return Current.sync.conflictCount;
-                    }
-                    return modelData.name === "notUploaded" ? Current.sync.blockedCount : 0;
-                }
+                // Status's icon is the account's state.
+                icon.name: modelData.name === "status" ? (Current.status ? Current.status.iconName : "state-offline") : modelData.icon
+                visible: root.pageShows(modelData.name)
+                // Both versions kept, and the changes that need the user to go up.
+                badge: modelData.name === "issues" && Current.sync ? Current.sync.conflictCount + Current.sync.blockedCount : 0
             }
         }
         Kirigami.Separator {
@@ -221,72 +237,24 @@ Kirigami.ApplicationWindow {
         Item {
             Layout.fillHeight: true
         }
-
-        // This build, on every page, for bug reports: selectable, to copy.
-        footer: ColumnLayout {
-            spacing: 0
-
-            Kirigami.Separator {
-                Layout.fillWidth: true
-            }
-            QQC2.TextArea {
-                objectName: "versionLine"
-                Layout.fillWidth: true
-                Layout.leftMargin: Kirigami.Units.smallSpacing
-                Layout.rightMargin: Kirigami.Units.smallSpacing
-                Layout.topMargin: Kirigami.Units.smallSpacing
-                text: Daemon.versionLine
-                readOnly: true
-                selectByMouse: true
-                wrapMode: TextEdit.Wrap
-                background: null
-                padding: 0
-                font: Kirigami.Theme.smallFont
-                opacity: 0.7
-            }
-            // The running service is another build (installed, not restarted).
-            QQC2.TextArea {
-                objectName: "serviceVersionLine"
-                Layout.fillWidth: true
-                Layout.leftMargin: Kirigami.Units.smallSpacing
-                Layout.rightMargin: Kirigami.Units.smallSpacing
-                Layout.bottomMargin: Kirigami.Units.smallSpacing
-                visible: text.length > 0
-                text: Daemon.daemonBuildMismatch
-                readOnly: true
-                selectByMouse: true
-                wrapMode: TextEdit.Wrap
-                background: null
-                padding: 0
-                font: Kirigami.Theme.smallFont
-                color: Kirigami.Theme.neutralTextColor
-            }
-        }
     }
-
 
     // The pages live for the window's lifetime: the page row borrows the one
     // shown and hands it back here (hidden) when another is chosen.
     Item {
         visible: false
 
+        SignInPage {
+            id: signInPage
+        }
         StatusPage {
             id: statusPage
         }
-        ActivityPage {
-            id: activityPage
+        IssuesPage {
+            id: issuesPage
         }
-        ConflictsPage {
-            id: conflictsPage
-        }
-        SkippedPage {
-            id: skippedPage
-        }
-        NotUploadedPage {
-            id: notUploadedPage
-        }
-        AccountPage {
-            id: accountPage
+        OneDriveSettingsPage {
+            id: oneDriveSettingsPage
         }
         SettingsPage {
             id: settingsPage

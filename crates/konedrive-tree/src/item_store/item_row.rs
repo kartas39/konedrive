@@ -711,6 +711,15 @@ pub(super) fn count_pinned_files_to_download(conn: &Connection) -> Result<(u64, 
     Ok((count.max(0) as u64, bytes.max(0) as u64))
 }
 
+/// [`ItemReader::sum_pinned_file_sizes`](super::ItemReader::sum_pinned_file_sizes): the
+/// sizes the folder shows of the files a pin holds for (`held`, [`HELD_BY_PIN`]), summed;
+/// no row is read whole.
+pub(super) fn sum_pinned_file_sizes(conn: &Connection) -> Result<u64, TreeError> {
+    let sql = format!("{HELD_BY_PIN} SELECT COALESCE(SUM(local_size), 0) FROM items WHERE local_item_id IN (SELECT id FROM held) AND kind = 'file'");
+    let bytes: i64 = conn.prepare_cached(&sql)?.query_row([], |row| row.get(0))?;
+    Ok(bytes.max(0) as u64)
+}
+
 /// SQL for "the folder shows the item, and its own placement says the folder cannot show
 /// it". The index `items_shown_against_placement` holds these rows, and a query finds them
 /// by it when it asks in these words.

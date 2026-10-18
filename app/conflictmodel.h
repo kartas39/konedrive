@@ -4,9 +4,9 @@
 
 #include <QAbstractListModel>
 
-/// The window's "Conflicts" list: files changed here and in OneDrive, each with
+/// The window's "Kept Both Versions" list: files changed here and in OneDrive, each with
 /// the copy kept beside it (Conflicts.List()), newest first, the first `Shown` of
-/// them; `total` counts them all. Rows are kept by the copy's path, and a
+/// them; `total` counts them all. Issues takes the rows into its own list (rows()). Rows are kept by the copy's path, and a
 /// refresh applies what changed at once — one removal, one insertion and one
 /// dataChanged, or else one reset — never row by row.
 class ConflictModel : public QAbstractListModel
@@ -26,6 +26,8 @@ public:
         OriginalFolderRole,
         CopyFolderRole,
         CopyNameRole,
+        /// When it was kept, as the window writes it (timeText).
+        TimeTextRole,
     };
     Q_ENUM(Role)
 
@@ -39,6 +41,8 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     int count() const { return static_cast<int>(m_rows.size()); }
+    /// Every row shown, each as its roles by name.
+    Q_INVOKABLE QVariantList rows() const;
     int total() const { return m_total; }
 
     void setConflicts(const KonedriveConflictList &conflicts);

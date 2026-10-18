@@ -45,7 +45,7 @@ A folder is **read-only** until its account is switched to uploading. A read-onl
 every change a program makes (`EROFS`); its account's sign-in asks for `Files.Read`, so Microsoft
 itself refuses any write made with its token. A **read-write** folder takes changes, and what is
 changed in it is uploaded ([writes.md](writes.md)). Uploading is the user's choice, account by
-account: the switch on the Account page, or `konedrivectl account mode read-write`.
+account: Two-way sync on OneDrive Settings, or `konedrivectl account mode read-write`.
 
 Supported: several personal Microsoft accounts, each with its own folder; KDE Plasma 6 with KDE
 Frameworks 6.21 or later; FUSE 3 (`fusermount3`). A folder's filesystem must give nameless files

@@ -186,7 +186,7 @@ private Q_SLOTS:
         QVERIFY(AccountController::modeRefusalText(QStringLiteral("read-write"), QStringLiteral("org.konedrive.Error.ModeNotGranted"), QStringLiteral("x"))
                     .contains(QStringLiteral("Sign in again")));
         QCOMPARE(AccountController::modeRefusalText(QStringLiteral("read-only"), QStringLiteral("org.konedrive.Error.Failed"), QStringLiteral("disk full")),
-                 QStringLiteral("Uploading was not turned off: disk full"));
+                 QStringLiteral("Read-only was not turned on: disk full"));
     }
 
     /// A switch to read-only is asked of the daemon as it was asked for,

@@ -158,6 +158,11 @@ impl Folder {
         PINNED_COUNT.of(&self.service)
     }
 
+    #[zbus(property)]
+    async fn pinned_bytes(&self) -> u64 {
+        PINNED_BYTES.of(&self.service)
+    }
+
     // The properties a call sets and announces, and the folder's record.
 
     #[zbus(property)]

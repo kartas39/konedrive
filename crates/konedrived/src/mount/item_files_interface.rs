@@ -5,7 +5,7 @@
 //! ONE reader (`ItemReader::find_item_by_path`), here and nowhere else in `mount`.
 //!
 //! **Answers for:** `org.konedrive.Files` (`docs/design/desktop.md` §2.9) and `Folder.FreeUpSpace`,
-//! `PinnedCount`: download now, free up, pin and unpin, the status of a path.
+//! `PinnedCount`, `PinnedBytes`: download now, free up, pin and unpin, the status of a path.
 //!
 //! **Tested without the rest**, over a store in memory and a temporary backing directory:
 // test: a_path_outside_the_folder_and_a_path_the_folder_does_not_show_are_refused
@@ -24,7 +24,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use konedrive_tree::{ContentPresence, FileSyncState, Item, ItemKind, LocalItemId, OneDriveItemReference, PinChange, Store, TreeError};
+use konedrive_tree::{ContentPresence, FileSyncState, Item, ItemKind, LocalItemId, OneDriveItemReference, PinChange, PinnedTotal, Store, TreeError};
 use tokio::sync::oneshot;
 
 use super::item_free_up::FreeUpDecision;
@@ -316,11 +316,13 @@ impl ItemFilesInterface {
         Ok(unfinished)
     }
 
-    /// `Folder.PinnedCount` (`ItemReader::count_pins`).
-    pub(crate) async fn count_pins(&self) -> u64 {
-        self.store.read_items(|reader| reader.count_pins()).await.unwrap_or_else(|error| {
+    /// `Folder.PinnedCount` and `PinnedBytes` (`ItemReader::count_pins`,
+    /// `sum_pinned_file_sizes`), in one reading.
+    pub(crate) async fn count_pins(&self) -> PinnedTotal {
+        let read = self.store.read_items(|reader| Ok(PinnedTotal { count: reader.count_pins()?, bytes: reader.sum_pinned_file_sizes()? }));
+        read.await.unwrap_or_else(|error| {
             tracing::warn!("the pins could not be counted: {error}");
-            0
+            PinnedTotal::default()
         })
     }
 

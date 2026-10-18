@@ -29,9 +29,11 @@ lists their checksums (`sha256sum -c --ignore-missing SHA256SUMS`).
 ## First steps
 
 1. Open **KOneDrive** from the launcher.
-2. Choose **Sign in…** on the Status page. Your browser opens Microsoft's sign-in, with its account
-   picker; there is nothing to register or type in first.
-3. When the sign-in is done, a folder picker opens. Choose an **empty** folder.
+2. Choose **Sign In…** under **Add your OneDrive**. Your browser opens Microsoft's sign-in, with
+   its account picker; there is nothing to register or type in first.
+3. When the sign-in is done, Status asks where your OneDrive should appear. An empty folder is
+   offered, `~/OneDrive` while it is free; **Choose Another…** picks another one, which must be
+   **empty**. Leave **Two-way sync** off for now (see "Uploading changes") and choose **Continue**.
 
 Your OneDrive appears in that folder: every file with its real name and size, taking no space until
 it is read.
@@ -66,20 +68,26 @@ downloaded for good, pin them ("Always keep on this device", under "Dolphin").
 
 ## The window
 
-The sidebar starts with the **account switcher**: the account shown, and a menu with every account
-and **Sign in…**. Below it are the pages of that account.
+The sidebar starts with the **account switcher**: the OneDrive shown, and a menu with every one and
+**Add Another OneDrive…**. Below it are the pages of that OneDrive.
 
-- **Status** — the folder and what it is doing now: up to date, downloading, uploading, paused, or
-  what needs your attention. Buttons: **Refresh Now**, **Pause Syncing…**, **Free Up Space…**,
-  **Open in File Manager**.
-- **Activity** — the downloads and uploads under way, and what happened lately.
-- **Conflicts** — your versions of files that changed on both sides, kept so that nothing is lost,
-  with **Show in Folder** and **Dismiss**.
-- **Not in the Folder** — what OneDrive has that cannot be shown here, and why: the Personal
-  Vault, a OneNote notebook, a shared folder, a name Linux cannot hold.
-- **Not Uploaded** — what stays on this computer, and why (see "Uploading changes").
-- **Account** — the account's name (**Rename…**), signing in and out, the quota, the folder
-  (**Choose Folder…**, **Forget Folder**), uploading, thumbnails, and **Remove Account…**.
+- **Status** — what the folder is doing now: up to date, syncing, paused, or what needs your
+  attention, with a line that leads to Issues. At the top: **Sync Now**, **Pause** or **Resume**,
+  and **Open Folder**. Below:
+  - the space, in one bar as long as your OneDrive's storage: bright for what is on this computer,
+    pale for the rest of what your OneDrive holds; how many items are always kept here, and their
+    size; **Free Up Space…** and **Unpin All…**;
+  - **Downloading** and **Uploading**: the speed, the files moving, what is left with its size and
+    time, and a chart of the last two minutes; then the files moving now;
+  - **History**, folded until you open it: what happened lately, with a search by name or folder.
+- **Issues** — what needs you: the changes that **Can't Upload** and why (see "Uploading
+  changes"); files changed on both sides, of which both versions are kept so that nothing is lost
+  (**Kept Both Versions**, with **Show Both** and **Dismiss**); and what **Can't Be Shown in the
+  Folder**, and why: the Personal Vault, a OneNote notebook, a shared folder, a name Linux cannot
+  hold.
+- **OneDrive Settings** — its name (**Rename…**), the Microsoft account, **Two-way sync**, the
+  folder (**Use Another Folder…**), previews, the free space to keep, what is never uploaded,
+  **Sign Out** and **Disconnect This OneDrive…**.
 
 **Settings** is for the whole app:
 
@@ -114,8 +122,8 @@ In the OneDrive folder every file and folder has an emblem:
 The right-click menu has, under **OneDrive**:
 
 - **Always Keep on This Device** — downloads it and keeps it, for a file or a whole folder; what
-  comes into a pinned folder later is downloaded too. The Activity page says how many files are
-  still to download, and the Status page how much the folder takes on this computer;
+  comes into a pinned folder later is downloaded too. Status says how many files are still to
+  download, how much the folder takes on this computer, and how much of it is always kept;
 - **Free Up Space** — makes it online-only again, and unpins it;
 - **Open in OneDrive** — opens its page in OneDrive's web interface, where it can be shared and its
   versions seen. With two personal accounts this opens under the account your browser is signed in
@@ -132,33 +140,34 @@ download every file.
 ## Freeing up space
 
 - One file or folder: **Free Up Space** in Dolphin's menu.
-- Everything that is not in use: **Free Up Space…** on the Status page.
+- Everything that is not in use: **Free Up Space…** on Status.
 
 The file stays in the folder with its name and size; only its copy on this computer goes. A file
 you changed that has not been uploaded yet, and a file a program has open for writing, is never
-freed.
+freed. Neither is a file always kept on this device: **Unpin All…** on Status makes nothing always
+kept any more, and then **Free Up Space…** frees those files too.
 
 ## Pausing
 
-**Pause Syncing…** on the Status page or in the tray menu: for 2, 8 or 24 hours, or until you
-resume. Nothing is uploaded and OneDrive is not asked for changes meanwhile; opening a file still
-downloads it. The pause stays across a restart.
+**Pause** at the top of Status, or **Pause Syncing** in the tray menu: for 2, 8 or 24 hours, or
+until you resume. Nothing is uploaded and OneDrive is not asked for changes meanwhile; opening a
+file still downloads it. The pause stays across a restart.
 
 An account can also pause by itself on a metered connection or on battery (Settings). **Sync
-Anyway** on the Status page or in the tray lifts that, until the connection or the power changes
+Anyway** on Status or in the tray lifts that, until the connection or the power changes
 again.
 
 ## Several accounts
 
-**Sign in…** in the account switcher's menu adds another Microsoft account, with a folder of its
-own. Two accounts' folders cannot be inside one another, and one Microsoft account can be connected
-once. A file moved from one account's folder to another's is copied and removed, as between two
-disks.
+**Add Another OneDrive…** in the account switcher's menu adds another Microsoft account, with a
+folder of its own. Two accounts' folders cannot be inside one another, and one Microsoft account can
+be connected once. A file moved from one account's folder to another's is copied and removed, as
+between two disks.
 
-**Remove Account…** on the Account page signs the account out and forgets it on this computer. Its
-files stay where they are — those that were downloaded, and your own; a file that was never
-downloaded is not on this computer — and nothing in OneDrive is deleted. If changes were not sent
-to OneDrive yet, the window says how many before it goes on: they stay only on this computer.
+**Disconnect This OneDrive…** on OneDrive Settings signs the account out and forgets it on this
+computer. Its files stay where they are — those that were downloaded, and your own; a file that was
+never downloaded is not on this computer — and nothing in OneDrive is deleted. If changes were not
+sent to OneDrive yet, the window says how many before it goes on: they stay only on this computer.
 
 ## Uploading changes
 
@@ -166,20 +175,20 @@ to OneDrive yet, the window says how many before it goes on: they stay only on t
 (a program that tries is told the folder is read-only), so nothing can drift from OneDrive by
 accident.
 
-Turn it on with **Upload changes made on this computer** on the Account page. The browser opens
-once more, for permission to change your files. From then on, what you add, change, move or delete
-in the folder is added, changed, moved or deleted in your OneDrive.
+Turn it on with **Two-way sync** on OneDrive Settings, or when you choose the folder. The browser
+opens once more, for permission to change your files. From then on, what you add, change, move or
+delete in the folder is added, changed, moved or deleted in your OneDrive.
 
 - **What goes up**: new files and folders, edits, renames, moves and deletes. A changed file goes
-  up a couple of seconds after the last change, once no program has it open for writing. The
-  Status page counts what is waiting; Dolphin shows an emblem on each.
+  up a couple of seconds after the last change, once no program has it open for writing. Status
+  counts what is waiting; Dolphin shows an emblem on each.
 - **Changed on both sides**: both are kept. OneDrive's version keeps the name, and yours stays
-  beside it as `Report-<computer name>.docx` and goes up under that name. It is listed under
-  **Conflicts**.
-- **What stays on this computer**, listed under **Not Uploaded**: a file whose name OneDrive
-  refuses (rename it to upload it), a file larger than OneDrive takes, and, while OneDrive is
-  full, every file with new content. Editors' temporary files stay too; the list of such names is
-  on the Account page ("Never uploaded").
+  beside it as `Report-<computer name>.docx` and goes up under that name. Issues lists it under
+  **Kept Both Versions**.
+- **What stays on this computer**, listed on Issues under **Can't Upload**: a file whose name
+  OneDrive refuses (rename it to upload it), a file larger than OneDrive takes, and, while OneDrive
+  is full, every file with new content. Editors' temporary files stay too; the list of such names is
+  on OneDrive Settings ("Never uploaded").
 - **What the folder does not take**: symbolic and hard links, device files, pipes and sockets.
   OneDrive holds none of them.
 - **Moving a file out of the folder** removes it in OneDrive. The file is copied to where it
@@ -197,37 +206,37 @@ A file or folder removed here is removed in OneDrive, and goes to **OneDrive's r
   downloaded and nothing lands in the trash of your home directory. Shift+Delete deletes without
   the detour.
 - **A folder that will not go.** A folder that holds in OneDrive something this computer cannot
-  show (see **Not in the Folder**) cannot be removed here: removing it fails with "directory not
-  empty", though it looks empty. The files shown in it are removed as you asked. A notification
-  and the Activity page name the folder; remove it in OneDrive on the web.
+  show (Issues lists it under **Can't Be Shown in the Folder**) cannot be removed here: removing
+  it fails with "directory not empty", though it looks empty. The files shown in it are removed as
+  you asked. A notification and Status's History name the folder; remove it in OneDrive on the
+  web.
 
 ### Turning uploading off
 
-Turning **Upload changes made on this computer** off does not drop what is still to be sent.
+Turning **Two-way sync** off does not drop what is still to be sent.
 
 - **Nothing waiting**: the folder is read-only again at once.
-- **Changes still to send**: the account sends them first and then switches by itself. The Status
-  and Account pages say **Switching to read-only: 3 changes still to send** meanwhile.
-- **Switch Now** on the Account page switches at once. What is not sent stays on this computer as
-  it is, and is sent when uploading is turned on again.
-- **Cancel** leaves uploading on.
+- **Changes still to send**: the account sends them first and then switches by itself. OneDrive
+  Settings says **Switching to read-only: 3 changes still to send** meanwhile.
+- **Switch Now** there switches at once. What is not sent stays on this computer as it is, and is
+  sent when two-way sync is turned on again.
+- **Keep Two-Way Sync** leaves it on.
 
 The wish survives a restart of the service.
 
-## Changing or forgetting the folder
+## Using another folder
 
-**Forget Folder** on the Account page stops keeping the folder in step. The folder becomes a plain
-folder again: the files that were downloaded and your own stay in it, and can be changed; files
-that were never downloaded are not in it. Nothing in OneDrive is deleted.
+**Use Another Folder…** on OneDrive Settings stops keeping the folder in step, and Status then asks
+for another empty one. The old folder becomes a plain folder again: the files that were downloaded
+and your own stay in it, and can be changed; files that were never downloaded are not in it.
+Nothing in OneDrive is deleted.
 
-If changes were not sent to OneDrive yet, the window says how many before it goes on. Forgetting
-the folder then leaves them as plain local files, and they are not sent.
-
-**Choose Folder…** then binds the account to another empty folder.
+If changes were not sent to OneDrive yet, the window says how many before it goes on. Leaving the
+folder then leaves them as plain local files, and they are not sent.
 
 If the OneDrive folder itself is moved, renamed or deleted while the service is not running,
-KOneDrive stops syncing that account and says so. Move it back, or forget the folder and choose it
-again.
+KOneDrive stops syncing that account, and Status says why, with **Try Again**. Move the folder back
+and try again, or choose another folder right there: **Continue** forgets the old one first.
 
 ## While the service was not running
 
@@ -249,7 +258,7 @@ To move or remove something in OneDrive, do it while the service runs.
   restart by themselves. While the service restarts, the folder shows only the files that are on
   this computer, and a program reading a file in it gets an error: close programs that have files
   of the folder open first.
-- **Removing**: first **Forget Folder** for every account, then
+- **Removing**: first **Disconnect This OneDrive…** for every account, then
   `sudo dnf remove konedrive konedrive-kde`. A folder still registered when the package goes
   stays locked, and shows only the files that are on this computer.
 
@@ -262,8 +271,8 @@ To move or remove something in OneDrive, do it while the service runs.
   ended without taking its folder off. Start it again (`systemctl --user start konedrived`): it
   clears the folder and serves it again.
 - **The folder stopped by itself.** After a fault the service takes the folder down, shows the
-  cause on the Status page and starts it again by itself: after 1 minute, then 5, then 30, then
-  every hour. **Refresh Now** tries at once.
+  cause on Status and starts it again by itself: after 1 minute, then 5, then 30, then every hour.
+  **Try Again** there tries at once.
 - Files: `~/.config/konedrive/config.toml` (the client ID, and each account with its name and
   folder; `config.toml.v1` is the single-account file it was migrated from, if any). Each
   account's state is in `~/.local/state/konedrive/accounts/<id>/`: `account.json` (cached name

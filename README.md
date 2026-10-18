@@ -26,9 +26,9 @@ folder of files at their real sizes, and a file downloads when something reads i
 
 ## Screenshots
 
-| Status | Activity | Account |
+| Status | Issues | OneDrive Settings |
 | --- | --- | --- |
-| ![Status page](docs/screenshots/status.png) | ![Activity page](docs/screenshots/activity.png) | ![Account page](docs/screenshots/account.png) |
+| ![Status page](docs/screenshots/status.png) | ![Issues page](docs/screenshots/issues.png) | ![OneDrive Settings page](docs/screenshots/onedrive-settings.png) |
 
 (Shown with example data from a test daemon, not a real OneDrive account: two accounts,
 "Personal" chosen in the switcher at the top of the sidebar.)

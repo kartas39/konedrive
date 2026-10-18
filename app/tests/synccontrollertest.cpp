@@ -5,7 +5,10 @@
 #include "transfermodel.h"
 
 #include <QAbstractItemModelTester>
+#include <QDir>
+#include <QFileInfo>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QTest>
 
 #include <memory>
@@ -107,7 +110,6 @@ private Q_SLOTS:
         m_fake->keptBackFiles.insert(QStringLiteral("name-characters"), {{root + QStringLiteral("/a:b"), QStringLiteral("name-characters")}});
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
-        QCOMPARE(controller.machineName(), QStringLiteral("fedora"));
         QCOMPARE(controller.ignorePatterns(), (QStringList{QStringLiteral("*.tmp"), QStringLiteral("~*")}));
 
         m_fake->queue->set({{QStringLiteral("PendingCount"), QVariant::fromValue<uint>(1)},
@@ -172,24 +174,50 @@ private Q_SLOTS:
     void choosingAFolderRegistersIt()
     {
         startFake();
+        QTemporaryDir home;
+        const QString folder = home.path() + QStringLiteral("/OneDrive");
+        QVERIFY(QDir().mkdir(folder));
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
-        controller.chooseFolder(QUrl::fromLocalFile(QStringLiteral("/home/u/OneDrive")));
-        QTRY_COMPARE(controller.rootPath(), QStringLiteral("/home/u/OneDrive"));
-        QVERIFY(m_fake->calls.contains(QStringLiteral("Register:/home/u/OneDrive")));
+        controller.chooseFolder(QUrl::fromLocalFile(folder));
+        QTRY_COMPARE(controller.rootPath(), folder);
+        QVERIFY(m_fake->calls.contains(QStringLiteral("Register:") + folder));
+    }
+
+    /// The folder offered by name (~/OneDrive) is made when it is not there yet; a folder
+    /// whose parent is not there either is not, and nothing is registered.
+    void aFolderNotThereYetIsMadeFirst()
+    {
+        startFake();
+        QTemporaryDir home;
+        const QString folder = home.path() + QStringLiteral("/OneDrive");
+        SyncController controller(fake::FirstAccount);
+        QTRY_VERIFY(controller.serviceAvailable());
+        controller.chooseFolder(QUrl::fromLocalFile(folder));
+        QVERIFY(QFileInfo(folder).isDir());
+        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("Register:") + folder));
+
+        const QString deeper = home.path() + QStringLiteral("/missing/OneDrive");
+        controller.chooseFolder(QUrl::fromLocalFile(deeper));
+        QTRY_VERIFY(!controller.actionError().isEmpty());
+        QVERIFY(!QFileInfo::exists(home.path() + QStringLiteral("/missing")));
+        QVERIFY(!m_fake->calls.contains(QStringLiteral("Register:") + deeper));
     }
 
     /// A folder the daemon refuses is not registered, and the refusal is said.
     void aRefusedFolderIsAnActionError()
     {
         startFake();
-        m_fake->registerRefused = QStringLiteral("/home/u/OneDrive is not empty");
+        QTemporaryDir home;
+        const QString folder = home.path() + QStringLiteral("/OneDrive");
+        QVERIFY(QDir().mkdir(folder));
+        m_fake->registerRefused = folder + QStringLiteral(" is not empty");
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
-        controller.chooseFolder(QUrl::fromLocalFile(QStringLiteral("/home/u/OneDrive")));
-        QTRY_COMPARE(controller.actionError(), QStringLiteral("/home/u/OneDrive is not empty"));
+        controller.chooseFolder(QUrl::fromLocalFile(folder));
+        QTRY_COMPARE(controller.actionError(), folder + QStringLiteral(" is not empty"));
         QCOMPARE(controller.rootPath(), QString());
-        QCOMPARE(m_fake->calls.count(QStringLiteral("Register:/home/u/OneDrive")), 1);
+        QCOMPARE(m_fake->calls.count(QStringLiteral("Register:") + folder), 1);
     }
 
     void listsWhatIsSkippedWithWhy()
@@ -289,17 +317,19 @@ private Q_SLOTS:
         QCOMPARE(controller.conflictCount(), 2U);
     }
 
-    /// PinnedCount (dbus/org.konedrive.Folder.xml) reaches the window, both
-    /// from GetAll at start and from a PropertiesChanged that follows.
+    /// PinnedCount and PinnedBytes (dbus/org.konedrive.Folder.xml) reach the
+    /// window, both from GetAll at start and from a PropertiesChanged that follows.
     void followsPinnedCount()
     {
         startFake();
-        m_fake->folder->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(3)}});
+        m_fake->folder->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(3)}, {QStringLiteral("PinnedBytes"), QVariant::fromValue<qulonglong>(12ULL << 30)}});
         SyncController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.pinnedCount(), 3U);
+        QCOMPARE(controller.pinnedBytes(), 12ULL << 30);
 
-        m_fake->folder->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(5)}});
+        m_fake->folder->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(5)}, {QStringLiteral("PinnedBytes"), QVariant::fromValue<qulonglong>(20ULL << 30)}});
         QTRY_COMPARE(controller.pinnedCount(), 5U);
+        QCOMPARE(controller.pinnedBytes(), 20ULL << 30);
     }
 
     /// Transfers (a(stt)) arrives as a D-Bus structure inside PropertiesChanged
@@ -325,7 +355,7 @@ private Q_SLOTS:
         QCOMPARE(reset.count(), 0);
     }
 
-    /// The "Recent" list: Recent(50) at start, then each ActivityLog.Added
+    /// The "Recent" list: Recent(Capacity) at start, then each ActivityLog.Added
     /// on top, newest first.
     void recentActivityThenLiveEventsNewestFirst()
     {
@@ -334,7 +364,7 @@ private Q_SLOTS:
                        {100, QStringLiteral("first-sync-ended"), QStringLiteral("/home/u/OneDrive"), QString()}};
         SyncController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.activity()->count(), 2);
-        QVERIFY(m_fake->calls.contains(QStringLiteral("Recent:50")));
+        QVERIFY(m_fake->calls.contains(QStringLiteral("Recent:%1").arg(ActivityModel::Capacity)));
         QCOMPARE(text(controller.activity(), 0, ActivityModel::PathRole), QStringLiteral("/home/u/OneDrive/b.txt"));
 
         QSignalSpy added(&controller, &SyncController::activityAdded);
@@ -413,7 +443,7 @@ private Q_SLOTS:
         m_fake->log = {{100, QStringLiteral("first-sync-ended"), QStringLiteral("/home/u/OneDrive"), QString()}};
         m_fake->holdActivity = true;
         SyncController controller(fake::FirstAccount);
-        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("Recent:50")));
+        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("Recent:%1").arg(ActivityModel::Capacity)));
 
         QSignalSpy added(&controller, &SyncController::activityAdded);
         // Signalled before the daemon stored it: the answer will lack it.
@@ -440,7 +470,7 @@ private Q_SLOTS:
         startFake();
         m_fake->holdActivity = true;
         SyncController controller(fake::FirstAccount);
-        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("Recent:50")));
+        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("Recent:%1").arg(ActivityModel::Capacity)));
 
         // Stored (as the daemon always does before signalling) and already in
         // what the held reply will answer with.

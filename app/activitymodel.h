@@ -28,7 +28,8 @@ class ActivityModel : public QAbstractListModel
     Q_PROPERTY(int count READ count NOTIFY countChanged)
 
 public:
-    static constexpr int Capacity = 50;
+    /// As many as the daemon keeps.
+    static constexpr int Capacity = 200;
 
     enum Role {
         TimeRole = Qt::UserRole + 1,
@@ -42,6 +43,8 @@ public:
         /// The detail as shown: a reason in words for `upload-failed`, the
         /// detail itself otherwise.
         DetailTextRole,
+        /// When, as the window writes it (timeText()).
+        TimeTextRole,
     };
     Q_ENUM(Role)
 

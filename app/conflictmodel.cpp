@@ -1,5 +1,8 @@
 #include "conflictmodel.h"
 
+#include "timetext.h"
+
+#include <QDateTime>
 #include <QFileInfo>
 #include <QHash>
 #include <QSet>
@@ -38,8 +41,25 @@ QVariant ConflictModel::data(const QModelIndex &index, int role) const
         return QFileInfo(row.copy).path();
     case CopyNameRole:
         return QFileInfo(row.copy).fileName();
+    case TimeTextRole:
+        return timeText(row.time, QDateTime::currentSecsSinceEpoch());
     }
     return {};
+}
+
+QVariantList ConflictModel::rows() const
+{
+    const QHash<int, QByteArray> roles = roleNames();
+    QVariantList rows;
+    rows.reserve(count());
+    for (int row = 0; row < count(); ++row) {
+        QVariantMap fields;
+        for (auto it = roles.constBegin(); it != roles.constEnd(); ++it) {
+            fields.insert(QString::fromLatin1(it.value()), data(index(row), it.key()));
+        }
+        rows << fields;
+    }
+    return rows;
 }
 
 QHash<int, QByteArray> ConflictModel::roleNames() const
@@ -52,6 +72,7 @@ QHash<int, QByteArray> ConflictModel::roleNames() const
         {OriginalFolderRole, "originalFolder"},
         {CopyFolderRole, "copyFolder"},
         {CopyNameRole, "copyName"},
+        {TimeTextRole, "timeText"},
     };
 }
 

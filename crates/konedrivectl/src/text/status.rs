@@ -275,8 +275,8 @@ pub struct FolderStatus {
     pub retry_after_refusal: String,
     /// What the folder's files take on this disk.
     pub local_bytes: Option<u64>,
-    /// Files and folders with a pin of their own.
-    pub pinned: Option<u32>,
+    /// Files and folders with a pin of their own, and the sizes of the files they hold.
+    pub pinned: Option<(u32, u64)>,
     pub conflicts: u32,
 }
 
@@ -365,8 +365,8 @@ pub fn sync_status_text(status: &FolderStatus, prefix: &str, now: i64) -> String
         if let Some(bytes) = status.local_bytes {
             line("On this computer:", &human_bytes(bytes));
         }
-        if let Some(pinned) = status.pinned {
-            line("Always on this device:", &pinned.to_string());
+        if let Some((pinned, bytes)) = status.pinned {
+            line("Always on this device:", &format!("{pinned} ({})", human_bytes(bytes)));
         }
     }
     if status.conflicts > 0 {
