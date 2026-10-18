@@ -31,13 +31,13 @@ Session bus, service `org.konedrive.Daemon`. The objects are in [accounts.md](ac
 `Conflicts`, `LocalScan` and `ActivityLog`. A development build adds `DevTools` and `TokenExport`
 (§2.11).
 
-No name carries a version: the daemon and its clients ship in one package. A member does not
-repeat its interface's name (`Conflicts.List`, not `Conflicts.Conflicts`). The definitions are
-`dbus/*.xml`, one file per interface, with each member's meaning in its comment; a test
-(`crates/konedrived/tests/dbus_api.rs`) holds each against the live interface's signatures. The
-daemon is D-Bus activated (`SystemdService=konedrived.service`), so the first call from any client
-starts it, and every object is on the bus before the name is claimed
-([accounts.md](accounts.md) §3.2).
+No name carries a version: the daemon and its clients are installed at one version
+([packaging.md](packaging.md) §1). A member does not repeat its interface's name (`Conflicts.List`,
+not `Conflicts.Conflicts`). The definitions are `dbus/*.xml`, one file per interface, with each
+member's meaning in its comment; a test (`crates/konedrived/tests/dbus_api.rs`) holds each against
+the live interface's signatures. The daemon is D-Bus activated
+(`SystemdService=konedrived.service`), so the first call from any client starts it, and every object
+is on the bus before the name is claimed ([accounts.md](accounts.md) §3.2).
 
 Properties change through `PropertiesChanged`, each under the interface that holds it. Which
 property goes out how is one table (`dbus/properties.rs`), which the getters answer through too, so
@@ -376,7 +376,7 @@ commit 5254595" (`docs/releasing.md`). When the daemon on the bus runs another b
 `Version` or `Commit` differs — a second line says to restart it. `konedrivectl --version` says
 the same.
 
-**After an update** the package replaces the window's program file and restarts the daemon, not
+**After an update** the packages replace the window's program file and restart the daemon, not
 the window. So when the daemon comes back as another build and the window's own program file is no
 longer the one it started from, the window starts the installed program in its place, in the same
 process (`SelfRestart`): hidden in the tray if it was hidden, on the same account if it was shown.

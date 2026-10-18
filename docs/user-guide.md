@@ -9,8 +9,8 @@ fixed: [limitations/](limitations/README.md).
 
 KOneDrive is two packages, for Fedora 44 and 45 (x86_64):
 
-- `konedrive` — the service, the window and `konedrivectl`;
-- `konedrive-kde` — the Dolphin plugins. `konedrive` recommends it, so it is installed too.
+- `konedrive` — the service and `konedrivectl`;
+- `konedrive-kde` — the window, with its tray icon, and the Dolphin plugins, for KDE Plasma.
 
 It needs KDE Plasma 6 with KDE Frameworks 6.21 or later, and FUSE 3 (`fuse3`, which the package
 asks for).

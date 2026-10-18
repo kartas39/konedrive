@@ -55,8 +55,8 @@ security](#5-account-and-security), [the desktop](#6-the-desktop), [testing](#7-
 
 - **Decision.** `/org/konedrive/Daemon` is not served. The window, the CLI and the Dolphin plugins
   use `/org/konedrive/Accounts` and the per-account objects.
-- **Why.** konedrive has no outside clients, and its clients ship in the same packages as the
-  daemon. An alias would need a meaning for "the first account" that changes when that account is
+- **Why.** konedrive has no outside clients, and its clients are installed at the same version
+  as the daemon. An alias would need a meaning for "the first account" that changes when that account is
   removed, and tests of its own, to serve no one.
 - **Trade-off.** None.
 

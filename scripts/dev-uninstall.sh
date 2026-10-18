@@ -44,7 +44,7 @@ systemctl --user daemon-reload || true
 busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig >/dev/null || true
 
 # "Start at login": the entry the window wrote runs the
-# program just removed. Pointed at the one the konedrive package installs, so
+# program just removed. Pointed at the one the konedrive-kde package installs, so
 # that it keeps working once the package is in.
 autostart="$config_home/autostart/org.konedrive.KOneDrive.desktop"
 if [ -f "$autostart" ] && grep -qxF "Exec=$prefix/bin/konedrive --background" "$autostart"; then
@@ -53,7 +53,7 @@ if [ -f "$autostart" ] && grep -qxF "Exec=$prefix/bin/konedrive --background" "$
         '$0 == old { print "Exec=/usr/bin/konedrive --background"; next } { print }' \
         "$autostart" >"$tmp"
     mv -f "$tmp" "$autostart"
-    echo "\"Start at login\" now runs /usr/bin/konedrive, where the konedrive package installs it"
+    echo "\"Start at login\" now runs /usr/bin/konedrive, where the konedrive-kde package installs it"
 elif [ -f "$autostart" ] && grep -qF "$prefix/bin/konedrive" "$autostart"; then
     echo "note: $autostart still runs $prefix/bin/konedrive; once the"
     echo "package is installed, switch \"Start at login\" off and on again in the window's Settings."

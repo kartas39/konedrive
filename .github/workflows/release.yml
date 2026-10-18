@@ -134,30 +134,39 @@ jobs:
           name: konedrive-${{ needs.build.outputs.version }}-fc${{ matrix.fedora }}
           path: dist
 
-      # Both packages, as "sudo dnf install ./konedrive-*.rpm" does, without
-      # the source RPM; dbus-daemon for the private bus below.
-      - name: Install them
+      # The daemon's package alone first, as a machine without Plasma has it;
+      # dbus-daemon for the private bus below. It brings in nothing of Qt.
+      - name: Install the daemon's package
         run: |
           rm -f dist/*.src.rpm
           ls -l dist
-          dnf -y install dbus-daemon dist/*.rpm
+          dnf -y install dbus-daemon dist/konedrive-[0-9]*.rpm
+          if rpm -q qt6-qtbase; then
+            echo "::error::the konedrive package brought in Qt"
+            exit 1
+          fi
+
+      - name: The daemon and the command line start
+        run: |
+          konedrived --version
+          dbus-run-session -- konedrivectl --version
+
+      # Then the window and the Dolphin plugins, as "sudo dnf install
+      # ./konedrive-*.rpm" has them too.
+      - name: Install the KDE package
+        run: dnf -y install dist/konedrive-kde-*.rpm
 
       - name: The programs find their libraries
         run: |
           missing=0
-          for file in /usr/bin/konedrived /usr/bin/konedrivectl /usr/bin/konedrive \
-                      $(rpm -ql konedrive-kde | grep '\.so$'); do
+          for file in /usr/bin/konedrived /usr/bin/konedrivectl \
+                      $(rpm -ql konedrive-kde | grep -e '^/usr/bin/' -e '\.so$'); do
             echo "== $file"
             if ldd "$file" | grep 'not found'; then
               missing=1
             fi
           done
           exit "$missing"
-
-      - name: The daemon and the command line start
-        run: |
-          konedrived --version
-          dbus-run-session -- konedrivectl --version
 
       # The window, with no display, on a bus of its own: it must load its
       # QML and come up hidden, and is then stopped. "ready" is its last line
