@@ -40,8 +40,6 @@ Kirigami.ApplicationWindow {
         case "status":
             return !hasService || hasAccount;
         case "issues":
-        case "conflicts":
-        case "skipped":
         case "activity":
         case "storage":
         case "oneDriveSettings":
@@ -52,9 +50,9 @@ Kirigami.ApplicationWindow {
         return false;
     }
 
-    /// Shows one of the pages, by name: a sidebar page, the page that adds a OneDrive, or
-    /// one of the two lists that Issues leads to (conflicts, skipped), shown over it. A page
-    /// with nothing to show gives way to the account's Status, or with no account to adding one.
+    /// Shows one of the pages, by name: a sidebar page, or the page that adds a OneDrive. A
+    /// page with nothing to show gives way to the account's Status, or with no account to
+    /// adding one.
     function showPage(name) {
         const pages = {
             "signIn": signInPage,
@@ -65,27 +63,16 @@ Kirigami.ApplicationWindow {
             "oneDriveSettings": oneDriveSettingsPage,
             "settings": settingsPage,
         };
-        const lists = {
-            "conflicts": conflictsPage,
-            "skipped": skippedPage,
-        };
-        if (!pages[name] && !lists[name]) {
+        if (!pages[name]) {
             return;
         }
         if (!pageShows(name)) {
             name = hasService && !hasAccount ? "signIn" : "status";
         }
-        const sidebarPage = lists[name] ? "issues" : name;
-        if (sidebarPage !== currentPage || pageStack.depth === 0 || (!lists[name] && pageStack.depth > 1)) {
-            currentPage = sidebarPage;
+        if (name !== currentPage || pageStack.depth === 0) {
+            currentPage = name;
             pageStack.clear();
-            pageStack.push(pages[sidebarPage]);
-        }
-        if (lists[name]) {
-            if (pageStack.depth > 1) {
-                pageStack.pop(pageStack.get(0));
-            }
-            pageStack.push(lists[name]);
+            pageStack.push(pages[name]);
         }
         if (drawer.modal) {
             drawer.close();
@@ -270,12 +257,6 @@ Kirigami.ApplicationWindow {
         }
         IssuesPage {
             id: issuesPage
-        }
-        ConflictsPage {
-            id: conflictsPage
-        }
-        SkippedPage {
-            id: skippedPage
         }
         ActivityPage {
             id: activityPage

@@ -151,8 +151,6 @@ set(KONEDRIVE_QML
     qml/DisconnectDialog.qml
     qml/AnotherFolderDialog.qml
     qml/IssuesPage.qml
-    qml/ConflictsPage.qml
-    qml/SkippedPage.qml
     qml/ActivityPage.qml
     qml/StoragePage.qml
     qml/OneDriveSettingsPage.qml

@@ -2,6 +2,7 @@
 
 #include "accountcontroller.h"
 #include "synccontroller.h"
+#include "timetext.h"
 #include "transfermodel.h"
 
 #include <KLocalizedString>
@@ -109,11 +110,7 @@ QString AccountStatus::heldBackText(const QString &reason)
 
 QString AccountStatus::until(qint64 unixSeconds) const
 {
-    const QDateTime when = QDateTime::fromSecsSinceEpoch(unixSeconds);
-    if (when.date() == QDateTime::fromSecsSinceEpoch(m_clock()).date()) {
-        return QLocale().toString(when.time(), QLocale::ShortFormat);
-    }
-    return QLocale().toString(when, QLocale::ShortFormat);
+    return timeText(unixSeconds, m_clock());
 }
 
 QString AccountStatus::ago(qint64 unixSeconds) const

@@ -1107,7 +1107,9 @@ private Q_SLOTS:
 
         // Opened, the refused names are listed; the full OneDrive never is.
         QMetaObject::invokeMethod(page, "setOpened", Q_ARG(QVariant, QStringLiteral("name-characters")), Q_ARG(QVariant, true));
-        QTRY_COMPARE(itemsSaying(page, root), 3);
+        auto *perFile = window->findChild<QQuickItem *>(QStringLiteral("perFileGroup"));
+        QVERIFY(perFile);
+        QTRY_COMPARE(itemsSaying(perFile, root), 3);
         QVERIFY(fake.sync->calls.contains(QStringLiteral("NotUploadedFiles:name-characters:20")));
         QVERIFY(!fake.sync->calls.join(QLatin1Char(' ')).contains(QStringLiteral("NotUploadedFiles:quota-exceeded")));
 
@@ -1144,9 +1146,9 @@ private Q_SLOTS:
     }
 
     /// Issue #39: 5 000 skipped entries and 5 000 conflicts are the first
-    /// 200 of each in a list that builds only the rows in sight, then "and
-    /// 4800 more"; a count that keeps moving asks for the skipped list again
-    /// at most once a second.
+    /// 200 of each in Issues' one list, which builds only the rows in sight,
+    /// each followed by "and 4800 more"; a count that keeps moving asks for
+    /// the skipped list again at most once a second.
     void thousandsSkippedAndConflictsAreAFewRows()
     {
         const QString root = QStringLiteral("/home/u/OneDrive");
@@ -1185,22 +1187,41 @@ private Q_SLOTS:
         QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->sync()->skippedCount() == 5000);
         SyncController *sync = accounts.at(0)->sync();
 
-        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("skipped")));
-        auto *skipped = window->findChild<QQuickItem *>(QStringLiteral("skippedList"));
-        QVERIFY(skipped);
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("issues")));
+        auto *list = window->findChild<QQuickItem *>(QStringLiteral("issuesList"));
+        QVERIFY(list);
         QTRY_COMPARE(sync->skipped().size(), 5000);
-        QTRY_COMPARE(skipped->property("count").toInt(), 200);
-        // The window shows about ten rows; a few more are built beyond them.
-        QTRY_VERIFY(builtRows(skipped, QStringLiteral("skippedRow")) >= 5);
+        QTRY_COMPARE(sync->conflicts()->count(), 200);
+        // Each section: its heading, 200 rows and the line that counts the rest.
+        QTRY_COMPARE(list->property("count").toInt(), 2 * (1 + 200 + 1));
+        // Taller rows first: a few in sight, and a few more built beyond them.
+        QTRY_VERIFY(builtRows(list, QStringLiteral("conflictRow")) >= 3);
         QTest::qWait(100);
-        QVERIFY2(builtRows(skipped, QStringLiteral("skippedRow")) <= 40, "more rows built than a few screens hold");
-        // At the end, the line that counts the rest.
-        QMetaObject::invokeMethod(skipped, "positionViewAtEnd");
-        auto *skippedMore = window->findChild<QQuickItem *>(QStringLiteral("skippedMore"));
-        QVERIFY(skippedMore);
-        QTRY_VERIFY(skippedMore->isVisible());
+        QVERIFY2(builtRows(list, QStringLiteral("conflictRow")) <= 20, "more rows built than a few screens hold");
+        // After the conflicts, the line that counts the rest of them.
+        QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, 201), Q_ARG(int, 1));
+        const auto shownRow = [list](const char *name) -> QQuickItem * {
+            const auto *content = list->property("contentItem").value<QQuickItem *>();
+            const auto children = content ? content->childItems() : QList<QQuickItem *>();
+            for (QQuickItem *item : children) {
+                if (item->objectName() == QLatin1String(name) && item->isVisible()) {
+                    return item;
+                }
+            }
+            return nullptr;
+        };
+        QTRY_VERIFY(shownRow("conflictsMore"));
+        auto *conflictsMore = shownRow("conflictsMore");
         QTest::qWait(100);
-        QVERIFY2(builtRows(skipped, QStringLiteral("skippedRow")) <= 40, "more rows built than a few screens hold");
+        QVERIFY2(builtRows(list, QStringLiteral("conflictRow")) + builtRows(list, QStringLiteral("skippedRow")) <= 40, "more rows built than a few screens hold");
+        QCOMPARE(digits(conflictsMore->property("text").toString()), QStringLiteral("4800"));
+        QVERIFY(conflictsMore->property("description").toString().contains(QStringLiteral("konedrivectl sync conflicts")));
+        // At the end, the line that counts the rest of the skipped.
+        QMetaObject::invokeMethod(list, "positionViewAtEnd");
+        QTRY_VERIFY(shownRow("skippedMore"));
+        auto *skippedMore = shownRow("skippedMore");
+        QTest::qWait(100);
+        QVERIFY2(builtRows(list, QStringLiteral("conflictRow")) + builtRows(list, QStringLiteral("skippedRow")) <= 40, "more rows built than a few screens hold");
         QCOMPARE(digits(skippedMore->property("text").toString()), QStringLiteral("4800"));
         QVERIFY(skippedMore->property("description").toString().contains(QStringLiteral("konedrivectl sync skipped")));
 
@@ -1215,24 +1236,6 @@ private Q_SLOTS:
         QTRY_COMPARE(fake.sync->calls.count(QStringLiteral("Skipped")), asked + 1);
         QTest::qWait(1200);
         QCOMPARE(fake.sync->calls.count(QStringLiteral("Skipped")), asked + 1);
-
-        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("conflicts")));
-        auto *conflicts = window->findChild<QQuickItem *>(QStringLiteral("conflictsList"));
-        QVERIFY(conflicts);
-        QTRY_COMPARE(conflicts->property("count").toInt(), 200);
-        // Taller rows: about four in sight.
-        QTRY_VERIFY(builtRows(conflicts, QStringLiteral("conflictRow")) >= 3);
-        QTest::qWait(100);
-        QVERIFY2(builtRows(conflicts, QStringLiteral("conflictRow")) <= 20, "more rows built than a few screens hold");
-        QMetaObject::invokeMethod(conflicts, "positionViewAtEnd");
-        auto *conflictsMore = window->findChild<QQuickItem *>(QStringLiteral("conflictsMore"));
-        QVERIFY(conflictsMore);
-        QTRY_VERIFY(conflictsMore->isVisible());
-        QTest::qWait(100);
-        QVERIFY2(builtRows(conflicts, QStringLiteral("conflictRow")) <= 20, "more rows built than a few screens hold");
-        QCOMPARE(digits(conflictsMore->property("text").toString()), QStringLiteral("4800"));
-        QVERIFY(conflictsMore->property("description").toString().contains(QStringLiteral("konedrivectl sync conflicts")));
-
         fake.stop();
     }
 };

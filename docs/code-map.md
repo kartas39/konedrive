@@ -965,6 +965,7 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `folderchoice.h`, `folderchoice.cpp` — the folder offered to the account shown while it has
   none, and Continue: the folder registered, once the switch to two-way is granted when asked.
 - `foldertext.h` — a folder's path as the window writes it, from `~`.
+- `timetext.h` — a moment as the window writes it: the time of day today, else the date too.
 - `accountcontroller.h`, `accountcontroller.cpp` — one account's `org.konedrive.Account`.
 - `synccontroller.h`, `synccontroller.cpp` — one account's folder, for QML.
 - `synctypes.h` — the structured types of the folder's interfaces.
@@ -1009,10 +1010,8 @@ Each has its file in `crates/konedrived/src/dbus/`.
   many changes made here are not uploaded.
 - `DisconnectDialog.qml` — that question before an account is disconnected.
 - `AnotherFolderDialog.qml` — that question before another folder is used.
-- `IssuesPage.qml` — what needs the user: the changes that can't upload, the files whose both
-  versions were kept, what can't be shown in the folder.
-- `ConflictsPage.qml` — the "Kept Both Versions" list.
-- `SkippedPage.qml` — the "Can't Be Shown in the Folder" list.
+- `IssuesPage.qml` — what needs the user, in one list: the changes that can't upload, the files
+  whose both versions were kept, what can't be shown in the folder.
 - `ActivityPage.qml` — what happened in the folder.
 - `StoragePage.qml` — the space the OneDrive takes on this device, with Free Up Space and the free
   space its downloads leave, and in OneDrive.
