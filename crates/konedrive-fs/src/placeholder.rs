@@ -142,13 +142,12 @@ fn read_xattr(file: &impl AsFd, name: &str) -> io::Result<Option<String>> {
     }
 }
 
-/// Why `read_state` could not tell the caller what state a file is in.
+/// Why `read_state` could not tell a test what state a file is in: a value it does not
+/// know is `Corrupt`, not an absent attribute, so a wrong write is not read as none.
 ///
-/// `Corrupt` exists because collapsing it into `Ok(None)` — "this file is not
-/// one of ours" — is a data-loss bug, not a simplification: a file whose
-/// `user.konedrive.state` had been truncated, half-written or set by hand to
-/// something we do not recognise would be taken for the user's own, whole
-/// file.
+/// Only the tests read the state this way. The daemon reads a backing file's mark as
+/// bytes, and the file is whole only when the mark says `hydrated`; the folder's mount
+/// answers `user.konedrive.state` from the item's row.
 #[cfg(test)]
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {

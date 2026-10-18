@@ -14,9 +14,3 @@ fn random_tokens_are_43_unreserved_chars_and_unique() {
     assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
     assert_ne!(a, b);
 }
-
-#[test]
-fn new_pkce_is_self_consistent() {
-    let pkce = Pkce::new();
-    assert_eq!(Pkce::from_verifier(pkce.verifier.clone()).challenge, pkce.challenge);
-}

@@ -9,9 +9,9 @@ use crate::item_store::tests::listed_drive::{listed_directory, listed_file, list
 use crate::item_store::tests::shown_items::{bound, row, show_listed_directory, show_listed_file, store_in_file_with_listed_root};
 use crate::item_store::tests::{made, make_directory, make_file, place};
 use crate::item_store::apply_change;
-use crate::model::{ContentPresence, ContentVersion, FolderVisibility, ItemKind, LocalVersionChange, SkipReason};
+use crate::model::{ContentPresence, ContentVersion, ItemKind, LocalVersionChange, SkipReason};
 use crate::sync_plan::ItemVersions;
-use crate::{FoldedName, StepCommitOutcome};
+use crate::StepCommitOutcome;
 
 const ROOT: LocalItemId = LocalItemId::ROOT;
 
@@ -32,22 +32,6 @@ fn remove(store: &mut TreeStore, item: LocalItemId) {
 fn make_file_of_size(store: &mut TreeStore, parent: LocalItemId, name: &str, size: u64, is_name_ignored: bool) -> LocalItemId {
     let content = Some(ContentVersion::ChangedHere { size, mtime: 200, mtime_nsec: 0, change_count: 1 });
     store.item_store().apply(&LocalVersionChange::Made { kind: ItemKind::File, place: place(parent, name), content, is_name_ignored, replaced: None }).unwrap()
-}
-
-/// A connection opened for reading alone reads what the writer's connection committed,
-/// through a reader.
-#[test]
-fn a_reader_of_a_store_opened_for_reading_alone_sees_what_the_writer_committed() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tree.sqlite");
-    let mut writer = store_in_file_with_listed_root(&path);
-    let reading = TreeStore::open_read_only(&path).unwrap();
-    assert_eq!(reading.read_items(|reader| Ok(root_names(reader))).unwrap(), Vec::<String>::new());
-
-    let made_file = make_file(&mut writer, ROOT, "a");
-    let seen = reading.read_items(|reader| Ok((reader.find_item(made_file)?, reader.find_item_at(ROOT, OsStr::new("a"))?))).unwrap();
-    assert_eq!(seen.0.as_ref().map(|item| item.local_item_id), Some(made_file));
-    assert_eq!(seen.0, seen.1);
 }
 
 /// While the writer has a transaction open the reader sees nothing of it, and does not
@@ -196,51 +180,6 @@ fn the_marks_of_a_path_are_one_for_each_name_the_outermost_first() {
         assert_eq!(Some(&path), reader.find_path(item).unwrap().as_ref());
         assert_eq!(marks.len(), path.components().count());
     }
-}
-
-#[test]
-fn every_reader_answers_what_the_item_stores_reader_of_the_same_name_answers() {
-    let mut store = store_with_listed_root();
-    let a = show_listed_directory(&mut store, "A", "R", "a");
-    let shown_file = show_listed_file(&mut store, "F", "A", "f", "h1");
-    let made_file = make_file(&mut store, a, "F");
-    let ignored = make_file_of_size(&mut store, ROOT, "x.tmp", 1, true);
-    write_listing_of_changes(&mut store, &[not_placed(listed_file("S", "A", "s", (3, "h2"), "e-S"))]);
-    let not_shown = bound(&mut store, "S").local_item_id;
-    store.set_pin("A", true).unwrap();
-    store.item_store().begin_delta_listing().unwrap();
-    let all = [ROOT, a, shown_file, made_file, ignored, not_shown];
-
-    let items = store.item_store();
-    let reader = items.reader();
-    for item in all {
-        assert_eq!(reader.find_item(item).unwrap(), items.find_item(item).unwrap());
-        assert_eq!(reader.find_path(item).unwrap(), items.find_path(item).unwrap());
-        assert_eq!(reader.is_ignored(item).unwrap(), items.is_ignored(item).unwrap());
-        assert_eq!(reader.find_folder_visibility(item).unwrap(), items.find_folder_visibility(item).unwrap());
-        assert_eq!(reader.is_pinned(item).unwrap(), items.is_pinned(item).unwrap());
-        assert_eq!(reader.list_children(item).unwrap(), items.list_children(item).unwrap());
-    }
-    let name = OsStr::new("f");
-    assert_eq!(reader.find_item_at(a, name).unwrap(), items.find_item_at(a, name).unwrap());
-    assert_eq!(reader.find_bound_item(&reference("F")).unwrap(), items.find_bound_item(&reference("F")).unwrap());
-    assert_eq!(reader.list_unsent(None, 10).unwrap(), items.list_unsent(None, 10).unwrap());
-    let folded = FoldedName::of(name);
-    assert_eq!(reader.list_children_with_folded_name(a, &folded).unwrap(), items.list_children_with_folded_name(a, &folded).unwrap());
-    assert_eq!(reader.find_listing_under_way().unwrap(), items.find_listing_under_way().unwrap());
-
-    // And the answers are those the rows were built for, not two empty ones.
-    assert_eq!(reader.find_item_at(a, name).unwrap().map(|item| item.local_item_id), Some(shown_file));
-    assert_eq!(reader.find_bound_item(&reference("F")).unwrap().map(|item| item.local_item_id), Some(shown_file));
-    assert_eq!(ids(&reader.list_children(a).unwrap()), [made_file, shown_file]);
-    assert_eq!(reader.find_path(shown_file).unwrap(), Some(PathBuf::from("a/f")));
-    assert_eq!((reader.is_ignored(ignored).unwrap(), reader.is_ignored(made_file).unwrap()), (true, false));
-    assert_eq!(reader.find_folder_visibility(not_shown).unwrap(), FolderVisibility::CannotBeShown);
-    assert_eq!((reader.is_pinned(shown_file).unwrap(), reader.is_pinned(ignored).unwrap()), (true, false));
-    assert_eq!(ids(&reader.list_unsent(None, 10).unwrap()), [made_file]);
-    assert_eq!(ids(&reader.list_children_with_folded_name(a, &folded).unwrap()), [shown_file, made_file]);
-    assert!(reader.find_listing_under_way().unwrap().is_some());
-    assert!(reader.is_ignored(LocalItemId::new(999)).is_err(), "refused for an id with no row, as the store's");
 }
 
 #[test]

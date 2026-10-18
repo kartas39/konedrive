@@ -16,27 +16,7 @@
 //! (`items_left_by_start_up_check`), which the plan is TOLD and answers as its own waits.
 //!
 //! **Tested without the rest**, over a store in memory:
-// test: the_unsent_and_the_changed_in_onedrive_are_read_bounded
 // test: the_pinned_to_download_are_read_while_the_reader_is_asked_and_not_otherwise
-// test: an_item_is_given_with_the_directories_above_it_on_every_side
-// test: an_item_that_differs_is_given_with_the_holders_of_its_name_its_copy_names_and_its_temporary_name
-// test: a_directory_removed_here_is_given_with_all_onedrive_has_in_it_and_their_count
-// test: a_shown_directory_that_cannot_be_shown_is_given_with_what_the_folder_shows_in_it_and_their_count
-// test: an_item_the_plan_answers_it_was_not_given_is_given_and_the_plan_made_again
-// test: a_directory_whose_items_the_plan_answers_were_not_given_is_given_them_with_their_count
-// test: twice_as_many_are_read_when_no_step_can_run_and_more_is_there
-// test: a_window_whose_every_item_is_refused_or_waits_for_its_next_try_is_widened_until_a_step_can_run
-// test: the_items_open_for_writing_are_those_whose_row_keeps_a_content_before_the_write
-// test: the_taken_names_come_from_the_step_memory
-// test: an_item_whose_next_try_is_kept_is_given_with_it_and_its_reason
-// test: the_tasks_tries_whose_rows_changed_or_went_are_void_before_the_plan_is_told
-// test: a_step_towards_the_folder_that_failed_waits_until_its_next_try_and_a_sending_of_the_item_does_not
-// test: an_item_refused_for_good_or_too_big_for_the_space_is_given_as_refused_with_the_reason
-// test: the_items_the_check_left_are_given_as_left_by_it
-// test: the_rows_of_the_directories_running_steps_send_into_are_given_as_destinations
-// test: the_quiet_time_of_a_changed_file_ends_that_long_after_its_time
-// test: a_name_onedrive_cannot_hold_is_refused_with_its_reason
-// test: the_plan_made_through_this_caller_converges_as_the_tests_caller_does
 // test: each_case_of_a_reading_is_enough_or_reads_more
 // test: unsent_items_that_wait_for_the_user_do_not_hold_the_window_while_another_step_is_planned
 // test: the_unsent_that_will_not_be_sent_by_themselves_are_the_refused_for_good_those_the_check_left_and_what_waits_for_them

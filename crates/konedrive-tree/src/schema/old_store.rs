@@ -42,6 +42,10 @@
 // test: a_store_that_cannot_be_read_for_another_reason_is_left_alone
 // test: where_there_is_no_store_one_is_made
 // test: a_rebuild_counts_what_it_loses_before_the_file_goes
+// test: the_version_a_stores_file_says_is_read_without_changing_the_file
+// test: a_stores_file_that_cannot_be_opened_is_an_error_and_no_version
+// test: the_upload_sessions_of_a_store_of_an_older_version_are_listed_from_both_tables
+// test: no_upload_session_is_listed_where_none_is_to_cancel
 
 use std::path::Path;
 

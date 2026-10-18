@@ -51,6 +51,8 @@
 // test: a_landing_of_content_the_row_says_is_on_disk_already_links_nothing
 // test: a_death_after_the_record_or_after_the_link_is_settled_by_the_check_at_start
 // test: a_landing_whose_undo_fails_keeps_its_record_and_asks_for_the_mounts_take_down
+// test: a_landing_after_the_file_was_opened_for_writing_links_nothing
+// test: a_landing_while_a_listing_changed_the_content_does_not_say_the_old_content_is_the_new
 
 use std::fs::File;
 use std::path::PathBuf;

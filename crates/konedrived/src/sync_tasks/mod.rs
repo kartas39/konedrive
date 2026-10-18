@@ -51,8 +51,8 @@
 //!
 //! **Tested without the rest** (the tests of each part are listed in its module):
 // test: a_folder_started_and_stopped_leaves_no_task_running
-// test: a_folder_taken_down_for_a_fault_is_started_again_by_its_owner_and_by_no_task_of_the_sync
 // test: a_sync_dropped_unstopped_has_its_stop_token_cancelled
+// test: a_sync_started_over_the_fixture_runs_its_tasks_until_it_is_stopped
 
 use std::sync::Arc;
 

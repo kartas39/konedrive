@@ -1028,9 +1028,9 @@ fn a_child_moved_out_of_a_directory_listed_gone_has_its_version_again_on_a_later
     assert_eq!(item(&mut store, kept).onedrive, version(ROOT, "kept", Some("1")));
 }
 
-/// A full listing that begins forgets the delta link, in its own transaction: while one is
-/// under way the store has no link to ask a listing of changes from, so none can be asked
-/// whose end would take what the full listing has not seen yet.
+/// A full listing that begins forgets the delta link: while one is under way the store has
+/// no link to ask a listing of changes from, so none can be asked whose end would take what
+/// the full listing has not seen yet.
 #[test]
 fn a_full_listing_that_begins_forgets_the_delta_link() {
     let mut store = listed_store();
@@ -1060,8 +1060,8 @@ fn a_full_listing_goes_on_in_a_store_opened_again() {
     assert_eq!(onedrive_side(&mut store).keys().map(String::as_str).collect::<Vec<_>>(), ["A", "R"]);
 }
 
-/// The link the next listing is asked from is written with the answer that gave it, in
-/// one transaction; a link to a next page leaves it as it was.
+/// The link the next listing is asked from is written with the answer that gave it; a link
+/// to a next page leaves it as it was.
 #[test]
 fn the_delta_link_is_written_with_the_answer_that_gave_it() {
     let mut store = listed_store();

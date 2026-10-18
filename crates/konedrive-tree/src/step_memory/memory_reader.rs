@@ -9,9 +9,7 @@
 //! **Answers for:** `Changes()`, polled by the window, does not queue
 //! behind a listing's page.
 //!
-//! **Tested without the rest:**
-// test: each_memory_reader_answers_what_the_step_memorys_reader_of_the_same_name_answers
-// test: the_memory_of_an_item_is_of_the_same_moment_as_its_row
+//! **No test of its own.**
 #![allow(dead_code, unused_variables)]
 
 use crate::item_store::ItemReader;

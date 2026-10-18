@@ -37,9 +37,9 @@
 // test: a_directory_lists_neither_hidden_names_nor_what_the_folder_does_not_show_and_lists_ignored_names
 // test: the_folders_own_attributes_are_the_roots_alone
 // test: the_pin_attribute_is_the_rows_pin
-// test: the_attributes_a_node_has_are_named_by_one_read
 // test: the_sync_mark_per_case
 // test: the_state_attribute_per_case
+// test: no_attribute_is_named_in_a_list_though_each_is_read_by_its_name
 
 use std::ffi::OsStr;
 use std::fs::File;

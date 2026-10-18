@@ -14,6 +14,7 @@
 // test: a_new_item_whose_row_is_gone_is_removed_in_onedrive
 // test: a_new_item_whose_row_is_still_there_asks_for_a_cycle
 // test: a_made_item_that_cannot_be_removed_is_left_and_said
+// test: the_fate_of_a_made_item_is_by_its_row
 
 use konedrive_graph::drive::WriteError;
 use konedrive_graph::pool::Class;

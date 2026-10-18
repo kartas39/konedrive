@@ -64,24 +64,16 @@
 //!
 //! **Tested without the rest**, over the fixture (`mount::item_fixture`) with its stand-in
 //! for the runners (`step_runners_stand_in`), its poll handle and a clock the test
-//! holds; the convergence through the task runs with the three real runners once they
-//! are filled:
-// test: a_local_change_is_planned_and_its_step_started
-// test: no_plan_is_made_for_a_finished_step_while_steps_of_the_last_plan_are_left
-// test: a_plan_is_made_when_the_last_plans_steps_have_all_ended
-// test: the_show_steps_of_one_plan_are_run_as_one_job
-// test: no_second_step_is_started_for_an_item_whose_step_runs
-// test: nothing_towards_onedrive_is_started_while_something_holds_all_sending
-// test: steps_towards_the_folder_run_while_sending_is_held
-// test: a_download_runs_beside_the_steps_towards_the_folder
-// test: the_task_sleeps_until_the_soonest_time_something_is_due
-// test: a_plan_fault_that_needs_a_full_listing_asks_for_one_once
-// test: a_stop_aborts_the_requests_and_settles_the_steps_towards_the_folder_before_the_loop_returns
-// test: a_hash_that_runs_at_a_stop_is_aborted_and_writes_nothing
-// test: the_plans_read_waits_for_no_job_of_the_stores_writer
+//! holds:
 // test: a_refresh_reads_the_quota_once_and_a_quota_read_by_another_is_not_read_again
 // test: a_refresh_forgets_what_was_not_allowed_and_another_wake_keeps_it
-// test: rows_changed_at_random_on_both_sides_converge_through_the_task
+// test: the_progress_tick_comes_a_second_on_while_a_step_sends_content_and_at_no_other_time
+// test: the_queues_status_is_published_from_the_rows_the_answers_and_the_running_uploads
+// test: the_status_is_published_after_a_plan_and_after_a_settled_round_and_the_marks_once_the_step_is_ended
+// test: the_pinned_files_to_download_are_published_with_the_plan_that_counted_them
+// test: what_a_settlement_wrote_is_announced_and_the_conflicts_counted_again_unless_the_loop_is_stopping
+// test: a_download_that_would_not_leave_the_free_space_kept_is_held_and_said
+// test: the_pool_reaches_its_ceiling_while_there_is_work_beyond_its_slots_and_not_without
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};

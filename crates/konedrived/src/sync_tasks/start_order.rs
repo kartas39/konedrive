@@ -50,29 +50,28 @@
 //! daemon does not do outside the VM). So the tests of stages 5 to 7 call
 //! `start_sync_over_parts` with a mount built and not served (the fixture's); the tests
 //! of stages 0 to 2 and 4 call the stage's own function; the tests of `start_folder_sync`
-//! itself run with kept parts, or end at a refusal of stage 1 or 2. The three that need
-//! the whole function past stage 3 with nothing kept are the VM suite's, and are marked
-//! below.
+//! itself run with kept parts, or end at a refusal of stage 1 or 2. The whole function
+//! past stage 3 with nothing kept runs only in the VM suite.
 //!
 //! **Tested without the rest:**
-// test: a_store_that_was_kept_asks_for_no_full_listing
-// test: a_store_made_empty_lists_in_full_by_itself_and_is_asked_nothing
-// test: entries_bound_by_their_marks_ask_for_a_full_listing
 // test: the_drive_for_the_check_is_the_stores_else_the_recorded_else_the_accounts
 // test: a_folder_whose_drive_is_not_known_is_not_mounted
-// test: the_plans_task_is_started_in_a_read_only_folder_too
-// test: the_access_mode_is_applied_before_the_first_plan
 // test: a_folder_that_keeps_its_parts_opens_no_store_runs_no_check_builds_no_mount_and_asks_for_no_full_listing
-// test: every_part_is_made_once_and_given_to_whoever_holds_it
 // test: the_holds_that_stand_at_the_start_are_set_before_the_first_plan
 // test: a_refused_start_gives_back_the_parts_it_was_given_as_kept
-// test: a_refused_start_stops_the_mount_it_built (the VM suite's: it mounts)
-// test: a_mount_that_cannot_be_served_is_stopped_and_refused_as_the_mounts (the VM suite's: it mounts)
-// test: a_start_with_nothing_kept_runs_every_stage_in_its_order (the VM suite's: it mounts)
 // test: the_parts_are_given_back_by_a_start_over_them_that_is_refused
 // test: a_refused_start_says_what_the_rebuild_of_its_store_lost
 // test: the_upload_sessions_of_a_store_of_an_older_version_are_cancelled_before_it_is_removed
-// test: a_quota_read_at_the_start_that_has_space_forgets_the_refusals_that_fit
+// test: a_full_listing_is_asked_for_only_where_the_check_bound_entries_of_a_kept_store_by_their_marks
+// test: the_check_at_start_is_said_as_a_scan_that_runs_and_then_as_one_that_finished
+// test: the_folders_store_is_made_where_there_is_none_kept_where_there_is_one_and_refused_where_it_cannot_be_opened
+// test: entries_bound_by_their_marks_ask_the_store_for_a_full_listing_and_nothing_else_does
+// test: a_quota_read_at_the_start_says_whether_onedrive_is_full_before_the_first_plan
+// test: the_sessions_of_a_store_of_todays_version_and_of_no_store_are_not_cancelled
+// test: a_onedrive_that_does_not_answer_holds_the_start_for_the_one_bound_and_no_longer
+// test: the_plans_task_is_started_in_a_read_only_folder_too_and_the_access_mode_is_applied_before_its_first_plan
+// test: a_start_over_parts_answers_them_with_its_tasks_and_the_origin_it_was_given
+// test: a_start_whose_store_cannot_be_opened_is_refused_with_nothing_left
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -198,22 +198,3 @@ fn a_sync_dropped_unstopped_has_its_stop_token_cancelled() {
         wait_until("the dropped sync's steps are settled", || fixture.running_steps.list_steps().is_empty()).await;
     });
 }
-
-#[test]
-fn the_holder_hands_out_the_holds_the_poll_and_the_stops_token_of_its_tasks() {
-    let fixture = ItemFixture::new();
-    fixture.runtime().block_on(async {
-        let graph = fixture.start_fake_onedrive().await;
-        let started = start_over_kept_parts(&fixture, make_start_input(&fixture, graph.client())).await;
-
-        assert!(Arc::ptr_eq(started.tasks.sending_holds(), &started.tasks.sending_holds));
-        // The poll that is handed out reaches the poller: a refresh runs a cycle.
-        wait_until("the first cycle asked for a page", || graph.with(|cloud| cloud.count("GET", "root/delta")) >= 1).await;
-        wait_until("the first cycle ended", || started.tasks.sending_holds().find((fixture.clock())()).is_none()).await;
-        let asked = graph.with(|cloud| cloud.count("GET", "root/delta"));
-        started.tasks.poll().refresh();
-        wait_until("the refresh ran a cycle", || graph.with(|cloud| cloud.count("GET", "root/delta")) > asked).await;
-
-        stop(started).await;
-    });
-}

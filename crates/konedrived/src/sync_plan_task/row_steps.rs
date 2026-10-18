@@ -14,14 +14,7 @@
 //! through `ItemContentFiles`, whose opens cannot be crossed by a rename. `RowsChanged`
 //! is answered as it is: nothing was written and nothing is to undo.
 //!
-//! **Tested without the rest**, over the fixture (`mount::item_fixture`):
-// test: each_case_calls_its_commit_and_answers_written
-// test: a_step_planned_from_other_versions_answers_that_the_rows_changed
-// test: the_hash_written_is_that_of_the_bytes_on_disk
-// test: a_file_changed_while_it_was_hashed_writes_no_hash
-// test: the_tree_lock_is_not_held_while_a_file_is_hashed
-// test: an_item_that_gave_its_binding_up_has_no_onedrive_marks_on_disk
-// test: a_content_agreed_on_is_marked_as_the_whole_copy_with_its_ctag
+//! **No test of its own.**
 
 use std::sync::Arc;
 

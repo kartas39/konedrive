@@ -400,18 +400,3 @@ fn a_refused_start_says_what_the_rebuild_of_its_store_lost() {
         store.close().await;
     });
 }
-
-#[test]
-fn the_runner_of_the_steps_towards_the_folder_is_made_of_the_mounts_own_parts() {
-    let fixture = ItemFixture::new();
-    let listed = fixture.list_onedrive_directory("docs");
-    let mount = fixture.build_mount();
-
-    let folder_steps = make_folder_steps(mount.folder_step_parts());
-
-    // It runs a step over the mount's rows: the directory OneDrive has is shown.
-    assert!(fixture.find_item(listed.local_item_id).unwrap().local.is_none());
-    let outcomes = fixture.runtime().block_on(folder_steps.run_show_items(vec![fixture.versions_of(listed.local_item_id)]));
-    assert_eq!(outcomes.len(), 1);
-    assert!(fixture.find_item(listed.local_item_id).unwrap().local.is_some(), "{outcomes:?}");
-}

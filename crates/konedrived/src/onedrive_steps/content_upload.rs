@@ -52,11 +52,9 @@
 // test: an_opening_whose_request_was_answered_for_certain_is_settled_and_one_whose_answer_was_lost_stays
 // test: a_session_of_the_same_content_is_gone_on_with_from_where_onedrive_says_it_got
 // test: a_session_whose_empty_file_is_elsewhere_is_gone_on_with_and_answers_that_place
-// test: a_session_whose_empty_files_directory_has_no_binding_is_abandoned_and_a_new_one_opened
 // test: a_hold_between_two_fragments_keeps_the_session
 // test: a_full_onedrive_between_two_fragments_keeps_the_session
 // test: a_file_changed_between_two_fragments_abandons_the_session
-// test: a_fragment_refused_for_good_abandons_the_session
 // test: a_session_found_gone_whose_content_is_in_onedrive_is_the_upload_that_went_through
 // test: a_session_found_gone_otherwise_is_forgotten_and_said
 // test: an_answer_with_another_hash_for_a_new_file_is_remembered_and_its_removal_asked
@@ -65,8 +63,18 @@
 // test: a_rename_in_onedrive_does_not_hold_back_the_content_sent_into_the_item
 // test: a_change_of_the_content_in_onedrive_during_the_session_refuses_its_last_fragment
 // test: a_changed_item_that_holds_the_hash_sent_is_the_upload_that_went_through
-// test: the_hash_sent_is_that_of_the_bytes_read_for_the_fragments
 // test: the_upload_slot_is_held_from_the_first_request_to_the_end
+// test: an_upload_begins_by_the_size_and_the_session_the_step_memory_still_says
+// test: an_upload_stops_between_fragments_for_a_hold_and_for_a_full_onedrive
+// test: a_new_file_is_sent_in_fragments_through_one_session_and_marked_when_its_commit_is_written
+// test: a_file_too_big_for_the_space_left_is_its_own_refusal
+// test: a_fragment_refused_for_good_abandons_the_session_and_one_refused_for_now_keeps_it
+// test: an_answer_with_another_hash_whose_item_is_removed_at_once_is_forgotten
+// test: an_item_an_earlier_upload_left_is_removed_adopted_or_left_before_the_file_is_sent_again
+// test: an_existing_item_that_is_gone_or_locked_is_answered_as_its_case
+// test: a_new_file_whose_name_is_taken_is_answered_by_who_holds_it
+// test: a_new_file_made_and_removed_here_before_its_commit_is_removed_in_onedrive
+// test: a_content_the_row_no_longer_has_is_not_sent
 
 use std::ffi::OsString;
 use std::sync::Arc;

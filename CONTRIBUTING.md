@@ -83,7 +83,7 @@ These rules hold for every change:
    `dbus/`.
 5. **Every `impl SyncService` is in `account_folder/`.** The directories before
    `account_folder/` do not know `SyncService`.
-6. **A guard**, `scripts/check-structure.sh`, checks rules 1–3 and 7. It runs on every pull request
+6. **A guard**, `scripts/check-structure.sh`, checks rules 1–3, 7 and 8. It runs on every pull request
    (`.github/workflows/structure.yml`); run it yourself before sending a change:
 
 ```
@@ -126,6 +126,12 @@ scripts/check-structure.sh
      lock of `std::sync` in source today; the first one there needs a function of its own and
      a line in the guard. What is under a `tests/` directory is test code to the guard, so a
      lock there (`tests/write-account/src/guard.rs`) is not read.
+8. **The tests a module names.** Below its module doc, a module lists the tests that check
+   it without the rest, one line `// test: <name>` each. Every name there is a test
+   function, `#[test]` or `#[tokio::test]`, somewhere in the checkout: a test renamed,
+   merged or removed takes its line along. A module with no test of its own says so. The
+   guard checks the names alone: not that a test checks the module that names it, and not
+   that the list is whole.
 
 Between crates the compiler keeps the order: `konedrive-graph` and `konedrive-tree` know
 nothing of the daemon.

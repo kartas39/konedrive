@@ -17,6 +17,9 @@
 // test: a_directory_is_downloaded_file_by_file_and_a_failure_is_said_after_the_rest
 // test: a_free_up_after_the_thread_stopped_is_refused
 // test: a_download_asked_by_path_while_onedrive_asks_to_wait_is_refused_with_the_time_left
+// test: the_nearest_mark_at_a_path_or_above_it_says_whether_a_pin_holds_for_it
+// test: what_a_free_up_would_decide_is_what_the_free_up_then_does
+// test: the_unfinished_downloads_are_listed_by_path_with_their_size_and_checkpoint
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

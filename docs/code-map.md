@@ -88,7 +88,7 @@ know `konedrive-graph`); `konedrive-dbus`; `konedrive-text` (uses `konedrive-rea
 | The Dolphin plugins | `cmake -S dolphin -B build/dolphin -DBUILD_TESTING=ON && cmake --build build/dolphin && ctest --test-dir build/dolphin --output-on-failure` | `dolphin/tests/` |
 | The VM suite | `tests/fuse-probe/run.sh [<group>…]`; `ONLY="<scenario>"` for one scenario | The daemon's service and `konedrivectl` over a sync folder that is mounted for real, on ext4 in a virtme-ng VM, over the fake OneDrive: nothing is mounted on the host. Groups: `service`, `mounted_folder`, `file_writes`, `file_reads`, `daemon_restarts`, `cli`; by name only, `kio_trash` |
 | The test account | `konedrive-write-test` (`tests/write-account`) | Writes to OneDrive itself, through the guards; rare, never the user's real account |
-| The structure | `scripts/check-structure.sh` | The files over the advised sizes (listed only), tests outside source files, the daemon's layer order, locks |
+| The structure | `scripts/check-structure.sh` | The files over the advised sizes (listed only), tests outside source files, the daemon's layer order, locks, the tests a module names |
 
 ## `crates/konedrived`: the daemon
 
@@ -471,7 +471,7 @@ The task of a folder's sync plan: one per folder, in either access mode.
   of a reading (`decide_window`) and the count of what will not be sent by itself. `[tests]`
 - `missing_pinned_files.rs` — `MissingPinnedFiles`: whether a pinned file may be missing its
   content, which is when a plan's reading scans below the pinned directories. `[tests]`
-- `step_choice.rs` — `decide_steps_to_start`: which steps of a plan start now.
+- `step_choice.rs` — `decide_steps_to_start`: which steps of a plan start now. `[tests]`
 - `step_runners.rs` — the three runners as the task takes them: one seam.
 - `row_steps.rs` — the runner of the steps of the rows alone, among them the hash of a local
   content.

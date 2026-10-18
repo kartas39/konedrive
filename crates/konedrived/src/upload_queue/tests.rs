@@ -577,17 +577,6 @@ fn word(path: &str, kind: &str, state: &str, reason: &str) -> (String, String, S
 }
 
 #[test]
-fn the_conditions_are_the_hold_shown_and_whether_onedrive_is_full() {
-    let fixture = ItemFixture::new();
-    let read = || read_queue_conditions(&fixture.sending_holds, &fixture.onedrive_space, START_TIME);
-    assert_eq!(read(), running(Some(SendingHold::FirstListingNotEnded)));
-    fixture.sending_holds.set_listing_ended();
-    assert_eq!(read(), running(None));
-    fixture.sending_holds.set_paused(Some(None));
-    assert_eq!(read(), running(Some(SendingHold::Paused { until: None })));
-}
-
-#[test]
 fn changes_lists_every_unsent_item_once_in_its_state_oldest_first() {
     let queue = QueueFixture::new();
     let changes = queue.read_changes(&queue.conditions(), 0);

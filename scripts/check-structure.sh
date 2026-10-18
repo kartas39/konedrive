@@ -10,6 +10,8 @@
 #   7. a lock of std::sync is taken through the one function that goes on
 #      after a panic (konedrived: panic::lock, read, write), never with
 #      `.lock().unwrap()` or a recovery written out. Test code is exempt.
+#   8. a `// test: <name>` line of a module's doc names a test function
+#      (`#[test]`, `#[tokio::test]`) that is in the checkout.
 #
 # It reads the files git tracks, except the vendored crates (vendor/), prints one line for each thing against a rule
 # and exits with 1 if there is any. A file over the advised size is printed too,
@@ -121,7 +123,32 @@ function poison(file, number, line, chained,    text, taken) {
     return text ~ /(\.(lock|read|write)\(\)|(Mutex|RwLock)::(lock|read|write)\([^()]*\))[ \t]*$/
 }
 
-function read_rust(file,    line, number, pending, own, top, name, by_path, locks, chained) {
+# Rule 8: the name of every test function (a `fn` right below `#[test]` or
+# `#[tokio::test]`, past other attributes and comments), and every name a
+# `// test:` line gives, kept for the report. Whether the next line is still
+# below a test attribute is returned.
+function tests_named(file, number, line, attributed,    name) {
+    if (match(line, /^[ \t]*\/\/[ \t]*test:[ \t]*[a-z_][a-z_0-9]*/)) {
+        name = substr(line, RSTART, RLENGTH)
+        sub(/^.*test:[ \t]*/, "", name)
+        named++
+        named_name[named] = name
+        named_text[named] = file ":" number ": " name " is no test function (rule 8)"
+    }
+    if (line ~ /^[ \t]*#\[(tokio::)?test[]( ]/)
+        return 1
+    if (!attributed)
+        return 0
+    if (match(line, /^[ \t]*(pub(\([a-z]+\))? )?(async )?fn [a-z_][a-z_0-9]*/)) {
+        name = substr(line, RSTART, RLENGTH)
+        sub(/^.*fn /, "", name)
+        test_name[name] = 1
+        return 0
+    }
+    return line ~ /^[ \t]*(#\[|\/\/)/
+}
+
+function read_rust(file,    line, number, pending, own, top, name, by_path, locks, chained, attributed) {
     by_path = test_by_path(file)
     locks = locks_checked(file)
     chained = 0
@@ -135,8 +162,10 @@ function read_rust(file,    line, number, pending, own, top, name, by_path, lock
     }
     number = 0
     pending = 0
+    attributed = 0
     while ((getline line < file) > 0) {
         number++
+        attributed = tests_named(file, number, line, attributed)
         if (by_path)
             continue
         if (own != "")
@@ -229,6 +258,13 @@ END {
         if (found_rule[i] != 2 && is_test[found_file[i]])
             continue
         print found_text[i]
+        bad++
+    }
+    # Rule 8 holds everywhere: a name is looked for among the tests of every file.
+    for (i = 1; i <= named; i++) {
+        if (named_name[i] in test_name)
+            continue
+        print named_text[i]
         bad++
     }
     if (bad) {

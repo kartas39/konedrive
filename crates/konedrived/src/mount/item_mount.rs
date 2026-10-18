@@ -35,6 +35,7 @@
 // test: a_build_that_fails_leaves_the_folder_without_its_write_bits
 // test: a_stopped_mount_leaves_the_folder_without_its_write_bits_and_a_forget_gives_them_back
 // test: the_flags_of_ignored_names_are_gone_over_as_a_job_of_the_write_operation_thread
+// test: a_mount_that_asked_to_be_taken_down_refuses_the_switch_to_read_write
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};

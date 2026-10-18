@@ -13,7 +13,7 @@ use crate::error_name;
 
 /// Every name a call to the daemon is refused under.
 ///
-/// The first twenty-two are the daemon's own, under [`ERROR_PREFIX`](crate::ERROR_PREFIX);
+/// The first twenty-one are the daemon's own, under [`ERROR_PREFIX`](crate::ERROR_PREFIX);
 /// then the bus's names the daemon and its object server answer with; and a name this build
 /// does not know, kept as it came ([`Refusal::Other`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

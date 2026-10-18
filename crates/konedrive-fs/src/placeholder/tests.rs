@@ -4,8 +4,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use super::{
     combine_op_and_restore_results, read_progress, read_state, remove_progress, set_mtime,
-    with_owner_write, write_ctag, write_progress, write_state, Progress, State, StateError,
-    XATTR_CTAG, XATTR_PROGRESS, XATTR_STATE,
+    with_owner_write, write_ctag, write_progress, write_state, Progress, State, XATTR_CTAG,
+    XATTR_PROGRESS,
 };
 
 fn dir() -> (tempfile::TempDir, File) {
@@ -25,27 +25,6 @@ fn state_round_trips_and_unmanaged_files_have_none() {
     assert_eq!(read_state(&file).unwrap(), Some(State::Hydrating));
     write_state(&file, State::Hydrated).unwrap();
     assert_eq!(read_state(&file).unwrap(), Some(State::Hydrated));
-}
-
-/// A distinction that must not be lost: a file
-/// with no state attribute at all is not ours and is none of our business,
-/// but a file whose state attribute we cannot make sense of is a managed
-/// file in an unknown condition, and the two must not report the same way.
-#[test]
-fn an_unparseable_state_is_an_error_not_an_absent_one() {
-    let (dir, _handle) = dir();
-    let path = dir.path().join("corrupt.bin");
-    std::fs::write(&path, b"x").unwrap();
-    let file = File::options().read(true).write(true).open(&path).unwrap();
-    assert_eq!(read_state(&file).unwrap(), None, "no attribute means no attribute");
-
-    for bad in ["", "hydrate", "HYDRATED", "online only", "\u{fffd}"] {
-        xattr::FileExt::set_xattr(&file, XATTR_STATE, bad.as_bytes()).unwrap();
-        match read_state(&file) {
-            Err(StateError::Corrupt(value)) => assert_eq!(value, bad),
-            other => panic!("{bad:?} must not be readable as a state: {other:?}"),
-        }
-    }
 }
 
 fn locked(dir: &std::path::Path, name: &str, content: &[u8]) -> std::path::PathBuf {

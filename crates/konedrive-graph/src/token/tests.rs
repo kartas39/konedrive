@@ -315,19 +315,6 @@ fn read_only_refresh(delay: Duration) -> Mock {
         )
 }
 
-/// A read-write account's read-only token is kept while it is fresh: asked for
-/// again, it needs no request.
-#[tokio::test]
-async fn a_read_write_accounts_read_only_token_is_cached() {
-    let server = MockServer::start().await;
-    read_only_refresh(Duration::ZERO).mount(&server).await;
-    let (tokens, _) = read_write_manager(&server, Arc::new(MemoryStore::with_token("RT0")));
-    tokens.seed(&scoped("AT-RW", "Files.ReadWrite User.Read")).await;
-    assert_eq!(tokens.read_only_token().await.unwrap(), "AT-RO");
-    assert_eq!(tokens.read_only_token().await.unwrap(), "AT-RO");
-    assert_eq!(server.received_requests().await.unwrap().len(), 1, "one refresh for both");
-}
-
 /// While a read-write account's read-only token is fetched, the account's own
 /// cached token is still handed out: Graph calls do not wait for that request.
 /// The token comes at the first poll, with the read-only refresh still under

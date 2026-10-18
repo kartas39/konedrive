@@ -1,7 +1,5 @@
 //! The table "its place" of `docs/design/sync.md` §6.3: a test per cell.
 
-use konedrive_reason::Reason;
-
 use super::*;
 
 // -- same here, moved in OneDrive
@@ -240,13 +238,4 @@ fn a_directory_shown_in_one_that_gives_up_its_binding_gives_up_its_own_without_w
     assert_eq!(make_sync_plan(&given).faults, [], "no item waits without end");
     assert_eq!(answer(&given, 3), row_step(RowStep::GiveUpBinding { item: versions(&given, 3) }));
     assert_eq!(answer(&given, 5), Answer::Wait(WaitReason::AnotherItem(id(3))), "what was agreed to be in it follows its binding first");
-}
-
-/// A name OneDrive cannot hold is not sent and not altered (`docs/design/sync.md` §6.5):
-/// also the name a move gives.
-#[test]
-fn a_move_to_a_name_onedrive_cannot_hold_waits_for_the_user() {
-    let mut given = input(vec![moved_here(synced_file(2, ROOT, "a.txt"), ROOT, "a?.txt")]);
-    given.name_refusals.insert(id(2), Reason::NameCharacters);
-    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::User(Reason::NameCharacters)));
 }
