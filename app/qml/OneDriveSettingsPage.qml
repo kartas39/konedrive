@@ -264,21 +264,97 @@ FormCard.FormCardPage {
             }
         }
         FormCard.FormDelegateSeparator {}
-        FormCard.FormSpinBoxDelegate {
-            id: freeSpaceReserveBox
-            objectName: "freeSpaceReserveBox"
+        // The box takes the wheel only after Edit, which turns into Save: a spin box turns with
+        // the wheel, so scrolling the page over it would change the number. A disabled box
+        // takes no input, and the page scrolls.
+        FormCard.AbstractFormDelegate {
+            id: freeSpaceReserveRow
+            objectName: "freeSpaceReserveRow"
 
+            /// The number is being changed: the box takes input, and the button saves it.
+            property bool editing: false
             readonly property int kept: page.sync !== null ? page.sync.freeSpaceReserve : 0
 
-            label: i18n("Keep at least this much free space on this device, in GiB")
-            from: 0
-            to: 100000
-            value: kept
-            // The inner box writes `value` back, ending the binding: kept in step here.
-            onKeptChanged: value = kept
-            onValueChanged: {
-                if (page.sync !== null && value !== kept) {
-                    page.sync.setFreeSpaceReserve(value);
+            /// The number in the box, also one typed and not yet taken by it; within its range.
+            function chosen() {
+                try {
+                    const typed = Math.round(reserveBox.valueFromText(reserveBox.contentItem.text, reserveBox.locale));
+                    if (!isNaN(typed)) {
+                        return Math.max(reserveBox.from, Math.min(reserveBox.to, typed));
+                    }
+                } catch (error) {
+                    // Not a number: what the box holds.
+                }
+                return reserveBox.value;
+            }
+
+            function edit() {
+                editing = true;
+                reserveBox.contentItem.selectAll();
+                reserveBox.forceActiveFocus();
+            }
+
+            /// Sends the number when it differs; the box then shows what the daemon keeps.
+            function save() {
+                const wanted = chosen();
+                editing = false;
+                if (page.sync !== null && wanted !== kept) {
+                    page.sync.setFreeSpaceReserve(wanted);
+                }
+            }
+
+            onKeptChanged: {
+                if (!editing) {
+                    reserveBox.value = kept;
+                }
+            }
+            onEditingChanged: {
+                if (!editing) {
+                    reserveBox.value = kept;
+                }
+            }
+
+            // Another account shown: its own number, not the one being typed.
+            Connections {
+                target: Current
+                function onChanged() {
+                    freeSpaceReserveRow.editing = false;
+                }
+            }
+
+            focusPolicy: Qt.NoFocus
+            background: null
+            contentItem: ColumnLayout {
+                spacing: Kirigami.Units.smallSpacing
+                QQC2.Label {
+                    Layout.fillWidth: true
+                    text: i18n("Keep at least this much free space on this device, in GiB")
+                    wrapMode: Text.Wrap
+                    Accessible.ignored: true
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Kirigami.Units.smallSpacing
+                    QQC2.SpinBox {
+                        id: reserveBox
+                        objectName: "freeSpaceReserveBox"
+                        Layout.fillWidth: true
+                        from: 0
+                        to: 100000
+                        editable: true
+                        enabled: freeSpaceReserveRow.editing
+                        value: freeSpaceReserveRow.kept
+                        Accessible.name: i18n("Keep at least this much free space on this device, in GiB")
+                        Keys.onReturnPressed: freeSpaceReserveRow.save()
+                        Keys.onEnterPressed: freeSpaceReserveRow.save()
+                    }
+                    QQC2.Button {
+                        objectName: "editFreeSpaceReserveButton"
+                        enabled: page.sync !== null
+                        text: freeSpaceReserveRow.editing ? i18nc("@action:button", "Save") : i18nc("@action:button", "Edit")
+                        icon.name: freeSpaceReserveRow.editing ? "document-save" : "document-edit"
+                        onClicked: freeSpaceReserveRow.editing ? freeSpaceReserveRow.save() : freeSpaceReserveRow.edit()
+                    }
                 }
             }
         }

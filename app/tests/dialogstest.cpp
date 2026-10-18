@@ -584,7 +584,8 @@ private Q_SLOTS:
     }
 
     /// Issue #80: OneDrive Settings' previews switch shows what the daemon says and sets
-    /// it; the line about Dolphin's previews shows while it is off.
+    /// it; the line about Dolphin's previews shows while it is off. The free space to keep
+    /// is changed only after Edit.
     void theThumbnailsSetting()
     {
         FakeDaemon fake;
@@ -637,20 +638,59 @@ private Q_SLOTS:
         QTRY_VERIFY(!offLine->isVisible());
 
         // Issue #217: the free space to keep, in gigabytes, shows what the daemon says
-        // and is set through it.
-        auto *freeSpace = window->findChild<QQuickItem *>(QStringLiteral("freeSpaceReserveBox"));
-        QVERIFY(freeSpace);
-        QTRY_COMPARE(freeSpace->property("value").toInt(), 10);
-        freeSpace->setProperty("value", 25);
+        // and is set through it. Its box takes no input, and so no wheel, until Edit, which
+        // turns into Save: Save sends the number, also one typed and not yet taken by the
+        // box, Enter is Save, and the same number sends nothing.
+        auto *reserveBox = window->findChild<QQuickItem *>(QStringLiteral("freeSpaceReserveBox"));
+        auto *edit = window->findChild<QQuickItem *>(QStringLiteral("editFreeSpaceReserveButton"));
+        QVERIFY(reserveBox && edit);
+        QTRY_COMPARE(reserveBox->property("value").toInt(), 10);
+        QVERIFY(!reserveBox->isEnabled());
+        QCOMPARE(edit->property("text").toString(), QStringLiteral("Edit"));
+        const auto sent = [&fake] {
+            return fake.sync->calls.filter(QStringLiteral("SetFreeSpaceReserve:"));
+        };
+
+        auto *row = window->findChild<QObject *>(QStringLiteral("freeSpaceReserveRow"));
+        QVERIFY(row);
+        QMetaObject::invokeMethod(edit, "clicked");
+        QVERIFY(reserveBox->isEnabled());
+        QCOMPARE(edit->property("text").toString(), QStringLiteral("Save"));
+        reserveBox->setProperty("value", 25);
+        QMetaObject::invokeMethod(edit, "clicked");
         QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("SetFreeSpaceReserve:25")));
+        QVERIFY(!reserveBox->isEnabled());
+        QCOMPARE(edit->property("text").toString(), QStringLiteral("Edit"));
+        QTRY_COMPARE(row->property("kept").toInt(), 25);
+        QTRY_COMPARE(reserveBox->property("value").toInt(), 25);
+
+        // Typed over what Edit selects, and Enter: not yet taken by the box, still sent.
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QMetaObject::invokeMethod(edit, "clicked");
+        QTest::keyClick(window, '4');
+        QTest::keyClick(window, '0');
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("SetFreeSpaceReserve:40")));
+        QVERIFY(!reserveBox->isEnabled());
+        QTRY_COMPARE(row->property("kept").toInt(), 40);
+        QTRY_COMPARE(reserveBox->property("value").toInt(), 40);
+
+        const qsizetype before = sent().size();
+        QMetaObject::invokeMethod(edit, "clicked");
+        QMetaObject::invokeMethod(edit, "clicked");
+        QVERIFY(!reserveBox->isEnabled());
+
+        // Changed elsewhere (konedrivectl), the page follows and sends nothing back.
         fake.sync->folder->set({{QStringLiteral("FreeSpaceReserve"), qulonglong(3)}});
-        QTRY_COMPARE(freeSpace->property("value").toInt(), 3);
-        QCOMPARE(fake.sync->calls.count(QStringLiteral("SetFreeSpaceReserve:3")), 0);
+        QTRY_COMPARE(reserveBox->property("value").toInt(), 3);
+        QCOMPARE(sent().size(), before);
         fake.stop();
     }
 
     /// Issue #95: pausing on metered connections and on battery is the whole app's, on the
-    /// Settings page; the controls show what the manager says and set it there.
+    /// Settings page; the controls show what the manager says and set it there, and the
+    /// wheel does not turn the choice for battery.
     void theHoldSettings()
     {
         FakeDaemon fake;
@@ -682,6 +722,8 @@ private Q_SLOTS:
         QTRY_VERIFY(metered->isVisible() && metered->isEnabled());
         QVERIFY(metered->property("checked").toBool());
         QCOMPARE(battery->property("currentIndex").toInt(), 1);
+        // Scrolling the page over it does not change the setting.
+        QVERIFY(!battery->property("wheelEnabled").toBool());
 
         // Turned by the user, the manager is asked; its answer is what shows.
         metered->setProperty("checked", false);

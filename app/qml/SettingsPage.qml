@@ -107,21 +107,40 @@ FormCard.FormCardPage {
             }
         }
         FormCard.FormDelegateSeparator {}
-        FormCard.FormComboBoxDelegate {
-            id: batteryCombo
-            objectName: "batteryCombo"
-
-            readonly property string choice: Daemon.onBattery
-            readonly property var choices: ["sync", "power-saver", "pause"]
-
-            text: i18n("On battery")
-            model: [i18nc("@item:inlistbox on battery", "Sync as usual"), i18nc("@item:inlistbox on battery", "Pause in power-saver mode"), i18nc("@item:inlistbox on battery", "Pause")]
+        // A combo box of its own, laid out as FormComboBoxDelegate's, which turns with the
+        // wheel: scrolling the page over it would change the setting.
+        FormCard.AbstractFormDelegate {
+            id: batteryRow
             enabled: page.available
-            currentIndex: Math.max(0, choices.indexOf(choice))
-            onChoiceChanged: currentIndex = Math.max(0, choices.indexOf(choice))
-            onActivated: index => {
-                currentIndex = Math.max(0, choices.indexOf(choice));
-                Daemon.setOnBattery(choices[index]);
+            focusPolicy: Qt.NoFocus
+            background: null
+            contentItem: ColumnLayout {
+                spacing: Kirigami.Units.smallSpacing
+                QQC2.Label {
+                    Layout.fillWidth: true
+                    text: i18n("On battery")
+                    wrapMode: Text.Wrap
+                    color: batteryRow.enabled ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
+                    Accessible.ignored: true
+                }
+                QQC2.ComboBox {
+                    id: batteryCombo
+                    objectName: "batteryCombo"
+
+                    readonly property string choice: Daemon.onBattery
+                    readonly property var choices: ["sync", "power-saver", "pause"]
+
+                    Layout.fillWidth: true
+                    wheelEnabled: false
+                    Accessible.name: i18n("On battery")
+                    model: [i18nc("@item:inlistbox on battery", "Sync as usual"), i18nc("@item:inlistbox on battery", "Pause in power-saver mode"), i18nc("@item:inlistbox on battery", "Pause")]
+                    currentIndex: Math.max(0, choices.indexOf(choice))
+                    onChoiceChanged: currentIndex = Math.max(0, choices.indexOf(choice))
+                    onActivated: index => {
+                        currentIndex = Math.max(0, choices.indexOf(choice));
+                        Daemon.setOnBattery(choices[index]);
+                    }
+                }
             }
         }
     }
