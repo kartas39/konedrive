@@ -203,6 +203,7 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         number("LocalBytes", m_localBytes);
         time("LastChecked", m_lastChecked);
         count("PinnedCount", m_pinnedCount);
+        number("PinnedBytes", m_pinnedBytes);
         if (const auto it = p.constFind(QLatin1String("Paused")); it != p.constEnd()) {
             m_paused = it->toBool();
         }

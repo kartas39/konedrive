@@ -129,7 +129,7 @@ pub(crate) async fn folder_status(daemon: &Daemon, path: &OwnedObjectPath) -> zb
         held_back: said(folder.held_back()).await?,
         retry_after_refusal: said(transfers.retry_after_refusal()).await?,
         local_bytes: served(folder.local_bytes()).await?,
-        pinned: served(folder.pinned_count()).await?,
+        pinned: both(folder.pinned_count(), folder.pinned_bytes()).await?,
         conflicts: said(conflicts.count()).await?,
     })
 }

@@ -122,6 +122,7 @@ into an item (`ItemReader::find_item_by_path`).
 | `FreeUp(paths)` | `as → (u files, t bytes, u skipped_pinned)` | As `Unpin`, and then everything at and below each path is freed up |
 | `Menu(paths)` | `as → a{sv}` | What a context menu may offer for a selection (§4.2) |
 | `Folder.PinnedCount` | `u` | How many pins there are, the exceptions not among them, of bindings rows still have (`ItemReader::count_pins`) |
+| `Folder.PinnedBytes` | `t` | The sizes the folder shows of the files a pin holds for, a file made here among them (`ItemReader::sum_pinned_file_sizes`); published with `PinnedCount` |
 
 Every path is checked before any mark changes: one outside every folder, or one OneDrive has no
 item for, refuses the whole call. A mark that cannot be written stops the call with that failure;
@@ -177,7 +178,9 @@ accounts.
   right click;
 - `sync dehydrate <path>`, `sync free-up-space`;
 - `sync free-space [<GiB>]`: the free space the downloads of pinned files leave;
-- `sync status` has a line `Always on this device: N` for each folder that is up.
+- `sync unpin <folder>`, the folder itself, lets every pin and exception in it go;
+- `sync status` has a line `Always on this device: N (<size>)` for each folder that is up: the
+  pins, and the sizes of the files they hold.
 
 A refused `dehydrate` of a pinned file names the path and says to unpin it first.
 

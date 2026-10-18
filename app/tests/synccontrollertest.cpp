@@ -317,17 +317,19 @@ private Q_SLOTS:
         QCOMPARE(controller.conflictCount(), 2U);
     }
 
-    /// PinnedCount (dbus/org.konedrive.Folder.xml) reaches the window, both
-    /// from GetAll at start and from a PropertiesChanged that follows.
+    /// PinnedCount and PinnedBytes (dbus/org.konedrive.Folder.xml) reach the
+    /// window, both from GetAll at start and from a PropertiesChanged that follows.
     void followsPinnedCount()
     {
         startFake();
-        m_fake->folder->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(3)}});
+        m_fake->folder->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(3)}, {QStringLiteral("PinnedBytes"), QVariant::fromValue<qulonglong>(12ULL << 30)}});
         SyncController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.pinnedCount(), 3U);
+        QCOMPARE(controller.pinnedBytes(), 12ULL << 30);
 
-        m_fake->folder->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(5)}});
+        m_fake->folder->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(5)}, {QStringLiteral("PinnedBytes"), QVariant::fromValue<qulonglong>(20ULL << 30)}});
         QTRY_COMPARE(controller.pinnedCount(), 5U);
+        QCOMPARE(controller.pinnedBytes(), 20ULL << 30);
     }
 
     /// Transfers (a(stt)) arrives as a D-Bus structure inside PropertiesChanged

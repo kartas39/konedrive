@@ -59,6 +59,8 @@ class SyncController : public QObject
     Q_PROPERTY(uint conflictCount READ conflictCount NOTIFY syncChanged)
     /// How many files and folders carry their own "Always keep on this device" pin.
     Q_PROPERTY(uint pinnedCount READ pinnedCount NOTIFY syncChanged)
+    /// The sizes of the files those pins hold.
+    Q_PROPERTY(qulonglong pinnedBytes READ pinnedBytes NOTIFY syncChanged)
     Q_PROPERTY(TransferModel *transfers READ transfers CONSTANT)
     Q_PROPERTY(ActivityModel *activity READ activity CONSTANT)
     Q_PROPERTY(ConflictModel *conflicts READ conflicts CONSTANT)
@@ -185,6 +187,7 @@ public:
     qulonglong localBytes() const { return m_localBytes; }
     uint conflictCount() const { return m_conflictCount; }
     uint pinnedCount() const { return m_pinnedCount; }
+    qulonglong pinnedBytes() const { return m_pinnedBytes; }
     TransferModel *transfers() const { return m_transfers; }
     ActivityModel *activity() const { return m_activity; }
     ConflictModel *conflicts() const { return m_conflicts; }
@@ -353,6 +356,7 @@ private:
     qulonglong m_localBytes = 0;
     uint m_conflictCount = 0;
     uint m_pinnedCount = 0;
+    qulonglong m_pinnedBytes = 0;
     TransferModel *m_transfers;
     ActivityModel *m_activity;
     ConflictModel *m_conflicts;

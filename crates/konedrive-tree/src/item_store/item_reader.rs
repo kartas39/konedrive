@@ -106,7 +106,7 @@ impl ItemReader<'_> {
 }
 
 /// How many items there are of each kind the folder's counts on the bus show
-/// (`ItemsListed`, `ItemsPlaced`, `SkippedCount`).
+/// (`ItemsListed`, `ItemsPlaced`, `SkippedCount`, `PinnedCount`, `PinnedBytes`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ItemCounts {
     /// The items OneDrive has, by their rows: those with an OneDrive version, the root
@@ -118,9 +118,21 @@ pub struct ItemCounts {
     /// The items OneDrive has that the folder cannot show: each with all OneDrive has
     /// below it.
     pub cannot_be_shown: u64,
-    /// The pins there are (`count_pins`): `Folder.PinnedCount`, published with the three
-    /// above so that a listing that took a pinned item is said.
-    pub pinned: u64,
+    /// The pins there are and what they hold: `Folder.PinnedCount` and `PinnedBytes`,
+    /// published with the three above so that a listing that took a pinned item is said.
+    pub pinned: PinnedTotal,
+}
+
+/// The pins there are, as one count, and the sizes of the files they hold, as one sum:
+/// `Folder.PinnedCount` and `PinnedBytes`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PinnedTotal {
+    /// The items with a pin of their own, the exceptions not among them
+    /// ([`ItemReader::count_pins`]).
+    pub count: u64,
+    /// The sizes the folder shows of the files a pin holds for
+    /// ([`ItemReader::sum_pinned_file_sizes`]).
+    pub bytes: u64,
 }
 
 /// What is unsent, as one count and one sum: `PendingCount` and `PendingBytes` before what
@@ -404,10 +416,11 @@ impl ItemReader<'_> {
         self.list_items(&sql, params![directory.as_i64(), after.map_or(0, LocalItemId::as_i64), limit as i64])
     }
 
-    /// How many items OneDrive has, the folder shows, and the folder cannot show. Called
-    /// after a listing's page is written and after a step's commit, for the folder's
-    /// counts on the bus. Three counts, each over an index; `cannot_be_shown` walks the
-    /// rows below each item whose own placement says so, each item once.
+    /// How many items OneDrive has, the folder shows, and the folder cannot show, and the
+    /// pins with the sizes of what they hold. Called after a listing's page is written and
+    /// after a step's commit, for the folder's counts on the bus. Three counts, each over
+    /// an index; `cannot_be_shown` walks the rows below each item whose own placement says
+    /// so, each item once, and `pinned_bytes` the rows below each pin.
     pub fn count_items(&self) -> Result<ItemCounts, TreeError> {
         let count = |sql: &str| -> Result<u64, TreeError> { Ok(self.conn().prepare_cached(sql)?.query_row([], |row| row.get::<_, i64>(0))?.max(0) as u64) };
         let cannot_be_shown = format!(
@@ -421,7 +434,7 @@ impl ItemReader<'_> {
             in_onedrive: count("SELECT COUNT(*) FROM items INDEXED BY items_onedrive_place WHERE onedrive_parent_id IS NOT NULL")?,
             shown: item_row::count_shown_items(self.conn())?,
             cannot_be_shown: count(&cannot_be_shown)?,
-            pinned: self.count_pins()?,
+            pinned: PinnedTotal { count: self.count_pins()?, bytes: self.sum_pinned_file_sizes()? },
         })
     }
 

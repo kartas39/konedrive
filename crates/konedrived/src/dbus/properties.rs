@@ -176,6 +176,8 @@ properties! {
     LOCAL_BYTES: u64 = FOLDER, "LocalBytes", |s| s.snapshot.local.local_bytes;
     /// Files and folders with a pin of their own.
     PINNED_COUNT: u32 = FOLDER, "PinnedCount", |s| s.snapshot.local.pinned_count;
+    /// The sizes of the files those pins hold.
+    PINNED_BYTES: u64 = FOLDER, "PinnedBytes", |s| s.snapshot.local.pinned_bytes;
     /// Conflicts whose kept file is still there.
     CONFLICT_COUNT: u32 = CONFLICTS_INTERFACE_NAME, "Count", |s| s.snapshot.local.conflict_count;
 

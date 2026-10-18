@@ -104,6 +104,7 @@ Each setting is written to the account's section of `config.toml` and taken at o
 | `LastChecked` (`x`) | unix time of the last successful check with OneDrive; 0 for never |
 | `LocalBytes` (`t`) | the space the folder's files take in the backing directory (`st_blocks × 512`): a file that is not on disk takes none |
 | `PinnedCount` (`u`) | how many files and folders carry a pin of their own |
+| `PinnedBytes` (`t`) | the sizes the folder shows of the files those pins hold |
 | `IgnorePatterns` (`as`), `Thumbnails` (`b`), `FreeSpaceReserve` (`t`) | the settings of §2.3 |
 | `Paused` (`b`), `PausedUntil` (`x`) | the user's pause, and when it ends by itself (0: until `Resume`) |
 | `HeldBack` (`s`) | why the account holds back by itself: `metered`, `on-battery`, `power-saver`, or empty |

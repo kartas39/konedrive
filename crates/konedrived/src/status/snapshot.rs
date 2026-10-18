@@ -148,6 +148,8 @@ pub struct LocalStatus {
     /// `PinnedCount`: files and folders with a pin of their own, as the folder's mount
     /// has them.
     pub pinned_count: u32,
+    /// `PinnedBytes`: the sizes of the files those pins hold, published with the count.
+    pub pinned_bytes: u64,
     /// `LocalScan`'s `State`, `Reason`, `Started`, `Directories`, `Files`,
     /// `Expected`, `Finished`, `Took`: nothing scans a folder any more, and these stay as
     /// they start (`none`, empty, 0) for the clients that read them.

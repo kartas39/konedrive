@@ -250,6 +250,9 @@ pub trait Folder {
     /// Files and folders with an "Always keep on this device" pin of their own.
     #[zbus(property)]
     fn pinned_count(&self) -> zbus::Result<u32>;
+    /// The sizes of the files those pins hold.
+    #[zbus(property)]
+    fn pinned_bytes(&self) -> zbus::Result<u64>;
     #[zbus(property)]
     fn ignore_patterns(&self) -> zbus::Result<Vec<String>>;
     #[zbus(property)]

@@ -208,6 +208,9 @@
     <!-- How many files and folders carry their own "Always keep on this
          device" pin. -->
     <property name="PinnedCount" type="u" access="read"/>
+    <!-- The sizes of the files those pins hold, as the folder shows
+         them. -->
+    <property name="PinnedBytes" type="t" access="read"/>
     <!-- See SetIgnorePatterns; the defaults until it is called. -->
     <property name="IgnorePatterns" type="as" access="read"/>
     <property name="Paused" type="b" access="read"/>

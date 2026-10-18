@@ -246,6 +246,7 @@ class FakeFolder : public FakeFolderInterface
     Q_PROPERTY(qlonglong LastChecked READ lastChecked)
     Q_PROPERTY(qulonglong LocalBytes READ localBytes)
     Q_PROPERTY(uint PinnedCount READ pinnedCount)
+    Q_PROPERTY(qulonglong PinnedBytes READ pinnedBytes)
     Q_PROPERTY(QStringList IgnorePatterns READ ignorePatterns)
     Q_PROPERTY(bool Paused READ paused)
     Q_PROPERTY(qlonglong PausedUntil READ pausedUntil)
@@ -275,6 +276,7 @@ public:
                                   {QStringLiteral("LastChecked"), QVariant::fromValue<qlonglong>(0)},
                                   {QStringLiteral("LocalBytes"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(0)},
+                                  {QStringLiteral("PinnedBytes"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("IgnorePatterns"), QStringList{QStringLiteral("*.tmp"), QStringLiteral("~*")}},
                                   {QStringLiteral("Paused"), false},
                                   {QStringLiteral("PausedUntil"), QVariant::fromValue<qlonglong>(0)},
@@ -300,6 +302,7 @@ public:
     qlonglong lastChecked() const { return value("LastChecked").toLongLong(); }
     qulonglong localBytes() const { return value("LocalBytes").toULongLong(); }
     uint pinnedCount() const { return value("PinnedCount").toUInt(); }
+    qulonglong pinnedBytes() const { return value("PinnedBytes").toULongLong(); }
     QStringList ignorePatterns() const { return value("IgnorePatterns").toStringList(); }
     bool paused() const { return value("Paused").toBool(); }
     qlonglong pausedUntil() const { return value("PausedUntil").toLongLong(); }
