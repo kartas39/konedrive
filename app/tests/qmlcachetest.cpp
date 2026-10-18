@@ -68,7 +68,8 @@ private Q_SLOTS:
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
+        ServiceUnit serviceUnit;
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);

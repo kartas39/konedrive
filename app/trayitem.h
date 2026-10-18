@@ -39,7 +39,7 @@ public:
     QAction *openFolderMenuAction() const { return m_openFolderMenuAction; }
     QMenu *openFolderMenu() const { return m_folderMenu; }
     QAction *openWindowAction() const { return m_openWindow; }
-    /// "Refresh Now": every account of the icon whose folder shows OneDrive.
+    /// "Sync Now": every account of the icon whose folder shows OneDrive.
     QAction *refreshAction() const { return m_refresh; }
     /// "Pause Syncing": a submenu that pauses every account of the icon whose folder
     /// shows OneDrive and is not paused, for 2, 8 or 24 hours or until resumed.

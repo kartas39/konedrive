@@ -5,22 +5,25 @@ import org.kde.kirigami as Kirigami
 import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
-/// What stays on this computer and is not uploaded, grouped by what can be
-/// done about it (UploadQueue.NotUploadedSummary()): a reason one action fixes is
-/// one line with its button; files are listed only where something can be
-/// done to each, and only when their reason is opened (NotUploadedFiles(),
-/// at most perFileCap of them).
+/// What needs the user, for the account chosen in the sidebar, in three groups: the changes
+/// that can't upload, by what can be done about them (UploadQueue.NotUploadedSummary(): a
+/// reason one action fixes is one line with its button, files are listed only where each
+/// needs something, and only once their reason is opened, at most perFileCap of them); the
+/// files whose both versions were kept; and what OneDrive has that can't be shown in the
+/// folder. The last two are counted here and listed on pages of their own. What waits and
+/// goes up by itself is on Activity.
 FormCard.FormCardPage {
     id: page
 
     readonly property var sync: Current.sync
     readonly property var window: QQC2.ApplicationWindow.window
-    readonly property var summary: sync ? sync.notUploadedSummary : []
+    /// What can't upload: the summary without what waits and goes up by itself.
+    readonly property var summary: sync ? sync.notUploadedSummary.filter(row => row.group !== "waiting") : []
     /// The counts the summary was last asked for at.
     property string shownCounts: ""
-    /// The per-file reasons opened, and whether the waiting ones are.
+    /// The per-file reasons opened.
     property var opened: ({})
-    property bool waitingOpened: false
+    readonly property bool nothing: summary.length === 0 && (sync === null || (sync.conflictCount === 0 && sync.skippedCount === 0))
 
     function countsNow() {
         return sync ? sync.pendingCount + "/" + sync.blockedCount + "/" + sync.quotaFull + "/" + sync.spaceWaitingCount + "/" + sync.tooBigCount : "";
@@ -39,10 +42,6 @@ FormCard.FormCardPage {
         return summary.filter(row => row.group === group);
     }
 
-    function countOf(group) {
-        return rowsOf(group).reduce((n, row) => n + row.count, 0);
-    }
-
     function setOpened(reason, open) {
         const next = Object.assign({}, opened);
         next[reason] = open;
@@ -54,13 +53,12 @@ FormCard.FormCardPage {
         return bytes > 0 ? Qt.locale().formattedDataSize(bytes) : "";
     }
 
-    objectName: "notUploadedPage"
-    title: window ? window.accountTitle(i18nc("@title", "Not Uploaded")) : i18nc("@title", "Not Uploaded")
+    objectName: "issuesPage"
+    title: window ? window.accountTitle(i18nc("@title", "Issues")) : i18nc("@title", "Issues")
 
     onVisibleChanged: load()
     onSyncChanged: {
         opened = {};
-        waitingOpened = false;
         load();
     }
     Connections {
@@ -76,21 +74,32 @@ FormCard.FormCardPage {
         }
     }
 
-    FormCard.FormCard {
+    Kirigami.InlineMessage {
+        Layout.fillWidth: true
         Layout.topMargin: Kirigami.Units.largeSpacing
-        visible: page.summary.length === 0
+        Layout.leftMargin: Kirigami.Units.largeSpacing
+        Layout.rightMargin: Kirigami.Units.largeSpacing
+        type: Kirigami.MessageType.Error
+        text: page.sync ? page.sync.actionError : ""
+        visible: text.length > 0
+    }
+
+    FormCard.FormCard {
+        objectName: "nothingCard"
+        Layout.topMargin: Kirigami.Units.largeSpacing
+        visible: page.nothing
 
         FormCard.FormPlaceholderMessageDelegate {
-            text: i18n("Nothing is kept back")
-            explanation: i18n("Changes made here that cannot be uploaded — a name OneDrive refuses, a full OneDrive — are listed here with the reason.")
-            icon.name: "cloud-upload"
+            text: i18n("Nothing needs you")
+            explanation: i18n("Changes that can't upload, files whose two versions were both kept, and items that can't be shown in the folder are listed here.")
+            icon.name: "checkmark"
         }
     }
 
-    // Needs you: one action fixes every file of the reason.
+    // Can't upload: one action fixes every file of the reason.
     FormCard.FormHeader {
-        visible: page.rowsOf("one-action").length > 0
-        title: i18nc("@title:group", "Needs You")
+        visible: page.summary.length > 0
+        title: i18nc("@title:group", "Can't Upload")
     }
     FormCard.FormCard {
         objectName: "oneActionGroup"
@@ -99,12 +108,16 @@ FormCard.FormCardPage {
         Repeater {
             model: page.rowsOf("one-action")
             delegate: ColumnLayout {
+                id: oneAction
                 required property var modelData
+                /// OneDrive has no room: its website is where space is made.
+                readonly property bool space: modelData.reason === "quota-exceeded" || modelData.reason === "waiting-for-space" || modelData.reason === "too-big"
                 Layout.fillWidth: true
                 spacing: 0
                 FormCard.FormTextDelegate {
-                    text: i18np("1 change: %2", "%1 changes: %2", modelData.count, modelData.why)
-                    description: page.sizeText(modelData.bytes)
+                    text: i18np("1 change: %2", "%1 changes: %2", oneAction.modelData.count, oneAction.modelData.why)
+                    description: page.sizeText(oneAction.modelData.bytes)
+                    textItem.wrapMode: Text.Wrap
                     leading: Kirigami.Icon {
                         source: "dialog-warning"
                         implicitWidth: Kirigami.Units.iconSizes.medium
@@ -112,9 +125,16 @@ FormCard.FormCardPage {
                     }
                 }
                 FormCard.FormButtonDelegate {
-                    visible: modelData.reason === "quota-exceeded" || modelData.reason === "waiting-for-space" || modelData.reason === "too-big" || modelData.reason === "forbidden"
-                    text: i18nc("@action:button", "Refresh")
-                    description: modelData.reason === "forbidden" ? i18n("If OneDrive allows these changes now, they go up.") : i18n("Once there is room in OneDrive, these go up.")
+                    visible: oneAction.space
+                    text: i18nc("@action:button", "Open OneDrive on the Web")
+                    description: i18n("Delete or move files there to make room.")
+                    icon.name: "internet-services"
+                    onClicked: page.sync.openOnWeb()
+                }
+                FormCard.FormButtonDelegate {
+                    visible: oneAction.space || oneAction.modelData.reason === "forbidden"
+                    text: i18nc("@action:button", "Check Again")
+                    description: oneAction.modelData.reason === "forbidden" ? i18n("If OneDrive allows these changes now, they go up.") : i18n("Once there is room in OneDrive, these go up.")
                     icon.name: "view-refresh"
                     onClicked: page.sync.refresh()
                 }
@@ -122,13 +142,10 @@ FormCard.FormCardPage {
         }
     }
 
-    // Needs you: each file, listed only when its reason is opened.
-    FormCard.FormHeader {
-        visible: page.rowsOf("per-file").length > 0
-        title: i18nc("@title:group", "Needs You for Each File")
-    }
+    // Can't upload: each file needs something, listed once its reason is opened.
     FormCard.FormCard {
         objectName: "perFileGroup"
+        Layout.topMargin: page.rowsOf("one-action").length > 0 ? Kirigami.Units.largeSpacing : 0
         visible: page.rowsOf("per-file").length > 0
 
         Repeater {
@@ -167,26 +184,39 @@ FormCard.FormCardPage {
         }
     }
 
-    // Waiting: goes up by itself; one line, its reasons when opened.
+    // Both versions kept: the list is a page of its own.
     FormCard.FormHeader {
-        visible: page.rowsOf("waiting").length > 0
-        title: i18nc("@title:group", "Waiting")
+        visible: page.sync !== null && page.sync.conflictCount > 0
+        title: i18nc("@title:group", "Kept Both Versions")
     }
     FormCard.FormCard {
-        objectName: "waitingGroup"
-        visible: page.rowsOf("waiting").length > 0
+        objectName: "conflictsGroup"
+        visible: page.sync !== null && page.sync.conflictCount > 0
 
         FormCard.FormButtonDelegate {
-            text: i18np("1 change waits and will go up by itself", "%1 changes wait and will go up by themselves", page.countOf("waiting"))
-            icon.name: page.waitingOpened ? "go-down" : "go-next"
-            onClicked: page.waitingOpened = !page.waitingOpened
+            objectName: "conflictsLink"
+            text: page.sync ? i18np("1 file changed here and in OneDrive", "%1 files changed here and in OneDrive", page.sync.conflictCount) : ""
+            description: i18n("OneDrive's version keeps the name; yours is the copy beside it.")
+            icon.name: "document-duplicate"
+            onClicked: page.window.showPage("conflicts")
         }
-        Repeater {
-            model: page.waitingOpened ? page.rowsOf("waiting") : []
-            delegate: FormCard.FormTextDelegate {
-                required property var modelData
-                text: i18np("1: %2", "%1: %2", modelData.count, modelData.why)
-            }
+    }
+
+    // Can't be shown in the folder: the list is a page of its own.
+    FormCard.FormHeader {
+        visible: page.sync !== null && page.sync.skippedCount > 0
+        title: i18nc("@title:group", "Can't Be Shown in the Folder")
+    }
+    FormCard.FormCard {
+        objectName: "skippedGroup"
+        visible: page.sync !== null && page.sync.skippedCount > 0
+
+        FormCard.FormButtonDelegate {
+            objectName: "skippedLink"
+            text: page.sync ? i18np("1 item in OneDrive", "%1 items in OneDrive", page.sync.skippedCount) : ""
+            description: i18n("Names too long for Linux, the Personal Vault, shared folders, OneNote notebooks…")
+            icon.name: "view-hidden"
+            onClicked: page.window.showPage("skipped")
         }
     }
 }

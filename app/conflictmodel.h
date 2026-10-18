@@ -4,7 +4,7 @@
 
 #include <QAbstractListModel>
 
-/// The window's "Conflicts" list: files changed here and in OneDrive, each with
+/// The window's "Kept Both Versions" list: files changed here and in OneDrive, each with
 /// the copy kept beside it (Conflicts.List()), newest first, the first `Shown` of
 /// them; `total` counts them all. Rows are kept by the copy's path, and a
 /// refresh applies what changed at once — one removal, one insertion and one

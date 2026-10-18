@@ -8,8 +8,9 @@ import org.kde.quickcharts.controls as ChartsControls
 import org.konedrive.app
 
 /// How fast things move and how much is left (two mini cards with the last two
-/// minutes), the downloads and uploads under way, the way to what is kept back,
-/// then the recent events; a click shows the file in the file manager.
+/// minutes), the downloads and uploads under way, why changes wait and the way to
+/// those that can't upload, then the recent events; a click shows the file in the
+/// file manager.
 FormCard.FormCardPage {
     id: page
 
@@ -21,9 +22,10 @@ FormCard.FormCardPage {
 
     /// How many changes have not gone up yet — pending and blocked.
     readonly property int waitingCount: sync ? sync.pendingCount + sync.blockedCount : 0
-    /// Whether the Not Uploaded page lists anything, and how many changes it counts.
-    readonly property bool keptBack: sync !== null && sync.notUploadedSummary.length > 0
-    readonly property int keptBackCount: sync ? sync.notUploadedSummary.reduce((n, row) => n + row.count, 0) : 0
+    /// What waits and goes up by itself, by why (UploadQueue.NotUploadedSummary()'s "waiting").
+    readonly property var waitingRows: sync ? sync.notUploadedSummary.filter(row => row.group === "waiting") : []
+    /// How many changes can't upload: what Issues lists.
+    readonly property int cantUploadCount: sync ? sync.notUploadedSummary.filter(row => row.group !== "waiting").reduce((n, row) => n + row.count, 0) : 0
 
     /// A queue's time left: "about 12 min".
     function timeLeftText(seconds) {
@@ -278,29 +280,6 @@ FormCard.FormCardPage {
             leftText: i18ncp("@info changes left to upload", "%1 change left", "%1 changes left", uploading.leftCount)
         }
     }
-    // The account's transfer pool, shared by both directions: shown once, with the large
-    // transfers under way, and OneDrive's Retry-After counting down while it runs.
-    QQC2.Label {
-        objectName: "transferPool"
-        Layout.leftMargin: Kirigami.Units.largeSpacing
-        Layout.rightMargin: Kirigami.Units.largeSpacing
-        Layout.fillWidth: true
-        wrapMode: Text.Wrap
-        visible: page.sync !== null
-        opacity: 0.7
-        text: {
-            if (!page.sync) {
-                return "";
-            }
-            const pool = i18nc("@info the account's transfer pool: %1 slots in use now (may be above %2), %2 the pool's size now, %3 large files moving now, %4 the streams of large files now, %5 how many such streams may run at once",
-                               "Pool: %1 of %2 · large files: %3 (%4 of %5 streams)",
-                               page.sync.poolInUse, page.sync.poolSize, page.sync.largeFiles, page.sync.largeTransfers, page.sync.largeLimit);
-            return page.sync.retryAfter > 0
-                ? i18nc("@info the pool line during OneDrive's Retry-After, seconds left", "%1 — OneDrive asked to wait %2 s", pool, page.sync.retryAfter)
-                : pool;
-        }
-    }
-
     Kirigami.InlineMessage {
         Layout.fillWidth: true
         Layout.topMargin: Kirigami.Units.largeSpacing
@@ -406,23 +385,32 @@ FormCard.FormCardPage {
         }
     }
 
-    // What is kept back is on the Not Uploaded page; what is left to upload is counted in
-    // the Uploading card.
+    // Why changes wait, and the way to those that can't upload; what is left to upload is
+    // counted in the Uploading card.
     FormCard.FormHeader {
-        visible: page.keptBack
-        title: i18nc("@title:group", "Waiting to upload")
+        visible: page.waitingRows.length > 0 || page.cantUploadCount > 0
+        title: i18nc("@title:group", "Waiting to Upload")
     }
     FormCard.FormCard {
         objectName: "waitingToUpload"
-        visible: page.keptBack
+        visible: page.waitingRows.length > 0 || page.cantUploadCount > 0
 
+        Repeater {
+            model: page.waitingRows
+            delegate: FormCard.FormTextDelegate {
+                required property var modelData
+                text: i18np("1 change: %2", "%1 changes: %2", modelData.count, modelData.why)
+                description: i18n("Goes up by itself.")
+                textItem.wrapMode: Text.Wrap
+            }
+        }
         FormCard.FormButtonDelegate {
             objectName: "keptBackLink"
-            visible: page.keptBack
-            text: i18ncp("@action:button", "1 change kept back — see Not Uploaded", "%1 changes kept back — see Not Uploaded", page.keptBackCount)
-            description: i18n("The Not Uploaded page says why, and what to do.")
+            visible: page.cantUploadCount > 0
+            text: i18np("1 change can't upload", "%1 changes can't upload", page.cantUploadCount)
+            description: i18n("Issues says why, and what to do.")
             icon.name: "dialog-warning"
-            onClicked: page.window.showPage("notUploaded")
+            onClicked: page.window.showPage("issues")
         }
     }
 

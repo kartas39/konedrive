@@ -135,12 +135,10 @@ class SyncController : public QObject
     Q_PROPERTY(uint uploadTimeLeft READ uploadTimeLeft NOTIFY syncChanged)
     /// The check of the folder on disk at the start of its sync (LocalScan's properties):
     /// "running", "idle", or "none" before the first; why it runs; when it started (unix
-    /// seconds); when the last one finished (0: not yet) and how long it took, in seconds.
+    /// seconds).
     Q_PROPERTY(QString scanState READ scanState NOTIFY syncChanged)
     Q_PROPERTY(QString scanReason READ scanReason NOTIFY syncChanged)
     Q_PROPERTY(qlonglong scanStarted READ scanStarted NOTIFY syncChanged)
-    Q_PROPERTY(qlonglong scanFinished READ scanFinished NOTIFY syncChanged)
-    Q_PROPERTY(uint scanTook READ scanTook NOTIFY syncChanged)
     /// The last two minutes of each, one sample a second, oldest first: the window keeps
     /// them, the daemon does not.
     Q_PROPERTY(QVariantList downloadSpeedHistory READ downloadSpeedHistory NOTIFY historyChanged)
@@ -238,8 +236,6 @@ public:
     QString scanState() const { return m_scanState; }
     QString scanReason() const { return m_scanReason; }
     qlonglong scanStarted() const { return m_scanStarted; }
-    qlonglong scanFinished() const { return m_scanFinished; }
-    uint scanTook() const { return m_scanTook; }
     QVariantList downloadSpeedHistory() const { return m_history[0]; }
     QVariantList uploadSpeedHistory() const { return m_history[1]; }
     QVariantList activeDownloadsHistory() const { return m_history[2]; }
@@ -252,7 +248,8 @@ public:
     QVariantMap notUploadedFiles() const { return m_notUploadedFiles; }
     int perFileCap() const { return PerFileCap; }
 
-    /// Folder.Register; a refusal is actionError.
+    /// Folder.Register; a refusal is actionError. A folder that is not there yet is made
+    /// first (only it, not the directories above it).
     Q_INVOKABLE void chooseFolder(const QUrl &folder);
     Q_INVOKABLE void forget();
     /// Asks UploadQueue.UnsentCount(): how many changes made here are not sent to
@@ -263,6 +260,8 @@ public:
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void loadSkipped();
     Q_INVOKABLE void openFolder();
+    /// Opens the drive on the OneDrive website (Files.WebUrl of the folder); a refusal is actionError.
+    Q_INVOKABLE void openOnWeb();
     /// ActivityLog.Recent(ActivityModel::Capacity) into `activity`.
     Q_INVOKABLE void loadActivity();
     /// Conflicts.List() into `conflicts`.
@@ -416,8 +415,6 @@ private:
     QString m_scanState = QStringLiteral("none");
     QString m_scanReason;
     qlonglong m_scanStarted = 0;
-    qlonglong m_scanFinished = 0;
-    uint m_scanTook = 0;
     /// Download speed, upload speed, active downloads, active uploads.
     QVariantList m_history[4];
     QTimer *m_sampler;

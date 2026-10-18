@@ -97,7 +97,7 @@ private Q_SLOTS:
         QCOMPARE(notRemoved.data(row, ActivityModel::NameRole).toString(), QStringLiteral("Notebooks"));
         QCOMPARE(notRemoved.data(row, ActivityModel::TextRole).toString(), QStringLiteral("Cannot be removed here"));
         QCOMPARE(notRemoved.data(row, ActivityModel::DetailTextRole).toString(),
-                 QStringLiteral("It holds items that cannot be shown on this computer. Remove it in OneDrive."));
+                 QStringLiteral("It holds items that can't be shown in the folder. Remove it in OneDrive."));
         QCOMPARE(notRemoved.data(row, ActivityModel::IconRole).toString(), QStringLiteral("dialog-warning"));
 
         ConflictModel conflicts;

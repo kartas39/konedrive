@@ -100,7 +100,8 @@ int run(int argc, char *argv[], Restart *restart)
     AppStatus appStatus(&accounts);
     PlacesController placesController(&accounts, &placesSettings);
 
-    registerKonedriveQml(&daemon, &accounts, &current, &autostart, &downloadProgressSettings, &placesSettings, &traySettings);
+    ServiceUnit serviceUnit;
+    registerKonedriveQml(&daemon, &accounts, &current, &autostart, &downloadProgressSettings, &placesSettings, &traySettings, &serviceUnit);
 
     QQmlApplicationEngine engine;
     KLocalization::setupLocalizedContext(&engine);

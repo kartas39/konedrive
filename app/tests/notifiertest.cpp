@@ -123,7 +123,7 @@ private Q_SLOTS:
         QCOMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.first().event, QStringLiteral("notRemovedHere"));
         QCOMPARE(m_sink.sent.first().text,
-                 QStringLiteral("Notebooks cannot be removed here: it holds items that cannot be shown on this computer. Remove it in OneDrive."));
+                 QStringLiteral("Notebooks cannot be removed here: it holds items that can't be shown in the folder. Remove it in OneDrive."));
         QCOMPARE(m_sink.sent.first().showPath, QString());
     }
 
@@ -165,7 +165,7 @@ private Q_SLOTS:
         QCOMPARE(m_sink.sent.size(), 1);
         const Notice &notice = m_sink.sent.first();
         QCOMPARE(notice.title, QStringLiteral("Changed on both sides"));
-        QCOMPARE(notice.text, QStringLiteral("Report.docx changed here and in OneDrive. Both are kept: your version as Report-fedora.docx."));
+        QCOMPARE(notice.text, QStringLiteral("Report.docx changed here and in OneDrive. Kept both versions: yours is Report-fedora.docx."));
         QCOMPARE(notice.showPath, Root + QStringLiteral("/Report-fedora.docx"));
     }
 
@@ -177,8 +177,8 @@ private Q_SLOTS:
         report(QStringLiteral("upload-failed"), QStringLiteral("a:b.txt"), QStringLiteral("name-characters"));
         QCOMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.at(0).event, QStringLiteral("uploadFailed"));
-        QCOMPARE(m_sink.sent.at(0).title, QStringLiteral("Upload failed"));
-        QVERIFY2(m_sink.sent.at(0).text.contains(QStringLiteral("a:b.txt cannot be uploaded. A name OneDrive refuses")), qPrintable(m_sink.sent.at(0).text));
+        QCOMPARE(m_sink.sent.at(0).title, QStringLiteral("Can't upload"));
+        QVERIFY2(m_sink.sent.at(0).text.contains(QStringLiteral("a:b.txt can't upload. A name OneDrive refuses")), qPrintable(m_sink.sent.at(0).text));
         QCOMPARE(m_sink.sent.at(0).showPath, Root + QStringLiteral("/a:b.txt"));
 
         m_nowMs += Notifier::WindowMs + 1;
@@ -186,7 +186,7 @@ private Q_SLOTS:
         report(QStringLiteral("upload-failed"), QStringLiteral("big.iso"), QStringLiteral("quota-exceeded"));
         QCOMPARE(m_sink.sent.size(), 2);
         QCOMPARE(m_sink.sent.at(1).title, QStringLiteral("OneDrive is full"));
-        QCOMPARE(m_sink.sent.at(1).text, QStringLiteral("big.iso cannot be uploaded until there is space in OneDrive."));
+        QCOMPARE(m_sink.sent.at(1).text, QStringLiteral("big.iso can't upload until there is space in OneDrive."));
     }
 
     /// OneDrive turning full notifies once, for the account (issue #2).
@@ -214,7 +214,7 @@ private Q_SLOTS:
         QTRY_COMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.at(0).event, QStringLiteral("throttled"));
         QCOMPARE(m_sink.sent.at(0).title, QStringLiteral("OneDrive asked to wait"));
-        QCOMPARE(m_sink.sent.at(0).text, QStringLiteral("OneDrive asked this computer to wait about 5 minutes. budget.xlsx opens after that."));
+        QCOMPARE(m_sink.sent.at(0).text, QStringLiteral("OneDrive asked this device to wait about 5 minutes. budget.xlsx opens after that."));
 
         m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(289)}});
         QTRY_COMPARE(m_sync->retryAfter(), 289u);
@@ -226,7 +226,7 @@ private Q_SLOTS:
         m_notifier->flushDue();
         m_daemon->sync->transfers->set({{QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(30)}, {QStringLiteral("RetryAfterRefusal"), QString(Root + QStringLiteral("/notes.docx"))}});
         QTRY_COMPARE(m_sink.sent.size(), 2);
-        QCOMPARE(m_sink.sent.at(1).text, QStringLiteral("OneDrive asked this computer to wait about 1 minute. notes.docx opens after that."));
+        QCOMPARE(m_sink.sent.at(1).text, QStringLiteral("OneDrive asked this device to wait about 1 minute. notes.docx opens after that."));
     }
 
     /// Every notice carries its account, for a click to open the window on

@@ -13,6 +13,8 @@
 #include <QDBusPendingReply>
 #include <QDBusServiceWatcher>
 #include <QDesktopServices>
+#include <QDir>
+#include <QFileInfo>
 #include <QLocale>
 #include <QTimer>
 
@@ -279,8 +281,6 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         text("State", m_scanState);
         text("Reason", m_scanReason);
         time("Started", m_scanStarted);
-        time("Finished", m_scanFinished);
-        count("Took", m_scanTook);
     }
     Q_EMIT syncChanged();
 
@@ -391,6 +391,12 @@ void SyncController::quietly(const QDBusPendingCall &pending, std::function<void
 void SyncController::chooseFolder(const QUrl &folder)
 {
     const QString path = folder.toLocalFile();
+    // A folder offered by name (~/OneDrive) may not be there yet: Register opens what it
+    // is given. Only the folder itself is made, never a directory above it.
+    if (!QFileInfo::exists(path) && !QDir().mkdir(path)) {
+        setActionError(i18n("%1 could not be made.", path));
+        return;
+    }
     // M6: no timeout, as FreeUpSpace has — Register can take a while
     // (the initial listing starts under it), so it bypasses the generated
     // proxy (whose timeout is shared with every other call on m_folder).
@@ -451,6 +457,20 @@ void SyncController::openFolder()
     if (!m_rootPath.isEmpty()) {
         QDesktopServices::openUrl(QUrl::fromLocalFile(m_rootPath));
     }
+}
+
+void SyncController::openOnWeb()
+{
+    if (m_rootPath.isEmpty()) {
+        return;
+    }
+    // Files.WebUrl answers the folder itself with the address of the drive's root.
+    auto message = QDBusMessage::createMethodCall(ServiceName, QStringLiteral("/org/konedrive/Accounts"), QStringLiteral("org.konedrive.Files"), QStringLiteral("WebUrl"));
+    message << m_rootPath;
+    call(m_bus.asyncCall(message), [](const QDBusPendingCall &pending) {
+        const QDBusPendingReply<QString> reply = pending;
+        QDesktopServices::openUrl(QUrl(reply.value()));
+    });
 }
 
 void SyncController::loadActivity()

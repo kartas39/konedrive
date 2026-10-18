@@ -269,14 +269,14 @@ QString AccountController::modeRefusalText(const QString &mode, const QString &e
     const QLatin1String prefix("org.konedrive.Error.");
     const QString name = errorName.startsWith(prefix) ? errorName.mid(prefix.size()) : QString();
     if (name == QLatin1String("NotSignedIn")) {
-        return i18n("This account is not signed in. Sign in first, then turn on uploading.");
+        return i18n("This account is not signed in. Sign in first, then turn on two-way sync.");
     }
     if (name == QLatin1String("ModeNotGranted")) {
-        return i18n("This account's sign-in does not allow KOneDrive to change your files. Sign in again: turn on uploading once more, and allow it when Microsoft asks.");
+        return i18n("This account's sign-in does not allow KOneDrive to change your files. Sign in again: turn on two-way sync once more, and allow it when Microsoft asks.");
     }
     const QString detail = message.isEmpty() ? errorName : message;
     if (mode == ReadWrite) {
-        return i18n("Uploading was not turned on: %1", detail);
+        return i18n("Two-way sync was not turned on: %1", detail);
     }
-    return i18n("Uploading was not turned off: %1", detail);
+    return i18n("Read-only was not turned on: %1", detail);
 }

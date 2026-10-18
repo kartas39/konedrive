@@ -5,8 +5,9 @@ import org.kde.kirigami as Kirigami
 import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
-/// Files changed here and in OneDrive: each keeps a copy of your version beside
-/// it; where, under which name, when; "Show Both" and "Dismiss". The model holds
+/// The files whose both versions were kept, opened from Issues: each changed here and in
+/// OneDrive, and keeps a copy of your version beside it; where, under which name, when;
+/// "Show Both" and "Dismiss". The model holds
 /// the newest ConflictModel.Shown (200); a ListView builds only the rows in
 /// sight, and a line after them counts the rest. A ScrollablePage rather than
 /// a FormCardPage, whose one long column would build every row; the
@@ -23,7 +24,7 @@ Kirigami.ScrollablePage {
     // would otherwise be the whole list's: the ListView would build every row
     // there and keep them once shown.
     implicitHeight: Kirigami.Units.gridUnit * 20
-    title: window ? window.accountTitle(i18nc("@title", "Conflicts")) : i18nc("@title", "Conflicts")
+    title: window ? window.accountTitle(i18nc("@title", "Kept Both Versions")) : i18nc("@title", "Kept Both Versions")
 
     topPadding: 0
     bottomPadding: 0
@@ -79,7 +80,7 @@ Kirigami.ScrollablePage {
                 visible: page.conflicts === null || page.conflicts.count === 0
 
                 FormCard.FormPlaceholderMessageDelegate {
-                    text: i18n("No conflicts")
+                    text: i18n("No file has two versions")
                     explanation: i18n("When a file you changed here also changes in OneDrive, both versions are kept: OneDrive's under the file's name, yours as a copy beside it. They are listed here.")
                     icon.name: "document-duplicate"
                 }

@@ -123,7 +123,8 @@ private Q_SLOTS:
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
+        ServiceUnit serviceUnit;
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -154,7 +155,7 @@ private Q_SLOTS:
         QVERIFY(remove);
         QMetaObject::invokeMethod(remove, "open");
         QTRY_VERIFY(shown(remove));
-        QCOMPARE(remove->property("title").toString(), QStringLiteral("Remove Family?"));
+        QCOMPARE(remove->property("title").toString(), QStringLiteral("Disconnect Family?"));
         current.select(personal);
         QTRY_VERIFY(!shown(remove));
         QMetaObject::invokeMethod(remove, "confirm");
@@ -166,7 +167,7 @@ private Q_SLOTS:
         // dialog closes, and has nothing left to remove.
         QMetaObject::invokeMethod(remove, "open");
         QTRY_VERIFY(shown(remove));
-        QCOMPARE(remove->property("title").toString(), QStringLiteral("Remove Personal?"));
+        QCOMPARE(remove->property("title").toString(), QStringLiteral("Disconnect Personal?"));
         fake.removeAccount(personal);
         QTRY_VERIFY(!shown(remove));
         QTRY_COMPARE(remove->property("item").value<QObject *>(), nullptr);
@@ -177,11 +178,10 @@ private Q_SLOTS:
         fake.stop();
     }
 
-    /// "Upload changes made on this computer" follows Mode. Turned on, it
-    /// explains before the daemon is asked anything; turned off while
-    /// changes are unsent, the page shows the switch that waits, with its
-    /// two ways out.
-    void theUploadSwitch()
+    /// How the folder syncs: the mode line follows Mode. Two-way, chosen in the mode
+    /// dialog, goes to the daemon only once confirmed; read-only while changes are unsent
+    /// shows the switch that waits, with its two ways out.
+    void theModeDialog()
     {
         FakeDaemon fake;
         fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
@@ -200,7 +200,8 @@ private Q_SLOTS:
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
+        ServiceUnit serviceUnit;
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -211,82 +212,80 @@ private Q_SLOTS:
         window->show();
         QTRY_COMPARE(accounts.count(), 1);
         QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
-        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("account")));
-        QObject *page = window->findChild<QObject *>(QStringLiteral("accountPage"));
-        QObject *uploadSwitch = window->findChild<QObject *>(QStringLiteral("uploadSwitch"));
-        QObject *explain = window->findChild<QObject *>(QStringLiteral("uploadDialog"));
-        QVERIFY(page && uploadSwitch && explain);
-        QTRY_VERIFY(uploadSwitch->property("enabled").toBool());
-        QVERIFY(!uploadSwitch->property("checked").toBool());
+        QObject *dialog = window->findChild<QObject *>(QStringLiteral("modeDialog"));
+        auto *modeLine = window->findChild<QQuickItem *>(QStringLiteral("modeLine"));
+        QVERIFY(dialog && modeLine);
+        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Read-only"));
 
-        // On: explained first. The fake refuses it, so no browser opens here.
-        QMetaObject::invokeMethod(page, "setUploads", Q_ARG(QVariant, true));
-        QTRY_VERIFY(shown(explain));
+        // Two-way: chosen, then confirmed. The fake refuses it, so no browser opens here.
+        QMetaObject::invokeMethod(window, "changeMode");
+        QTRY_VERIFY(shown(dialog));
+        QVERIFY(!dialog->property("twoWay").toBool());
+        dialog->setProperty("twoWay", true);
         QVERIFY(!fake.account->calls.join(QLatin1Char(' ')).contains(QStringLiteral("SetMode")));
-        QVERIFY(explain->property("subtitle").toString().contains(QStringLiteral("/home/u/OneDrive")));
-        QMetaObject::invokeMethod(explain, "confirm");
+        QMetaObject::invokeMethod(dialog, "confirm");
         QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-write:no-force")));
-        QTRY_COMPARE(accounts.at(0)->account()->actionError(), QStringLiteral("Uploading was not turned on: cannot listen on localhost"));
-        QVERIFY(!uploadSwitch->property("checked").toBool());
+        QTRY_COMPARE(accounts.at(0)->account()->actionError(), QStringLiteral("Two-way sync was not turned on: cannot listen on localhost"));
+        QCOMPARE(modeLine->property("text").toString(), QStringLiteral("Read-only"));
 
         // It follows the mode the account runs in.
         fake.account->set({{QStringLiteral("Mode"), QStringLiteral("read-write")}});
-        QTRY_VERIFY(uploadSwitch->property("checked").toBool());
+        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Two-way sync"));
 
-        // Off: asked of the daemon at once, with no question.
-        QMetaObject::invokeMethod(page, "setUploads", Q_ARG(QVariant, false));
+        // Read-only, with nothing unsent: switched at once.
+        QMetaObject::invokeMethod(window, "changeMode");
+        QTRY_VERIFY(shown(dialog));
+        QVERIFY(dialog->property("twoWay").toBool());
+        dialog->setProperty("twoWay", false);
+        QMetaObject::invokeMethod(dialog, "confirm");
         QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-only:no-force")));
         QTRY_COMPARE(accounts.at(0)->account()->mode(), QStringLiteral("read-only"));
         QTRY_VERIFY(accounts.at(0)->account()->switchingTo().isEmpty());
-        QVERIFY(!uploadSwitch->property("checked").toBool());
+        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Read-only"));
 
-        // Off while changes are unsent: no question; the page says that the switch waits.
-        QObject *waits = window->findChild<QObject *>(QStringLiteral("switchingToReadOnlyLine"));
+        // Read-only while changes are unsent: the mode line says that the switch waits.
         QObject *now = window->findChild<QObject *>(QStringLiteral("switchToReadOnlyNow"));
         QObject *cancel = window->findChild<QObject *>(QStringLiteral("cancelReadOnlySwitch"));
-        QVERIFY(waits && now && cancel);
-        QVERIFY(!waits->property("visible").toBool());
+        QVERIFY(now && cancel);
+        QVERIFY(!now->property("visible").toBool());
         fake.account->set({{QStringLiteral("Mode"), QStringLiteral("read-write")}});
-        QTRY_VERIFY(uploadSwitch->property("checked").toBool());
+        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Two-way sync"));
         fake.account->unsentChanges = 2;
-        QMetaObject::invokeMethod(page, "setUploads", Q_ARG(QVariant, false));
-        QTRY_VERIFY(waits->property("visible").toBool());
-        QCOMPARE(waits->property("text").toString(), QStringLiteral("Switching to read-only: 2 changes still to send"));
+        QMetaObject::invokeMethod(window, "changeMode");
+        dialog->setProperty("twoWay", false);
+        QMetaObject::invokeMethod(dialog, "confirm");
+        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Switching to read-only: 2 changes still to send"));
         QVERIFY(now->property("visible").toBool() && cancel->property("visible").toBool());
-        // The daemon's signal shows the line before SetMode answers; the switch shows
-        // the mode the account runs in once the call has ended.
         QTRY_VERIFY(accounts.at(0)->account()->switchingTo().isEmpty());
-        QVERIFY(uploadSwitch->property("checked").toBool());
         QObject *accountError = window->findChild<QObject *>(QStringLiteral("accountError"));
         QVERIFY(accountError);
         QVERIFY(!accountError->property("visible").toBool());
 
-        // Cancel takes the wish back: read-write, and the state is gone.
+        // Keep Two-Way Sync takes the wish back: read-write, and the state is gone.
         fake.account->calls.clear();
         QTRY_VERIFY(cancel->property("enabled").toBool());
         QMetaObject::invokeMethod(cancel, "clicked");
         QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-write:no-force")));
-        QTRY_VERIFY(!waits->property("visible").toBool());
-        QVERIFY(uploadSwitch->property("checked").toBool());
+        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Two-way sync"));
 
         // Switch Now forces it.
-        QTRY_VERIFY(uploadSwitch->property("enabled").toBool());
-        QMetaObject::invokeMethod(page, "setUploads", Q_ARG(QVariant, false));
-        QTRY_VERIFY(waits->property("visible").toBool());
+        QMetaObject::invokeMethod(window, "changeMode");
+        dialog->setProperty("twoWay", false);
+        QMetaObject::invokeMethod(dialog, "confirm");
+        QTRY_VERIFY(now->property("visible").toBool());
         QTRY_VERIFY(now->property("enabled").toBool());
         QMetaObject::invokeMethod(now, "clicked");
         QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-only:force")));
         QTRY_COMPARE(accounts.at(0)->account()->mode(), QStringLiteral("read-only"));
-        QTRY_VERIFY(!waits->property("visible").toBool());
-        QVERIFY(!uploadSwitch->property("checked").toBool());
+        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Read-only"));
 
         fake.stop();
     }
 
-    /// A Forget and the account's removal are never refused for what is unsent:
-    /// the question says how many changes stay only on this computer. With none,
-    /// the removal asks as it always did, and the folder is forgotten unasked.
-    void aForgetAndARemovalWarnOfUnsentChanges()
+    /// Disconnecting and moving to another folder are never refused for what is unsent:
+    /// the question says first how many changes stay on this device only. Another folder,
+    /// confirmed, forgets this one and then opens the folder picker.
+    void disconnectingAndAnotherFolderWarnOfUnsentChanges()
     {
         FakeDaemon fake;
         const QString root = QStringLiteral("/home/u/OneDrive");
@@ -301,7 +300,8 @@ private Q_SLOTS:
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
+        ServiceUnit serviceUnit;
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -312,59 +312,57 @@ private Q_SLOTS:
         window->show();
         QTRY_COMPARE(accounts.count(), 1);
         QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->sync()->rootPath() == root);
-        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("account")));
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("oneDriveSettings")));
         QObject *remove = window->findChild<QObject *>(QStringLiteral("removeDialog"));
-        QObject *forget = window->findChild<QObject *>(QStringLiteral("forgetDialog"));
-        QVERIFY(remove && forget);
+        QObject *another = window->findChild<QObject *>(QStringLiteral("anotherFolderDialog"));
+        QVERIFY(remove && another);
 
-        // Nothing unsent: the removal's question says only what it always said.
+        // Nothing unsent: the question says only what disconnecting does.
+        const QString stops = QStringLiteral("KOneDrive stops syncing ") + root;
         QMetaObject::invokeMethod(remove, "open");
         QTRY_VERIFY(shown(remove));
         QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("UnsentCount")));
         QTest::qWait(100);
-        QVERIFY(remove->property("subtitle").toString().startsWith(QStringLiteral("The files that were downloaded")));
+        QVERIFY(remove->property("subtitle").toString().startsWith(stops));
         QMetaObject::invokeMethod(remove, "close");
         QTRY_VERIFY(!shown(remove));
 
         // Two changes unsent: said first, in both questions.
-        const QString warning = QStringLiteral("2 changes were not sent to OneDrive and will stay only on this computer.");
+        const QString warning = QStringLiteral("2 changes made here are not uploaded yet: they stay on this device only, as plain files.");
         fake.sync->uploadQueueRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("pending"), 0, 10, QString(), 0},
                                  {2, QStringLiteral("create"), root + QStringLiteral("/b.odt"), QStringLiteral("pending"), 0, 10, QString(), 0}};
         QMetaObject::invokeMethod(remove, "open");
         QTRY_VERIFY(shown(remove));
         QTRY_VERIFY(remove->property("subtitle").toString().startsWith(warning));
-        QVERIFY(remove->property("subtitle").toString().contains(QStringLiteral("The files that were downloaded")));
+        QVERIFY(remove->property("subtitle").toString().contains(stops));
         QMetaObject::invokeMethod(remove, "close");
         QTRY_VERIFY(!shown(remove));
         QVERIFY(!fake.manager->calls.join(QLatin1Char(' ')).contains(QStringLiteral("Remove")));
 
-        QMetaObject::invokeMethod(forget, "ask");
-        QTRY_VERIFY(shown(forget));
-        QCOMPARE(forget->property("subtitle").toString(), warning);
-        QVERIFY(!fake.sync->calls.contains(QStringLiteral("Unregister")));
+        QMetaObject::invokeMethod(another, "open");
+        QTRY_VERIFY(shown(another));
+        QTRY_VERIFY(another->property("subtitle").toString().startsWith(warning));
+        QVERIFY(another->property("subtitle").toString().contains(stops));
         // Declined: nothing is forgotten.
-        QMetaObject::invokeMethod(forget, "close");
-        QTRY_VERIFY(!shown(forget));
+        QMetaObject::invokeMethod(another, "close");
+        QTRY_VERIFY(!shown(another));
         QTest::qWait(100);
         QVERIFY(!fake.sync->calls.contains(QStringLiteral("Unregister")));
-        // Asked again and confirmed.
-        QMetaObject::invokeMethod(forget, "ask");
-        QTRY_VERIFY(shown(forget));
-        QMetaObject::invokeMethod(forget, "confirm");
+        // Asked again and confirmed: forgotten, then the picker opens for the account.
+        QMetaObject::invokeMethod(another, "open");
+        QTRY_VERIFY(shown(another));
+        QMetaObject::invokeMethod(another, "confirm");
         QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Unregister")));
-        QTRY_VERIFY(!shown(forget));
-
-        // Nothing unsent: forgotten unasked.
-        fake.sync->uploadQueueRows.clear();
-        fake.sync->calls.clear();
-        QMetaObject::invokeMethod(forget, "ask");
-        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Unregister")));
-        QVERIFY(!shown(forget));
+        QTRY_VERIFY(!shown(another));
+        QTRY_VERIFY(accounts.at(0)->sync()->rootPath().isEmpty());
+        QObject *picker = window->findChild<QObject *>(QStringLiteral("folderDialog"));
+        QVERIFY(picker);
+        QTRY_COMPARE(picker->property("item").value<QObject *>(), accounts.at(0));
 
         fake.stop();
     }
 
-    /// Issue #80: the account page's thumbnails switch shows what the daemon says and sets
+    /// Issue #80: OneDrive Settings' previews switch shows what the daemon says and sets
     /// it; the line about Dolphin's previews shows while it is off.
     void theThumbnailsSetting()
     {
@@ -385,7 +383,8 @@ private Q_SLOTS:
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
+        ServiceUnit serviceUnit;
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -396,7 +395,7 @@ private Q_SLOTS:
         window->show();
         QTRY_COMPARE(accounts.count(), 1);
         QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
-        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("account")));
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("oneDriveSettings")));
         auto *thumbnails = window->findChild<QQuickItem *>(QStringLiteral("thumbnailsSwitch"));
         auto *offLine = window->findChild<QQuickItem *>(QStringLiteral("thumbnailsOffLine"));
         QVERIFY(thumbnails && offLine);
@@ -443,7 +442,8 @@ private Q_SLOTS:
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
+        ServiceUnit serviceUnit;
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -483,7 +483,7 @@ private Q_SLOTS:
         QVERIFY(!battery->isEnabled());
     }
 
-    /// The sidebar's foot names this build; a daemon of another build (installed, not
+    /// Settings' About names this build; a daemon of another build (installed, not
     /// restarted) adds a second line, which goes once the daemon runs this build.
     void theVersionLine()
     {
@@ -497,7 +497,8 @@ private Q_SLOTS:
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
+        ServiceUnit serviceUnit;
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -507,6 +508,7 @@ private Q_SLOTS:
         QVERIFY(window);
         window->show();
         QTRY_VERIFY(daemon.serviceAvailable());
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("settings")));
 
         QQuickItem *line = nullptr;
         QQuickItem *service = nullptr;
@@ -547,9 +549,9 @@ private Q_SLOTS:
                  QStringLiteral("Version %1 · commit %2").arg(QStringLiteral(KONEDRIVE_VERSION), commit.left(7)));
     }
 
-    /// Issue #57: while the account holds back by itself, the Status page says why, beside
-    /// a Sync Anyway button; the user's own pause is not shown for it.
-    void theStatusPageShowsAHold()
+    /// Issue #57: while the account holds back by itself, the head of the Overview says why,
+    /// with a Sync Anyway button.
+    void theOverviewShowsAHold()
     {
         FakeDaemon fake;
         fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
@@ -557,6 +559,7 @@ private Q_SLOTS:
                                 {QStringLiteral("State"), QStringLiteral("ready")},
                                 {QStringLiteral("Source"), QStringLiteral("onedrive")},
                                 {QStringLiteral("HeldBack"), QStringLiteral("metered")}});
+        fake.sync->folder->decide("paused", "held-back");
         QVERIFY(fake.start());
 
         Autostart autostart;
@@ -566,7 +569,8 @@ private Q_SLOTS:
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
+        ServiceUnit serviceUnit;
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -577,26 +581,38 @@ private Q_SLOTS:
         window->show();
         QTRY_COMPARE(accounts.count(), 1);
         QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
-        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("status")));
-        auto *held = window->findChild<QQuickItem *>(QStringLiteral("heldBackLine"));
-        auto *anyway = window->findChild<QObject *>(QStringLiteral("syncAnywayButton"));
-        auto *paused = window->findChild<QQuickItem *>(QStringLiteral("pausedLine"));
-        QVERIFY(held && anyway && paused);
-        QTRY_VERIFY(held->isVisible());
-        QCOMPARE(held->property("text").toString(), QStringLiteral("Paused: metered connection"));
-        QVERIFY(!paused->isVisible());
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("overview")));
+        auto *headline = window->findChild<QQuickItem *>(QStringLiteral("headline"));
+        auto *anyway = window->findChild<QQuickItem *>(QStringLiteral("syncAnywayButton"));
+        auto *resume = window->findChild<QQuickItem *>(QStringLiteral("resumeButton"));
+        auto *attention = window->findChild<QQuickItem *>(QStringLiteral("attentionCard"));
+        auto *conflictsLine = window->findChild<QQuickItem *>(QStringLiteral("conflictsLine"));
+        QVERIFY(headline && anyway && resume && attention && conflictsLine);
+        QTRY_COMPARE(headline->property("text").toString(), QStringLiteral("Paused: metered connection"));
+        QVERIFY(anyway->isVisible());
+        QVERIFY(!resume->isVisible());
+        QVERIFY(!attention->isVisible());
+
+        // Both versions kept: Needs Your Attention shows, with its line.
+        fake.sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(2)}});
+        QTRY_VERIFY(attention->isVisible() && conflictsLine->isVisible());
+        fake.sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(0)}});
+        QTRY_VERIFY(!attention->isVisible());
 
         fake.sync->folder->set({{QStringLiteral("HeldBack"), QStringLiteral("power-saver")}});
-        QTRY_COMPARE(held->property("text").toString(), QStringLiteral("Paused: power-saver mode"));
+        QTRY_COMPARE(headline->property("text").toString(), QStringLiteral("Paused: power-saver mode"));
         QMetaObject::invokeMethod(anyway, "clicked");
         QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("SyncAnyway")));
-        QTRY_VERIFY(!held->isVisible());
+        fake.sync->folder->decide("ok", "up-to-date", {{QStringLiteral("HeldBack"), QString()}});
+        QTRY_COMPARE(headline->property("text").toString(), QStringLiteral("Up to date"));
+        QVERIFY(!anyway->isVisible());
         fake.stop();
     }
 
-    /// The Status page says how the check of the local files goes — since when a running
-    /// one runs and why; then when the last one finished.
-    void theStatusPageShowsTheLocalScan()
+    /// The Overview says how the folder syncs — "Read-only for now" while a two-way
+    /// folder cannot be watched (Folder.Writable) — and, while the check of the local files
+    /// runs, since when and why.
+    void theOverviewShowsTheModeAndTheLocalScan()
     {
         FakeDaemon fake;
         fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}, {QStringLiteral("Mode"), QStringLiteral("read-write")}});
@@ -615,7 +631,8 @@ private Q_SLOTS:
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
+        ServiceUnit serviceUnit;
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -626,36 +643,122 @@ private Q_SLOTS:
         window->show();
         QTRY_COMPARE(accounts.count(), 1);
         QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
-        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("status")));
-        // The mode line follows Folder.Writable: a read-write account whose folder cannot be
-        // watched reads "Read-only for now".
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("overview")));
         auto *modeLine = window->findChild<QQuickItem *>(QStringLiteral("modeLine"));
         QVERIFY(modeLine);
-        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Changes upload"));
+        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Two-way sync"));
         fake.sync->folder->set({{QStringLiteral("Writable"), false}});
         QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Read-only for now"));
         fake.sync->folder->set({{QStringLiteral("Writable"), true}});
-        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Changes upload"));
+        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Two-way sync"));
         auto *line = window->findChild<QQuickItem *>(QStringLiteral("scanLine"));
         QVERIFY(line);
         QTRY_VERIFY(line->isVisible());
         QCOMPARE(line->property("text").toString(),
                  QStringLiteral("Checking local files — started 2 min ago, as syncing started"));
 
+        // A check that ended says nothing: what changes after it is seen as it is made.
         fake.sync->scan->set({{QStringLiteral("State"), QStringLiteral("idle")},
                               {QStringLiteral("Finished"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 300)},
                               {QStringLiteral("Took"), QVariant::fromValue<uint>(40)}});
-        QTRY_COMPARE(line->property("text").toString(), QStringLiteral("Local files last checked 5 min ago (took 40 s)"));
-
-        fake.account->set({{QStringLiteral("Mode"), QStringLiteral("read-only")}});
-        fake.sync->scan->set({{QStringLiteral("State"), QStringLiteral("none")}});
         QTRY_VERIFY(!line->isVisible());
         fake.stop();
     }
 
+    /// Setting up an account that has no folder: the Overview offers ~/OneDrive, made when
+    /// it is not there, and then asks how the folder syncs. HOME is a temporary directory.
+    void theOverviewSetsUpAFolderAndAMode()
+    {
+        QTemporaryDir home;
+        QVERIFY(home.isValid());
+        const QByteArray realHome = qgetenv("HOME");
+        qputenv("HOME", QFile::encodeName(home.path()));
+        FakeDaemon fake;
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        fake.sync->folder->decide("offline", "no-folder");
+        QVERIFY(fake.start());
+
+        Autostart autostart;
+        DownloadProgressSettings progress;
+        PlacesSettings places;
+        TraySettings trayIcons;
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        ServiceUnit serviceUnit;
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+
+        QQmlApplicationEngine engine;
+        KLocalization::setupLocalizedContext(&engine);
+        engine.loadFromModule("org.konedrive.app.window", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        window->show();
+        QTRY_COMPARE(accounts.count(), 1);
+        QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
+        auto *headline = window->findChild<QQuickItem *>(QStringLiteral("headline"));
+        auto *useDefault = window->findChild<QQuickItem *>(QStringLiteral("useDefaultFolderButton"));
+        auto *modeChoice = window->findChild<QQuickItem *>(QStringLiteral("modeChoiceCard"));
+        auto *readOnly = window->findChild<QQuickItem *>(QStringLiteral("chooseReadOnly"));
+        auto *modeLine = window->findChild<QQuickItem *>(QStringLiteral("modeLine"));
+        QVERIFY(headline && useDefault && modeChoice && readOnly && modeLine);
+        QTRY_COMPARE(headline->property("text").toString(), QStringLiteral("Choose where your OneDrive appears"));
+        QTRY_VERIFY(useDefault->isVisible());
+        QCOMPARE(useDefault->property("text").toString(), QStringLiteral("Use ~/OneDrive"));
+
+        QMetaObject::invokeMethod(useDefault, "clicked");
+        const QString folder = home.path() + QStringLiteral("/OneDrive");
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Register:") + folder));
+        QVERIFY(QFileInfo(folder).isDir());
+        fake.sync->folder->decide("ok", "up-to-date");
+        QTRY_VERIFY(modeChoice->isVisible());
+        QVERIFY(!modeLine->isVisible());
+
+        QMetaObject::invokeMethod(readOnly, "clicked");
+        QTRY_VERIFY(!modeChoice->isVisible());
+        QTRY_VERIFY(modeLine->isVisible());
+        QCOMPARE(modeLine->property("text").toString(), QStringLiteral("Read-only"));
+        QVERIFY(!fake.account->calls.join(QLatin1Char(' ')).contains(QStringLiteral("SetMode")));
+        fake.stop();
+        qputenv("HOME", realHome);
+    }
+
+    /// With no service, the Overview says so and starts it; a start refused (the test bus
+    /// has no systemd) says it could not, and offers to start again.
+    void theOverviewStartsTheService()
+    {
+        Autostart autostart;
+        DownloadProgressSettings progress;
+        PlacesSettings places;
+        TraySettings trayIcons;
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        ServiceUnit serviceUnit;
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+
+        QQmlApplicationEngine engine;
+        KLocalization::setupLocalizedContext(&engine);
+        engine.loadFromModule("org.konedrive.app.window", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        window->show();
+        auto *card = window->findChild<QQuickItem *>(QStringLiteral("serviceCard"));
+        auto *start = window->findChild<QQuickItem *>(QStringLiteral("startServiceButton"));
+        QVERIFY(card && start);
+        QTRY_VERIFY(card->isVisible());
+        QCOMPARE(start->property("text").toString(), QStringLiteral("Start Service"));
+        QMetaObject::invokeMethod(start, "clicked");
+        QTRY_VERIFY(!serviceUnit.startError().isEmpty());
+        QTRY_COMPARE(start->property("text").toString(), QStringLiteral("Start Again"));
+        QVERIFY(card->isVisible());
+    }
+
     /// Issue #20: with 5000 changes OneDrive has no room for and 3 names it
-    /// refuses, both pages come up at once and build a handful of rows — a
-    /// line per reason, files only for a per-file reason opened — and the
+    /// refuses, Issues and Activity come up at once and build a handful of rows
+    /// — a line per reason, files only for a per-file reason opened — and the
     /// window never asks for every row.
     void thousandsKeptBackAreAFewLines()
     {
@@ -697,7 +800,8 @@ private Q_SLOTS:
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
+        ServiceUnit serviceUnit;
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -712,24 +816,25 @@ private Q_SLOTS:
 
         QElapsedTimer clock;
         clock.start();
-        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("notUploaded")));
-        auto *page = window->findChild<QQuickItem *>(QStringLiteral("notUploadedPage"));
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("issues")));
+        auto *page = window->findChild<QQuickItem *>(QStringLiteral("issuesPage"));
         QVERIFY(page);
         QTRY_VERIFY(sync->notUploadedKnown());
         QTRY_COMPARE(itemsSaying(page, QStringLiteral("changes: OneDrive is full")), 1);
         QVERIFY2(clock.elapsed() < 3000, qPrintable(QString::number(clock.elapsed())));
         QCOMPARE(itemsSaying(page, QStringLiteral("3 files")), 1);
         QCOMPARE(itemsSaying(page, root), 0);
-        QCOMPARE(itemsSaying(page, QStringLiteral("Refresh")), 2);
+        QCOMPARE(itemsSaying(page, QStringLiteral("Check Again")), 2);
+        QCOMPARE(itemsSaying(page, QStringLiteral("Open OneDrive on the Web")), 1);
         const int rows = itemsSaying(page, QString());
         QVERIFY2(rows <= 10, qPrintable(QString::number(rows)));
 
-        // What OneDrive did not allow is tried again by a refresh; no sign-in is offered for it.
+        // What OneDrive did not allow is checked again by a refresh; no sign-in is offered for it.
         QCOMPARE(itemsSaying(page, QStringLiteral("changes: OneDrive does not allow this change")), 1);
         QCOMPARE(itemsSaying(page, QStringLiteral("Sign In Again")), 0);
         QQuickItem *tryAgain = itemDescribed(page, QStringLiteral("If OneDrive allows these changes now, they go up."));
         QVERIFY(tryAgain);
-        QCOMPARE(tryAgain->property("text").toString(), QStringLiteral("Refresh"));
+        QCOMPARE(tryAgain->property("text").toString(), QStringLiteral("Check Again"));
         QVERIFY(!fake.sync->calls.contains(QStringLiteral("Refresh")));
         QMetaObject::invokeMethod(tryAgain, "clicked");
         QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Refresh")));
@@ -740,14 +845,14 @@ private Q_SLOTS:
         QVERIFY(fake.sync->calls.contains(QStringLiteral("NotUploadedFiles:name-characters:20")));
         QVERIFY(!fake.sync->calls.join(QLatin1Char(' ')).contains(QStringLiteral("NotUploadedFiles:quota-exceeded")));
 
-        // Activity: what is left is in the cards (issue #16), and one line leads to what is kept back.
+        // Activity: what is left is in the cards (issue #16), and one line leads to what can't upload.
         QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("activity")));
         auto *activity = window->findChild<QQuickItem *>(QStringLiteral("activityPage"));
         QVERIFY(activity);
         auto *link = window->findChild<QQuickItem *>(QStringLiteral("keptBackLink"));
         QVERIFY(link);
         QTRY_VERIFY(link->isVisible());
-        QTRY_VERIFY2(link->property("text").toString().endsWith(QStringLiteral("005 changes kept back — see Not Uploaded")),
+        QTRY_VERIFY2(link->property("text").toString().endsWith(QStringLiteral("005 changes can't upload")),
                      qPrintable(link->property("text").toString()));
         const auto text = [window](const char *name) {
             auto *item = window->findChild<QQuickItem *>(QLatin1String(name));
@@ -809,7 +914,8 @@ private Q_SLOTS:
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
+        ServiceUnit serviceUnit;
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);

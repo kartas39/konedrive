@@ -5,7 +5,7 @@ import org.kde.kirigami as Kirigami
 import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
-/// What is in OneDrive but not in the folder, each with why. The first
+/// What is in OneDrive but can't be shown in the folder, each with why, opened from Issues. The first
 /// `shownLimit` entries are listed — a ListView, so only the rows in sight are
 /// built — and then how many more there are and where to see them all. A
 /// ScrollablePage rather than a FormCardPage, whose one long column would
@@ -55,7 +55,7 @@ Kirigami.ScrollablePage {
     // would otherwise be the whole list's: the ListView would build every row
     // there and keep them once shown.
     implicitHeight: Kirigami.Units.gridUnit * 20
-    title: window ? window.accountTitle(i18nc("@title", "Not in the Folder")) : i18nc("@title", "Not in the Folder")
+    title: window ? window.accountTitle(i18nc("@title", "Can't Be Shown in the Folder")) : i18nc("@title", "Can't Be Shown in the Folder")
 
     topPadding: 0
     bottomPadding: 0
@@ -138,7 +138,7 @@ Kirigami.ScrollablePage {
             }
             FormCard.FormSectionText {
                 visible: page.total > 0
-                text: i18n("These are in your OneDrive but not in the folder. What is inside a skipped folder is covered by the folder's own entry.")
+                text: i18n("These are in your OneDrive but can't be shown in the folder. What is inside such a folder is covered by the folder's own entry.")
             }
         }
 

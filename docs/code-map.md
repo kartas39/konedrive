@@ -968,7 +968,7 @@ Each has its file in `crates/konedrived/src/dbus/`.
   the daemon decided (`Folder.Overall`), in words by its reason.
 - `appstatus.h`, `appstatus.cpp` — the whole app's state, for the tray: the worst of the accounts'.
 - `activitymodel.h`, `activitymodel.cpp` — the activity list.
-- `conflictmodel.h`, `conflictmodel.cpp` — the "Conflicts" list.
+- `conflictmodel.h`, `conflictmodel.cpp` — the "Kept Both Versions" list.
 - `transfermodel.h`, `transfermodel.cpp` — the downloads under way.
 - `uploadreasons.h`, `uploadreasons.cpp` — why a change is not uploaded, in words: the entry
   functions; the sentences are generated.
@@ -988,18 +988,25 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `placessettings.h`, `placessettings.cpp` — the setting for it.
 - `autostart.h`, `autostart.cpp` — start at login.
 - `selfrestart.h`, `selfrestart.cpp` — the window restarts as the installed program after an update.
+- `serviceunit.h`, `serviceunit.cpp` — the daemon's systemd unit: starting it, and its log.
 - `org.konedrive.KOneDrive.desktop.in` — the desktop entry.
 
 ### `app/qml/`
 
-- `AccountSwitcher.qml` — the top of the sidebar: the account the pages show.
-- `StatusPage.qml` — the start page: how the folder is doing, and what to do.
-- `AccountPage.qml` — the account: its name, its mode, its sign-in.
-- `ActivityPage.qml` — speeds, what is left, what happened.
-- `ConflictsPage.qml` — the local versions the sync moved out of the way.
-- `NotUploadedPage.qml` — what stays on this computer and is not uploaded.
-- `SkippedPage.qml` — what is in OneDrive but not in the folder.
-- `SettingsPage.qml` — the whole app's settings.
+- `AccountSwitcher.qml` — the top of the sidebar: the OneDrive the pages show.
+- `OverviewPage.qml` — the start page: how the folder is doing, what needs the user, what moves
+  now and the space it takes; with no account, setting one up.
+- `IssuesPage.qml` — what needs the user: the changes that can't upload, the files whose both
+  versions were kept, what can't be shown in the folder.
+- `ConflictsPage.qml` — the "Kept Both Versions" list.
+- `SkippedPage.qml` — the "Can't Be Shown in the Folder" list.
+- `ActivityPage.qml` — speeds, what is left, what waits to upload, what happened.
+- `OneDriveSettingsPage.qml` — one OneDrive's settings: its account, mode, folder and what it
+  keeps on this device.
+- `SettingsPage.qml` — the whole app's settings, and About.
+- `ModeCard.qml` — how the folder syncs, with "Change…" and a switch under way.
+- `ModeDialog.qml` — the choice between two-way sync and read-only.
+- `ServiceCard.qml` — the KOneDrive service is not running: start it, or read its log.
 
 ### `app/tests/`
 
@@ -1012,7 +1019,8 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `reasontextstest.cpp` — every reason reads as it did before its sentence was generated.
 - `modelstest.cpp` — the transfer, activity and conflict models.
 - `notifiertest.cpp` — `Notifier`.
-- `dialogstest.cpp` — the window's confirmations.
+- `dialogstest.cpp` — the window's pages and confirmations, against the fake daemon.
+- `serviceunittest.cpp` — `ServiceUnit`.
 - `downloadprogresscontrollertest.cpp` — `DownloadProgressController`.
 - `downloadprogresssettingstest.cpp` — `DownloadProgressSettings`.
 - `placescontrollertest.cpp` — `PlacesController`.

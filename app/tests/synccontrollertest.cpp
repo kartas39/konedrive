@@ -5,7 +5,10 @@
 #include "transfermodel.h"
 
 #include <QAbstractItemModelTester>
+#include <QDir>
+#include <QFileInfo>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QTest>
 
 #include <memory>
@@ -172,24 +175,50 @@ private Q_SLOTS:
     void choosingAFolderRegistersIt()
     {
         startFake();
+        QTemporaryDir home;
+        const QString folder = home.path() + QStringLiteral("/OneDrive");
+        QVERIFY(QDir().mkdir(folder));
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
-        controller.chooseFolder(QUrl::fromLocalFile(QStringLiteral("/home/u/OneDrive")));
-        QTRY_COMPARE(controller.rootPath(), QStringLiteral("/home/u/OneDrive"));
-        QVERIFY(m_fake->calls.contains(QStringLiteral("Register:/home/u/OneDrive")));
+        controller.chooseFolder(QUrl::fromLocalFile(folder));
+        QTRY_COMPARE(controller.rootPath(), folder);
+        QVERIFY(m_fake->calls.contains(QStringLiteral("Register:") + folder));
+    }
+
+    /// The folder offered by name (~/OneDrive) is made when it is not there yet; a folder
+    /// whose parent is not there either is not, and nothing is registered.
+    void aFolderNotThereYetIsMadeFirst()
+    {
+        startFake();
+        QTemporaryDir home;
+        const QString folder = home.path() + QStringLiteral("/OneDrive");
+        SyncController controller(fake::FirstAccount);
+        QTRY_VERIFY(controller.serviceAvailable());
+        controller.chooseFolder(QUrl::fromLocalFile(folder));
+        QVERIFY(QFileInfo(folder).isDir());
+        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("Register:") + folder));
+
+        const QString deeper = home.path() + QStringLiteral("/missing/OneDrive");
+        controller.chooseFolder(QUrl::fromLocalFile(deeper));
+        QTRY_VERIFY(!controller.actionError().isEmpty());
+        QVERIFY(!QFileInfo::exists(home.path() + QStringLiteral("/missing")));
+        QVERIFY(!m_fake->calls.contains(QStringLiteral("Register:") + deeper));
     }
 
     /// A folder the daemon refuses is not registered, and the refusal is said.
     void aRefusedFolderIsAnActionError()
     {
         startFake();
-        m_fake->registerRefused = QStringLiteral("/home/u/OneDrive is not empty");
+        QTemporaryDir home;
+        const QString folder = home.path() + QStringLiteral("/OneDrive");
+        QVERIFY(QDir().mkdir(folder));
+        m_fake->registerRefused = folder + QStringLiteral(" is not empty");
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
-        controller.chooseFolder(QUrl::fromLocalFile(QStringLiteral("/home/u/OneDrive")));
-        QTRY_COMPARE(controller.actionError(), QStringLiteral("/home/u/OneDrive is not empty"));
+        controller.chooseFolder(QUrl::fromLocalFile(folder));
+        QTRY_COMPARE(controller.actionError(), folder + QStringLiteral(" is not empty"));
         QCOMPARE(controller.rootPath(), QString());
-        QCOMPARE(m_fake->calls.count(QStringLiteral("Register:/home/u/OneDrive")), 1);
+        QCOMPARE(m_fake->calls.count(QStringLiteral("Register:") + folder), 1);
     }
 
     void listsWhatIsSkippedWithWhy()
