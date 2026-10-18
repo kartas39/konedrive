@@ -841,7 +841,7 @@ private Q_SLOTS:
     }
 
     /// A click opens the window on the one account needing attention, when
-    /// exactly one does; otherwise on the account it was showing.
+    /// exactly one does; otherwise on the account it was showing. Either way on Status.
     void aClickShowsTheOneAccountNeedingAttention()
     {
         startSynced();
@@ -851,6 +851,7 @@ private Q_SLOTS:
         QWindow window;
         tray.setWindow(&window);
         QSignalSpy toShow(&tray, &TrayIcon::accountToShow);
+        QSignalSpy toStatus(&tray, &TrayIcon::statusToShow);
 
         family->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(1)}});
         family->sync->folder->decide("warning", "conflicts");
@@ -867,6 +868,7 @@ private Q_SLOTS:
         tray.one()->item()->activate();
         QTRY_VERIFY(window.isVisible());
         QCOMPARE(toShow.count(), 1);
+        QCOMPARE(toStatus.count(), 2);
     }
 
     /// The setting on and several accounts: an icon each, with the account's
@@ -926,7 +928,7 @@ private Q_SLOTS:
     }
 
     /// A second account splits the one icon in two. A click on the icon of the
-    /// account the window in front does not show turns the window to it; a
+    /// account the window in front does not show turns the window to its Status; a
     /// click on the icon of the one it shows hides the window.
     void aSecondAccountSplitsTheIconAndAClickTurnsTheWindow()
     {
@@ -945,17 +947,21 @@ private Q_SLOTS:
         QWindow window;
         tray.setWindow(&window);
         current.select(m_accounts->at(0)->path());
+        QSignalSpy toStatus(&tray, &TrayIcon::statusToShow);
 
         tray.perAccount().at(0)->item()->activate();
         QTRY_VERIFY(window.isVisible() && window.isActive());
         QCOMPARE(current.path(), m_accounts->at(0)->path());
+        QCOMPARE(toStatus.count(), 1);
 
         tray.perAccount().at(1)->item()->activate();
         QCOMPARE(current.path(), family->path);
         QVERIFY(window.isVisible());
+        QCOMPARE(toStatus.count(), 2);
 
         tray.perAccount().at(1)->item()->activate();
         QTRY_VERIFY(!window.isVisible());
+        QCOMPARE(toStatus.count(), 2);
     }
 };
 

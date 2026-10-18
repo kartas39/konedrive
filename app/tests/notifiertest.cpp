@@ -102,6 +102,7 @@ private Q_SLOTS:
         report(QStringLiteral("failed"), QStringLiteral("big.iso"), QStringLiteral("not enough disk space"));
         QCOMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.first().event, QStringLiteral("diskFull"));
+        QCOMPARE(m_sink.sent.first().section, WindowSection::Storage);
         QVERIFY2(m_sink.sent.first().text.contains(QStringLiteral("big.iso")), qPrintable(m_sink.sent.first().text));
     }
 
@@ -111,6 +112,7 @@ private Q_SLOTS:
         report(QStringLiteral("failed"), QStringLiteral("a.txt"), QStringLiteral("the connection was reset"));
         QCOMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.first().event, QStringLiteral("downloadFailed"));
+        QCOMPARE(m_sink.sent.first().section, WindowSection::Activity);
         QVERIFY(m_sink.sent.first().text.contains(QStringLiteral("a.txt")));
         QVERIFY(m_sink.sent.first().text.contains(QStringLiteral("the connection was reset")));
     }
@@ -123,6 +125,7 @@ private Q_SLOTS:
         report(QStringLiteral("not-removed-here"), QStringLiteral("Notebooks"), QString());
         QCOMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.first().event, QStringLiteral("notRemovedHere"));
+        QCOMPARE(m_sink.sent.first().section, WindowSection::NotInFolder);
         QCOMPARE(m_sink.sent.first().text,
                  QStringLiteral("Notebooks cannot be removed here: it holds items that can't be shown in the folder. Remove it in OneDrive."));
         QCOMPARE(m_sink.sent.first().showPath, QString());
@@ -135,6 +138,7 @@ private Q_SLOTS:
         report(QStringLiteral("update-failed"), QStringLiteral("a.txt"), QStringLiteral("the connection was reset"));
         QCOMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.first().event, QStringLiteral("updateFailed"));
+        QCOMPARE(m_sink.sent.first().section, WindowSection::Activity);
         QVERIFY(m_sink.sent.first().text.contains(QStringLiteral("a.txt")));
         QVERIFY(m_sink.sent.first().text.contains(QStringLiteral("the connection was reset")));
     }
@@ -168,6 +172,7 @@ private Q_SLOTS:
         QCOMPARE(notice.title, QStringLiteral("Changed on both sides"));
         QCOMPARE(notice.text, QStringLiteral("Report.docx changed here and in OneDrive. Kept both versions: yours is Report-fedora.docx."));
         QCOMPARE(notice.showPath, Root + QStringLiteral("/Report-fedora.docx"));
+        QCOMPARE(notice.section, WindowSection::KeptBothVersions);
     }
 
     /// A change that cannot go up notifies with the reason in words; a full
@@ -181,6 +186,7 @@ private Q_SLOTS:
         QCOMPARE(m_sink.sent.at(0).title, QStringLiteral("Can't upload"));
         QVERIFY2(m_sink.sent.at(0).text.contains(QStringLiteral("a:b.txt can't upload. A name OneDrive refuses")), qPrintable(m_sink.sent.at(0).text));
         QCOMPARE(m_sink.sent.at(0).showPath, Root + QStringLiteral("/a:b.txt"));
+        QCOMPARE(m_sink.sent.at(0).section, WindowSection::CantUpload);
 
         m_nowMs += Notifier::WindowMs + 1;
         m_notifier->flushDue();
@@ -188,6 +194,7 @@ private Q_SLOTS:
         QCOMPARE(m_sink.sent.size(), 2);
         QCOMPARE(m_sink.sent.at(1).title, QStringLiteral("OneDrive is full"));
         QCOMPARE(m_sink.sent.at(1).text, QStringLiteral("big.iso can't upload until there is space in OneDrive."));
+        QCOMPARE(m_sink.sent.at(1).section, WindowSection::CantUpload);
     }
 
     /// OneDrive turning full notifies once, for the account (issue #2).
@@ -197,6 +204,7 @@ private Q_SLOTS:
         m_daemon->sync->queue->set({{QStringLiteral("QuotaFull"), true}, {QStringLiteral("QuotaWaitingCount"), QVariant::fromValue<uint>(3)}});
         QTRY_COMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.at(0).title, QStringLiteral("OneDrive is full"));
+        QCOMPARE(m_sink.sent.at(0).section, WindowSection::CantUpload);
         m_daemon->sync->queue->set({{QStringLiteral("QuotaWaitingCount"), QVariant::fromValue<uint>(4)}});
         QTest::qWait(50);
         QCOMPARE(m_sink.sent.size(), 1);
@@ -214,6 +222,7 @@ private Q_SLOTS:
         m_daemon->sync->transfers->set({{QStringLiteral("RetryAfterRefusal"), QString(Root + QStringLiteral("/budget.xlsx"))}});
         QTRY_COMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.at(0).event, QStringLiteral("throttled"));
+        QCOMPARE(m_sink.sent.at(0).section, WindowSection::Status);
         QCOMPARE(m_sink.sent.at(0).title, QStringLiteral("OneDrive asked to wait"));
         QCOMPARE(m_sink.sent.at(0).text, QStringLiteral("OneDrive asked this device to wait about 5 minutes. budget.xlsx opens after that."));
 
@@ -261,6 +270,7 @@ private Q_SLOTS:
         QTRY_COMPARE(m_account->state(), QStringLiteral("signed-out"));
         QTRY_COMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.first().event, QStringLiteral("signedOut"));
+        QCOMPARE(m_sink.sent.first().section, WindowSection::Status);
     }
 
     /// Starting signed out, or a sign-in given up, is not news.
@@ -386,6 +396,7 @@ private Q_SLOTS:
         QCOMPARE(m_sink.sent.size(), 3);
         const Notice &summary = m_sink.sent.at(2);
         QCOMPARE(summary.event, QStringLiteral("downloadFailed"));
+        QCOMPARE(summary.section, WindowSection::Activity);
         QCOMPARE(summary.count, 2);
         QVERIFY2(summary.text.contains(QStringLiteral("2 more files")), qPrintable(summary.text));
 

@@ -981,6 +981,8 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `generated/reasontexts.h`, `generated/reasontexts.cpp` — generated from `konedrive-text`, not
   edited: the window's sentence for every reason, and how a reason is cut into its parts.
 - `notifier.h`, `notifier.cpp` — the notifications.
+- `windowsection.h` — where a click on a notification opens the window: a page, or a section
+  of Issues.
 - `konedrive.notifyrc` — the notification events.
 - `trayicon.h`, `trayicon.cpp` — the app in the tray: one icon for every account, or one each.
 - `trayitem.h`, `trayitem.cpp` — one tray icon and its menu.

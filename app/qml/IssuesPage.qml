@@ -36,6 +36,8 @@ ListPage {
     property string shownCounts: ""
     /// The skippedCount the skipped list was last asked for at.
     property var shownSkipped: -1
+    /// The section showSection() asked for, until it is brought to the top.
+    property string wantedSection: ""
     readonly property bool nothing: summary.length === 0 && (sync === null || (sync.conflictCount === 0 && sync.skippedCount === 0))
 
     function countsNow() {
@@ -77,6 +79,29 @@ ListPage {
         return bytes > 0 ? Qt.locale().formattedDataSize(bytes) : "";
     }
 
+    /// Brings a section to the top: Can't Upload, which heads the list, or the heading of Kept
+    /// Both Versions or of Can't Be Shown in the Folder ("cantUpload", "keptBothVersions",
+    /// "notInFolder"). A section whose rows are still on their way is brought once they come,
+    /// while the page is shown. A heading at the top stays there when the header above it
+    /// grows: the rows' places do not depend on it.
+    function showSection(name) {
+        wantedSection = name;
+        showWanted();
+    }
+
+    function showWanted() {
+        if (wantedSection === "cantUpload") {
+            list.positionViewAtBeginning();
+            wantedSection = "";
+            return;
+        }
+        const heading = rows.findIndex(row => row.section === wantedSection && row.kind === "heading");
+        if (heading >= 0) {
+            list.positionViewAtIndex(heading, ListView.Beginning);
+            wantedSection = "";
+        }
+    }
+
     /// Takes the conflicts and the skipped list into `rows`. Rows that have not changed are
     /// left as they are, and otherwise the list stays at the row it showed on top.
     function take() {
@@ -109,12 +134,19 @@ ListPage {
         if (top > 0 && next.length > 0) {
             list.positionViewAtIndex(Math.min(top, next.length - 1), ListView.Beginning);
         }
+        if (wantedSection !== "") {
+            showWanted();
+        }
     }
 
     objectName: "issuesPage"
     title: window ? window.accountTitle(i18nc("@title", "Issues")) : i18nc("@title", "Issues")
 
     onVisibleChanged: {
+        // A section asked for is brought while the page is shown, not the next time it is.
+        if (!visible) {
+            wantedSection = "";
+        }
         load();
         loadSkipped();
     }

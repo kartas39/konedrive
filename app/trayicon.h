@@ -56,6 +56,8 @@ Q_SIGNALS:
     /// the account of the icon clicked, or with one icon for them all the only
     /// account needing attention.
     void accountToShow(const QString &path);
+    /// A click is about to show the window, or to turn it to another account: on Status.
+    void statusToShow();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;

@@ -1,5 +1,6 @@
 #include "fakedaemon.h"
 #include "qmlregistration.h"
+#include "windowsection.h"
 
 #include <KLocalizedQmlContext>
 #include <KLocalizedString>
@@ -1064,6 +1065,77 @@ private Q_SLOTS:
         type("/none");
         QTRY_COMPARE(list->property("count").toInt(), 0);
         QTRY_VERIFY(nothingFound->isVisible());
+        fake.stop();
+    }
+
+    /// A notification opens the window where it is dealt with (Notice::section): its page,
+    /// and on Issues its section at the top, wherever the list was left.
+    void aNoticeOpensItsSection_data()
+    {
+        QTest::addColumn<int>("section");
+        QTest::addColumn<QString>("page");
+        /// On Issues, the row brought to the top; -1 for the top of the list, Can't Upload.
+        QTest::addColumn<int>("topRow");
+        QTest::newRow("status") << int(WindowSection::Status) << QStringLiteral("status") << 0;
+        QTest::newRow("can't upload") << int(WindowSection::CantUpload) << QStringLiteral("issues") << -1;
+        // Its heading, then the 30 conflicts.
+        QTest::newRow("kept both versions") << int(WindowSection::KeptBothVersions) << QStringLiteral("issues") << 0;
+        QTest::newRow("not in the folder") << int(WindowSection::NotInFolder) << QStringLiteral("issues") << 31;
+        QTest::newRow("activity") << int(WindowSection::Activity) << QStringLiteral("activity") << 0;
+        QTest::newRow("storage") << int(WindowSection::Storage) << QStringLiteral("storage") << 0;
+    }
+
+    void aNoticeOpensItsSection()
+    {
+        QFETCH(int, section);
+        QFETCH(QString, page);
+        QFETCH(int, topRow);
+        const QString root = QStringLiteral("/home/u/OneDrive");
+        FakeDaemon fake;
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        fake.sync->folder->set({{QStringLiteral("Path"), root},
+                                {QStringLiteral("State"), QStringLiteral("ready")},
+                                {QStringLiteral("Source"), QStringLiteral("onedrive")},
+                                {QStringLiteral("SkippedCount"), QVariant::fromValue<qulonglong>(50)}});
+        fake.sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(30)}});
+        fake.sync->skippedList.clear();
+        for (int i = 0; i < 50; ++i) {
+            fake.sync->skippedList << KonedriveNotInFolderItem{root + QStringLiteral("/Shared/%1").arg(i), QStringLiteral("shared"), QString(), QString()};
+        }
+        for (int i = 0; i < 30; ++i) {
+            fake.sync->conflictList << KonedriveConflict{i, root + QStringLiteral("/%1.txt").arg(i), root + QStringLiteral("/%1-fedora.txt").arg(i), QStringLiteral("copy")};
+        }
+        fake.sync->keptBack = {{QStringLiteral("one-action"), QStringLiteral("forbidden"), 2, 2048}};
+        QVERIFY(fake.start());
+        App app;
+        QVERIFY(app.load());
+        QTRY_COMPARE(app.accounts.count(), 1);
+        SyncController *sync = app.accounts.at(0)->sync();
+        QTRY_VERIFY(sync->serviceAvailable() && sync->conflicts()->count() == 30);
+
+        // Issues filled and left at its end; then Status.
+        QMetaObject::invokeMethod(app.window, "showPage", Q_ARG(QVariant, QStringLiteral("issues")));
+        auto *list = app.find("issuesList");
+        QVERIFY(list);
+        QTRY_COMPARE(list->property("count").toInt(), 1 + 30 + 1 + 50);
+        QMetaObject::invokeMethod(list, "positionViewAtEnd");
+        QMetaObject::invokeMethod(app.window, "showPage", Q_ARG(QVariant, QStringLiteral("status")));
+        QTRY_COMPARE(app.pageShown(), QStringLiteral("statusPage"));
+
+        QMetaObject::invokeMethod(app.window, "showSection", Q_ARG(QVariant, sectionName(WindowSection(section))));
+        QTRY_COMPARE(app.window->property("currentPage").toString(), page);
+        if (page == QLatin1String("issues")) {
+            const auto top = [list] {
+                int row = -1;
+                QMetaObject::invokeMethod(list, "indexAt", Q_RETURN_ARG(int, row), Q_ARG(qreal, 0), Q_ARG(qreal, list->property("contentY").toReal() + 1));
+                return row;
+            };
+            if (topRow < 0) {
+                QTRY_COMPARE(list->property("contentY").toReal(), list->property("originY").toReal());
+            } else {
+                QTRY_COMPARE(top(), topRow);
+            }
+        }
         fake.stop();
     }
 

@@ -79,6 +79,20 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    /// Shows where a notification leads, by its name (sectionName() of a WindowSection): a
+    /// page, or a section of Issues brought to the top.
+    function showSection(name) {
+        const issuesSections = ["cantUpload", "keptBothVersions", "notInFolder"];
+        if (!issuesSections.includes(name)) {
+            showPage(name);
+            return;
+        }
+        showPage("issues");
+        if (currentPage === "issues") {
+            issuesPage.showSection(name);
+        }
+    }
+
     /// The page shown again once what it shows changes: one with nothing left to show gives way.
     function reconsiderPage() {
         if (!pageShows(currentPage)) {

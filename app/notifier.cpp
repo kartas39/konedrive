@@ -33,7 +33,7 @@ QString copyTitle()
 }
 }
 
-KNotificationSink::KNotificationSink(std::function<void(const QString &account)> openWindow)
+KNotificationSink::KNotificationSink(OpenWindow openWindow)
     : m_openWindow(std::move(openWindow))
 {
 }
@@ -54,14 +54,15 @@ void KNotificationSink::send(const Notice &notice)
     }
     if (m_openWindow) {
         KNotificationAction *open = notification->addDefaultAction(i18nc("@action", "Open KOneDrive"));
-        const std::function<void(const QString &)> openWindow = m_openWindow;
+        const OpenWindow openWindow = m_openWindow;
         const QString account = notice.account;
-        QObject::connect(open, &KNotificationAction::activated, notification, [notification, openWindow, account] {
+        const WindowSection section = notice.section;
+        QObject::connect(open, &KNotificationAction::activated, notification, [notification, openWindow, account, section] {
             // The click hands over the right to raise a window (xdg-activation on Wayland).
             if (const QString token = notification->xdgActivationToken(); !token.isEmpty()) {
                 KWindowSystem::setCurrentXdgActivationToken(token);
             }
-            openWindow(account);
+            openWindow(account, section);
         });
     }
     notification->sendEvent();
@@ -110,6 +111,7 @@ void Notifier::onActivity(qint64, const QString &kind, const QString &path, cons
     if (kind == QLatin1String("not-removed-here")) {
         // The path is the directory; rmdir itself could only say "not empty". Nothing to press.
         post({QStringLiteral("notRemovedHere"),
+              WindowSection::NotInFolder,
               i18nc("@title notification", "Folder not removed"),
               i18n("%1 cannot be removed here: it holds items that can't be shown in the folder. Remove it in OneDrive.", name),
               {}});
@@ -117,17 +119,18 @@ void Notifier::onActivity(qint64, const QString &kind, const QString &path, cons
     }
     if (kind == QLatin1String("conflict")) {
         // A file changed on both sides: the daemon's detail is the copy kept beside it.
-        post({QStringLiteral("conflict"), copyTitle(), i18n("%1 changed here and in OneDrive. Kept both versions: yours is %2.", name, fileName(detail)), detail});
+        post({QStringLiteral("conflict"), WindowSection::KeptBothVersions, copyTitle(), i18n("%1 changed here and in OneDrive. Kept both versions: yours is %2.", name, fileName(detail)), detail});
         return;
     }
     switch (classifyFailure(kind, detail)) {
     case ActivityFailure::None:
         return;
     case ActivityFailure::DiskFull:
-        post({QStringLiteral("diskFull"), i18nc("@title notification", "Not enough disk space"), i18n("%1 could not be downloaded: the disk is full.", name), {}});
+        post({QStringLiteral("diskFull"), WindowSection::Storage, i18nc("@title notification", "Not enough disk space"), i18n("%1 could not be downloaded: the disk is full.", name), {}});
         return;
     case ActivityFailure::Update:
         post({QStringLiteral("updateFailed"),
+              WindowSection::Activity,
               i18nc("@title notification", "A file could not be updated"),
               i18n("%1 changed in OneDrive but could not be updated here: %2", name, detail),
               {}});
@@ -136,15 +139,17 @@ void Notifier::onActivity(qint64, const QString &kind, const QString &path, cons
         // Blocked names and a full OneDrive are the usual ones; the detail is a reason code.
         if (detail == QLatin1String("quota-exceeded")) {
             post({QStringLiteral("uploadFailed"),
+                  WindowSection::CantUpload,
                   i18nc("@title notification", "OneDrive is full"),
                   i18n("%1 can't upload until there is space in OneDrive.", name),
                   path});
             return;
         }
-        post({QStringLiteral("uploadFailed"), i18nc("@title notification", "Can't upload"), i18n("%1 can't upload. %2", name, uploadReasonText(detail)), path});
+        post({QStringLiteral("uploadFailed"), WindowSection::CantUpload, i18nc("@title notification", "Can't upload"), i18n("%1 can't upload. %2", name, uploadReasonText(detail)), path});
         return;
     case ActivityFailure::Download:
         post({QStringLiteral("downloadFailed"),
+              WindowSection::Activity,
               i18nc("@title notification", "Download failed"),
               detail.isEmpty() ? i18n("%1 could not be downloaded.", name) : i18n("%1 could not be downloaded: %2", name, detail),
               {}});
@@ -162,6 +167,7 @@ void Notifier::onSyncChanged()
     const int full = int(m_sync->quotaFull());
     if (m_full == 0 && full == 1) {
         post({QStringLiteral("uploadFailed"),
+              WindowSection::CantUpload,
               i18nc("@title notification", "OneDrive is full"),
               i18n("Nothing more is uploaded until there is space in OneDrive. Free up space there, then choose Sync Now in KOneDrive."),
               {}});
@@ -175,6 +181,7 @@ void Notifier::onSyncChanged()
         const QString name = fileName(refused);
         const int minutes = int((m_sync->retryAfter() + 59) / 60);
         post({QStringLiteral("throttled"),
+              WindowSection::Status,
               i18nc("@title notification", "OneDrive asked to wait"),
               minutes > 0 ? i18np("OneDrive asked this device to wait about 1 minute. %2 opens after that.",
                                   "OneDrive asked this device to wait about %1 minutes. %2 opens after that.",
@@ -213,7 +220,7 @@ void Notifier::announceSignOut()
     if (m_account->state() != QLatin1String("signed-out")) {
         return;
     }
-    post({QStringLiteral("signedOut"), i18nc("@title notification", "Signed out of OneDrive"), i18n("Sign in again to keep your OneDrive folder up to date."), {}});
+    post({QStringLiteral("signedOut"), WindowSection::Status, i18nc("@title notification", "Signed out of OneDrive"), i18n("Sign in again to keep your OneDrive folder up to date."), {}});
 }
 
 void Notifier::setAccountName(std::function<QString()> name)
