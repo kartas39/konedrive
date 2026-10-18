@@ -5,6 +5,7 @@
 #include <KLocalizedString>
 
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QFile>
 #include <QLocale>
 #include <QQmlApplicationEngine>
@@ -16,17 +17,89 @@
 #include <QTemporaryDir>
 #include <QTest>
 
-/// The window's confirmations act on the account they were opened for.
-/// Another account chosen while one is open — by a notification, the tray,
-/// or konedrivectl removing the one shown — closes it and never redirects
-/// it. Main.qml as the app loads it, offscreen, against the fake daemon;
-/// XDG_CONFIG_HOME is a temporary directory.
+/// The app's objects and its window: Main.qml loaded as main() loads it.
+struct App {
+    Autostart autostart;
+    DownloadProgressSettings progress;
+    PlacesSettings places;
+    TraySettings trayIcons;
+    DaemonController daemon;
+    AccountsModel accounts{&daemon};
+    CurrentAccount current{&accounts};
+    ServiceUnit serviceUnit;
+    QQmlApplicationEngine engine;
+    QQuickWindow *window = nullptr;
+
+    /// Loads and shows the window; false when it could not be loaded.
+    bool load()
+    {
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+        KLocalization::setupLocalizedContext(&engine);
+        engine.loadFromModule("org.konedrive.app.window", "Main");
+        window = engine.rootObjects().isEmpty() ? nullptr : qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        if (window) {
+            window->show();
+        }
+        return window != nullptr;
+    }
+
+    template<typename T = QQuickItem>
+    T *find(const char *name) const
+    {
+        return window->findChild<T *>(QLatin1String(name));
+    }
+
+    /// Whether the sidebar shows the entry of the page `name`; the entries are a
+    /// Repeater's, found by the visual tree.
+    bool inSidebar(const QString &name) const
+    {
+        const QQuickItem *entry = named(window->contentItem(), QStringLiteral("sidebar-") + name);
+        return entry && entry->isVisible();
+    }
+
+    static const QQuickItem *named(const QQuickItem *root, const QString &name)
+    {
+        const auto children = root->childItems();
+        for (const QQuickItem *item : children) {
+            if (item->objectName() == name) {
+                return item;
+            }
+            if (const QQuickItem *found = named(item, name)) {
+                return found;
+            }
+        }
+        return nullptr;
+    }
+
+    /// The page the window shows: its objectName.
+    QString pageShown() const
+    {
+        auto *stack = window->property("pageStack").value<QObject *>();
+        auto *page = stack ? stack->property("currentItem").value<QObject *>() : nullptr;
+        return page ? page->objectName() : QString();
+    }
+};
+
+/// The window's pages, by what the account and its folder are, and its confirmations,
+/// which act on the account they were opened for: another account chosen while one is
+/// open — by a notification, the tray, or konedrivectl removing the one shown — closes it
+/// and never redirects it. Main.qml as the app loads it, offscreen, against the fake daemon;
+/// XDG_CONFIG_HOME is a temporary directory, and an address the window opens is kept here
+/// rather than given to a browser.
 class DialogsTest : public QObject
 {
     Q_OBJECT
 
+public Q_SLOTS:
+    /// QDesktopServices' handler of https: what Qt.openUrlExternally was given.
+    void openUrl(const QUrl &url)
+    {
+        m_opened << url;
+    }
+
 private:
     QTemporaryDir m_config;
+    QList<QUrl> m_opened;
 
     static bool shown(const QObject *dialog)
     {
@@ -98,6 +171,148 @@ private Q_SLOTS:
         qputenv("XDG_CONFIG_HOME", QFile::encodeName(m_config.path()));
         KLocalizedString::setApplicationDomain("konedrive");
         QQuickStyle::setStyle(QStringLiteral("org.kde.desktop"));
+        QDesktopServices::setUrlHandler(QStringLiteral("https"), this, "openUrl");
+    }
+
+    void init()
+    {
+        m_opened.clear();
+    }
+
+    /// Adding a OneDrive is one page, the first one and one more alike: Sign In, its wait with
+    /// the link to copy and Cancel, and why a sign-in added nothing. Added, the account's
+    /// Status offers its folder; the pages about the folder show only once it has one.
+    void addingAOneDriveIsOnePage()
+    {
+        FakeDaemon fake({});
+        QVERIFY(fake.start());
+        App app;
+        QVERIFY(app.load());
+        QTRY_VERIFY(app.daemon.serviceAvailable());
+        QTRY_COMPARE(app.pageShown(), QStringLiteral("signInPage"));
+        auto *signIn = app.find("signInButton");
+        auto *wait = app.find("signInWait");
+        auto *copy = app.find("copySignInLink");
+        auto *error = app.find("addError");
+        QVERIFY(signIn && wait && copy && error);
+        QVERIFY(signIn->isVisible() && !wait->isVisible() && !error->isVisible());
+        // With no account, only adding one and Settings are in the sidebar.
+        QVERIFY(app.inSidebar(QStringLiteral("signIn")));
+        QVERIFY(!app.inSidebar(QStringLiteral("overview")));
+        QVERIFY(!app.inSidebar(QStringLiteral("issues")));
+        QVERIFY(app.inSidebar(QStringLiteral("settings")));
+
+        // Refused: why, and Sign In again.
+        fake.manager->refuseSignIn = QStringLiteral("no client id");
+        QMetaObject::invokeMethod(signIn, "clicked");
+        QTRY_VERIFY(error->isVisible());
+        QCOMPARE(error->property("text").toString(), QStringLiteral("no client id"));
+        QVERIFY(signIn->isVisible());
+
+        // The sign-in waits in the browser: its link can be copied.
+        fake.manager->refuseSignIn.clear();
+        QMetaObject::invokeMethod(signIn, "clicked");
+        QTRY_VERIFY(wait->isVisible());
+        QVERIFY(!error->isVisible() && !signIn->isVisible());
+        QTRY_COMPARE(m_opened.size(), 1);
+        QVERIFY(copy->isEnabled());
+        fake.finishSignIn(QStringLiteral("signed-in"), QStringLiteral("ann@example.com"));
+        QTRY_COMPARE(app.accounts.count(), 1);
+        QTRY_COMPARE(app.pageShown(), QStringLiteral("overviewPage"));
+        QCOMPARE(app.current.path(), fake.object(0)->path);
+        QTRY_VERIFY(app.find("folderChoiceCard")->isVisible());
+        QVERIFY(!app.find("headCard")->isVisible());
+        QVERIFY(!app.inSidebar(QStringLiteral("signIn")));
+        QVERIFY(app.inSidebar(QStringLiteral("overview")));
+        QVERIFY(!app.inSidebar(QStringLiteral("issues")) && !app.inSidebar(QStringLiteral("oneDriveSettings")));
+        // A page about the folder gives way to Status.
+        QMetaObject::invokeMethod(app.window, "showPage", Q_ARG(QVariant, QStringLiteral("activity")));
+        QCOMPARE(app.pageShown(), QStringLiteral("overviewPage"));
+
+        // One more, from the switcher: the same page, and Cancel gives the sign-in up.
+        auto *switcher = app.find<QObject>("accountSwitcher");
+        QVERIFY(switcher);
+        QMetaObject::invokeMethod(switcher, "addRequested");
+        QTRY_COMPARE(app.pageShown(), QStringLiteral("signInPage"));
+        QVERIFY(signIn->isVisible());
+        QMetaObject::invokeMethod(signIn, "clicked");
+        QTRY_VERIFY(wait->isVisible());
+        QMetaObject::invokeMethod(app.find("cancelSignIn"), "clicked");
+        QTRY_VERIFY(signIn->isVisible());
+        QVERIFY(!error->isVisible());
+        QCOMPARE(app.accounts.count(), 1);
+        fake.stop();
+    }
+
+    /// The account with no folder: its Status is the folder step, which offers ~/OneDrive (or
+    /// the next free one); Continue makes and registers it. Two-way waits for the browser
+    /// first. Cancel asks to disconnect the account. HOME is a temporary directory.
+    void theFolderStepGivesTheFolderOffered()
+    {
+        QTemporaryDir home;
+        QVERIFY(home.isValid());
+        const QByteArray realHome = qgetenv("HOME");
+        qputenv("HOME", QFile::encodeName(home.path()));
+        FakeDaemon fake({QStringLiteral("ann@example.com"), QStringLiteral("Family")});
+        fake.object(0)->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}, {QStringLiteral("Email"), QStringLiteral("ann@example.com")}});
+        fake.object(0)->sync->folder->decide("offline", "no-folder");
+        fake.object(1)->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        fake.object(1)->sync->folder->set({{QStringLiteral("Path"), QString(home.path() + QStringLiteral("/OneDrive"))},
+                                           {QStringLiteral("State"), QStringLiteral("ready")},
+                                           {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+        QVERIFY(fake.start());
+        App app;
+        QVERIFY(app.load());
+        QTRY_COMPARE(app.accounts.count(), 2);
+        app.current.select(fake.object(0)->path);
+        QTRY_VERIFY(app.accounts.at(0)->account()->state() == QLatin1String("signed-in"));
+        auto *card = app.find("folderChoiceCard");
+        auto *offered = app.find("offeredFolder");
+        auto *twoWay = app.find("twoWaySwitch");
+        auto *next = app.find("continueButton");
+        QVERIFY(card && offered && twoWay && next);
+        QTRY_VERIFY(card->isVisible());
+        // Family has ~/OneDrive.
+        QTRY_COMPARE(offered->property("text").toString(), QStringLiteral("~/OneDrive-ann"));
+        QVERIFY(!twoWay->property("checked").toBool());
+
+        // Two-way: the switch first, the folder once it is granted.
+        twoWay->setProperty("checked", true);
+        QMetaObject::invokeMethod(twoWay, "toggled");
+        QMetaObject::invokeMethod(next, "clicked");
+        QTRY_VERIFY(fake.object(0)->account->calls.contains(QStringLiteral("SetMode:read-write:no-force")));
+        QTRY_COMPARE(m_opened.size(), 1);
+        QTRY_VERIFY(app.find("cancelTwoWayButton")->isVisible());
+        QVERIFY(!next->isVisible());
+        QVERIFY(!fake.object(0)->sync->calls.join(QLatin1Char(' ')).contains(QStringLiteral("Register")));
+        fake.object(0)->account->grantReadWrite();
+        const QString folder = home.path() + QStringLiteral("/OneDrive-ann");
+        QTRY_VERIFY(fake.object(0)->sync->calls.contains(QStringLiteral("Register:") + folder));
+        QVERIFY(QFileInfo(folder).isDir());
+        fake.object(0)->sync->folder->decide("ok", "up-to-date");
+        QTRY_VERIFY(!card->isVisible());
+        QTRY_VERIFY(app.find("headCard")->isVisible());
+        QVERIFY(app.inSidebar(QStringLiteral("issues")));
+
+        // Family's folder forgotten: the step again, offering ~/OneDrive; Cancel asks to disconnect.
+        const QString family = fake.object(1)->path;
+        app.current.select(family);
+        fake.object(1)->sync->folder->set({{QStringLiteral("Path"), QString()}, {QStringLiteral("State"), QStringLiteral("none")}});
+        fake.object(1)->sync->folder->decide("offline", "no-folder");
+        QTRY_VERIFY(card->isVisible());
+        QTRY_COMPARE(offered->property("text").toString(), QStringLiteral("~/OneDrive"));
+        auto *cancel = app.find<QObject>("cancelSetUpDialog");
+        QVERIFY(cancel);
+        QMetaObject::invokeMethod(app.find("cancelSetUpButton"), "clicked");
+        QTRY_VERIFY(shown(cancel));
+        QCOMPARE(cancel->property("title").toString(), QStringLiteral("Disconnect Family?"));
+        QMetaObject::invokeMethod(cancel, "confirm");
+        QTRY_VERIFY(fake.manager->calls.contains(QStringLiteral("Remove:") + family));
+        // Closed, not closing: its transition must not outlive the window.
+        QTRY_VERIFY(!shown(cancel));
+        QTRY_COMPARE(app.accounts.count(), 1);
+        fake.stop();
+        qputenv("HOME", realHome);
     }
 
     void aDialogStaysWithItsAccount()
@@ -284,7 +499,7 @@ private Q_SLOTS:
 
     /// Disconnecting and moving to another folder are never refused for what is unsent:
     /// the question says first how many changes stay on this device only. Another folder,
-    /// confirmed, forgets this one and then opens the folder picker.
+    /// confirmed, forgets this one, and Status offers the new one.
     void disconnectingAndAnotherFolderWarnOfUnsentChanges()
     {
         FakeDaemon fake;
@@ -348,16 +563,17 @@ private Q_SLOTS:
         QTRY_VERIFY(!shown(another));
         QTest::qWait(100);
         QVERIFY(!fake.sync->calls.contains(QStringLiteral("Unregister")));
-        // Asked again and confirmed: forgotten, then the picker opens for the account.
+        // Asked again and confirmed: forgotten, and Status offers a new folder.
         QMetaObject::invokeMethod(another, "open");
         QTRY_VERIFY(shown(another));
         QMetaObject::invokeMethod(another, "confirm");
         QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Unregister")));
         QTRY_VERIFY(!shown(another));
         QTRY_VERIFY(accounts.at(0)->sync()->rootPath().isEmpty());
-        QObject *picker = window->findChild<QObject *>(QStringLiteral("folderDialog"));
-        QVERIFY(picker);
-        QTRY_COMPARE(picker->property("item").value<QObject *>(), accounts.at(0));
+        fake.sync->folder->decide("offline", "no-folder");
+        auto *step = window->findChild<QQuickItem *>(QStringLiteral("folderChoiceCard"));
+        QVERIFY(step);
+        QTRY_VERIFY(step->isVisible());
 
         fake.stop();
     }
@@ -699,65 +915,6 @@ private Q_SLOTS:
                               {QStringLiteral("Took"), QVariant::fromValue<uint>(40)}});
         QTRY_VERIFY(!line->isVisible());
         fake.stop();
-    }
-
-    /// Setting up an account that has no folder: the Overview offers ~/OneDrive, made when
-    /// it is not there, and then asks how the folder syncs. HOME is a temporary directory.
-    void theOverviewSetsUpAFolderAndAMode()
-    {
-        QTemporaryDir home;
-        QVERIFY(home.isValid());
-        const QByteArray realHome = qgetenv("HOME");
-        qputenv("HOME", QFile::encodeName(home.path()));
-        FakeDaemon fake;
-        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
-        fake.sync->folder->decide("offline", "no-folder");
-        QVERIFY(fake.start());
-
-        Autostart autostart;
-        DownloadProgressSettings progress;
-        PlacesSettings places;
-        TraySettings trayIcons;
-        DaemonController daemon;
-        AccountsModel accounts(&daemon);
-        CurrentAccount current(&accounts);
-        ServiceUnit serviceUnit;
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
-
-        QQmlApplicationEngine engine;
-        KLocalization::setupLocalizedContext(&engine);
-        engine.loadFromModule("org.konedrive.app.window", "Main");
-        QVERIFY(!engine.rootObjects().isEmpty());
-        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
-        QVERIFY(window);
-        window->show();
-        QTRY_COMPARE(accounts.count(), 1);
-        QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
-        auto *headline = window->findChild<QQuickItem *>(QStringLiteral("headline"));
-        auto *useDefault = window->findChild<QQuickItem *>(QStringLiteral("useDefaultFolderButton"));
-        auto *modeChoice = window->findChild<QQuickItem *>(QStringLiteral("modeChoiceCard"));
-        auto *readOnly = window->findChild<QQuickItem *>(QStringLiteral("chooseReadOnly"));
-        auto *modeLine = window->findChild<QQuickItem *>(QStringLiteral("modeLine"));
-        QVERIFY(headline && useDefault && modeChoice && readOnly && modeLine);
-        QTRY_COMPARE(headline->property("text").toString(), QStringLiteral("Choose where your OneDrive appears"));
-        QTRY_VERIFY(useDefault->isVisible());
-        QCOMPARE(useDefault->property("text").toString(), QStringLiteral("Use ~/OneDrive"));
-
-        QMetaObject::invokeMethod(useDefault, "clicked");
-        const QString folder = home.path() + QStringLiteral("/OneDrive");
-        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Register:") + folder));
-        QVERIFY(QFileInfo(folder).isDir());
-        fake.sync->folder->decide("ok", "up-to-date");
-        QTRY_VERIFY(modeChoice->isVisible());
-        QVERIFY(!modeLine->isVisible());
-
-        QMetaObject::invokeMethod(readOnly, "clicked");
-        QTRY_VERIFY(!modeChoice->isVisible());
-        QTRY_VERIFY(modeLine->isVisible());
-        QCOMPARE(modeLine->property("text").toString(), QStringLiteral("Read-only"));
-        QVERIFY(!fake.account->calls.join(QLatin1Char(' ')).contains(QStringLiteral("SetMode")));
-        fake.stop();
-        qputenv("HOME", realHome);
     }
 
     /// With no service, the Overview says so and starts it; a start refused (the test bus

@@ -91,6 +91,7 @@ add_library(konedrive_core STATIC
     synccontroller.cpp
     accountsmodel.cpp
     currentaccount.cpp
+    folderchoice.cpp
     transfermodel.cpp
     activitymodel.cpp
     conflictmodel.cpp
@@ -143,7 +144,10 @@ qt_policy(SET QTP0004 NEW)
 qt_add_library(konedrive_window STATIC)
 set(KONEDRIVE_QML
     Main.qml
+    qml/SignInPage.qml
     qml/OverviewPage.qml
+    qml/FolderChoiceCard.qml
+    qml/DisconnectDialog.qml
     qml/IssuesPage.qml
     qml/ConflictsPage.qml
     qml/SkippedPage.qml
@@ -198,6 +202,7 @@ if(BUILD_TESTING)
 
     konedrive_test(accountcontrollertest)
     konedrive_test(accountsmodeltest)
+    konedrive_test(folderchoicetest)
     konedrive_test(synccontrollertest)
     konedrive_test(modelstest)
     konedrive_test(reasontextstest)

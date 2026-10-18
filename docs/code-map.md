@@ -955,11 +955,16 @@ Each has its file in `crates/konedrived/src/dbus/`.
 
 - `CMakeLists.txt` — the build; reads the version from `Cargo.toml`.
 - `main.cpp` — the program: single instance, the window, the tray.
-- `Main.qml` — the window: pages chosen from a sidebar.
+- `Main.qml` — the window: pages chosen from a sidebar, each shown only while there is something
+  on it to see or do.
 - `qmlregistration.h` — what the QML finds in `org.konedrive.app`.
 - `daemoncontroller.h`, `daemoncontroller.cpp` — the manager object, `org.konedrive.Accounts`.
-- `accountsmodel.h`, `accountsmodel.cpp` — the accounts, each with its controllers; Sign In.
+- `accountsmodel.h`, `accountsmodel.cpp` — the accounts, each with its controllers; Sign In and
+  its link.
 - `currentaccount.h`, `currentaccount.cpp` — the account the window shows.
+- `folderchoice.h`, `folderchoice.cpp` — the folder offered to the account shown while it has
+  none, and Continue: the folder registered, once the switch to two-way is granted when asked.
+- `foldertext.h` — a folder's path as the window writes it, from `~`.
 - `accountcontroller.h`, `accountcontroller.cpp` — one account's `org.konedrive.Account`.
 - `synccontroller.h`, `synccontroller.cpp` — one account's folder, for QML.
 - `synctypes.h` — the structured types of the folder's interfaces.
@@ -994,8 +999,12 @@ Each has its file in `crates/konedrived/src/dbus/`.
 ### `app/qml/`
 
 - `AccountSwitcher.qml` — the top of the sidebar: the OneDrive the pages show.
+- `SignInPage.qml` — adding a OneDrive: Microsoft's sign-in in the browser, its link, Cancel.
 - `OverviewPage.qml` — the start page: how the folder is doing, what needs the user, what moves
-  now and the space it takes; with no account, setting one up.
+  now and the space it takes; with no folder, choosing it.
+- `FolderChoiceCard.qml` — the last step of adding a OneDrive, on the Overview: the folder, two-way
+  sync or not, Continue; Cancel disconnects.
+- `DisconnectDialog.qml` — the question before an account is disconnected.
 - `IssuesPage.qml` — what needs the user: the changes that can't upload, the files whose both
   versions were kept, what can't be shown in the folder.
 - `ConflictsPage.qml` — the "Kept Both Versions" list.
@@ -1015,6 +1024,7 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `accountcontrollertest.cpp` — `AccountController`.
 - `accountsmodeltest.cpp` — `DaemonController`, `AccountsModel`, `CurrentAccount`.
 - `appstatustest.cpp` — `AccountStatus`, `AppStatus`.
+- `folderchoicetest.cpp` — the folder offered, how a folder is written, `FolderChoice`.
 - `synccontrollertest.cpp` — `SyncController`.
 - `reasontextstest.cpp` — every reason reads as it did before its sentence was generated.
 - `modelstest.cpp` — the transfer, activity and conflict models.

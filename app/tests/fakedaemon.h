@@ -1016,7 +1016,10 @@ public:
         signIn = 0;
         QString path = QStringLiteral("/");
         if (outcome == QLatin1String("signed-in")) {
-            path = addAccount(message, {{QStringLiteral("Email"), message}, {QStringLiteral("State"), QStringLiteral("signed-in")}})->path;
+            FakeAccountObject *added = addAccount(message, {{QStringLiteral("Email"), message}, {QStringLiteral("State"), QStringLiteral("signed-in")}});
+            // As the daemon says it of an account signed in with no folder yet.
+            added->sync->folder->decide("offline", "no-folder");
+            path = added->path;
         } else if (outcome == QLatin1String("already-added")) {
             for (const FakeAccountObject *object : std::as_const(objects)) {
                 if (object->account->label() == message) {

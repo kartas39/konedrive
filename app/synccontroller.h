@@ -35,6 +35,8 @@ class SyncController : public QObject
     Q_PROPERTY(bool serviceAvailable READ serviceAvailable NOTIFY serviceAvailableChanged)
     Q_PROPERTY(QString path READ path CONSTANT)
     Q_PROPERTY(QString rootPath READ rootPath NOTIFY syncChanged)
+    /// The folder as the window writes it: ~/OneDrive.
+    Q_PROPERTY(QString rootPathText READ rootPathText NOTIFY syncChanged)
     Q_PROPERTY(QString rootState READ rootState NOTIFY syncChanged)
     Q_PROPERTY(QString rootSource READ rootSource NOTIFY syncChanged)
     /// Folder.Overall, as the daemon decided it: the state of the account as a whole
@@ -176,6 +178,7 @@ public:
     bool serviceAvailable() const { return m_serviceAvailable; }
     QString path() const { return m_path; }
     QString rootPath() const { return m_rootPath; }
+    QString rootPathText() const;
     QString rootState() const { return m_rootState; }
     QString rootSource() const { return m_rootSource; }
     QString overallState() const { return m_overallState; }

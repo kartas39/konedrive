@@ -24,14 +24,6 @@ FormCard.FormCardPage {
     readonly property string accountError: account ? (account.actionError.length > 0 ? account.actionError : account.lastError) : ""
     readonly property var window: QQC2.ApplicationWindow.window
 
-    /// What disconnecting, or another folder, says first of `count` changes made here
-    /// that are not uploaded.
-    function unsentWarning(count) {
-        return i18np("1 change made here is not uploaded yet: it stays on this device only, as a plain file.",
-                     "%1 changes made here are not uploaded yet: they stay on this device only, as plain files.",
-                     count);
-    }
-
     objectName: "oneDriveSettingsPage"
     title: window ? window.accountTitle(i18nc("@title", "OneDrive Settings")) : i18nc("@title", "OneDrive Settings")
 
@@ -146,15 +138,14 @@ FormCard.FormCardPage {
 
     // The folder: where the OneDrive shows up on this device.
     FormCard.FormHeader {
-        visible: page.signedIn || page.hasFolder
+        visible: page.hasFolder
         title: i18nc("@title:group", "Folder")
     }
     FormCard.FormCard {
-        visible: page.signedIn || page.hasFolder
+        visible: page.hasFolder
 
         FormCard.FormTextDelegate {
-            visible: page.hasFolder
-            text: page.sync ? page.window.shownPath(page.sync.rootPath) : ""
+            text: page.sync ? page.sync.rootPathText : ""
             description: i18n("Your OneDrive on this device")
             leading: Kirigami.Icon {
                 source: "folder-cloud"
@@ -169,23 +160,10 @@ FormCard.FormCardPage {
         }
         FormCard.FormButtonDelegate {
             objectName: "anotherFolderButton"
-            visible: page.hasFolder
             text: i18nc("@action:button", "Use Another Folder…")
             description: i18n("Your OneDrive moves to another empty folder; this one keeps its files as plain files.")
             icon.name: "folder-open"
             onClicked: anotherFolderDialog.open()
-        }
-        FormCard.FormTextDelegate {
-            visible: page.signedIn && !page.hasFolder
-            text: i18n("No folder yet")
-            description: i18n("Choose an empty folder. Your OneDrive shows up in it, and files download when you open them.")
-        }
-        FormCard.FormButtonDelegate {
-            objectName: "chooseFolder"
-            visible: page.signedIn && !page.hasFolder
-            text: i18nc("@action:button", "Choose Folder…")
-            icon.name: "folder-open"
-            onClicked: page.window.pickFolder(Current.item)
         }
     }
 
@@ -423,8 +401,8 @@ FormCard.FormCardPage {
         ]
     }
 
-    // Another folder: this one is forgotten (its files stay, as plain files), then the
-    // folder picker opens for the new one.
+    // Another folder: this one is forgotten (its files stay, as plain files), and the
+    // account's Status offers it a new one.
     Kirigami.PromptDialog {
         id: anotherFolderDialog
         objectName: "anotherFolderDialog"
@@ -434,12 +412,9 @@ FormCard.FormCardPage {
         /// How many changes made here are not uploaded (UnsentCount), read when the question
         /// is asked; 0 until it is answered, and when it cannot be read.
         property double unsentCount: 0
-        /// The account whose folder is being forgotten, until it is and the picker opens.
-        property QtObject forgetting: null
 
         function confirm() {
             if (item) {
-                forgetting = item;
                 item.sync.forget();
             }
             close();
@@ -450,7 +425,7 @@ FormCard.FormCardPage {
             const leaves = item && item.sync.rootPath.length > 0
                 ? i18n("KOneDrive stops syncing %1 and leaves the files downloaded so far, and your own, there as plain files. Then you choose an empty folder: your OneDrive shows up there, and files download again when you open them.", item.sync.rootPath)
                 : "";
-            return unsentCount > 0 ? page.unsentWarning(unsentCount) + "\n\n" + leaves : leaves;
+            return unsentCount > 0 ? removeDialog.unsentWarning(unsentCount) + "\n\n" + leaves : leaves;
         }
         onAboutToShow: {
             item = Current.item;
@@ -482,95 +457,17 @@ FormCard.FormCardPage {
                 anotherFolderDialog.unsentCount = count;
             }
         }
-        // The folder forgotten: the picker for the new one. A Forget refused says so in
-        // actionError, and no picker opens.
-        Connections {
-            target: anotherFolderDialog.forgetting ? anotherFolderDialog.forgetting.sync : null
-            function onSyncChanged() {
-                const forgetting = anotherFolderDialog.forgetting;
-                if (forgetting.sync.rootPath.length === 0) {
-                    anotherFolderDialog.forgetting = null;
-                    page.window.pickFolder(forgetting);
-                }
-            }
-            function onActionErrorChanged() {
-                if (anotherFolderDialog.forgetting.sync.actionError.length > 0) {
-                    anotherFolderDialog.forgetting = null;
-                }
-            }
-        }
         // Another account shown, or this one gone: not the question asked.
         Connections {
             target: Current
             function onChanged() {
                 anotherFolderDialog.close();
-                anotherFolderDialog.forgetting = null;
             }
         }
     }
 
-    Kirigami.PromptDialog {
+    DisconnectDialog {
         id: removeDialog
         objectName: "removeDialog"
-
-        /// The account it was opened for (an AccountItem); null once that account is gone.
-        property QtObject item: null
-
-        function confirm() {
-            if (item) {
-                Accounts.removeAccount(item.path);
-            }
-            close();
-        }
-
-        /// How many changes made here are not uploaded (UnsentCount), read when the
-        /// question is asked; 0 until it is answered, and when it cannot be read.
-        property double unsentCount: 0
-
-        title: item ? i18nc("@title:window", "Disconnect %1?", item.account.label) : ""
-        subtitle: {
-            const stays = item && item.sync.rootPath.length > 0
-                ? i18n("KOneDrive stops syncing %1 and signs out of the account. The files downloaded so far, and your own, stay there as plain files; the rest are only in OneDrive. Nothing in OneDrive is deleted.", item.sync.rootPath)
-                : i18n("KOneDrive signs out of this account and forgets it on this device. Nothing in OneDrive is deleted.");
-            return unsentCount > 0 ? page.unsentWarning(unsentCount) + "\n\n" + stays : stays;
-        }
-        onAboutToShow: {
-            item = Current.item;
-            unsentCount = 0;
-            if (item) {
-                item.sync.readUnsentCount();
-            }
-        }
-
-        Connections {
-            target: removeDialog.item ? removeDialog.item.sync : null
-            function onUnsentCountRead(count) {
-                removeDialog.unsentCount = count;
-            }
-        }
-        dialogType: Kirigami.PromptDialog.Warning
-        maximumWidth: Math.min(absoluteMaximumWidth, Kirigami.Units.gridUnit * 30)
-        standardButtons: Kirigami.Dialog.NoButton
-        customFooterActions: [
-            Kirigami.Action {
-                text: i18nc("@action:button", "Disconnect")
-                icon.name: "list-remove-user"
-                enabled: removeDialog.item !== null
-                onTriggered: removeDialog.confirm()
-            },
-            Kirigami.Action {
-                text: i18nc("@action:button", "Cancel")
-                icon.name: "dialog-cancel"
-                onTriggered: removeDialog.close()
-            }
-        ]
-
-        // Another account shown, or this one gone: not the question asked.
-        Connections {
-            target: Current
-            function onChanged() {
-                removeDialog.close();
-            }
-        }
     }
 }

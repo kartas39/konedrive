@@ -12,6 +12,7 @@
 #include "currentaccount.h"
 #include "daemoncontroller.h"
 #include "downloadprogresssettings.h"
+#include "folderchoice.h"
 #include "placessettings.h"
 #include "serviceunit.h"
 #include "transfermodel.h"
@@ -37,6 +38,8 @@ inline void registerKonedriveQml(DaemonController *daemon,
     qmlRegisterSingletonInstance(uri, 1, 0, "Places", places);
     qmlRegisterSingletonInstance(uri, 1, 0, "Tray", tray);
     qmlRegisterSingletonInstance(uri, 1, 0, "ServiceUnit", serviceUnit);
+    // Parented to `current`, whose account it offers a folder to.
+    qmlRegisterSingletonInstance(uri, 1, 0, "FolderChoice", new FolderChoice(accounts, current, current));
     qmlRegisterUncreatableType<AccountItem>(uri, 1, 0, "AccountItem", QStringLiteral("owned by Accounts"));
     qmlRegisterUncreatableType<AccountController>(uri, 1, 0, "AccountController", QStringLiteral("owned by Accounts"));
     qmlRegisterUncreatableType<SyncController>(uri, 1, 0, "SyncController", QStringLiteral("owned by Accounts"));

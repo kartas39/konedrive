@@ -1,7 +1,5 @@
-import QtCore
 import QtQuick
 import QtQuick.Controls as QQC2
-import QtQuick.Dialogs
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.konedrive.app
@@ -10,23 +8,21 @@ import org.konedrive.app
 /// drawer behind a menu button when the window is narrow. The OneDrive
 /// switcher heads the sidebar; the pages under it show the OneDrive chosen
 /// there — an account, its folder and how it syncs, as one — and Settings,
-/// below them, is the whole app's. The folder picker and the mode dialog are
-/// the window's, opened from several pages.
+/// below them, is the whole app's. A page shows only when there is something
+/// on it to see or do: with no account, adding one; with no service, its
+/// Status; with no folder, its Status, where the folder is chosen.
 Kirigami.ApplicationWindow {
     id: root
 
-    /// The page shown: overview, issues, activity, oneDriveSettings or settings.
+    /// The page shown: signIn, overview, issues, activity, oneDriveSettings or settings.
     property string currentPage: "overview"
     /// Wide enough for the sidebar beside a page.
     readonly property bool sidebarFits: width >= Kirigami.Units.gridUnit * 36
+    readonly property bool hasService: Daemon.serviceAvailable
     /// An account is chosen: the per-account pages have something to show.
     readonly property bool hasAccount: Current.account !== null
-    /// The account just given a folder here while read-only: the Overview asks how it
-    /// syncs, until that is answered or another account is set up.
-    property string modeChoiceFor: ""
-    /// The home directory, and the folder offered first for a OneDrive: ~/OneDrive.
-    readonly property string home: decodeURIComponent(StandardPaths.writableLocation(StandardPaths.HomeLocation).toString().replace(/^file:\/\//, ""))
-    readonly property string defaultFolder: home + "/OneDrive"
+    /// And it has a folder: the pages about the folder have something to show.
+    readonly property bool hasFolder: hasAccount && Current.sync !== null && Current.sync.rootPath.length > 0
 
     title: i18nc("@title:window", "KOneDrive")
     // main.cpp shows the window unless started with --background.
@@ -36,11 +32,31 @@ Kirigami.ApplicationWindow {
     minimumWidth: Kirigami.Units.gridUnit * 20
     minimumHeight: Kirigami.Units.gridUnit * 20
 
-    /// Shows one of the pages, by name: a sidebar page, or one of the two lists that
-    /// Issues leads to (conflicts, skipped), shown over it. With no account, the
-    /// per-account pages give way to the Overview, which leads through setting one up.
+    /// Whether the page `name` has something to show now.
+    function pageShows(name) {
+        switch (name) {
+        case "signIn":
+            return hasService;
+        case "overview":
+            return !hasService || hasAccount;
+        case "issues":
+        case "conflicts":
+        case "skipped":
+        case "activity":
+        case "oneDriveSettings":
+            return hasService && hasFolder;
+        case "settings":
+            return true;
+        }
+        return false;
+    }
+
+    /// Shows one of the pages, by name: a sidebar page, the page that adds a OneDrive, or
+    /// one of the two lists that Issues leads to (conflicts, skipped), shown over it. A page
+    /// with nothing to show gives way to the account's Status, or with no account to adding one.
     function showPage(name) {
         const pages = {
+            "signIn": signInPage,
             "overview": overviewPage,
             "issues": issuesPage,
             "activity": activityPage,
@@ -54,8 +70,8 @@ Kirigami.ApplicationWindow {
         if (!pages[name] && !lists[name]) {
             return;
         }
-        if (!hasAccount && name !== "settings") {
-            name = "overview";
+        if (!pageShows(name)) {
+            name = hasService && !hasAccount ? "signIn" : "overview";
         }
         const sidebarPage = lists[name] ? "issues" : name;
         if (sidebarPage !== currentPage || pageStack.depth === 0 || (!lists[name] && pageStack.depth > 1)) {
@@ -74,6 +90,13 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    /// The page shown again once what it shows changes: one with nothing left to show gives way.
+    function reconsiderPage() {
+        if (!pageShows(currentPage)) {
+            showPage(currentPage);
+        }
+    }
+
     /// A per-account page's title: with more than one account it names the
     /// account too ("Overview · Personal"), since a narrow window hides the switcher.
     function accountTitle(title) {
@@ -83,54 +106,11 @@ Kirigami.ApplicationWindow {
         return title;
     }
 
-    /// Straight to Microsoft's sign-in in the browser.
-    function signIn() {
-        if (Accounts.adding) {
-            return;
-        }
-        Accounts.clearAddError();
-        Accounts.addAccount("");
-    }
-
     /// The mode dialog, for the account shown.
     function changeMode() {
         if (Current.item) {
             modeDialog.openFor(Current.item);
         }
-    }
-
-    /// The folder picker, for `item` (an AccountItem).
-    function pickFolder(item) {
-        if (item) {
-            folderDialog.openFor(item);
-        }
-    }
-
-    /// Registers `path` as the folder of `item`; a read-only account is then asked how it syncs.
-    function useFolder(item, path) {
-        if (!item) {
-            return;
-        }
-        if (item.account.mode === "read-only") {
-            modeChoiceFor = item.path;
-        }
-        item.sync.chooseFolder("file://" + path);
-    }
-
-    /// Whether an account's folder is `path`.
-    function folderInUse(path) {
-        for (let i = 0; i < accountFolders.count; ++i) {
-            const folder = accountFolders.objectAt(i);
-            if (folder && folder.rootPath === path) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /// A path as people read it: the home directory as ~.
-    function shownPath(path) {
-        return path === home || path.startsWith(home + "/") ? "~" + path.slice(home.length) : path;
     }
 
     /// A unix time as the time of day today, or a short date and time before.
@@ -142,23 +122,13 @@ Kirigami.ApplicationWindow {
         return date.toLocaleString(Qt.locale(), Locale.ShortFormat);
     }
 
-    // Every account's folder, for folderInUse().
-    Instantiator {
-        id: accountFolders
-        model: Accounts
-        delegate: QtObject {
-            required property string rootPath
-        }
-    }
-
     Connections {
         target: Accounts
         function onOpenUrlRequested(url) {
             Qt.openUrlExternally(url);
         }
-        // Sign In named and chose this account: the Overview offers it a folder next.
+        // Sign In named and chose this account: its Status offers it a folder next.
         function onAccountAdded(path) {
-            root.modeChoiceFor = "";
             Current.select(path);
             root.showPage("overview");
         }
@@ -166,13 +136,14 @@ Kirigami.ApplicationWindow {
     Connections {
         target: Current
         function onChanged() {
-            if (!root.hasAccount && root.currentPage !== "settings") {
-                root.showPage("overview");
-            }
+            root.reconsiderPage();
         }
     }
+    onHasServiceChanged: reconsiderPage()
+    onHasAccountChanged: reconsiderPage()
+    onHasFolderChanged: reconsiderPage()
 
-    Component.onCompleted: pageStack.push(overviewPage)
+    Component.onCompleted: showPage(pageShows("overview") ? "overview" : "signIn")
     pageStack.globalToolBar.showNavigationButtons: Kirigami.ApplicationHeaderStyle.NoNavigationButtons
 
     component SidebarEntry: QQC2.ItemDelegate {
@@ -232,13 +203,22 @@ Kirigami.ApplicationWindow {
 
         header: AccountSwitcher {
             visible: Accounts.count > 0
-            onAddRequested: root.signIn()
+            onAddRequested: root.showPage("signIn")
         }
 
+        // With no account: adding one.
+        SidebarEntry {
+            name: "signIn"
+            visible: root.hasService && !root.hasAccount
+            text: i18nc("@title sidebar", "Add OneDrive")
+            icon.name: "list-add-user"
+        }
         // The pages of the OneDrive chosen above.
+        // The model is fixed: a model that changes makes the delegates anew, and a layout
+        // keeps hold of the hidden ones it had.
         Repeater {
             model: [
-                { name: "overview", text: i18nc("@title sidebar", "Overview"), icon: Current.status ? Current.status.iconName : "state-offline" },
+                { name: "overview", text: i18nc("@title sidebar", "Overview"), icon: "" },
                 { name: "issues", text: i18nc("@title sidebar", "Issues"), icon: "dialog-warning" },
                 { name: "activity", text: i18nc("@title sidebar", "Activity"), icon: "view-history" },
                 { name: "oneDriveSettings", text: i18nc("@title sidebar", "OneDrive Settings"), icon: "folder-cloud" },
@@ -247,8 +227,9 @@ Kirigami.ApplicationWindow {
                 required property var modelData
                 name: modelData.name
                 text: modelData.text
-                icon.name: modelData.icon
-                enabled: root.hasAccount || modelData.name === "overview"
+                // The Overview's icon is the account's state.
+                icon.name: modelData.name === "overview" ? (Current.status ? Current.status.iconName : "state-offline") : modelData.icon
+                visible: root.pageShows(modelData.name)
                 // Both versions kept, and the changes that need the user to go up.
                 badge: modelData.name === "issues" && Current.sync ? Current.sync.conflictCount + Current.sync.blockedCount : 0
             }
@@ -269,32 +250,6 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    FolderDialog {
-        id: folderDialog
-        objectName: "folderDialog"
-
-        /// The account it was opened for (an AccountItem); null once that account is gone.
-        property QtObject item: null
-
-        function openFor(account) {
-            item = account;
-            open();
-        }
-
-        title: i18nc("@title:window", "Choose an Empty Folder for OneDrive")
-        currentFolder: StandardPaths.writableLocation(StandardPaths.HomeLocation)
-        onAccepted: {
-            if (item) {
-                if (item.account.mode === "read-only") {
-                    root.modeChoiceFor = item.path;
-                }
-                item.sync.chooseFolder(selectedFolder);
-            }
-            item = null;
-        }
-        onRejected: item = null
-    }
-
     ModeDialog {
         id: modeDialog
     }
@@ -304,6 +259,9 @@ Kirigami.ApplicationWindow {
     Item {
         visible: false
 
+        SignInPage {
+            id: signInPage
+        }
         OverviewPage {
             id: overviewPage
         }

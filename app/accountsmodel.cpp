@@ -6,6 +6,8 @@
 
 #include <KLocalizedString>
 
+#include <QClipboard>
+#include <QGuiApplication>
 #include <QRegularExpression>
 
 AccountItem::AccountItem(const QDBusConnection &bus, const QString &path, const AccountStatus::Clock &clock, QObject *parent)
@@ -268,6 +270,8 @@ void AccountsModel::addAccount(const QString &clientId)
                 } else if (m_cancelRequested) {
                     cancelSignIn();
                 } else {
+                    m_signInUrl = url;
+                    Q_EMIT addingChanged();
                     Q_EMIT openUrlRequested(url);
                 }
             },
@@ -373,6 +377,7 @@ void AccountsModel::finishAdding(const QString &error)
     m_early.clear();
     m_adding = false;
     m_addError = error;
+    m_signInUrl.clear();
     Q_EMIT addingChanged();
 }
 
@@ -383,6 +388,13 @@ void AccountsModel::clearAddError()
     }
     m_addError.clear();
     Q_EMIT addingChanged();
+}
+
+void AccountsModel::copySignInUrl() const
+{
+    if (auto *clipboard = QGuiApplication::clipboard(); clipboard && !m_signInUrl.isEmpty()) {
+        clipboard->setText(m_signInUrl);
+    }
 }
 
 void AccountsModel::removeAccount(const QString &path)

@@ -8,7 +8,7 @@ import org.konedrive.app
 /// The start page, for the account chosen in the sidebar: at the top, what its folder is
 /// doing or what stops it, with the one thing to do (AccountStatus); then how it syncs, the
 /// folder with Pause and Sync Now, what needs the user, what moves now, and the storage.
-/// With no account it leads through setting one up: sign in, the folder, how it syncs.
+/// An account with no folder has only the last step of adding it here: its folder.
 FormCard.FormCardPage {
     id: page
 
@@ -20,8 +20,8 @@ FormCard.FormCardPage {
     readonly property bool available: Daemon.serviceAvailable && account !== null && sync !== null && status !== null && account.serviceAvailable
                                       && sync.serviceAvailable
     readonly property bool hasFolder: available && sync.rootPath.length > 0
-    /// The account was just set up here and has not said yet how its folder syncs.
-    readonly property bool choosingMode: hasFolder && window !== null && window.modeChoiceFor === Current.path
+    /// Signed in with no folder: the folder is chosen here, and nothing else shows.
+    readonly property bool choosingFolder: available && status.action === AccountStatus.ChooseFolder
     /// Something under Needs Your Attention has a line: from the counts, since a line
     /// inside a hidden card reads as hidden itself.
     readonly property bool needsAttention: hasFolder && (sync.quotaFull || sync.tooBigCount > 0 || sync.blockedCount > 0 || sync.conflictCount > 0
@@ -66,49 +66,16 @@ FormCard.FormCardPage {
         visible: !Daemon.serviceAvailable
     }
 
-    // Setting up, step one: no account yet.
-    FormCard.FormCard {
-        objectName: "setUpCard"
+    FolderChoiceCard {
         Layout.topMargin: Kirigami.Units.largeSpacing
-        visible: Daemon.serviceAvailable && Accounts.count === 0
-
-        FormCard.FormPlaceholderMessageDelegate {
-            text: i18n("Connect your OneDrive")
-            explanation: i18n("Sign in with your Microsoft account. Your OneDrive then shows up in a folder on this device, and files download when you open them.")
-            icon.name: "folder-cloud"
-        }
-        FormCard.FormDelegateSeparator {}
-        FormCard.FormTextDelegate {
-            visible: Accounts.addError.length > 0
-            text: Accounts.addError
-            textItem.wrapMode: Text.Wrap
-            icon.name: "dialog-error"
-        }
-        FormCard.FormButtonDelegate {
-            objectName: "addAccountButton"
-            visible: !Accounts.adding
-            text: i18nc("@action:button", "Sign In…")
-            icon.name: "go-next"
-            onClicked: page.window.signIn()
-        }
-        FormCard.FormTextDelegate {
-            visible: Accounts.adding
-            text: i18n("Waiting for you to sign in in the browser…")
-            icon.name: "view-refresh"
-        }
-        FormCard.FormButtonDelegate {
-            visible: Accounts.adding
-            text: i18nc("@action:button", "Cancel")
-            icon.name: "dialog-cancel"
-            onClicked: Accounts.cancelAdd()
-        }
+        visible: page.choosingFolder
     }
 
     // The head: what the folder is doing or what stops it, and the one thing to do.
     FormCard.FormCard {
         objectName: "headCard"
         Layout.topMargin: Kirigami.Units.largeSpacing
-        visible: page.available
+        visible: page.available && !page.choosingFolder
 
         FormCard.AbstractFormDelegate {
             background: null
@@ -169,20 +136,6 @@ FormCard.FormCardPage {
                             onClicked: page.account.signIn()
                         }
                         QQC2.Button {
-                            objectName: "useDefaultFolderButton"
-                            visible: parent.action === AccountStatus.ChooseFolder && !page.window.folderInUse(page.window.defaultFolder)
-                            text: i18nc("@action:button %1 is a folder like ~/OneDrive", "Use %1", page.window.shownPath(page.window.defaultFolder))
-                            icon.name: "folder-cloud"
-                            onClicked: page.window.useFolder(Current.item, page.window.defaultFolder)
-                        }
-                        QQC2.Button {
-                            objectName: "chooseFolderButton"
-                            visible: parent.action === AccountStatus.ChooseFolder
-                            text: page.window.folderInUse(page.window.defaultFolder) ? i18nc("@action:button", "Choose Folder…") : i18nc("@action:button", "Choose Another Folder…")
-                            icon.name: "folder-open"
-                            onClicked: page.window.pickFolder(Current.item)
-                        }
-                        QQC2.Button {
                             objectName: "tryAgainButton"
                             visible: parent.action === AccountStatus.TryAgain
                             text: i18nc("@action:button", "Try Again")
@@ -216,39 +169,10 @@ FormCard.FormCardPage {
         }
     }
 
-    // Setting up, the last step: how the folder just chosen syncs.
-    FormCard.FormHeader {
-        visible: page.choosingMode
-        title: i18nc("@title:group", "How Should This Folder Sync?")
-    }
-    FormCard.FormCard {
-        objectName: "modeChoiceCard"
-        visible: page.choosingMode
-
-        FormCard.FormButtonDelegate {
-            objectName: "chooseTwoWay"
-            text: i18n("Two-way sync")
-            description: i18n("What you do in the folder is uploaded to OneDrive. Your browser opens once more to allow KOneDrive to change your files.")
-            icon.name: "folder-sync"
-            onClicked: {
-                page.window.modeChoiceFor = "";
-                page.account.setMode("read-write", false);
-            }
-        }
-        FormCard.FormDelegateSeparator {}
-        FormCard.FormButtonDelegate {
-            objectName: "chooseReadOnly"
-            text: i18n("Read-only")
-            description: i18n("Files from OneDrive arrive and open as usual, but can't be changed here. You can turn on two-way sync later.")
-            icon.name: "object-locked"
-            onClicked: page.window.modeChoiceFor = ""
-        }
-    }
-
     // How the folder syncs.
     ModeCard {
         Layout.topMargin: Kirigami.Units.largeSpacing
-        visible: page.hasFolder && !page.choosingMode
+        visible: page.hasFolder
     }
 
     // The folder, and what the user does with it.
@@ -258,7 +182,7 @@ FormCard.FormCardPage {
         visible: page.hasFolder
 
         FormCard.FormTextDelegate {
-            text: page.sync ? page.window.shownPath(page.sync.rootPath) : ""
+            text: page.sync ? page.sync.rootPathText : ""
             description: i18n("Your OneDrive on this device")
             leading: Kirigami.Icon {
                 source: "folder-cloud"

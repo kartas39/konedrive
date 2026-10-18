@@ -3,6 +3,7 @@
 #include "activityloginterface.h"
 #include "conflictsinterface.h"
 #include "folderinterface.h"
+#include "foldertext.h"
 #include "generated/reasontexts.h"
 #include "uploadqueueinterface.h"
 
@@ -386,6 +387,11 @@ void SyncController::quietly(const QDBusPendingCall &pending, std::function<void
             onSuccess(*w);
         }
     });
+}
+
+QString SyncController::rootPathText() const
+{
+    return folderText(m_rootPath);
 }
 
 void SyncController::chooseFolder(const QUrl &folder)

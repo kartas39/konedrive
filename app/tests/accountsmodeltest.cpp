@@ -209,6 +209,8 @@ private Q_SLOTS:
         QTRY_COMPARE(open.count(), 1);
         const QString path = fake::FirstAccount;
         QCOMPARE(open.at(0).at(0).toString(), QStringLiteral("https://login.example/authorize?sign_in=1"));
+        // Kept for Copy Sign-In Link while the sign-in waits.
+        QCOMPARE(model.signInUrl(), QStringLiteral("https://login.example/authorize?sign_in=1"));
         QCOMPARE(m_daemon->manager->calls, (QStringList{QStringLiteral("SetClientId:") + ClientId, QStringLiteral("SignIn")}));
         // Nothing is made before the sign-in has succeeded.
         QCOMPARE(m_daemon->objects.size(), 0);
@@ -221,6 +223,7 @@ private Q_SLOTS:
         QCOMPARE(added.at(0).at(0).toString(), path);
         QVERIFY(!model.adding());
         QCOMPARE(model.addError(), QString());
+        QCOMPARE(model.signInUrl(), QString());
         QCOMPARE(current.path(), path);
         QCOMPARE(remembered(), fake::idFor(1));
 
