@@ -102,15 +102,6 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    /// A unix time as the time of day today, or a short date and time before.
-    function when(unixSeconds) {
-        const date = new Date(unixSeconds * 1000);
-        if (date.toDateString() === new Date().toDateString()) {
-            return date.toLocaleTimeString(Qt.locale(), Locale.ShortFormat);
-        }
-        return date.toLocaleString(Qt.locale(), Locale.ShortFormat);
-    }
-
     Connections {
         target: Accounts
         function onOpenUrlRequested(url) {

@@ -1,9 +1,11 @@
 #include "activitymodel.h"
 
+#include "timetext.h"
 #include "uploadreasons.h"
 
 #include <KLocalizedString>
 
+#include <QDateTime>
 #include <QFileInfo>
 
 ActivityFailure classifyFailure(const QString &kind, const QString &detail)
@@ -114,6 +116,8 @@ QVariant ActivityModel::data(const QModelIndex &index, int role) const
     }
     case TimeRole:
         return row.time;
+    case TimeTextRole:
+        return timeText(row.time, QDateTime::currentSecsSinceEpoch());
     case KindRole:
         return row.kind;
     case PathRole:
@@ -179,6 +183,7 @@ QHash<int, QByteArray> ActivityModel::roleNames() const
         {TextRole, "what"}, // not "text": a delegate's own property
         {IconRole, "iconName"},
         {DetailTextRole, "detailText"},
+        {TimeTextRole, "timeText"},
     };
 }
 

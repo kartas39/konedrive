@@ -108,41 +108,43 @@ private Q_SLOTS:
         QCOMPARE(at(conflicts, 1, ConflictModel::CopyRole).toString(), root + QStringLiteral("/a-fedora.txt"));
     }
 
-    /// Live events go on top; past 50 rows the oldest is removed.
-    void activityPrependsAndDropsTheOldestPastFifty()
+    /// Live events go on top; past Capacity rows the oldest is removed.
+    void activityPrependsAndDropsTheOldestPastCapacity()
     {
+        constexpr int last = ActivityModel::Capacity - 1;
         ActivityModel model;
         QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
         for (int i = 0; i < ActivityModel::Capacity; ++i) {
             model.prepend(downloadedEvent(i, QStringLiteral("f%1").arg(i)));
         }
-        QCOMPARE(model.count(), 50);
-        QCOMPARE(at(model, 0, ActivityModel::NameRole).toString(), QStringLiteral("f49"));
-        QCOMPARE(at(model, 49, ActivityModel::NameRole).toString(), QStringLiteral("f0"));
+        QCOMPARE(model.count(), ActivityModel::Capacity);
+        QCOMPARE(at(model, 0, ActivityModel::NameRole).toString(), QStringLiteral("f%1").arg(last));
+        QCOMPARE(at(model, last, ActivityModel::NameRole).toString(), QStringLiteral("f0"));
 
         QSignalSpy removed(&model, &QAbstractItemModel::rowsRemoved);
-        model.prepend(downloadedEvent(50, QStringLiteral("f50")));
-        QCOMPARE(model.count(), 50);
+        model.prepend(downloadedEvent(ActivityModel::Capacity, QStringLiteral("newest")));
+        QCOMPARE(model.count(), ActivityModel::Capacity);
         QCOMPARE(removed.count(), 1);
-        QCOMPARE(at(model, 0, ActivityModel::NameRole).toString(), QStringLiteral("f50"));
-        QCOMPARE(at(model, 49, ActivityModel::NameRole).toString(), QStringLiteral("f1"));
-        QCOMPARE(at(model, 0, ActivityModel::TimeRole).toLongLong(), 50LL);
+        QCOMPARE(at(model, 0, ActivityModel::NameRole).toString(), QStringLiteral("newest"));
+        QCOMPARE(at(model, last, ActivityModel::NameRole).toString(), QStringLiteral("f1"));
+        QCOMPARE(at(model, 0, ActivityModel::TimeRole).toLongLong(), qint64(ActivityModel::Capacity));
+        QCOMPARE(at(model, 0, ActivityModel::TimeTextRole).toString(), timeText(ActivityModel::Capacity, QDateTime::currentSecsSinceEpoch()));
         QCOMPARE(at(model, 0, ActivityModel::TextRole).toString(), QStringLiteral("Downloaded"));
     }
 
-    /// A RecentActivity() answer replaces the rows, cut to 50.
+    /// A Recent() answer replaces the rows, cut to Capacity.
     void activitySetEventsReplacesAndCaps()
     {
         ActivityModel model;
         QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
         model.prepend(downloadedEvent(1, QStringLiteral("old")));
         KonedriveActivityList answer;
-        for (int i = 70; i > 0; --i) {
-            answer << downloadedEvent(100 + i, QStringLiteral("n%1").arg(i));
+        for (int i = ActivityModel::Capacity + 20; i > 0; --i) {
+            answer << downloadedEvent(1000 + i, QStringLiteral("n%1").arg(i));
         }
         model.setEvents(answer);
-        QCOMPARE(model.count(), 50);
-        QCOMPARE(at(model, 0, ActivityModel::NameRole).toString(), QStringLiteral("n70"));
+        QCOMPARE(model.count(), ActivityModel::Capacity);
+        QCOMPARE(at(model, 0, ActivityModel::NameRole).toString(), QStringLiteral("n%1").arg(ActivityModel::Capacity + 20));
     }
 
     /// Conflicts are kept by the path of the copy, newest first: a

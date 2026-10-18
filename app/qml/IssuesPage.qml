@@ -16,10 +16,8 @@ import org.konedrive.app
 /// first rows (ConflictModel.Shown, `shownLimit`) and count the rest. What waits and goes up
 /// by itself is on Status.
 ///
-/// One ListView builds only the rows in sight: Can't Upload, a few lines, heads it, and the
-/// two long lists are its rows. A ScrollablePage rather than a FormCardPage, whose one long
-/// column would build every row; the background and the card-coloured rows match it.
-Kirigami.ScrollablePage {
+/// Can't Upload, a few lines, heads the list, and the two long lists are its rows.
+ListPage {
     id: page
 
     readonly property var sync: Current.sync
@@ -114,31 +112,7 @@ Kirigami.ScrollablePage {
     }
 
     objectName: "issuesPage"
-    // Kept out of the page stack the page takes its implicit height, which
-    // would otherwise be the whole list's: the ListView would build every row
-    // there and keep them once shown.
-    implicitHeight: Kirigami.Units.gridUnit * 20
     title: window ? window.accountTitle(i18nc("@title", "Issues")) : i18nc("@title", "Issues")
-
-    topPadding: 0
-    bottomPadding: 0
-    leftPadding: 0
-    rightPadding: 0
-
-    // As FormCardPage's.
-    background: Rectangle {
-        Kirigami.Theme.colorSet: Kirigami.Theme.Window
-        Kirigami.Theme.inherit: false
-
-        Item {
-            id: view
-
-            Kirigami.Theme.colorSet: Kirigami.Theme.View
-            Kirigami.Theme.inherit: false
-        }
-
-        color: Kirigami.ColorUtils.linearInterpolation(Kirigami.Theme.backgroundColor, view.Kirigami.Theme.backgroundColor, 0.5)
-    }
 
     onVisibleChanged: {
         load();
@@ -377,26 +351,8 @@ Kirigami.ScrollablePage {
         }
     }
 
-    /// A row on a card-coloured band as wide as a FormCard.
-    component Band: Item {
-        default property alias content: band.data
-
-        width: ListView.view ? ListView.view.width : 0
-
-        Rectangle {
-            id: band
-
-            Kirigami.Theme.colorSet: Kirigami.Theme.View
-            Kirigami.Theme.inherit: false
-            anchors.horizontalCenter: parent.horizontalCenter
-            width: Math.min(parent.width, Kirigami.Units.gridUnit * 30)
-            height: parent.height
-            color: Kirigami.Theme.backgroundColor
-        }
-    }
-
     /// One file whose both versions were kept: where, under which name, when.
-    component ConflictRow: Band {
+    component ConflictRow: FormCardRow {
         id: row
 
         required property var modelData
@@ -451,7 +407,7 @@ Kirigami.ScrollablePage {
     }
 
     /// One item OneDrive has that can't be shown in the folder, and why.
-    component SkippedRow: Band {
+    component SkippedRow: FormCardRow {
         id: row
 
         required property var modelData
@@ -470,7 +426,7 @@ Kirigami.ScrollablePage {
     }
 
     /// How many more a section has than it lists, and where to see them all.
-    component MoreRow: Band {
+    component MoreRow: FormCardRow {
         id: row
 
         required property var modelData

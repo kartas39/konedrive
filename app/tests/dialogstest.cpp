@@ -1022,6 +1022,58 @@ private Q_SLOTS:
         QVERIFY(card->isVisible());
     }
 
+    /// Activity lists the events the daemon keeps, newest first. What is typed in its search
+    /// keeps the events whose path holds it, in any case, and a search nothing matches says so.
+    void theActivitySearchKeepsWhatMatches()
+    {
+        const QString root = QStringLiteral("/home/u/OneDrive");
+        FakeDaemon fake;
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        fake.sync->folder->set({{QStringLiteral("Path"), root},
+                                {QStringLiteral("State"), QStringLiteral("ready")},
+                                {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+        fake.sync->log = {{3, QStringLiteral("uploaded"), root + QStringLiteral("/Docs/report.odt"), QString()},
+                          {2, QStringLiteral("downloaded"), root + QStringLiteral("/Photos/beach.jpg"), QString()},
+                          {1, QStringLiteral("downloaded"), root + QStringLiteral("/docs/budget.ods"), QString()}};
+        QVERIFY(fake.start());
+        App app;
+        QVERIFY(app.load());
+        QTRY_COMPARE(app.accounts.count(), 1);
+        QTRY_COMPARE(app.accounts.at(0)->sync()->activity()->count(), 3);
+        QMetaObject::invokeMethod(app.window, "showPage", Q_ARG(QVariant, QStringLiteral("activity")));
+        QTRY_COMPARE(app.pageShown(), QStringLiteral("activityPage"));
+        auto *list = app.find("activityList");
+        auto *search = app.find("activitySearch");
+        auto *nothingFound = app.find("nothingFound");
+        QVERIFY(list && search && nothingFound);
+        QTRY_COMPARE(list->property("count").toInt(), 3);
+        const auto nameAt = [list](int index) {
+            QQuickItem *row = nullptr;
+            QMetaObject::invokeMethod(list, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, row), Q_ARG(int, index));
+            return row ? row->property("name").toString() : QString();
+        };
+        QTRY_COMPARE(nameAt(0), QStringLiteral("report.odt"));
+        QTRY_VERIFY(search->isVisible());
+        QVERIFY(!nothingFound->isVisible());
+
+        app.window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(app.window));
+        search->forceActiveFocus();
+        const auto type = [&app](const char *text) {
+            for (const char *key = text; *key != '\0'; ++key) {
+                QTest::keyClick(app.window, *key);
+            }
+        };
+        type("DOCS");
+        QTRY_COMPARE(list->property("count").toInt(), 2);
+        QTRY_COMPARE(nameAt(0), QStringLiteral("report.odt"));
+        QTRY_COMPARE(nameAt(1), QStringLiteral("budget.ods"));
+        type("/none");
+        QTRY_COMPARE(list->property("count").toInt(), 0);
+        QTRY_VERIFY(nothingFound->isVisible());
+        fake.stop();
+    }
+
     /// Issue #20: with 5000 changes OneDrive has no room for and 3 names it
     /// refuses, Issues and Status come up at once and build a handful of rows
     /// — a line per reason, files only for a per-file reason opened — and the

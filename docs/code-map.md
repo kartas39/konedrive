@@ -973,7 +973,7 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `accountstatus.h`, `accountstatus.cpp` — one summary of an account and its folder: the state
   the daemon decided (`Folder.Overall`), in words by its reason.
 - `appstatus.h`, `appstatus.cpp` — the whole app's state, for the tray: the worst of the accounts'.
-- `activitymodel.h`, `activitymodel.cpp` — the activity list.
+- `activitymodel.h`, `activitymodel.cpp` — the activity list: as many events as the daemon keeps.
 - `conflictmodel.h`, `conflictmodel.cpp` — the "Kept Both Versions" list.
 - `transfermodel.h`, `transfermodel.cpp` — the downloads under way.
 - `uploadreasons.h`, `uploadreasons.cpp` — why a change is not uploaded, in words: the entry
@@ -1010,9 +1010,11 @@ Each has its file in `crates/konedrived/src/dbus/`.
   many changes made here are not uploaded.
 - `DisconnectDialog.qml` — that question before an account is disconnected.
 - `AnotherFolderDialog.qml` — that question before another folder is used.
+- `ListPage.qml` — a page that is one long list, drawn as a page of FormCards.
+- `FormCardRow.qml` — a row of that list, on a card-coloured band.
 - `IssuesPage.qml` — what needs the user, in one list: the changes that can't upload, the files
   whose both versions were kept, what can't be shown in the folder.
-- `ActivityPage.qml` — what happened in the folder.
+- `ActivityPage.qml` — what happened in the folder, with a search.
 - `StoragePage.qml` — the space the OneDrive takes on this device, with Free Up Space and the free
   space its downloads leave, and in OneDrive.
 - `OneDriveSettingsPage.qml` — one OneDrive's settings: its account, mode, folder and previews.

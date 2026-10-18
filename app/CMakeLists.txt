@@ -150,6 +150,8 @@ set(KONEDRIVE_QML
     qml/UnsentChangesPrompt.qml
     qml/DisconnectDialog.qml
     qml/AnotherFolderDialog.qml
+    qml/ListPage.qml
+    qml/FormCardRow.qml
     qml/IssuesPage.qml
     qml/ActivityPage.qml
     qml/StoragePage.qml

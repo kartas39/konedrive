@@ -354,7 +354,7 @@ private Q_SLOTS:
         QCOMPARE(reset.count(), 0);
     }
 
-    /// The "Recent" list: Recent(50) at start, then each ActivityLog.Added
+    /// The "Recent" list: Recent(Capacity) at start, then each ActivityLog.Added
     /// on top, newest first.
     void recentActivityThenLiveEventsNewestFirst()
     {
@@ -363,7 +363,7 @@ private Q_SLOTS:
                        {100, QStringLiteral("first-sync-ended"), QStringLiteral("/home/u/OneDrive"), QString()}};
         SyncController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.activity()->count(), 2);
-        QVERIFY(m_fake->calls.contains(QStringLiteral("Recent:50")));
+        QVERIFY(m_fake->calls.contains(QStringLiteral("Recent:%1").arg(ActivityModel::Capacity)));
         QCOMPARE(text(controller.activity(), 0, ActivityModel::PathRole), QStringLiteral("/home/u/OneDrive/b.txt"));
 
         QSignalSpy added(&controller, &SyncController::activityAdded);
@@ -442,7 +442,7 @@ private Q_SLOTS:
         m_fake->log = {{100, QStringLiteral("first-sync-ended"), QStringLiteral("/home/u/OneDrive"), QString()}};
         m_fake->holdActivity = true;
         SyncController controller(fake::FirstAccount);
-        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("Recent:50")));
+        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("Recent:%1").arg(ActivityModel::Capacity)));
 
         QSignalSpy added(&controller, &SyncController::activityAdded);
         // Signalled before the daemon stored it: the answer will lack it.
@@ -469,7 +469,7 @@ private Q_SLOTS:
         startFake();
         m_fake->holdActivity = true;
         SyncController controller(fake::FirstAccount);
-        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("Recent:50")));
+        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("Recent:%1").arg(ActivityModel::Capacity)));
 
         // Stored (as the daemon always does before signalling) and already in
         // what the held reply will answer with.

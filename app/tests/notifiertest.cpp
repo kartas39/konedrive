@@ -1,5 +1,6 @@
 #include "accountcontroller.h"
 #include "accountsmodel.h"
+#include "activitymodel.h"
 #include "daemoncontroller.h"
 #include "fakedaemon.h"
 #include "notifier.h"
@@ -349,7 +350,7 @@ private Q_SLOTS:
         m_daemon->stop();
         QTRY_VERIFY(!m_sync->serviceAvailable());
         QVERIFY(m_daemon->start());
-        QTRY_COMPARE(m_daemon->sync->calls.count(QStringLiteral("Recent:50")), 2);
+        QTRY_COMPARE(m_daemon->sync->calls.count(QStringLiteral("Recent:%1").arg(ActivityModel::Capacity)), 2);
         QTRY_COMPARE(m_sync->activity()->count(), 3);
         QTRY_VERIFY(m_account->serviceAvailable());
         QCoreApplication::processEvents();

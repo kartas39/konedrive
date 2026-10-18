@@ -83,7 +83,7 @@ jobs:
       - name: Install the build dependencies and the window's QML modules
         run: |
           dnf -y builddep packaging/rpm/konedrive.spec
-          dnf -y install kf6-kirigami kf6-kirigami-addons kf6-kquickcharts kf6-qqc2-desktop-style qt6-qtdeclarative
+          dnf -y install kf6-kirigami kf6-kirigami-addons kf6-kitemmodels kf6-qqc2-desktop-style qt6-qtdeclarative
 
       # Not as root, which the container's steps run as: a test of a file that
       # cannot be written means nothing to root.
