@@ -158,9 +158,7 @@ set(KONEDRIVE_QML
     qml/OneDriveSettingsPage.qml
     qml/SettingsPage.qml
     qml/AccountSwitcher.qml
-    qml/ServiceCard.qml
-    qml/ModeCard.qml
-    qml/ModeDialog.qml)
+    qml/ServiceCard.qml)
 qt_add_qml_module(konedrive_window
     URI org.konedrive.app.window
     VERSION 1.0

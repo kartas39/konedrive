@@ -6,9 +6,9 @@ import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
 /// The settings of the OneDrive chosen in the sidebar — an account, its folder and how it
-/// syncs, as one: its name and Microsoft account, how it syncs, its folder (or another one),
-/// its previews, the advanced settings (what is never uploaded, this device's name for
-/// copies, signing out), and disconnecting it.
+/// syncs, as one: its name and Microsoft account, two-way sync, its folder (or another one),
+/// its previews, the advanced settings (what is never uploaded, signing out), and
+/// disconnecting it. Signing in again is on Status.
 FormCard.FormCardPage {
     id: page
 
@@ -17,8 +17,6 @@ FormCard.FormCardPage {
     // Current.account and Current.sync change together, but these bindings
     // may see one before the other: each checks both.
     readonly property bool available: account !== null && sync !== null && account.serviceAvailable && sync.serviceAvailable
-    readonly property bool signedOut: available && account.state === "signed-out"
-    readonly property bool signingIn: available && account.state === "signing-in"
     readonly property bool signedIn: available && account.state === "signed-in"
     readonly property bool hasFolder: available && sync.rootPath.length > 0
     readonly property string accountError: account ? (account.actionError.length > 0 ? account.actionError : account.lastError) : ""
@@ -58,11 +56,6 @@ FormCard.FormCardPage {
         visible: page.available && page.account !== null && Daemon.removeFailedPath === page.account.path
     }
 
-    ServiceCard {
-        Layout.topMargin: Kirigami.Units.largeSpacing
-        visible: !page.available
-    }
-
     // The account: its name here, and the Microsoft account behind it.
     FormCard.FormHeader {
         visible: page.available
@@ -81,7 +74,9 @@ FormCard.FormCardPage {
                 onClicked: renameDialog.open()
             }
         }
-        FormCard.FormDelegateSeparator {}
+        FormCard.FormDelegateSeparator {
+            visible: page.signedIn
+        }
         FormCard.FormTextDelegate {
             visible: page.signedIn
             text: page.account && page.account.displayName.length > 0 ? page.account.displayName : i18n("Microsoft account")
@@ -96,44 +91,106 @@ FormCard.FormCardPage {
                 onClicked: page.account.refreshAccountInfo()
             }
         }
-        FormCard.FormTextDelegate {
-            visible: page.signedOut
-            text: i18n("Signed out of OneDrive")
-            description: i18n("Nothing syncs until you sign in again.")
-        }
-        FormCard.FormButtonDelegate {
-            visible: page.signedOut
-            text: i18nc("@action:button", "Sign In Again")
-            icon.name: "go-next"
-            onClicked: page.account.signIn()
-        }
-        FormCard.FormTextDelegate {
-            visible: page.signingIn
-            text: i18n("Finish signing in in your browser")
-            description: page.account ? page.account.signInUrl : ""
-        }
-        FormCard.FormButtonDelegate {
-            visible: page.signingIn
-            text: i18nc("@action:button", "Copy Sign-In Link")
-            icon.name: "edit-copy"
-            enabled: page.account !== null && page.account.signInUrl.length > 0
-            onClicked: page.account.copySignInUrl()
-        }
-        FormCard.FormButtonDelegate {
-            visible: page.signingIn
-            text: i18nc("@action:button", "Cancel")
-            icon.name: "dialog-cancel"
-            onClicked: page.account.cancelSignIn()
-        }
     }
 
-    // How the folder syncs.
+    // How the folder syncs: the account's mode (Account.Mode). While a switch is under way the
+    // switch shows the mode asked for, and what it waits for is below it with its ways out.
     FormCard.FormHeader {
         visible: page.hasFolder
         title: i18nc("@title:group", "Sync")
     }
-    ModeCard {
+    FormCard.FormCard {
+        objectName: "syncSettings"
         visible: page.hasFolder
+
+        FormCard.FormSwitchDelegate {
+            id: twoWaySwitch
+            objectName: "twoWaySwitch"
+
+            /// The account syncs two-way.
+            readonly property bool on: page.account !== null && page.account.mode === "read-write"
+            /// A switch to two-way is under way: asked for, or waiting for the browser.
+            readonly property bool towardTwoWay: page.account !== null && page.account.switchingTo === "read-write"
+            /// A switch to read-only is under way: asked for, or waiting for what is unsent.
+            readonly property bool towardReadOnly: page.account !== null && (page.account.switchingTo === "read-only" || page.account.switchingToReadOnly)
+            /// What the switch shows: the mode asked for while a switch is under way.
+            readonly property bool shown: towardTwoWay || (on && !towardReadOnly)
+
+            text: i18n("Two-way sync")
+            description: {
+                if (!shown) {
+                    const readOnly = i18n("Files from OneDrive arrive and open as usual, but can't be changed here, and nothing is uploaded.");
+                    return on ? readOnly : readOnly + " " + i18n("Turning it on opens your browser once more to allow KOneDrive to change your files.");
+                }
+                if (on && page.sync !== null && !page.sync.writable) {
+                    return i18n("Two-way sync is on, but the folder can't be watched right now, so nothing is uploaded. If it stays so, Status says why.");
+                }
+                return i18n("What you add, change, rename, move or delete in the folder is uploaded to OneDrive and shows on your other devices.");
+            }
+            enabled: page.signedIn && !towardTwoWay && !towardReadOnly
+            checked: shown
+            // The inner switch writes `checked` back, ending the binding: kept in step here.
+            onShownChanged: checked = shown
+            onToggled: {
+                const wanted = checked;
+                checked = shown;
+                page.account.setMode(wanted ? "read-write" : "read-only", false);
+            }
+        }
+        FormCard.FormTextDelegate {
+            objectName: "modeSwitchLine"
+            visible: twoWaySwitch.towardTwoWay || twoWaySwitch.towardReadOnly
+            text: {
+                if (page.account === null) {
+                    return "";
+                }
+                if (page.account.modeSignInPending) {
+                    return i18n("Waiting for you to allow KOneDrive to change your files in your browser…");
+                }
+                if (twoWaySwitch.towardTwoWay) {
+                    return i18n("Starting the sign-in…");
+                }
+                if (page.account.switchingToReadOnly) {
+                    return i18np("Switching to read-only: 1 change still to send. The folder turns read-only by itself once it is uploaded.",
+                                 "Switching to read-only: %1 changes still to send. The folder turns read-only by itself once they are uploaded.",
+                                 page.account.unsentCount);
+                }
+                return i18n("Switching to read-only…");
+            }
+            textItem.wrapMode: Text.Wrap
+            icon.name: "view-refresh"
+        }
+        FormCard.FormButtonDelegate {
+            visible: page.account !== null && page.account.modeSignInPending
+            enabled: page.account !== null && page.account.signInUrl.length > 0
+            text: i18nc("@action:button", "Copy Sign-In Link")
+            icon.name: "edit-copy"
+            onClicked: page.account.copySignInUrl()
+        }
+        FormCard.FormButtonDelegate {
+            objectName: "cancelTwoWayButton"
+            visible: page.account !== null && page.account.modeSignInPending
+            text: i18nc("@action:button", "Cancel")
+            icon.name: "dialog-cancel"
+            onClicked: page.account.cancelModeSwitch()
+        }
+        FormCard.FormButtonDelegate {
+            objectName: "switchToReadOnlyNow"
+            visible: page.account !== null && page.account.switchingToReadOnly
+            enabled: page.account !== null && page.account.switchingTo.length === 0
+            text: i18nc("@action:button", "Switch Now")
+            description: i18n("What is not uploaded stays on this device, and is uploaded once two-way sync is on again.")
+            icon.name: "object-locked"
+            onClicked: page.account.setMode("read-only", true)
+        }
+        FormCard.FormButtonDelegate {
+            objectName: "cancelReadOnlySwitch"
+            visible: page.account !== null && page.account.switchingToReadOnly
+            enabled: page.account !== null && page.account.switchingTo.length === 0
+            text: i18nc("@action:button", "Keep Two-Way Sync")
+            icon.name: "dialog-cancel"
+            onClicked: page.account.setMode("read-write", false)
+        }
     }
 
     // The folder: where the OneDrive shows up on this device.
@@ -260,16 +317,6 @@ FormCard.FormCardPage {
                 page.sync.addIgnorePattern(ignoreField.text);
                 ignoreField.text = "";
             }
-        }
-        FormCard.FormDelegateSeparator {
-            visible: page.hasFolder
-        }
-        FormCard.FormTextDelegate {
-            objectName: "machineName"
-            visible: page.hasFolder
-            text: page.sync ? i18n("This device's name for copies: %1", page.sync.machineName) : ""
-            description: page.sync ? i18n("When a file changes both here and in OneDrive, your version is kept beside it, named after this device: Report-%1.docx. It is machine_name in ~/.config/konedrive/config.toml.", page.sync.machineName) : ""
-            textItem.wrapMode: Text.Wrap
         }
         FormCard.FormDelegateSeparator {
             visible: page.hasFolder && page.signedIn

@@ -95,13 +95,6 @@ Kirigami.ApplicationWindow {
         return title;
     }
 
-    /// The mode dialog, for the account shown.
-    function changeMode() {
-        if (Current.item) {
-            modeDialog.openFor(Current.item);
-        }
-    }
-
     Connections {
         target: Accounts
         function onOpenUrlRequested(url) {
@@ -229,10 +222,6 @@ Kirigami.ApplicationWindow {
         Item {
             Layout.fillHeight: true
         }
-    }
-
-    ModeDialog {
-        id: modeDialog
     }
 
     // The pages live for the window's lifetime: the page row borrows the one

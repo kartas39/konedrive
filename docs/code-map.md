@@ -1017,10 +1017,9 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `ActivityPage.qml` — what happened in the folder, with a search.
 - `StoragePage.qml` — the space the OneDrive takes on this device, with Free Up Space and the free
   space its downloads leave, and in OneDrive.
-- `OneDriveSettingsPage.qml` — one OneDrive's settings: its account, mode, folder and previews.
+- `OneDriveSettingsPage.qml` — one OneDrive's settings: its account, two-way sync, folder and
+  previews.
 - `SettingsPage.qml` — the whole app's settings, and About.
-- `ModeCard.qml` — how the folder syncs, with "Change…" and a switch under way.
-- `ModeDialog.qml` — the choice between two-way sync and read-only.
 - `ServiceCard.qml` — the KOneDrive service is not running: start it, or read its log.
 
 ### `app/tests/`

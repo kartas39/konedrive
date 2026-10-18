@@ -276,7 +276,7 @@ private Q_SLOTS:
         QTRY_VERIFY(app.accounts.at(0)->account()->state() == QLatin1String("signed-in"));
         auto *card = app.find("folderChoiceCard");
         auto *offered = app.find("offeredFolder");
-        auto *twoWay = app.find("twoWaySwitch");
+        auto *twoWay = app.findOn<QQuickItem>("statusPage", "twoWaySwitch");
         auto *next = app.find("continueButton");
         QVERIFY(card && offered && twoWay && next);
         QTRY_VERIFY(card->isVisible());
@@ -290,7 +290,7 @@ private Q_SLOTS:
         QMetaObject::invokeMethod(next, "clicked");
         QTRY_VERIFY(fake.object(0)->account->calls.contains(QStringLiteral("SetMode:read-write:no-force")));
         QTRY_COMPARE(m_opened.size(), 1);
-        QTRY_VERIFY(app.find("cancelTwoWayButton")->isVisible());
+        QTRY_VERIFY(app.findOn<QQuickItem>("statusPage", "cancelTwoWayButton")->isVisible());
         QVERIFY(!next->isVisible());
         QVERIFY(!fake.object(0)->sync->calls.join(QLatin1Char(' ')).contains(QStringLiteral("Register")));
         fake.object(0)->account->grantReadWrite();
@@ -401,10 +401,10 @@ private Q_SLOTS:
         fake.stop();
     }
 
-    /// How the folder syncs: the mode line follows Mode. Two-way, chosen in the mode
-    /// dialog, goes to the daemon only once confirmed; read-only while changes are unsent
-    /// shows the switch that waits, with its two ways out.
-    void theModeDialog()
+    /// How the folder syncs, on OneDrive Settings: the two-way switch follows Mode. Turned on,
+    /// it asks the daemon at once; turned off while changes are unsent, it shows the switch that
+    /// waits, with its two ways out, and stays off.
+    void theTwoWaySwitch()
     {
         FakeDaemon fake;
         fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
@@ -415,94 +415,87 @@ private Q_SLOTS:
                                 {QStringLiteral("State"), QStringLiteral("ready")},
                                 {QStringLiteral("Source"), QStringLiteral("onedrive")}});
         QVERIFY(fake.start());
+        App app;
+        QVERIFY(app.load());
+        QTRY_COMPARE(app.accounts.count(), 1);
+        QTRY_VERIFY(app.accounts.at(0)->sync()->serviceAvailable() && app.accounts.at(0)->account()->state() == QLatin1String("signed-in"));
+        QMetaObject::invokeMethod(app.window, "showPage", Q_ARG(QVariant, QStringLiteral("oneDriveSettings")));
+        auto *twoWay = app.findOn<QQuickItem>("oneDriveSettingsPage", "twoWaySwitch");
+        auto *line = app.findOn<QQuickItem>("oneDriveSettingsPage", "modeSwitchLine");
+        auto *now = app.findOn<QQuickItem>("oneDriveSettingsPage", "switchToReadOnlyNow");
+        auto *keep = app.findOn<QQuickItem>("oneDriveSettingsPage", "cancelReadOnlySwitch");
+        auto *accountError = app.findOn<QQuickItem>("oneDriveSettingsPage", "accountError");
+        QVERIFY(twoWay && line && now && keep && accountError);
+        QTRY_VERIFY(twoWay->isVisible() && twoWay->isEnabled());
+        QVERIFY(!twoWay->property("checked").toBool());
+        QVERIFY(!line->isVisible());
+        const auto toggle = [twoWay](bool on) {
+            twoWay->setProperty("checked", on);
+            QMetaObject::invokeMethod(twoWay, "toggled");
+        };
 
-        Autostart autostart;
-        DownloadProgressSettings progress;
-        PlacesSettings places;
-        TraySettings trayIcons;
-        DaemonController daemon;
-        AccountsModel accounts(&daemon);
-        CurrentAccount current(&accounts);
-        ServiceUnit serviceUnit;
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
-
-        QQmlApplicationEngine engine;
-        KLocalization::setupLocalizedContext(&engine);
-        engine.loadFromModule("org.konedrive.app.window", "Main");
-        QVERIFY(!engine.rootObjects().isEmpty());
-        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
-        QVERIFY(window);
-        window->show();
-        QTRY_COMPARE(accounts.count(), 1);
-        QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
-        QObject *dialog = window->findChild<QObject *>(QStringLiteral("modeDialog"));
-        // The mode is on OneDrive Settings.
-        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("oneDriveSettings")));
-        auto *modeLine = window->findChild<QQuickItem *>(QStringLiteral("modeLine"));
-        QVERIFY(dialog && modeLine);
-        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Read-only"));
-
-        // Two-way: chosen, then confirmed. The fake refuses it, so no browser opens here.
-        QMetaObject::invokeMethod(window, "changeMode");
-        QTRY_VERIFY(shown(dialog));
-        QVERIFY(!dialog->property("twoWay").toBool());
-        dialog->setProperty("twoWay", true);
-        QVERIFY(!fake.account->calls.join(QLatin1Char(' ')).contains(QStringLiteral("SetMode")));
-        QMetaObject::invokeMethod(dialog, "confirm");
-        QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-write:no-force")));
-        QTRY_COMPARE(accounts.at(0)->account()->actionError(), QStringLiteral("Two-way sync was not turned on: cannot listen on localhost"));
-        QCOMPARE(modeLine->property("text").toString(), QStringLiteral("Read-only"));
+        // Turned on: asked at once. The fake refuses it, so no browser opens, and it stays off.
+        toggle(true);
+        QTRY_VERIFY(app.accounts.at(0)->account()->switchingTo().isEmpty() && app.accounts.at(0)->account()->actionError().length() > 0);
+        QVERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-write:no-force")));
+        QCOMPARE(app.accounts.at(0)->account()->actionError(), QStringLiteral("Two-way sync was not turned on: cannot listen on localhost"));
+        QTRY_VERIFY(!twoWay->property("checked").toBool());
 
         // It follows the mode the account runs in.
         fake.account->set({{QStringLiteral("Mode"), QStringLiteral("read-write")}});
-        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Two-way sync"));
+        QTRY_VERIFY(twoWay->property("checked").toBool());
 
-        // Read-only, with nothing unsent: switched at once.
-        QMetaObject::invokeMethod(window, "changeMode");
-        QTRY_VERIFY(shown(dialog));
-        QVERIFY(dialog->property("twoWay").toBool());
-        dialog->setProperty("twoWay", false);
-        QMetaObject::invokeMethod(dialog, "confirm");
+        // Turned off with nothing unsent: switched at once.
+        toggle(false);
         QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-only:no-force")));
-        QTRY_COMPARE(accounts.at(0)->account()->mode(), QStringLiteral("read-only"));
-        QTRY_VERIFY(accounts.at(0)->account()->switchingTo().isEmpty());
-        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Read-only"));
+        QTRY_COMPARE(app.accounts.at(0)->account()->mode(), QStringLiteral("read-only"));
+        QTRY_VERIFY(app.accounts.at(0)->account()->switchingTo().isEmpty());
+        QVERIFY(!twoWay->property("checked").toBool());
+        QVERIFY(!line->isVisible() && !now->isVisible());
 
-        // Read-only while changes are unsent: the mode line says that the switch waits.
-        QObject *now = window->findChild<QObject *>(QStringLiteral("switchToReadOnlyNow"));
-        QObject *cancel = window->findChild<QObject *>(QStringLiteral("cancelReadOnlySwitch"));
-        QVERIFY(now && cancel);
-        QVERIFY(!now->property("visible").toBool());
+        // Turned off while changes are unsent: off, and the line says that the switch waits.
         fake.account->set({{QStringLiteral("Mode"), QStringLiteral("read-write")}});
-        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Two-way sync"));
+        QTRY_VERIFY(twoWay->property("checked").toBool());
         fake.account->unsentChanges = 2;
-        QMetaObject::invokeMethod(window, "changeMode");
-        dialog->setProperty("twoWay", false);
-        QMetaObject::invokeMethod(dialog, "confirm");
-        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Switching to read-only: 2 changes still to send"));
-        QVERIFY(now->property("visible").toBool() && cancel->property("visible").toBool());
-        QTRY_VERIFY(accounts.at(0)->account()->switchingTo().isEmpty());
-        QObject *accountError = window->findChild<QObject *>(QStringLiteral("accountError"));
-        QVERIFY(accountError);
-        QVERIFY(!accountError->property("visible").toBool());
+        toggle(false);
+        QTRY_COMPARE(line->property("text").toString(),
+                     QStringLiteral("Switching to read-only: 2 changes still to send. The folder turns read-only by itself once they are uploaded."));
+        QVERIFY(!twoWay->property("checked").toBool() && !twoWay->isEnabled());
+        QVERIFY(now->isVisible() && keep->isVisible());
+        QTRY_VERIFY(app.accounts.at(0)->account()->switchingTo().isEmpty());
+        QVERIFY(!accountError->isVisible());
 
-        // Keep Two-Way Sync takes the wish back: read-write, and the state is gone.
+        // Keep Two-Way Sync takes the wish back: on, and the line is gone.
         fake.account->calls.clear();
-        QTRY_VERIFY(cancel->property("enabled").toBool());
-        QMetaObject::invokeMethod(cancel, "clicked");
+        QTRY_VERIFY(keep->isEnabled());
+        QMetaObject::invokeMethod(keep, "clicked");
         QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-write:no-force")));
-        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Two-way sync"));
+        QTRY_VERIFY(twoWay->property("checked").toBool() && twoWay->isEnabled());
+        QTRY_VERIFY(!line->isVisible());
 
         // Switch Now forces it.
-        QMetaObject::invokeMethod(window, "changeMode");
-        dialog->setProperty("twoWay", false);
-        QMetaObject::invokeMethod(dialog, "confirm");
-        QTRY_VERIFY(now->property("visible").toBool());
-        QTRY_VERIFY(now->property("enabled").toBool());
+        toggle(false);
+        QTRY_VERIFY(now->isVisible());
+        QTRY_VERIFY(now->isEnabled());
         QMetaObject::invokeMethod(now, "clicked");
         QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-only:force")));
-        QTRY_COMPARE(accounts.at(0)->account()->mode(), QStringLiteral("read-only"));
-        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Read-only"));
+        QTRY_COMPARE(app.accounts.at(0)->account()->mode(), QStringLiteral("read-only"));
+        QTRY_VERIFY(!line->isVisible());
+        QVERIFY(!twoWay->property("checked").toBool());
+
+        // Turned on, it waits for the browser: on while it does, with its link and Cancel,
+        // and off again once cancelled.
+        fake.account->readWriteFails.clear();
+        auto *cancel = app.findOn<QQuickItem>("oneDriveSettingsPage", "cancelTwoWayButton");
+        QVERIFY(cancel);
+        toggle(true);
+        QTRY_VERIFY(app.accounts.at(0)->account()->modeSignInPending());
+        QTRY_COMPARE(line->property("text").toString(), QStringLiteral("Waiting for you to allow KOneDrive to change your files in your browser…"));
+        QVERIFY(twoWay->property("checked").toBool() && !twoWay->isEnabled());
+        QVERIFY(cancel->isVisible());
+        QMetaObject::invokeMethod(cancel, "clicked");
+        QTRY_VERIFY(!line->isVisible());
+        QVERIFY(!twoWay->property("checked").toBool() && twoWay->isEnabled());
 
         fake.stop();
     }

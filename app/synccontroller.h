@@ -96,8 +96,6 @@ class SyncController : public QObject
     /// The account's own sync setting (FreeSpaceReserve): the gigabytes of the disk's
     /// free space that downloads of files kept on this device leave.
     Q_PROPERTY(int freeSpaceReserve READ freeSpaceReserve NOTIFY syncChanged)
-    /// What a copy of a file changed on both sides is named after: "Report-<machine>.docx".
-    Q_PROPERTY(QString machineName READ machineName NOTIFY syncChanged)
     /// Uploads under way (Transfers.Uploads).
     Q_PROPERTY(TransferModel *uploads READ uploads CONSTANT)
     /// The account's transfers and pool (Transfers' DownloadSpeed, UploadSpeed, ActiveDownloads,
@@ -207,7 +205,6 @@ public:
     QString liveChanges() const { return m_liveChanges; }
     bool thumbnails() const { return m_thumbnails; }
     int freeSpaceReserve() const { return m_freeSpaceReserve; }
-    QString machineName() const { return m_machineName; }
     TransferModel *uploads() const { return m_uploads; }
     qulonglong downloadSpeed() const { return m_downloadSpeed; }
     qulonglong uploadSpeed() const { return m_uploadSpeed; }
@@ -377,7 +374,6 @@ private:
     QString m_liveChanges = QStringLiteral("off");
     bool m_thumbnails = true;
     int m_freeSpaceReserve = 10;
-    QString m_machineName;
     TransferModel *m_uploads;
     qulonglong m_downloadSpeed = 0;
     qulonglong m_uploadSpeed = 0;

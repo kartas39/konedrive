@@ -265,7 +265,6 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         count("TooBigCount", m_tooBigCount);
     } else if (interfaceName == ConflictsInterface) {
         count("Count", m_conflictCount);
-        text("MachineName", m_machineName);
     } else if (interfaceName == LocalScanInterface) {
         text("State", m_scanState);
         text("Reason", m_scanReason);

@@ -110,7 +110,6 @@ private Q_SLOTS:
         m_fake->keptBackFiles.insert(QStringLiteral("name-characters"), {{root + QStringLiteral("/a:b"), QStringLiteral("name-characters")}});
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
-        QCOMPARE(controller.machineName(), QStringLiteral("fedora"));
         QCOMPARE(controller.ignorePatterns(), (QStringList{QStringLiteral("*.tmp"), QStringLiteral("~*")}));
 
         m_fake->queue->set({{QStringLiteral("PendingCount"), QVariant::fromValue<uint>(1)},
