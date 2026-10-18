@@ -585,19 +585,10 @@ private Q_SLOTS:
         auto *headline = window->findChild<QQuickItem *>(QStringLiteral("headline"));
         auto *anyway = window->findChild<QQuickItem *>(QStringLiteral("syncAnywayButton"));
         auto *resume = window->findChild<QQuickItem *>(QStringLiteral("resumeButton"));
-        auto *attention = window->findChild<QQuickItem *>(QStringLiteral("attentionCard"));
-        auto *conflictsLine = window->findChild<QQuickItem *>(QStringLiteral("conflictsLine"));
-        QVERIFY(headline && anyway && resume && attention && conflictsLine);
+        QVERIFY(headline && anyway && resume);
         QTRY_COMPARE(headline->property("text").toString(), QStringLiteral("Paused: metered connection"));
         QVERIFY(anyway->isVisible());
         QVERIFY(!resume->isVisible());
-        QVERIFY(!attention->isVisible());
-
-        // Both versions kept: Needs Your Attention shows, with its line.
-        fake.sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(2)}});
-        QTRY_VERIFY(attention->isVisible() && conflictsLine->isVisible());
-        fake.sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(0)}});
-        QTRY_VERIFY(!attention->isVisible());
 
         fake.sync->folder->set({{QStringLiteral("HeldBack"), QStringLiteral("power-saver")}});
         QTRY_COMPARE(headline->property("text").toString(), QStringLiteral("Paused: power-saver mode"));
@@ -606,6 +597,51 @@ private Q_SLOTS:
         fake.sync->folder->decide("ok", "up-to-date", {{QStringLiteral("HeldBack"), QString()}});
         QTRY_COMPARE(headline->property("text").toString(), QStringLiteral("Up to date"));
         QVERIFY(!anyway->isVisible());
+        fake.stop();
+    }
+
+    /// Needs Your Attention shows while something needs the user, with its line, and goes
+    /// once nothing does.
+    void theOverviewShowsWhatNeedsAttention()
+    {
+        FakeDaemon fake;
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        fake.sync->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/OneDrive")},
+                                {QStringLiteral("State"), QStringLiteral("ready")},
+                                {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+        QVERIFY(fake.start());
+
+        Autostart autostart;
+        DownloadProgressSettings progress;
+        PlacesSettings places;
+        TraySettings trayIcons;
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        ServiceUnit serviceUnit;
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+
+        QQmlApplicationEngine engine;
+        KLocalization::setupLocalizedContext(&engine);
+        engine.loadFromModule("org.konedrive.app.window", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        window->show();
+        QTRY_COMPARE(accounts.count(), 1);
+        QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("overview")));
+        auto *headline = window->findChild<QQuickItem *>(QStringLiteral("headline"));
+        auto *attention = window->findChild<QQuickItem *>(QStringLiteral("attentionCard"));
+        auto *conflictsLine = window->findChild<QQuickItem *>(QStringLiteral("conflictsLine"));
+        QVERIFY(headline && attention && conflictsLine);
+        QTRY_VERIFY(headline->isVisible());
+        QVERIFY(!attention->isVisible());
+
+        fake.sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(2)}});
+        QTRY_VERIFY(attention->isVisible() && conflictsLine->isVisible());
+        fake.sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(0)}});
+        QTRY_VERIFY(!attention->isVisible());
         fake.stop();
     }
 
