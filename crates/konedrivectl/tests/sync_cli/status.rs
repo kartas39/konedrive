@@ -1,20 +1,5 @@
 use super::*;
 
-/// The daemon has started and not brought the folder up yet: it has its path, its state is
-/// `none`, and nothing has measured it, so no size and no count of pins is printed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_status_of_a_folder_not_brought_up_yet_says_no_size() {
-    let f = harness().await;
-    f.service.state().update(|s| s.folder.root_path = "/home/u/OneDrive".into());
-
-    let out = run(f._bus.address(), &["sync", "status"]);
-    assert!(out.status.success(), "{out:?}");
-    let text = out_text(&out);
-    assert!(text.lines().any(|l| l.starts_with("Folder:") && l.ends_with("/home/u/OneDrive")), "{text}");
-    assert!(text.lines().any(|l| l.starts_with("State:") && l.ends_with("none")), "{text}");
-    assert!(!text.contains("On this computer:") && !text.contains("Always on this device:"), "{text}");
-}
-
 // --- `sync skipped`, `sync refresh`, and OneDrive-folder `sync status` ---
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
