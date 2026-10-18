@@ -80,6 +80,7 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
     , m_activity(new ActivityModel(this))
     , m_conflicts(new ConflictModel(this))
     , m_uploads(new TransferModel(this))
+    , m_sampler(new QTimer(this))
     , m_notUploadedSoon(new QTimer(this))
 {
     registerKonedriveSyncTypes();
@@ -88,6 +89,17 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
     // refresh never piles up behind the daemon's signals.
     m_notUploadedSoon->setSingleShot(true);
     connect(m_notUploadedSoon, &QTimer::timeout, this, &SyncController::loadNotUploaded);
+    // The charts' history: one sample a second, whether or not the daemon said anything,
+    // so that an idle line decays to 0.
+    for (auto &history : m_history) {
+        history.reserve(HistoryLength);
+        for (int i = 0; i < HistoryLength; ++i) {
+            history.append(0.0);
+        }
+    }
+    m_sampler->setInterval(1000);
+    connect(m_sampler, &QTimer::timeout, this, &SyncController::sampleHistory);
+    m_sampler->start();
     m_bus.connect(ServiceName,
                   m_path,
                   QStringLiteral("org.freedesktop.DBus.Properties"),
@@ -286,6 +298,29 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
     }
 }
 
+void SyncController::sampleHistory()
+{
+    const double now[4] = {double(m_downloadSpeed), double(m_uploadSpeed), double(m_activeDownloads), double(m_activeUploads)};
+    bool changed = false;
+    for (int i = 0; i < 4; ++i) {
+        // An idle history that stays idle is not news.
+        const auto nonZero = [](const QVariant &sample) {
+            return sample.toDouble() != 0.0;
+        };
+        if (now[i] != 0.0 || std::any_of(m_history[i].cbegin(), m_history[i].cend(), nonZero)) {
+            changed = true;
+        }
+    }
+    if (!changed) {
+        return;
+    }
+    for (int i = 0; i < 4; ++i) {
+        m_history[i].removeFirst();
+        m_history[i].append(now[i]);
+    }
+    Q_EMIT historyChanged();
+}
+
 void SyncController::onActivityAdded(qlonglong time, const QString &kind, const QString &path, const QString &detail)
 {
     const KonedriveActivity event{time, kind, path, detail};
@@ -378,10 +413,19 @@ void SyncController::chooseFolder(const QUrl &folder)
 
 void SyncController::forget()
 {
+    forgetThen({});
+}
+
+void SyncController::forgetThen(std::function<void()> then)
+{
     // Never refused for what is unsent: the page warns with readUnsentCount() before it calls.
     // M6: no timeout, as Register and FreeUpSpace have.
     const auto message = QDBusMessage::createMethodCall(ServiceName, m_path, FolderInterface, QStringLiteral("Unregister"));
-    call(m_bus.asyncCall(message, std::numeric_limits<int>::max()));
+    call(m_bus.asyncCall(message, std::numeric_limits<int>::max()), [then](const QDBusPendingCall &) {
+        if (then) {
+            then();
+        }
+    });
 }
 
 void SyncController::readUnsentCount()
@@ -442,6 +486,16 @@ void SyncController::openOnWeb()
         const QDBusPendingReply<QString> reply = pending;
         QDesktopServices::openUrl(QUrl(reply.value()));
     });
+}
+
+void SyncController::unpinAll()
+{
+    if (m_rootPath.isEmpty()) {
+        return;
+    }
+    auto message = QDBusMessage::createMethodCall(ServiceName, QStringLiteral("/org/konedrive/Accounts"), QStringLiteral("org.konedrive.Files"), QStringLiteral("Unpin"));
+    message << QStringList{m_rootPath};
+    call(m_bus.asyncCall(message));
 }
 
 void SyncController::loadActivity()

@@ -86,8 +86,7 @@ private Q_SLOTS:
         window->show();
         QTRY_COMPARE(accounts.count(), 1);
         QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable());
-        const QStringList pages{QStringLiteral("status"), QStringLiteral("issues"), QStringLiteral("activity"),
-                                QStringLiteral("storage"), QStringLiteral("oneDriveSettings"), QStringLiteral("settings")};
+        const QStringList pages{QStringLiteral("status"), QStringLiteral("issues"), QStringLiteral("oneDriveSettings"), QStringLiteral("settings")};
         for (const QString &page : pages) {
             QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, page));
         }

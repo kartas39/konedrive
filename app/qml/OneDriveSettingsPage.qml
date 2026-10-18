@@ -7,8 +7,9 @@ import org.konedrive.app
 
 /// The settings of the OneDrive chosen in the sidebar — an account, its folder and how it
 /// syncs, as one: its name and Microsoft account, two-way sync, its folder (or another one),
-/// its previews, the advanced settings (what is never uploaded, signing out), and
-/// disconnecting it. Signing in again is on Status.
+/// its previews and the free space its downloads leave, the advanced settings (what is never
+/// uploaded, signing out), and disconnecting it. Signing in again and opening the folder are
+/// on Status.
 FormCard.FormCardPage {
     id: page
 
@@ -209,13 +210,8 @@ FormCard.FormCardPage {
                 implicitWidth: Kirigami.Units.iconSizes.medium
                 implicitHeight: Kirigami.Units.iconSizes.medium
             }
-            trailing: QQC2.Button {
-                text: i18nc("@action:button", "Open Folder")
-                icon.name: "system-file-manager"
-                onClicked: page.sync.openFolder()
-            }
         }
-        // A folder that stopped has it on Status, beside what stopped it.
+        // A folder that stopped is given another on Status, in the step of choosing one.
         FormCard.FormButtonDelegate {
             objectName: "anotherFolderButton"
             visible: page.sync !== null && page.sync.overallReason !== "stopped"
@@ -226,10 +222,11 @@ FormCard.FormCardPage {
         }
     }
 
-    // What the folder shows on this device: the account's own sync setting (issue #80), the
-    // daemon's, written to config.toml; the switch shows what it says, and a change goes
-    // through it. The free space it leaves is on Storage; pausing on metered connections and
-    // on battery is the whole app's, on the Settings page (issue #95).
+    // What the folder shows and keeps on this device: the account's own sync settings — its
+    // previews (issue #80) and the free space its downloads leave (FreeSpaceReserve, issue
+    // #217) — the daemon's, written to config.toml; each control shows what it says, and a
+    // change goes through it. Pausing on metered connections and on battery is the whole
+    // app's, on the Settings page (issue #95).
     FormCard.FormHeader {
         visible: page.hasFolder
         title: i18nc("@title:group", "On This Device")
@@ -265,6 +262,30 @@ FormCard.FormCardPage {
                 implicitWidth: Kirigami.Units.iconSizes.small
                 implicitHeight: Kirigami.Units.iconSizes.small
             }
+        }
+        FormCard.FormDelegateSeparator {}
+        FormCard.FormSpinBoxDelegate {
+            id: freeSpaceReserveBox
+            objectName: "freeSpaceReserveBox"
+
+            readonly property int kept: page.sync !== null ? page.sync.freeSpaceReserve : 0
+
+            label: i18n("Keep at least this much free space on this device, in GiB")
+            from: 0
+            to: 100000
+            value: kept
+            // The inner box writes `value` back, ending the binding: kept in step here.
+            onKeptChanged: value = kept
+            onValueChanged: {
+                if (page.sync !== null && value !== kept) {
+                    page.sync.setFreeSpaceReserve(value);
+                }
+            }
+        }
+        FormCard.FormTextDelegate {
+            objectName: "freeSpaceReserveLine"
+            text: i18n("A file always kept on this device is not downloaded while its download would leave less free space than this.")
+            textItem.wrapMode: Text.Wrap
         }
     }
 

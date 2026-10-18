@@ -141,6 +141,12 @@ class SyncController : public QObject
     Q_PROPERTY(QString scanState READ scanState NOTIFY syncChanged)
     Q_PROPERTY(QString scanReason READ scanReason NOTIFY syncChanged)
     Q_PROPERTY(qlonglong scanStarted READ scanStarted NOTIFY syncChanged)
+    /// The last two minutes of each, one sample a second, oldest first: the window keeps
+    /// them, the daemon does not.
+    Q_PROPERTY(QVariantList downloadSpeedHistory READ downloadSpeedHistory NOTIFY historyChanged)
+    Q_PROPERTY(QVariantList uploadSpeedHistory READ uploadSpeedHistory NOTIFY historyChanged)
+    Q_PROPERTY(QVariantList activeDownloadsHistory READ activeDownloadsHistory NOTIFY historyChanged)
+    Q_PROPERTY(QVariantList activeUploadsHistory READ activeUploadsHistory NOTIFY historyChanged)
     /// What is kept back, one entry per reason: {group, reason, count, bytes, why}
     /// (NotUploadedSummary()), groups in the order one-action, per-file, waiting.
     Q_PROPERTY(QVariantList notUploadedSummary READ notUploadedSummary NOTIFY notUploadedChanged)
@@ -233,6 +239,12 @@ public:
     QString scanState() const { return m_scanState; }
     QString scanReason() const { return m_scanReason; }
     qlonglong scanStarted() const { return m_scanStarted; }
+    QVariantList downloadSpeedHistory() const { return m_history[0]; }
+    QVariantList uploadSpeedHistory() const { return m_history[1]; }
+    QVariantList activeDownloadsHistory() const { return m_history[2]; }
+    QVariantList activeUploadsHistory() const { return m_history[3]; }
+    /// Samples kept in each history: two minutes, one a second.
+    static constexpr int HistoryLength = 120;
     QVariantList notUploadedSummary() const { return m_notUploadedSummary; }
     bool notUploadedKnown() const { return m_notUploadedKnown; }
     qulonglong blockedBytes() const { return m_blockedBytes; }
@@ -243,6 +255,10 @@ public:
     /// first (only it, not the directories above it).
     Q_INVOKABLE void chooseFolder(const QUrl &folder);
     Q_INVOKABLE void forget();
+    /// Folder.Unregister, and `then` once the daemon has forgotten the folder: the folder
+    /// step gives an account whose folder stopped another one so. Not after a refusal,
+    /// which is actionError.
+    void forgetThen(std::function<void()> then);
     /// Asks UploadQueue.UnsentCount(): how many changes made here are not sent to
     /// OneDrive, which a Forget or the account's removal leaves only on this computer.
     /// Answers unsentCountRead; a count that cannot be read is 0, so that nothing waits
@@ -261,6 +277,9 @@ public:
     Q_INVOKABLE void dismissConflict(const QString &copyPath);
     /// FreeUpSpace; the outcome lands in `freeUpResult`.
     Q_INVOKABLE void freeUpSpace();
+    /// Unpin All: Files.Unpin of the folder itself, which lets every pin and exception in
+    /// it go; the files stay downloaded. A refusal is actionError.
+    Q_INVOKABLE void unpinAll();
     Q_INVOKABLE void clearFreeUpResult();
     /// Opens the file manager on the file's folder with the file selected.
     Q_INVOKABLE void showInFolder(const QString &path);
@@ -307,6 +326,7 @@ Q_SIGNALS:
     void actionErrorChanged();
     void freeUpResultChanged();
     void notUploadedChanged();
+    void historyChanged();
     void notUploadedFilesChanged();
     /// One ActivityLog.Added from the daemon, as it happens.
     void activityAdded(qlonglong time, const QString &kind, const QString &path, const QString &detail);
@@ -379,6 +399,8 @@ private:
     bool m_thumbnails = true;
     int m_freeSpaceReserve = 10;
     TransferModel *m_uploads;
+    /// Adds one sample to each history (every second).
+    void sampleHistory();
     qulonglong m_downloadSpeed = 0;
     qulonglong m_uploadSpeed = 0;
     uint m_activeDownloads = 0;
@@ -403,6 +425,9 @@ private:
     QString m_scanState = QStringLiteral("none");
     QString m_scanReason;
     qlonglong m_scanStarted = 0;
+    /// Download speed, upload speed, active downloads, active uploads.
+    QVariantList m_history[4];
+    QTimer *m_sampler;
     QVariantList m_notUploadedSummary;
     bool m_notUploadedKnown = false;
     qulonglong m_blockedBytes = 0;

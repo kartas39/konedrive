@@ -126,11 +126,11 @@ void Notifier::onActivity(qint64, const QString &kind, const QString &path, cons
     case ActivityFailure::None:
         return;
     case ActivityFailure::DiskFull:
-        post({QStringLiteral("diskFull"), WindowSection::Storage, i18nc("@title notification", "Not enough disk space"), i18n("%1 could not be downloaded: the disk is full.", name), {}});
+        post({QStringLiteral("diskFull"), WindowSection::Status, i18nc("@title notification", "Not enough disk space"), i18n("%1 could not be downloaded: the disk is full.", name), {}});
         return;
     case ActivityFailure::Update:
         post({QStringLiteral("updateFailed"),
-              WindowSection::Activity,
+              WindowSection::History,
               i18nc("@title notification", "A file could not be updated"),
               i18n("%1 changed in OneDrive but could not be updated here: %2", name, detail),
               {}});
@@ -149,7 +149,7 @@ void Notifier::onActivity(qint64, const QString &kind, const QString &path, cons
         return;
     case ActivityFailure::Download:
         post({QStringLiteral("downloadFailed"),
-              WindowSection::Activity,
+              WindowSection::History,
               i18nc("@title notification", "Download failed"),
               detail.isEmpty() ? i18n("%1 could not be downloaded.", name) : i18n("%1 could not be downloaded: %2", name, detail),
               {}});

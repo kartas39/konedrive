@@ -962,12 +962,14 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `accountsmodel.h`, `accountsmodel.cpp` — the accounts, each with its controllers; Sign In and
   its link.
 - `currentaccount.h`, `currentaccount.cpp` — the account the window shows.
-- `folderchoice.h`, `folderchoice.cpp` — the folder offered to the account shown while it has
-  none, and Continue: the folder registered, once the switch to two-way is granted when asked.
+- `folderchoice.h`, `folderchoice.cpp` — the folder offered to the account shown while it has no
+  working folder, none or one that stopped, and Continue: a folder that stopped forgotten first,
+  then the folder registered, once the switch to two-way is granted when asked.
 - `foldertext.h` — a folder's path as the window writes it, from `~`.
 - `timetext.h` — a moment as the window writes it: the time of day today, else the date too.
 - `accountcontroller.h`, `accountcontroller.cpp` — one account's `org.konedrive.Account`.
-- `synccontroller.h`, `synccontroller.cpp` — one account's folder, for QML.
+- `synccontroller.h`, `synccontroller.cpp` — one account's folder, for QML, with the speeds and
+  transfers of the last two minutes for the charts.
 - `synctypes.h` — the structured types of the folder's interfaces.
 - `skippeditem.h` — one entry of `Skipped()` and of `NotUploaded()`.
 - `accountstatus.h`, `accountstatus.cpp` — one summary of an account and its folder: the state
@@ -981,8 +983,8 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `generated/reasontexts.h`, `generated/reasontexts.cpp` — generated from `konedrive-text`, not
   edited: the window's sentence for every reason, and how a reason is cut into its parts.
 - `notifier.h`, `notifier.cpp` — the notifications.
-- `windowsection.h` — where a click on a notification opens the window: a page, or a section
-  of Issues.
+- `windowsection.h` — where a click on a notification opens the window: Status, Status with its
+  History unfolded, or a section of Issues.
 - `konedrive.notifyrc` — the notification events.
 - `trayicon.h`, `trayicon.cpp` — the app in the tray: one icon for every account, or one each.
 - `trayitem.h`, `trayitem.cpp` — one tray icon and its menu.
@@ -1003,11 +1005,17 @@ Each has its file in `crates/konedrived/src/dbus/`.
 
 - `AccountSwitcher.qml` — the top of the sidebar: the OneDrive the pages show.
 - `SignInPage.qml` — adding a OneDrive: Microsoft's sign-in in the browser, its link, Cancel.
-- `StatusPage.qml` — the start page: what the folder is doing or what stops it, with the one thing
-  to do; a line of what Issues lists; what moves now and what waits; the folder. With no folder,
-  choosing it.
-- `FolderChoiceCard.qml` — the last step of adding a OneDrive, on Status: the folder, two-way sync
-  or not, Continue; Cancel disconnects.
+- `StatusPage.qml` — the start page: Sync Now, Pause and Open Folder; what the folder is doing or
+  what stops it, with the one thing to do, and a line of what Issues lists; the space, with Free Up
+  Space and Unpin All; each way's card, the pool and the files moving now; History, folded, with
+  its search. With no working folder, choosing one.
+- `StorageBar.qml` — the space in one bar: what is on this device and the rest of what is used in
+  OneDrive, of its storage, with what is always kept.
+- `TransferCard.qml` — one way's card: the speed, the files moving, what is left, and the chart
+  of the last two minutes.
+- `FolderChoiceCard.qml` — choosing the folder, on Status: after adding a OneDrive, or for a folder
+  that stopped, with why and Try Again; the folder, two-way sync or not, Continue; Cancel
+  disconnects a OneDrive that has never had a folder.
 - `UnsentChangesPrompt.qml` — a question whose answer leaves the folder behind: it says first how
   many changes made here are not uploaded.
 - `DisconnectDialog.qml` — that question before an account is disconnected.
@@ -1016,11 +1024,8 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `FormCardRow.qml` — a row of that list, on a card-coloured band.
 - `IssuesPage.qml` — what needs the user, in one list: the changes that can't upload, the files
   whose both versions were kept, what can't be shown in the folder.
-- `ActivityPage.qml` — what happened in the folder, with a search.
-- `StoragePage.qml` — the space the OneDrive takes on this device, with Free Up Space and the free
-  space its downloads leave, and in OneDrive.
-- `OneDriveSettingsPage.qml` — one OneDrive's settings: its account, two-way sync, folder and
-  previews.
+- `OneDriveSettingsPage.qml` — one OneDrive's settings: its account, two-way sync, folder,
+  previews and the free space its downloads leave.
 - `SettingsPage.qml` — the whole app's settings, and About.
 - `ServiceCard.qml` — the KOneDrive service is not running: start it, or read its log.
 

@@ -74,6 +74,7 @@ BuildRequires:  systemd-rpm-macros
 Requires:       kf6-kirigami%{?_isa}
 Requires:       kf6-kirigami-addons%{?_isa}
 Requires:       kf6-kitemmodels%{?_isa}
+Requires:       kf6-kquickcharts%{?_isa}
 # The window's Qt Quick Controls style (org.kde.desktop).
 Requires:       kf6-qqc2-desktop-style%{?_isa}
 Requires:       qt6-qtdeclarative%{?_isa}

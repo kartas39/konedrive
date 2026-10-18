@@ -102,7 +102,7 @@ private Q_SLOTS:
         report(QStringLiteral("failed"), QStringLiteral("big.iso"), QStringLiteral("not enough disk space"));
         QCOMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.first().event, QStringLiteral("diskFull"));
-        QCOMPARE(m_sink.sent.first().section, WindowSection::Storage);
+        QCOMPARE(m_sink.sent.first().section, WindowSection::Status);
         QVERIFY2(m_sink.sent.first().text.contains(QStringLiteral("big.iso")), qPrintable(m_sink.sent.first().text));
     }
 
@@ -112,7 +112,7 @@ private Q_SLOTS:
         report(QStringLiteral("failed"), QStringLiteral("a.txt"), QStringLiteral("the connection was reset"));
         QCOMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.first().event, QStringLiteral("downloadFailed"));
-        QCOMPARE(m_sink.sent.first().section, WindowSection::Activity);
+        QCOMPARE(m_sink.sent.first().section, WindowSection::History);
         QVERIFY(m_sink.sent.first().text.contains(QStringLiteral("a.txt")));
         QVERIFY(m_sink.sent.first().text.contains(QStringLiteral("the connection was reset")));
     }
@@ -138,7 +138,7 @@ private Q_SLOTS:
         report(QStringLiteral("update-failed"), QStringLiteral("a.txt"), QStringLiteral("the connection was reset"));
         QCOMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.first().event, QStringLiteral("updateFailed"));
-        QCOMPARE(m_sink.sent.first().section, WindowSection::Activity);
+        QCOMPARE(m_sink.sent.first().section, WindowSection::History);
         QVERIFY(m_sink.sent.first().text.contains(QStringLiteral("a.txt")));
         QVERIFY(m_sink.sent.first().text.contains(QStringLiteral("the connection was reset")));
     }
@@ -396,7 +396,7 @@ private Q_SLOTS:
         QCOMPARE(m_sink.sent.size(), 3);
         const Notice &summary = m_sink.sent.at(2);
         QCOMPARE(summary.event, QStringLiteral("downloadFailed"));
-        QCOMPARE(summary.section, WindowSection::Activity);
+        QCOMPARE(summary.section, WindowSection::History);
         QCOMPARE(summary.count, 2);
         QVERIFY2(summary.text.contains(QStringLiteral("2 more files")), qPrintable(summary.text));
 

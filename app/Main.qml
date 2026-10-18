@@ -14,7 +14,7 @@ import org.konedrive.app
 Kirigami.ApplicationWindow {
     id: root
 
-    /// The page shown: signIn, status, issues, activity, storage, oneDriveSettings or settings.
+    /// The page shown: signIn, status, issues, oneDriveSettings or settings.
     property string currentPage: "status"
     /// Wide enough for the sidebar beside a page.
     readonly property bool sidebarFits: width >= Kirigami.Units.gridUnit * 36
@@ -40,8 +40,6 @@ Kirigami.ApplicationWindow {
         case "status":
             return !hasService || hasAccount;
         case "issues":
-        case "activity":
-        case "storage":
         case "oneDriveSettings":
             return hasService && hasFolder;
         case "settings":
@@ -58,8 +56,6 @@ Kirigami.ApplicationWindow {
             "signIn": signInPage,
             "status": statusPage,
             "issues": issuesPage,
-            "activity": activityPage,
-            "storage": storagePage,
             "oneDriveSettings": oneDriveSettingsPage,
             "settings": settingsPage,
         };
@@ -79,9 +75,16 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    /// Shows where a notification leads, by its name (sectionName() of a WindowSection): a
-    /// page, or a section of Issues brought to the top.
+    /// Shows where a notification leads, by its name (sectionName() of a WindowSection):
+    /// Status, Status with its History opened, or a section of Issues brought to the top.
     function showSection(name) {
+        if (name === "history") {
+            showPage("status");
+            if (currentPage === "status") {
+                statusPage.showHistory();
+            }
+            return;
+        }
         const issuesSections = ["cantUpload", "keptBothVersions", "notInFolder"];
         if (!issuesSections.includes(name)) {
             showPage(name);
@@ -207,8 +210,6 @@ Kirigami.ApplicationWindow {
             model: [
                 { name: "status", text: i18nc("@title sidebar", "Status"), icon: "" },
                 { name: "issues", text: i18nc("@title sidebar", "Issues"), icon: "dialog-warning" },
-                { name: "activity", text: i18nc("@title sidebar", "Activity"), icon: "view-history" },
-                { name: "storage", text: i18nc("@title sidebar", "Storage"), icon: "drive-harddisk" },
                 { name: "oneDriveSettings", text: i18nc("@title sidebar", "OneDrive Settings"), icon: "folder-cloud" },
             ]
             delegate: SidebarEntry {
@@ -251,12 +252,6 @@ Kirigami.ApplicationWindow {
         }
         IssuesPage {
             id: issuesPage
-        }
-        ActivityPage {
-            id: activityPage
-        }
-        StoragePage {
-            id: storagePage
         }
         OneDriveSettingsPage {
             id: oneDriveSettingsPage

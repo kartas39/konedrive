@@ -930,6 +930,29 @@ private:
     };
 };
 
+/// Files on the manager object: what the window asks of paths. Unpin answers how many
+/// paths it was given.
+class FakeFiles : public QDBusAbstractAdaptor
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.konedrive.Files")
+
+public:
+    explicit FakeFiles(QObject *daemon)
+        : QDBusAbstractAdaptor(daemon)
+    {
+    }
+
+    QStringList calls;
+
+public Q_SLOTS:
+    uint Unpin(const QStringList &paths)
+    {
+        calls << QStringLiteral("Unpin:") + paths.join(QLatin1Char(','));
+        return uint(paths.size());
+    }
+};
+
 /// The daemon: the manager object and its accounts. `account` and `sync` are
 /// the first account's, for tests about one account.
 class FakeDaemon : public QObject
@@ -940,6 +963,7 @@ public:
     /// One account per label, in order; by default one, "Personal".
     explicit FakeDaemon(const QStringList &labels = {QStringLiteral("Personal")})
         : manager(new FakeAccounts(this))
+        , files(new FakeFiles(this))
     {
         // Before anything is sent: Transfers is an a(stt).
         registerKonedriveSyncTypes();
@@ -1065,6 +1089,7 @@ public:
     FakeAccountObject *object(int index) const { return objects.value(index); }
 
     FakeAccounts *manager;
+    FakeFiles *files;
     QList<FakeAccountObject *> objects;
     /// The number of the SignIn that has not ended; 0 when none is under way.
     uint signIn = 0;

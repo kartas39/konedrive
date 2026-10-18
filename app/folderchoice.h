@@ -21,7 +21,8 @@ QString suggestFolder(const QString &home, const QString &accountName, const std
 /// there yet, or an empty directory.
 bool isFreeFolder(const QString &path, const QStringList &taken);
 
-/// The folder the account shown gets while it has none, and Continue, which gives it that
+/// The folder the account shown gets while it has no working folder — none, or one whose
+/// syncing stopped (moved, deleted, its disk gone) — and Continue, which gives it that
 /// folder: the one suggestFolder() offers, until another is chosen in the picker. Another
 /// account shown, or a folder taken meanwhile, offers again.
 class FolderChoice : public QObject
@@ -40,9 +41,10 @@ public:
 
     /// Choose Another…: the folder the picker gave.
     Q_INVOKABLE void setFolder(const QUrl &folder);
-    /// Continue: the account turned two-way first when `twoWay` (its sign-in in the browser),
-    /// read-only when not, and then the folder registered, made first when it is not there.
-    /// A switch to two-way that ends without it registers nothing: the account says why.
+    /// Continue: a folder that stopped forgotten first (Unregister, as Use Another Folder
+    /// does); then the account turned two-way when `twoWay` (its sign-in in the browser),
+    /// read-only when not, and the folder registered, made first when it is not there. A
+    /// switch to two-way that ends without it registers nothing: the account says why.
     Q_INVOKABLE void choose(bool twoWay);
 
 Q_SIGNALS:
@@ -52,6 +54,8 @@ private:
     /// The folder offered again, unless one was chosen in the picker for this account.
     void offer();
     void setChosen(const QString &folder);
+    /// Continue for `item`, which has no folder: `folder` given as choose() says.
+    void give(AccountItem *item, const QString &folder, bool twoWay);
     /// Registers `folder` for `item` once its switch to two-way has ended so, and gives
     /// it up once that switch has ended otherwise.
     void registerWhenTwoWay();

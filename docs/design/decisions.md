@@ -494,7 +494,7 @@ answer a user already knows, it is followed.
 
 - **Decision.** An item whose name OneDrive cannot hold (`" * : < > ? \ |`, a space at either end,
   a name that is not UTF-8, a reserved name) is not sent and not altered: it waits, listed under
-  "Not Uploaded" with the reason, until the user renames it.
+  under Issues' "Can't Upload" with the reason, until the user renames it.
 - **Why.** Windows does the same. A substituted name would differ between the folder and OneDrive
   for good, and every other device would see a name nobody chose.
 - **Trade-off.** A `:` or `?` in a Linux file name is common, and each such file stays here until
@@ -678,11 +678,11 @@ answer a user already knows, it is followed.
 - **Trade-off.** One exception: a full disk is recognised by the exact detail "not enough disk
   space".
 
-### 6.3 The window is seven pages, and Conflicts is always one
+### 6.3 The window is four pages, and Issues is always one
 
-- **Decision.** The window has seven pages in a sidebar: Status, Activity, Conflicts, Not in the
-  Folder, Not Uploaded, Account and Settings. Conflicts is always present, with a count badge while
-  there are conflicts, and Not Uploaded likewise ([desktop.md](desktop.md) §4).
+- **Decision.** The window has four pages in a sidebar: Status, Issues, OneDrive Settings and
+  Settings. Issues is always present, with a count badge while anything needs the user
+  ([desktop.md](desktop.md) §4).
 - **Why.** A page that appears only sometimes is hard to find and moves the others around; a badge
   says the same thing without that.
 - **Trade-off.** None.
@@ -690,7 +690,7 @@ answer a user already knows, it is followed.
 ### 6.4 An account switcher heads the sidebar
 
 - **Decision.** The window shows one account at a time. A switcher at the top of the sidebar
-  chooses it; the six account pages below show that account, and Settings, which holds only what is
+  chooses it; the three account pages below show that account, and Settings, which holds only what is
   the whole app's, stays one page. The switcher is there with a single account too, and a warning
   sign on it says when another account needs attention.
 - **Why.** The pages stay where they are and show the chosen account; KDE's multi-account

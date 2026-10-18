@@ -10,6 +10,12 @@
 namespace
 {
 const QString ReadWrite = QStringLiteral("read-write");
+
+/// The account has no working folder: none, or one whose syncing stopped.
+bool hasNoWorkingFolder(const AccountItem *item)
+{
+    return item->sync()->rootPath().isEmpty() || item->sync()->overallReason() == QLatin1String("stopped");
+}
 }
 
 QString suggestFolder(const QString &home, const QString &accountName, const std::function<bool(const QString &)> &isFree)
@@ -72,10 +78,12 @@ void FolderChoice::offer()
     }
     m_picked = nullptr;
     QString offered;
-    if (item && item->sync()->rootPath().isEmpty()) {
+    if (item && hasNoWorkingFolder(item)) {
+        // The account's own folder that stopped is forgotten by Continue: it may be offered
+        // again once it is gone or empty.
         QStringList taken;
         for (const AccountItem *other : m_accounts->items()) {
-            if (!other->sync()->rootPath().isEmpty()) {
+            if (other != item && !other->sync()->rootPath().isEmpty()) {
                 taken << other->sync()->rootPath();
             }
         }
@@ -108,6 +116,23 @@ void FolderChoice::choose(bool twoWay)
     if (!item || m_folder.isEmpty()) {
         return;
     }
+    if (!item->sync()->rootPath().isEmpty()) {
+        // A folder that stopped: forgotten first. Its going offers a folder anew, so the one
+        // chosen now is kept for the rest.
+        const QPointer<AccountItem> forgotten = item;
+        const QString folder = m_folder;
+        item->sync()->forgetThen([this, forgotten, folder, twoWay] {
+            if (forgotten) {
+                give(forgotten, folder, twoWay);
+            }
+        });
+        return;
+    }
+    give(item, m_folder, twoWay);
+}
+
+void FolderChoice::give(AccountItem *item, const QString &folder, bool twoWay)
+{
     AccountController *account = item->account();
     const bool isTwoWay = account->mode() == ReadWrite;
     if (twoWay && !isTwoWay) {
@@ -117,7 +142,7 @@ void FolderChoice::choose(bool twoWay)
             disconnect(m_twoWayFor->account(), nullptr, this, nullptr);
         }
         m_twoWayFor = item;
-        m_twoWayFolder = m_folder;
+        m_twoWayFolder = folder;
         connect(account, &AccountController::accountChanged, this, &FolderChoice::registerWhenTwoWay);
         connect(account, &AccountController::modeSwitchChanged, this, &FolderChoice::registerWhenTwoWay);
         account->setMode(ReadWrite, false);
@@ -127,7 +152,7 @@ void FolderChoice::choose(bool twoWay)
         // No folder, so nothing unsent: the switch is made at once.
         account->setMode(QStringLiteral("read-only"), false);
     }
-    item->sync()->chooseFolder(QUrl::fromLocalFile(m_folder));
+    item->sync()->chooseFolder(QUrl::fromLocalFile(folder));
 }
 
 void FolderChoice::registerWhenTwoWay()

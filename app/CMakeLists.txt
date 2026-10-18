@@ -146,6 +146,8 @@ set(KONEDRIVE_QML
     Main.qml
     qml/SignInPage.qml
     qml/StatusPage.qml
+    qml/StorageBar.qml
+    qml/TransferCard.qml
     qml/FolderChoiceCard.qml
     qml/UnsentChangesPrompt.qml
     qml/DisconnectDialog.qml
@@ -153,8 +155,6 @@ set(KONEDRIVE_QML
     qml/ListPage.qml
     qml/FormCardRow.qml
     qml/IssuesPage.qml
-    qml/ActivityPage.qml
-    qml/StoragePage.qml
     qml/OneDriveSettingsPage.qml
     qml/SettingsPage.qml
     qml/AccountSwitcher.qml

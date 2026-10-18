@@ -94,7 +94,7 @@ answering another content than the row's asks for a listing, and the next downlo
 | the free space the account keeps | `sync_plan_task/disk_space.rs` | a download that would leave less than the reserve is not started; a smaller one after it still is |
 
 **The free space kept** is `free_space_reserve_gb` in the account's section of `config.toml`, 10 by
-default (`Folder.SetFreeSpaceReserve`, `konedrivectl sync free-space`, the Account page). It is
+default (`Folder.SetFreeSpaceReserve`, `konedrivectl sync free-space`, OneDrive Settings). It is
 measured anew for every choice, on the filesystem the backing directory is on; a download that
 runs counts with its whole size; space that cannot be measured holds nothing. After a plan that
 held a download for space, the next is made 60 seconds later. `Folder.LastError` and `Trouble` say
@@ -212,9 +212,12 @@ whole selection, and a refusal is explained in the daemon's own words.
 
 ## 7. The window
 
-The Status page shows "Always on this device: N items" when N is more than zero. The Account page
-has the free space to keep on this computer's disk. Why a pinned file waits for space is in the
-folder's `LastError` and `Trouble`, which the window shows as it shows any other
+Status says what is always kept beside the space the folder takes on this device: "37 GB on this
+device · 3 items always kept (12 GB)" (`PinnedCount`, `PinnedBytes`). While anything is pinned it
+has **Unpin All…**: a question naming the count and the size, then `Files.Unpin` of the folder
+itself, as `sync unpin <folder>` (§5). The files stay downloaded until their space is freed up.
+OneDrive Settings has the free space to keep on this computer's disk. Why a pinned file waits for
+space is in the folder's `LastError` and `Trouble`, which the window shows as it shows any other
 ([desktop.md](desktop.md)).
 
 ## 8. Known limits

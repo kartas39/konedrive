@@ -7,14 +7,23 @@ import org.kde.kirigami as Kirigami
 import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
-/// The last step of adding a OneDrive, on Status while the account shown has no folder: the
-/// folder it gets (FolderChoice: the one offered, or another chosen), whether it syncs
-/// two-way, and Continue. Two-way waits for the browser first, with its link and a way out.
-/// Cancel disconnects the account: one with no folder is not kept.
+/// The step of choosing a folder, on Status while the account shown has no working folder —
+/// none yet, the last step of adding it, or one whose syncing stopped: the folder it gets
+/// (FolderChoice: the one offered, or another chosen), whether it syncs two-way, and
+/// Continue. Two-way waits for the browser first, with its link and a way out. A folder that
+/// stopped says why, with Try Again, and how many changes made here are not uploaded: they
+/// stay there when Continue forgets it. Cancel disconnects the account: one with no folder
+/// is not kept.
 ColumnLayout {
     id: card
 
     readonly property var account: Current.account
+    readonly property var sync: Current.sync
+    /// The account has a folder, and its syncing stopped (moved, deleted, its disk gone).
+    readonly property bool stopped: sync !== null && sync.rootPath.length > 0 && sync.overallReason === "stopped"
+    /// How many changes made here are not uploaded in the folder that stopped, read when
+    /// the step shows it; 0 until then.
+    property double unsentCount: 0
     /// The choice made here, applied by Continue: the account's mode until it is changed.
     property bool twoWay: account !== null && account.mode === "read-write"
     /// The switch to two-way that Continue asked for waits for the browser.
@@ -25,11 +34,29 @@ ColumnLayout {
     // The inner switch writes `checked` back, ending its binding: kept in step here.
     onTwoWayChanged: twoWaySwitch.checked = twoWay
 
-    // Another account: its own mode is the choice.
+    /// The changes not uploaded in the folder that stopped, asked for again.
+    function readUnsent() {
+        unsentCount = 0;
+        if (visible && stopped) {
+            sync.readUnsentCount();
+        }
+    }
+
+    onVisibleChanged: readUnsent()
+    onStoppedChanged: readUnsent()
+
+    // Another account: its own mode is the choice, and its own folder's changes.
     Connections {
         target: Current
         function onChanged() {
             card.twoWay = Qt.binding(() => card.account !== null && card.account.mode === "read-write");
+            card.readUnsent();
+        }
+    }
+    Connections {
+        target: card.sync
+        function onUnsentCountRead(count) {
+            card.unsentCount = count;
         }
     }
 
@@ -38,9 +65,34 @@ ColumnLayout {
     FormCard.FormCard {
         Layout.fillWidth: true
 
+        // What stopped, and Try Again: a folder that is back syncs on.
         FormCard.FormTextDelegate {
-            text: i18n("Where should your OneDrive appear?")
-            description: i18n("It shows up in a folder on this device, and files download when you open them.")
+            objectName: "stoppedLine"
+            visible: card.stopped
+            text: i18n("Syncing stopped")
+            description: card.sync ? card.sync.trouble : ""
+            textItem.wrapMode: Text.Wrap
+            descriptionItem.wrapMode: Text.Wrap
+            leading: Kirigami.Icon {
+                source: "dialog-warning"
+                implicitWidth: Kirigami.Units.iconSizes.medium
+                implicitHeight: Kirigami.Units.iconSizes.medium
+            }
+            trailing: QQC2.Button {
+                objectName: "tryAgainButton"
+                text: i18nc("@action:button", "Try Again")
+                icon.name: "view-refresh"
+                onClicked: card.sync.refresh()
+            }
+        }
+        FormCard.FormDelegateSeparator {
+            visible: card.stopped
+        }
+        FormCard.FormTextDelegate {
+            text: card.stopped ? i18n("Or use another folder") : i18n("Where should your OneDrive appear?")
+            description: card.stopped
+                         ? i18n("KOneDrive forgets %1 and leaves whatever is there as it is. Your OneDrive shows up in the folder below, and files download again when you open them.", card.sync.rootPathText)
+                         : i18n("It shows up in a folder on this device, and files download when you open them.")
             textItem.wrapMode: Text.Wrap
             leading: Kirigami.Icon {
                 source: "folder-cloud"
@@ -101,6 +153,19 @@ ColumnLayout {
         FormCard.FormDelegateSeparator {
             visible: !card.waiting
         }
+        FormCard.FormTextDelegate {
+            objectName: "unsentLine"
+            visible: card.stopped && card.unsentCount > 0 && !card.waiting
+            text: i18np("1 change made here is not uploaded yet: it stays in the old folder only, as a plain file.",
+                        "%1 changes made here are not uploaded yet: they stay in the old folder only, as plain files.",
+                        card.unsentCount)
+            textItem.wrapMode: Text.Wrap
+            leading: Kirigami.Icon {
+                source: "dialog-warning"
+                implicitWidth: Kirigami.Units.iconSizes.small
+                implicitHeight: Kirigami.Units.iconSizes.small
+            }
+        }
         FormCard.FormButtonDelegate {
             objectName: "continueButton"
             visible: !card.waiting
@@ -109,9 +174,10 @@ ColumnLayout {
             icon.name: "go-next"
             onClicked: FolderChoice.choose(card.twoWay)
         }
+        // An account whose folder stopped is kept: disconnecting it is in OneDrive Settings.
         FormCard.FormButtonDelegate {
             objectName: "cancelSetUpButton"
-            visible: !card.waiting
+            visible: !card.waiting && !card.stopped
             text: i18nc("@action:button", "Cancel")
             icon.name: "dialog-cancel"
             onClicked: cancelDialog.open()
