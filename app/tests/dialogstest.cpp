@@ -997,7 +997,7 @@ private Q_SLOTS:
 
     /// The head of Status says "Read-only for now" while a two-way folder cannot be watched
     /// (Folder.Writable); and while the check of the local files runs, since when and why,
-    /// which goes once it ended.
+    /// which goes once it ended. A read-only account has its Uploading card all the same.
     void theStatusShowsReadOnlyAndTheLocalScan()
     {
         FakeDaemon fake;
@@ -1050,6 +1050,12 @@ private Q_SLOTS:
                               {QStringLiteral("Finished"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 300)},
                               {QStringLiteral("Took"), QVariant::fromValue<uint>(40)}});
         QTRY_VERIFY(!line->isVisible());
+
+        fake.account->set({{QStringLiteral("Mode"), QStringLiteral("read-only")}});
+        QTRY_VERIFY(accounts.at(0)->account()->mode() == QLatin1String("read-only"));
+        auto *uploading = window->findChild<QQuickItem *>(QStringLiteral("uploadingCard"));
+        QVERIFY(uploading);
+        QVERIFY(uploading->isVisible());
         fake.stop();
     }
 
