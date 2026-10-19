@@ -1149,6 +1149,48 @@ private Q_SLOTS:
         fake.stop();
     }
 
+    /// What Free Up did shows on Status until it is closed, with the account it was done
+    /// for; closed, it is gone, also after another account was shown. Nothing freed says so.
+    void theFreeUpResultStaysUntilClosed()
+    {
+        FakeDaemon fake({QStringLiteral("Personal"), QStringLiteral("Family")});
+        for (FakeAccountObject *object : std::as_const(fake.objects)) {
+            object->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+            object->sync->folder->set({{QStringLiteral("Path"), QString(QStringLiteral("/home/u/") + object->account->label())},
+                                       {QStringLiteral("State"), QStringLiteral("ready")},
+                                       {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+            object->sync->folder->decide("ok", "up-to-date");
+        }
+        QVERIFY(fake.start());
+        App app;
+        QVERIFY(app.load());
+        QTRY_COMPARE(app.accounts.count(), 2);
+        const QString personal = fake.object(0)->path;
+        app.current.select(personal);
+        QTRY_VERIFY(app.accounts.at(0)->sync()->serviceAvailable());
+        auto *message = app.find("freeUpMessage");
+        auto *close = app.find<QObject>("closeFreeUpMessage");
+        QVERIFY(message && close);
+        QVERIFY(!message->isVisible());
+
+        app.accounts.at(0)->sync()->freeUpSpace();
+        QTRY_VERIFY(fake.object(0)->sync->calls.contains(QStringLiteral("FreeUpSpace")));
+        QTRY_VERIFY(message->isVisible());
+        QCOMPARE(message->property("text").toString(), QStringLiteral("Nothing was freed up."));
+        app.current.select(fake.object(1)->path);
+        QTRY_VERIFY(!message->isVisible());
+        app.current.select(personal);
+        QTRY_VERIFY(message->isVisible());
+
+        QMetaObject::invokeMethod(close, "trigger");
+        QTRY_VERIFY(!message->isVisible());
+        app.current.select(fake.object(1)->path);
+        app.current.select(personal);
+        QTest::qWait(100);
+        QVERIFY(!message->isVisible());
+        fake.stop();
+    }
+
     /// The space on Status: what is on this device, with what is always kept and its size,
     /// and Unpin All while anything is. Unpin All, confirmed, unpins the folder itself
     /// (Files.Unpin), which lets every pin in it go.

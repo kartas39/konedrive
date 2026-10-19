@@ -567,7 +567,8 @@ void SyncController::freeUpSpace()
         } else {
             const uint files = reply.argumentAt<0>();
             const qulonglong bytes = reply.argumentAt<1>();
-            m_freeUpResult = i18np("Freed 1 file (%2).", "Freed %1 files (%2).", files, QLocale().formattedDataSize(qint64(bytes)));
+            m_freeUpResult = files == 0 ? i18n("Nothing was freed up.")
+                                        : i18np("Freed 1 file (%2).", "Freed %1 files (%2).", files, QLocale().formattedDataSize(qint64(bytes)));
         }
         Q_EMIT freeUpResultChanged();
     });

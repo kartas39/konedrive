@@ -430,28 +430,20 @@ ListPage {
                         }
                     }
                 }
+                // What the last Free Up did, until it is closed: closing lets it go.
                 Kirigami.InlineMessage {
-                    id: freeUpMessage
+                    objectName: "freeUpMessage"
                     Layout.fillWidth: true
                     Layout.margins: Kirigami.Units.smallSpacing
-                    // Not bound: the close button hides it, and the next result shows it again.
                     visible: page.sync !== null && page.sync.freeUpResult.length > 0
                     type: Kirigami.MessageType.Information
                     text: page.sync ? page.sync.freeUpResult : ""
-                    showCloseButton: true
-
-                    Connections {
-                        target: page.sync
-                        function onFreeUpResultChanged() {
-                            freeUpMessage.visible = page.sync.freeUpResult.length > 0;
-                        }
-                    }
-                    // Another account's result is its own.
-                    Connections {
-                        target: Current
-                        function onChanged() {
-                            freeUpMessage.visible = page.sync !== null && page.sync.freeUpResult.length > 0;
-                        }
+                    actions: Kirigami.Action {
+                        objectName: "closeFreeUpMessage"
+                        text: i18nc("@action:button", "Close")
+                        icon.name: "dialog-close"
+                        displayHint: Kirigami.DisplayHint.IconOnly
+                        onTriggered: page.sync.clearFreeUpResult()
                     }
                 }
             }
