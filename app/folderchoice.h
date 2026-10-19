@@ -6,66 +6,55 @@
 #include <QStringList>
 #include <QUrl>
 
-#include <functional>
-
 class AccountItem;
 class AccountsModel;
 class CurrentAccount;
 
-/// The folder offered to an account called `accountName` (its email, else its label) under
-/// `home`: ~/OneDrive, else ~/OneDrive-<the name up to its @>, else that with -2, -3… up to
-/// -99; the first `isFree` holds for. Empty when none is.
-QString suggestFolder(const QString &home, const QString &accountName, const std::function<bool(const QString &)> &isFree);
+/// What a folder picked for an account is, as its folder.
+enum class FolderCheck {
+    /// Not there yet, or an empty directory: it can be the account's folder.
+    Free,
+    /// Something is in it, or it is a file or a link, not a directory.
+    NotEmpty,
+    /// It is another account's folder.
+    AnotherAccountsFolder,
+    /// It is inside another account's folder.
+    InsideAnotherAccountsFolder,
+};
 
-/// Whether `path` can be offered as a new folder: no account's folder (`taken`), and nothing
-/// there yet, or an empty directory.
-bool isFreeFolder(const QString &path, const QStringList &taken);
+/// What `path` is as the folder of an account, given the folders of the other accounts
+/// (`taken`): another account's folder, then a folder inside one, then what is there.
+FolderCheck checkFolder(const QString &path, const QStringList &taken);
 
-/// The folder the account shown gets while it has no working folder — none, or one whose
-/// syncing stopped (moved, deleted, its disk gone) — and Continue, which gives it that
-/// folder: the one suggestFolder() offers, until another is chosen in the picker. Another
-/// account shown, or a folder taken meanwhile, offers again.
+/// The folder picked in the dialog for an account, given to it once checkFolder() finds it
+/// free: a folder that stopped forgotten first (Unregister, as Use Another Folder does), then
+/// the folder registered, made first when it is not there. A folder that cannot be the
+/// account's is not given, and `refusal` says why while that account is shown.
 class FolderChoice : public QObject
 {
     Q_OBJECT
-    /// The folder, absolute; empty when none is offered and none was chosen.
-    Q_PROPERTY(QString folder READ folder NOTIFY folderChanged)
-    /// The folder as the window writes it: ~/OneDrive.
-    Q_PROPERTY(QString folderText READ folderText NOTIFY folderChanged)
+    /// Why the last folder picked for the account shown cannot be its folder; empty when
+    /// none was refused.
+    Q_PROPERTY(QString refusal READ refusal NOTIFY refusalChanged)
 
 public:
     FolderChoice(AccountsModel *accounts, CurrentAccount *current, QObject *parent = nullptr);
 
-    QString folder() const { return m_folder; }
-    QString folderText() const;
+    QString refusal() const;
 
-    /// Choose Another…: the folder the picker gave.
-    Q_INVOKABLE void setFolder(const QUrl &folder);
-    /// Continue: a folder that stopped forgotten first (Unregister, as Use Another Folder
-    /// does); then the account turned two-way when `twoWay` (its sign-in in the browser),
-    /// read-only when not, and the folder registered, made first when it is not there. A
-    /// switch to two-way that ends without it registers nothing: the account says why.
-    Q_INVOKABLE void choose(bool twoWay);
+    /// Gives `folder` to `item` when checkFolder() finds it free, and answers true; answers
+    /// false, with the refusal, when it does not.
+    Q_INVOKABLE bool choose(AccountItem *item, const QUrl &folder);
 
 Q_SIGNALS:
-    void folderChanged();
+    void refusalChanged();
 
 private:
-    /// The folder offered again, unless one was chosen in the picker for this account.
-    void offer();
-    void setChosen(const QString &folder);
-    /// Continue for `item`, which has no folder: `folder` given as choose() says.
-    void give(AccountItem *item, const QString &folder, bool twoWay);
-    /// Registers `folder` for `item` once its switch to two-way has ended so, and gives
-    /// it up once that switch has ended otherwise.
-    void registerWhenTwoWay();
+    void setRefusal(AccountItem *item, const QString &text);
 
     AccountsModel *m_accounts;
     CurrentAccount *m_current;
-    QString m_folder;
-    /// The account `m_folder` was chosen for in the picker; null while it is the one offered.
-    QPointer<AccountItem> m_picked;
-    /// The account waiting for its switch to two-way, and the folder it then registers.
-    QPointer<AccountItem> m_twoWayFor;
-    QString m_twoWayFolder;
+    /// The account the refusal is about, and the refusal.
+    QPointer<AccountItem> m_refused;
+    QString m_refusal;
 };

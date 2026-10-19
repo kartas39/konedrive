@@ -284,6 +284,10 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         time("Started", m_scanStarted);
     }
     Q_EMIT syncChanged();
+    // Registered or forgotten: what a call could not do was about the folder before.
+    if (m_rootPath != previousRoot) {
+        setActionError(QString());
+    }
 
     // GetAll's own answer loads the lists (fetchAll); a change on the way loads them again.
     if (!m_serviceAvailable) {
@@ -397,7 +401,7 @@ QString SyncController::rootPathText() const
 void SyncController::chooseFolder(const QUrl &folder)
 {
     const QString path = folder.toLocalFile();
-    // A folder offered by name (~/OneDrive) may not be there yet: Register opens what it
+    // A folder named in the dialog may not be there yet: Register opens what it
     // is given. Only the folder itself is made, never a directory above it.
     if (!QFileInfo::exists(path) && !QDir().mkdir(path)) {
         setActionError(i18n("%1 could not be made.", path));

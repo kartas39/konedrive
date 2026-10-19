@@ -184,7 +184,7 @@ private Q_SLOTS:
         QVERIFY(m_fake->calls.contains(QStringLiteral("Register:") + folder));
     }
 
-    /// The folder offered by name (~/OneDrive) is made when it is not there yet; a folder
+    /// A folder named in the dialog that is not there yet is made first; a folder
     /// whose parent is not there either is not, and nothing is registered.
     void aFolderNotThereYetIsMadeFirst()
     {
@@ -266,6 +266,20 @@ private Q_SLOTS:
         controller.loadSkipped();
         QTRY_COMPARE(controller.skipped().size(), 1);
         QVERIFY(!controller.actionError().isEmpty());
+    }
+
+    /// What a call could not do goes once a folder is registered or forgotten: it was about
+    /// the folder before, and a folder that syncs shows no error left over.
+    void anActionErrorGoesWithTheFolder()
+    {
+        startFake();
+        SyncController controller(fake::FirstAccount);
+        QTRY_VERIFY(controller.serviceAvailable());
+        controller.dismissConflict(QStringLiteral("/no/such/copy"));
+        QTRY_VERIFY(!controller.actionError().isEmpty());
+        m_fake->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/Elsewhere")}});
+        QTRY_COMPARE(controller.rootPath(), QStringLiteral("/home/u/Elsewhere"));
+        QCOMPARE(controller.actionError(), QString());
     }
 
     void refreshAndForgetCallTheDaemon()

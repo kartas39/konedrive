@@ -148,7 +148,8 @@ set(KONEDRIVE_QML
     qml/StatusPage.qml
     qml/StorageBar.qml
     qml/TransferCard.qml
-    qml/FolderChoiceCard.qml
+    qml/StoppedFolderCard.qml
+    qml/FolderPicker.qml
     qml/UnsentChangesPrompt.qml
     qml/DisconnectDialog.qml
     qml/AnotherFolderDialog.qml

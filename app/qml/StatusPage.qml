@@ -11,8 +11,8 @@ import org.konedrive.app
 /// what stops it, with the one thing to do, and one line of what Issues lists; the space it
 /// takes, with Free Up Space and Unpin All; each way's speed over the last two minutes and
 /// what is left, the transfer pool, and the files moving now; and its History, folded until
-/// it is opened, with a search. An account with no working folder — none yet, or one whose
-/// syncing stopped — has only the step of choosing a folder here.
+/// it is opened, with a search. An account with no folder yet has Choose Folder… in its head,
+/// and one whose syncing stopped only why, with Try Again and Use Another Folder….
 ///
 /// One list: what is above History is its header, and History's events are its rows, built
 /// only while it is open and only those in sight.
@@ -29,9 +29,6 @@ ListPage {
     readonly property bool hasFolder: available && sync.rootPath.length > 0
     /// The folder's syncing stopped on an error (moved, deleted, its disk gone).
     readonly property bool stopped: hasFolder && sync.overallReason === "stopped"
-    /// No working folder — none yet, or one that stopped: the folder is chosen here, and
-    /// nothing else shows.
-    readonly property bool choosingFolder: available && (status.action === AccountStatus.ChooseFolder || sync.overallReason === "stopped")
     /// The folder syncs: what it holds, moves and did shows.
     readonly property bool working: hasFolder && !stopped
     /// It syncs on: Sync Now and Pause have something to do.
@@ -232,10 +229,22 @@ ListPage {
                 visible: !Daemon.serviceAvailable
             }
 
-            FolderChoiceCard {
+            // Why the folder picked for the account cannot be its folder.
+            Kirigami.InlineMessage {
+                objectName: "folderRefusal"
                 Layout.fillWidth: true
                 Layout.topMargin: Kirigami.Units.largeSpacing
-                visible: page.choosingFolder
+                Layout.leftMargin: Kirigami.Units.largeSpacing
+                Layout.rightMargin: Kirigami.Units.largeSpacing
+                type: Kirigami.MessageType.Warning
+                text: FolderChoice.refusal
+                visible: page.available && text.length > 0
+            }
+
+            StoppedFolderCard {
+                Layout.topMargin: Kirigami.Units.largeSpacing
+                visible: page.stopped
+                onChooseFolderRequested: page.window.chooseFolder(Current.item)
             }
 
             // The head: what the folder is doing or what stops it, the one thing to do, the
@@ -243,7 +252,7 @@ ListPage {
             FormCard.FormCard {
                 objectName: "headCard"
                 Layout.topMargin: Kirigami.Units.largeSpacing
-                visible: page.available && !page.choosingFolder
+                visible: page.available && !page.stopped
 
                 FormCard.AbstractFormDelegate {
                     background: null
@@ -301,14 +310,15 @@ ListPage {
                                 wrapMode: Text.Wrap
                                 opacity: 0.8
                             }
-                            // Resume, Try Again and choosing a folder are elsewhere: in the
-                            // page's header and in the folder step.
+                            // Resume and Try Again are elsewhere: in the page's header and on the
+                            // card of a folder that stopped.
                             Flow {
                                 objectName: "headActions"
                                 Layout.fillWidth: true
                                 Layout.topMargin: Kirigami.Units.smallSpacing
                                 spacing: Kirigami.Units.smallSpacing
                                 visible: action === AccountStatus.CancelSignIn || action === AccountStatus.SignIn || action === AccountStatus.SyncAnyway
+                                         || action === AccountStatus.ChooseFolder
 
                                 readonly property int action: page.status ? page.status.action : AccountStatus.None
 
@@ -330,6 +340,13 @@ ListPage {
                                     text: i18nc("@action:button", "Sign In Again")
                                     icon.name: "go-next"
                                     onClicked: page.account.signIn()
+                                }
+                                QQC2.Button {
+                                    objectName: "chooseFolderButton"
+                                    visible: parent.action === AccountStatus.ChooseFolder
+                                    text: i18nc("@action:button", "Choose Folder…")
+                                    icon.name: "folder-open"
+                                    onClicked: page.window.chooseFolder(Current.item)
                                 }
                                 QQC2.Button {
                                     objectName: "syncAnywayButton"

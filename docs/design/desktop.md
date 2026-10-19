@@ -348,9 +348,9 @@ which is the whole app's. With no account at all the window is one page, "Add yo
 
 | Page | Shows |
 |---|---|
-| **Status** | in its header "Sync Now", "Pause" (2, 8 or 24 hours, or until resumed) or "Resume", and "Open Folder" with the folder's path in its tooltip. The state: the headline and the line under it by `Overall`, the mode ("Read-only", or "Read-only for now" while the folder of a read-write account is not writable), the trouble, the last start-up check, "Sign In Again" or "Sync Anyway" when they apply, and one line of what Issues lists, which opens it. The space: one bar as long as the OneDrive's storage (`QuotaTotal`), bright for what is on this device (`LocalBytes`), pale for the rest of what is used in OneDrive (`QuotaUsed`), with "N items always kept (size)" (`PinnedCount`, `PinnedBytes`); "Free Up Space…", and "Unpin All…" while anything is pinned. Two cards, "Downloading" and "Uploading": the speed, the files moving, what is left with its size and time, what is done, and a chart of the last two minutes (KQuickCharts); under Downloading the thumbnails being downloaded, under Uploading what waits and why. Uploading is left out for a read-only account unless something still uploads. The transfer pool once below them; the transfers under way with progress bars. **History**, folded until opened: the events the daemon keeps, newest first, with a search by name or folder. With no working folder, none yet or one that stopped, Status is the folder step instead (below) |
+| **Status** | in its header "Sync Now", "Pause" (2, 8 or 24 hours, or until resumed) or "Resume", and "Open Folder" with the folder's path in its tooltip. The state: the headline and the line under it by `Overall`, the mode ("Read-only", or "Read-only for now" while the folder of a read-write account is not writable), the trouble, the last start-up check, "Sign In Again" or "Sync Anyway" when they apply, and one line of what Issues lists, which opens it. The space: one bar as long as the OneDrive's storage (`QuotaTotal`), bright for what is on this device (`LocalBytes`), pale for the rest of what is used in OneDrive (`QuotaUsed`), with "N items always kept (size)" (`PinnedCount`, `PinnedBytes`); "Free Up Space…", and "Unpin All…" while anything is pinned. Two cards, "Downloading" and "Uploading": the speed, the files moving, what is left with its size and time, what is done, and a chart of the last two minutes (KQuickCharts); under Downloading the thumbnails being downloaded, under Uploading what waits and why. Uploading is left out for a read-only account unless something still uploads. The transfer pool once below them; the transfers under way with progress bars. **History**, folded until opened: the events the daemon keeps, newest first, with a search by name or folder. With no folder yet, the head says so, with "Choose Folder…"; a folder that stopped has only why, with "Try Again" and "Use Another Folder…" (below) |
 | **Issues** | one list in three sections, with a count badge while anything needs the user: **Can't Upload**, `NotUploadedSummary()` by what can be done about it, a reason one action fixes as one line with its button, and the files of a reason when it is opened (`NotUploadedFiles(reason, 20)`); **Kept Both Versions**, each conflict copy with "Show Both" and "Dismiss"; **Can't Be Shown in the Folder**, `Skipped()` and why, in the words `sync skipped` uses. The last two show their first 200 rows and count the rest |
-| **OneDrive Settings** | the name with "Rename…"; the Microsoft account's name and email; **Two-way sync** (below); the folder with "Use Another Folder…"; "Previews without downloading" (§8) and the free space to keep for pinned files, changed after "Edit", which turns into "Save"; the ignore list ("Never uploaded"); "Sign Out"; "Disconnect This OneDrive…" |
+| **OneDrive Settings** | the name with "Rename…"; the Microsoft account's name and email; **Two-way sync** (below); the folder with "Use Another Folder…"; "Previews without downloading" (§8) and the free space to keep for pinned files, changed after "Edit", which turns into "Save"; the ignore list ("Never uploaded"); "Sign Out"; "Disconnect This OneDrive…". With no folder yet, only the account's part, "Sign Out" and "Disconnect This OneDrive…" |
 | **Settings** | "Start at login", "Show download and upload progress", "Show in Places", "Show a tray icon for each account"; for every account, "Pause on metered connections" and "On battery"; About; "Quit KOneDrive" |
 
 The long lists are `ListView`s, which build only the rows in sight, with a fixed height.
@@ -359,7 +359,7 @@ Nothing on a page turns with the mouse wheel, so that scrolling a page changes n
 number's box takes input only after "Edit", and a choice's combo box does not take the wheel.
 
 **The switcher** shows the chosen account and opens a menu of every account, each with its state's
-icon (§5), then "Sign in…". When another account than the chosen one is in `warning`, a sign on
+icon (§5), then "Add Another OneDrive…". When another account than the chosen one is in `warning`, a sign on
 the switcher says so. The choice is remembered (`CurrentAccount=<id>` in `konedriverc`). With more
 than one account each page's title names the account.
 
@@ -383,21 +383,31 @@ process (`SelfRestart`): hidden in the tray if it was hidden, on the same accoun
 A window built by hand and run against an installed daemon stays, with the version line.
 
 **Sign In…** is `Accounts.SignIn`; the window then waits for `SignInFinished` with that number
-([accounts.md](accounts.md) §8.2). `signed-in` chooses the new account, and Status shows the folder
-step at once. A cancel shows nothing, `already-added` names the account it is, a failure says the
-daemon's reason, and a daemon that leaves the bus ends the adding with a message that says so.
-"Add Another OneDrive…" in the switcher's menu opens the same page.
+([accounts.md](accounts.md) §8.2), with the link to copy and "Cancel". "Add Another OneDrive…" in
+the switcher's menu calls it at once and shows the same wait. `signed-in` chooses the new account,
+shows its Status and opens the dialog that picks its folder. A cancel shows nothing, and with an
+account already there leads back to its Status; `already-added` names the account it is, a failure
+says the daemon's reason, with "Sign In…" to try again, and a daemon that leaves the bus ends the
+adding with a message that says so.
 
-**The folder step** offers an empty folder (`~/OneDrive` while it is free), with "Choose Another…",
-**Two-way sync** and "Continue", which registers it (`Folder.Register`); "Cancel" disconnects an
-account that has never had a folder. For a folder that stopped (`Overall` is `stopped`) the step
-first says why (`Trouble`), with "Try Again" (`Refresh`), and how many changes made there are not
-uploaded (`UploadQueue.UnsentCount`): they stay in the old folder as plain files. "Continue" then
-forgets the old folder (`Unregister`) and registers the one chosen.
+**The folder** is picked in a dialog, "Choose an Empty Folder for OneDrive", which nothing fills in:
+after a sign-in, by "Choose Folder…" on Status, and by "Use Another Folder…" of a folder that
+stopped. The window checks the folder picked first (`FolderChoice`): one that is another account's
+folder or inside one, or has anything in it, is not registered; Status says why, and the dialog
+opens again with that as its title. The daemon refuses a folder that is not empty too
+(`NotEmpty`). A folder that passes is registered (`Folder.Register`), read-only for a new account:
+two-way sync is switched on in OneDrive Settings. A dialog closed with no folder leaves "Choose
+Folder…" on Status, and OneDrive Settings, where the account can be disconnected. For a folder that
+stopped (`Overall` is `stopped`) Status says why (`Trouble`), with "Try Again" (`Refresh`), and how
+many changes made there are not uploaded (`UploadQueue.UnsentCount`): they stay in the old folder
+as plain files. The folder picked by "Use Another Folder…" is registered once the old one is
+forgotten (`Unregister`). An error a call left on Status goes once a folder is registered or
+forgotten.
 
 **Use Another Folder…** and **Disconnect This OneDrive…** read `UploadQueue.UnsentCount` first and,
 with any, say that those changes stay only on this computer. Both say that the files downloaded so
-far and the user's own stay in the folder as plain files.
+far and the user's own stay in the folder as plain files. Use Another Folder… then shows Status,
+with "Choose Folder…".
 
 **Two-way sync** is the access mode, and shows `Account.Mode`. Turned on, it says that the browser
 opens for a sign-in allowing KOneDrive to change files; then `SetMode("read-write", false)`, whose

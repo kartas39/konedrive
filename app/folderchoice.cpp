@@ -4,51 +4,50 @@
 #include "currentaccount.h"
 #include "foldertext.h"
 
+#include <KLocalizedString>
+
 #include <QDir>
 #include <QFileInfo>
 
 namespace
 {
-const QString ReadWrite = QStringLiteral("read-write");
-
-/// The account has no working folder: none, or one whose syncing stopped.
-bool hasNoWorkingFolder(const AccountItem *item)
+/// Why `path` cannot be an account's folder, as the window says it: empty for a folder
+/// that can.
+QString refusalText(FolderCheck check, const QString &path)
 {
-    return item->sync()->rootPath().isEmpty() || item->sync()->overallReason() == QLatin1String("stopped");
-}
-}
-
-QString suggestFolder(const QString &home, const QString &accountName, const std::function<bool(const QString &)> &isFree)
-{
-    const QString base = home + QStringLiteral("/OneDrive");
-    if (isFree(base)) {
-        return base;
-    }
-    // The part of an email before its @ tells two accounts apart well enough.
-    const QString name = accountName.section(QLatin1Char('@'), 0, 0).trimmed();
-    const QString named = name.isEmpty() ? base : base + QLatin1Char('-') + name;
-    if (named != base && isFree(named)) {
-        return named;
-    }
-    for (int n = 2; n <= 99; ++n) {
-        const QString numbered = named + QLatin1Char('-') + QString::number(n);
-        if (isFree(numbered)) {
-            return numbered;
-        }
+    const QString folder = folderText(path);
+    switch (check) {
+    case FolderCheck::Free:
+        return QString();
+    case FolderCheck::NotEmpty:
+        return i18n("%1 is not an empty folder. Choose an empty folder for your OneDrive.", folder);
+    case FolderCheck::AnotherAccountsFolder:
+        return i18n("%1 is already the folder of another OneDrive. Choose another folder.", folder);
+    case FolderCheck::InsideAnotherAccountsFolder:
+        return i18n("%1 is inside the folder of another OneDrive. Choose a folder outside it.", folder);
     }
     return QString();
 }
+}
 
-bool isFreeFolder(const QString &path, const QStringList &taken)
+FolderCheck checkFolder(const QString &path, const QStringList &taken)
 {
-    if (taken.contains(path)) {
-        return false;
+    const QString folder = QDir::cleanPath(path);
+    for (const QString &other : taken) {
+        const QString otherFolder = QDir::cleanPath(other);
+        if (folder == otherFolder) {
+            return FolderCheck::AnotherAccountsFolder;
+        }
+        if (folder.startsWith(otherFolder + QLatin1Char('/'))) {
+            return FolderCheck::InsideAnotherAccountsFolder;
+        }
     }
-    const QFileInfo info(path);
+    const QFileInfo info(folder);
     if (!info.exists() && !info.isSymLink()) {
-        return true;
+        return FolderCheck::Free;
     }
-    return info.isDir() && !info.isSymLink() && QDir(path).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+    const bool isEmptyDirectory = info.isDir() && !info.isSymLink() && QDir(folder).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+    return isEmptyDirectory ? FolderCheck::Free : FolderCheck::NotEmpty;
 }
 
 FolderChoice::FolderChoice(AccountsModel *accounts, CurrentAccount *current, QObject *parent)
@@ -56,119 +55,52 @@ FolderChoice::FolderChoice(AccountsModel *accounts, CurrentAccount *current, QOb
     , m_accounts(accounts)
     , m_current(current)
 {
-    connect(m_current, &CurrentAccount::changed, this, &FolderChoice::offer);
-    // A folder registered, forgotten or renamed: what is free changes. So does the account's
-    // name, which the offer may carry.
-    connect(m_accounts, &QAbstractItemModel::dataChanged, this, &FolderChoice::offer);
-    connect(m_accounts, &QAbstractItemModel::rowsInserted, this, &FolderChoice::offer);
-    connect(m_accounts, &QAbstractItemModel::rowsRemoved, this, &FolderChoice::offer);
-    offer();
+    // Another account shown: the refusal is about the one picked for, and shows with it.
+    connect(m_current, &CurrentAccount::changed, this, &FolderChoice::refusalChanged);
 }
 
-QString FolderChoice::folderText() const
+QString FolderChoice::refusal() const
 {
-    return ::folderText(m_folder);
+    return m_refused && m_refused == m_current->item() ? m_refusal : QString();
 }
 
-void FolderChoice::offer()
+void FolderChoice::setRefusal(AccountItem *item, const QString &text)
 {
-    AccountItem *item = m_current->item();
-    if (m_picked && m_picked == item) {
+    if (m_refused == item && m_refusal == text) {
         return;
     }
-    m_picked = nullptr;
-    QString offered;
-    if (item && hasNoWorkingFolder(item)) {
-        // The account's own folder that stopped is forgotten by Continue: it may be offered
-        // again once it is gone or empty.
-        QStringList taken;
-        for (const AccountItem *other : m_accounts->items()) {
-            if (other != item && !other->sync()->rootPath().isEmpty()) {
-                taken << other->sync()->rootPath();
-            }
+    m_refused = item;
+    m_refusal = text;
+    Q_EMIT refusalChanged();
+}
+
+bool FolderChoice::choose(AccountItem *item, const QUrl &folder)
+{
+    if (!item) {
+        return false;
+    }
+    const QString path = folder.toLocalFile();
+    QStringList taken;
+    for (const AccountItem *other : m_accounts->items()) {
+        if (other != item && !other->sync()->rootPath().isEmpty()) {
+            taken << other->sync()->rootPath();
         }
-        const QString email = item->account()->email();
-        offered = suggestFolder(QDir::homePath(), email.isEmpty() ? item->account()->label() : email, [&taken](const QString &path) {
-            return isFreeFolder(path, taken);
-        });
     }
-    setChosen(offered);
-}
-
-void FolderChoice::setFolder(const QUrl &folder)
-{
-    m_picked = m_current->item();
-    setChosen(folder.toLocalFile());
-}
-
-void FolderChoice::setChosen(const QString &folder)
-{
-    if (folder == m_folder) {
-        return;
+    const QString refused = refusalText(checkFolder(path, taken), path);
+    setRefusal(item, refused);
+    if (!refused.isEmpty()) {
+        return false;
     }
-    m_folder = folder;
-    Q_EMIT folderChanged();
-}
-
-void FolderChoice::choose(bool twoWay)
-{
-    AccountItem *item = m_current->item();
-    if (!item || m_folder.isEmpty()) {
-        return;
+    if (item->sync()->rootPath().isEmpty()) {
+        item->sync()->chooseFolder(folder);
+        return true;
     }
-    if (!item->sync()->rootPath().isEmpty()) {
-        // A folder that stopped: forgotten first. Its going offers a folder anew, so the one
-        // chosen now is kept for the rest.
-        const QPointer<AccountItem> forgotten = item;
-        const QString folder = m_folder;
-        item->sync()->forgetThen([this, forgotten, folder, twoWay] {
-            if (forgotten) {
-                give(forgotten, folder, twoWay);
-            }
-        });
-        return;
-    }
-    give(item, m_folder, twoWay);
-}
-
-void FolderChoice::give(AccountItem *item, const QString &folder, bool twoWay)
-{
-    AccountController *account = item->account();
-    const bool isTwoWay = account->mode() == ReadWrite;
-    if (twoWay && !isTwoWay) {
-        // The folder waits for the browser: a folder registered first would sync read-only
-        // until then, and stay so if the sign-in is given up.
-        if (m_twoWayFor) {
-            disconnect(m_twoWayFor->account(), nullptr, this, nullptr);
+    // A folder that stopped: forgotten first.
+    const QPointer<AccountItem> forgotten = item;
+    item->sync()->forgetThen([forgotten, folder] {
+        if (forgotten) {
+            forgotten->sync()->chooseFolder(folder);
         }
-        m_twoWayFor = item;
-        m_twoWayFolder = folder;
-        connect(account, &AccountController::accountChanged, this, &FolderChoice::registerWhenTwoWay);
-        connect(account, &AccountController::modeSwitchChanged, this, &FolderChoice::registerWhenTwoWay);
-        account->setMode(ReadWrite, false);
-        return;
-    }
-    if (!twoWay && isTwoWay) {
-        // No folder, so nothing unsent: the switch is made at once.
-        account->setMode(QStringLiteral("read-only"), false);
-    }
-    item->sync()->chooseFolder(QUrl::fromLocalFile(folder));
-}
-
-void FolderChoice::registerWhenTwoWay()
-{
-    if (!m_twoWayFor) {
-        return;
-    }
-    AccountController *account = m_twoWayFor->account();
-    const bool granted = account->mode() == ReadWrite;
-    if (!granted && !account->switchingTo().isEmpty()) {
-        return;
-    }
-    disconnect(account, nullptr, this, nullptr);
-    AccountItem *item = m_twoWayFor;
-    m_twoWayFor = nullptr;
-    if (granted) {
-        item->sync()->chooseFolder(QUrl::fromLocalFile(m_twoWayFolder));
-    }
+    });
+    return true;
 }

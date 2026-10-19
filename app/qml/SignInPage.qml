@@ -4,10 +4,11 @@ import org.kde.kirigami as Kirigami
 import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
-/// Adding a OneDrive, the first one or one more alike: Sign In opens Microsoft's sign-in in
-/// the browser; while it waits, its link can be copied and the sign-in given up; a sign-in
-/// that adds nothing says why. Once the account is added, the window shows its Status,
-/// where its folder is chosen.
+/// Adding a OneDrive. With no account yet, what adding one means, and Sign In, which opens
+/// Microsoft's sign-in in the browser; one more is added from the switcher, which opens it at
+/// once (Main.addOneDrive). While it waits, its link can be copied and the sign-in given up;
+/// a sign-in that adds nothing says why, with Sign In to try again. Once the account is
+/// added, the window shows its Status and the dialog that picks its folder.
 FormCard.FormCardPage {
     id: page
 
@@ -18,11 +19,15 @@ FormCard.FormCardPage {
         Layout.topMargin: Kirigami.Units.largeSpacing
 
         FormCard.FormPlaceholderMessageDelegate {
+            objectName: "addIntro"
+            visible: Accounts.count === 0 && !Accounts.adding
             text: i18n("Add your OneDrive")
-            explanation: i18n("Sign in with your Microsoft account in the browser. Your OneDrive then shows up in a folder on this device, and files download when you open them.")
+            explanation: i18n("Sign in with your Microsoft account in the browser, then choose an empty folder: your OneDrive shows up in it, and files download when you open them.")
             icon.name: "folder-cloud"
         }
-        FormCard.FormDelegateSeparator {}
+        FormCard.FormDelegateSeparator {
+            visible: Accounts.count === 0 && !Accounts.adding
+        }
         FormCard.FormTextDelegate {
             objectName: "addError"
             visible: Accounts.addError.length > 0

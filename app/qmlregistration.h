@@ -38,7 +38,7 @@ inline void registerKonedriveQml(DaemonController *daemon,
     qmlRegisterSingletonInstance(uri, 1, 0, "Places", places);
     qmlRegisterSingletonInstance(uri, 1, 0, "Tray", tray);
     qmlRegisterSingletonInstance(uri, 1, 0, "ServiceUnit", serviceUnit);
-    // Parented to `current`, whose account it offers a folder to.
+    // Parented to `current`, whose account its refusal shows with.
     qmlRegisterSingletonInstance(uri, 1, 0, "FolderChoice", new FolderChoice(accounts, current, current));
     qmlRegisterUncreatableType<AccountItem>(uri, 1, 0, "AccountItem", QStringLiteral("owned by Accounts"));
     qmlRegisterUncreatableType<AccountController>(uri, 1, 0, "AccountController", QStringLiteral("owned by Accounts"));
