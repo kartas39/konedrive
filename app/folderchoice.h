@@ -28,8 +28,9 @@ FolderCheck checkFolder(const QString &path, const QStringList &taken);
 
 /// The folder picked in the dialog for an account, given to it once checkFolder() finds it
 /// free: a folder that stopped forgotten first (Unregister, as Use Another Folder does), then
-/// the folder registered, made first when it is not there. A folder that cannot be the
-/// account's is not given, and `refusal` says why while that account is shown.
+/// the folder registered, made first when it is not there. A folder that works is never
+/// forgotten here. A folder that cannot be the account's is not given, and `refusal` says
+/// why while that account is shown.
 class FolderChoice : public QObject
 {
     Q_OBJECT

@@ -91,11 +91,12 @@ bool FolderChoice::choose(AccountItem *item, const QUrl &folder)
     if (!refused.isEmpty()) {
         return false;
     }
-    if (item->sync()->rootPath().isEmpty()) {
+    // Only a folder that stopped is forgotten first. One that works, registered while the
+    // dialog was open, stays: the daemon refuses another, and actionError says so.
+    if (item->sync()->rootPath().isEmpty() || item->sync()->overallReason() != QLatin1String("stopped")) {
         item->sync()->chooseFolder(folder);
         return true;
     }
-    // A folder that stopped: forgotten first.
     const QPointer<AccountItem> forgotten = item;
     item->sync()->forgetThen([forgotten, folder] {
         if (forgotten) {

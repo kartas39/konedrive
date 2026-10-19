@@ -157,6 +157,29 @@ private Q_SLOTS:
         fake.stop();
     }
 
+    /// A folder that works is never forgotten for one picked: the picked one is only asked
+    /// for, and the daemon refuses it.
+    void aWorkingFolderIsNotForgotten()
+    {
+        FakeDaemon fake;
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        fake.sync->folder->set({{QStringLiteral("Path"), inHome(QStringLiteral("Works"))}, {QStringLiteral("State"), QStringLiteral("ready")}});
+        fake.sync->folder->decide("ok", "up-to-date");
+        QVERIFY(fake.start());
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        FolderChoice choice(&accounts, &current);
+        QTRY_COMPARE(accounts.count(), 1);
+        QTRY_COMPARE(accounts.at(0)->sync()->overallReason(), QStringLiteral("up-to-date"));
+
+        const QString folder = inHome(QStringLiteral("OneDrive"));
+        QVERIFY(choice.choose(accounts.at(0), QUrl::fromLocalFile(folder)));
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Register:") + folder));
+        QVERIFY(!fake.sync->calls.contains(QStringLiteral("Unregister")));
+        fake.stop();
+    }
+
     /// For a folder that stopped, the one picked is registered once the stopped one is forgotten.
     void aFolderThatStoppedIsForgottenFirst()
     {
