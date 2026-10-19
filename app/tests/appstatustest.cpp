@@ -570,8 +570,8 @@ private Q_SLOTS:
                                     << QString();
         QTest::newRow("signed-out") << "offline" << "signed-out" << QVariantMap() << 0u << "Signed out of OneDrive"
                                     << "Sign in again to go on syncing. The files already on this device stay." << A::SignIn << QString();
-        QTest::newRow("no-folder") << "offline" << "no-folder" << QVariantMap() << 0u << "Choose where your OneDrive appears"
-                                   << "It shows up in an empty folder, and files download when you open them." << A::ChooseFolder << QString();
+        QTest::newRow("no-folder") << "offline" << "no-folder" << QVariantMap() << 0u << "No OneDrive folder yet"
+                                   << "Choose an empty folder: your OneDrive shows up in it, and files download when you open them." << A::ChooseFolder << QString();
         QTest::newRow("unreachable") << "offline" << "unreachable" << QVariantMap{{trouble, QStringLiteral("cannot reach OneDrive (timed out); trying again")}} << 0u
                                      << "Can't reach OneDrive" << "Cannot reach OneDrive (timed out); trying again" << A::None << QString();
         QTest::newRow("starting") << "syncing" << "starting" << QVariantMap() << 0u << "Starting…" << QString() << A::None << QString();

@@ -186,9 +186,8 @@ void AccountStatus::update()
         detail = i18n("Sign in again to go on syncing. The files already on this device stay.");
         action = Action::SignIn;
     } else if (reason == QLatin1String("no-folder")) {
-        text = i18n("No OneDrive folder yet");
-        headline = i18n("Choose where your OneDrive appears");
-        detail = i18n("It shows up in an empty folder, and files download when you open them.");
+        text = headline = i18n("No OneDrive folder yet");
+        detail = i18n("Choose an empty folder: your OneDrive shows up in it, and files download when you open them.");
         action = Action::ChooseFolder;
     } else if (reason == QLatin1String("starting")) {
         // A folder that is recorded and not up yet, with nothing known to be wrong: it is

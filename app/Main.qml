@@ -10,7 +10,9 @@ import org.konedrive.app
 /// there — an account, its folder and how it syncs, as one — and Settings,
 /// below them, is the whole app's. A page shows only when there is something
 /// on it to see or do: with no account, adding one; with no service, its
-/// Status; with no folder, its Status, where the folder is chosen.
+/// Status; with no folder, its Status, where the folder is chosen, and its
+/// OneDrive Settings. Adding a OneDrive opens the browser at once, and the
+/// dialog that picks its folder once it is added.
 Kirigami.ApplicationWindow {
     id: root
 
@@ -40,8 +42,9 @@ Kirigami.ApplicationWindow {
         case "status":
             return !hasService || hasAccount;
         case "issues":
-        case "oneDriveSettings":
             return hasService && hasFolder;
+        case "oneDriveSettings":
+            return hasService && hasAccount;
         case "settings":
             return true;
         }
@@ -103,6 +106,23 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    /// Adding a OneDrive: Microsoft's sign-in in the browser at once, and the page that
+    /// waits for it.
+    function addOneDrive() {
+        if (!Accounts.adding) {
+            Accounts.clearAddError();
+            Accounts.addAccount("");
+        }
+        showPage("signIn");
+    }
+
+    /// Opens the dialog that picks the folder of `item` (an AccountItem).
+    function chooseFolder(item) {
+        if (item) {
+            folderPicker.openFor(item);
+        }
+    }
+
     /// A per-account page's title: with more than one account it names the
     /// account too ("Status · Personal"), since a narrow window hides the switcher.
     function accountTitle(title) {
@@ -117,10 +137,18 @@ Kirigami.ApplicationWindow {
         function onOpenUrlRequested(url) {
             Qt.openUrlExternally(url);
         }
-        // Sign In named and chose this account: its Status offers it a folder next.
+        // Sign In named and chose this account: its Status, and the dialog that picks its folder.
         function onAccountAdded(path) {
             Current.select(path);
             root.showPage("status");
+            root.chooseFolder(Accounts.find(path));
+        }
+        // A sign-in given up or ended with nothing added while there is an account: its
+        // Status again. One that failed stays, saying why.
+        function onAddingChanged() {
+            if (!Accounts.adding && Accounts.addError.length === 0 && root.currentPage === "signIn" && root.hasAccount) {
+                root.showPage("status");
+            }
         }
     }
     Connections {
@@ -193,7 +221,7 @@ Kirigami.ApplicationWindow {
 
         header: AccountSwitcher {
             visible: Accounts.count > 0
-            onAddRequested: root.showPage("signIn")
+            onAddRequested: root.addOneDrive()
         }
 
         // With no account: adding one.
@@ -259,5 +287,9 @@ Kirigami.ApplicationWindow {
         SettingsPage {
             id: settingsPage
         }
+    }
+
+    FolderPicker {
+        id: folderPicker
     }
 }

@@ -51,6 +51,8 @@ class SyncController : public QObject
     Q_PROPERTY(qulonglong itemsListed READ itemsListed NOTIFY syncChanged)
     Q_PROPERTY(qulonglong skippedCount READ skippedCount NOTIFY syncChanged)
     Q_PROPERTY(QVariantList skipped READ skipped NOTIFY skippedChanged)
+    /// Why the last call the window made could not be done; empty once a folder is
+    /// registered or forgotten, and again at the next action.
     Q_PROPERTY(QString actionError READ actionError NOTIFY actionErrorChanged)
     /// Unix seconds of the last successful check with OneDrive; 0 = never.
     Q_PROPERTY(qlonglong lastChecked READ lastChecked NOTIFY syncChanged)
@@ -255,9 +257,9 @@ public:
     /// first (only it, not the directories above it).
     Q_INVOKABLE void chooseFolder(const QUrl &folder);
     Q_INVOKABLE void forget();
-    /// Folder.Unregister, and `then` once the daemon has forgotten the folder: the folder
-    /// step gives an account whose folder stopped another one so. Not after a refusal,
-    /// which is actionError.
+    /// Folder.Unregister, and `then` once the daemon has forgotten the folder: FolderChoice
+    /// gives an account whose folder stopped another one so. Not after a refusal, which is
+    /// actionError.
     void forgetThen(std::function<void()> then);
     /// Asks UploadQueue.UnsentCount(): how many changes made here are not sent to
     /// OneDrive, which a Forget or the account's removal leaves only on this computer.

@@ -3,14 +3,19 @@ import org.kde.kirigami as Kirigami
 import org.konedrive.app
 
 /// Using another folder for the account shown, whose folder works: this one is forgotten
-/// (Folder.Unregister; what is in it stays, as plain files), and the account's Status offers
-/// it a new one. A folder that stopped is given another in the step of choosing a folder.
+/// (Folder.Unregister; what is in it stays, as plain files), and the window shows the
+/// account's Status, which has Choose Folder… for a new one. A folder that stopped is given another by Use Another
+/// Folder… on Status.
 UnsentChangesPrompt {
     id: dialog
+
+    /// The folder is being forgotten: Status, where the next one is chosen, can be shown.
+    signal confirmed()
 
     function confirm() {
         if (item) {
             item.sync.forget();
+            confirmed();
         }
         close();
     }

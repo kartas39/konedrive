@@ -9,8 +9,8 @@ document does not repeat them.
 
 ## 1. What the user sees
 
-- **A folder is read-only until its account is switched.** "Two-way sync" on OneDrive Settings
-  or in the folder step, or `konedrivectl account mode read-write`, signs in again in the
+- **A folder is read-only until its account is switched.** "Two-way sync" on OneDrive Settings,
+  or `konedrivectl account mode read-write`, signs in again in the
   browser to ask for permission to change files. Until then the folder refuses every change
   (`EROFS`).
 - **Anything a program does in a read-write folder counts**: a file saved, a folder made, a

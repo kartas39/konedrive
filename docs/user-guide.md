@@ -31,9 +31,12 @@ lists their checksums (`sha256sum -c --ignore-missing SHA256SUMS`).
 1. Open **KOneDrive** from the launcher.
 2. Choose **Sign In…** under **Add your OneDrive**. Your browser opens Microsoft's sign-in, with
    its account picker; there is nothing to register or type in first.
-3. When the sign-in is done, Status asks where your OneDrive should appear. An empty folder is
-   offered, `~/OneDrive` while it is free; **Choose Another…** picks another one, which must be
-   **empty**. Leave **Two-way sync** off for now (see "Uploading changes") and choose **Continue**.
+3. When the sign-in is done, KOneDrive asks for a folder: choose an **empty** one, for example a
+   new `~/OneDrive`. A folder with anything in it, or another account's, is refused, and the
+   dialog asks again. If you close it, **Choose Folder…** on Status opens it again.
+
+The folder starts read-only; **Two-way sync** on OneDrive Settings turns on uploading (see
+"Uploading changes").
 
 Your OneDrive appears in that folder: every file with its real name and size, taking no space until
 it is read.
@@ -159,8 +162,8 @@ again.
 
 ## Several accounts
 
-**Add Another OneDrive…** in the account switcher's menu adds another Microsoft account, with a
-folder of its own. Two accounts' folders cannot be inside one another, and one Microsoft account can
+**Add Another OneDrive…** in the account switcher's menu opens the browser to sign another
+Microsoft account in, then asks for its own empty folder. Two accounts' folders cannot be inside one another, and one Microsoft account can
 be connected once. A file moved from one account's folder to another's is copied and removed, as
 between two disks.
 
@@ -226,8 +229,8 @@ The wish survives a restart of the service.
 
 ## Using another folder
 
-**Use Another Folder…** on OneDrive Settings stops keeping the folder in step, and Status then asks
-for another empty one. The old folder becomes a plain folder again: the files that were downloaded
+**Use Another Folder…** on OneDrive Settings stops keeping the folder in step, and Status then has
+**Choose Folder…** for another empty one. The old folder becomes a plain folder again: the files that were downloaded
 and your own stay in it, and can be changed; files that were never downloaded are not in it.
 Nothing in OneDrive is deleted.
 
@@ -236,7 +239,8 @@ folder then leaves them as plain local files, and they are not sent.
 
 If the OneDrive folder itself is moved, renamed or deleted while the service is not running,
 KOneDrive stops syncing that account, and Status says why, with **Try Again**. Move the folder back
-and try again, or choose another folder right there: **Continue** forgets the old one first.
+and try again, or choose **Use Another Folder…** right there: the old one is forgotten once you
+picked the new one.
 
 ## While the service was not running
 

@@ -133,7 +133,7 @@ Q_SIGNALS:
     void summaryChanged();
     void addingChanged();
     /// The account Sign In added is signed in, named, and shown; the window
-    /// selects it and shows its Status, where its folder is chosen.
+    /// selects it, shows its Status and opens the dialog that picks its folder.
     void accountAdded(const QString &path);
     /// A row is gone; `item` is deleted later.
     void accountRemoved(AccountItem *item);

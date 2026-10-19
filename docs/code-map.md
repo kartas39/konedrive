@@ -962,9 +962,9 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `accountsmodel.h`, `accountsmodel.cpp` — the accounts, each with its controllers; Sign In and
   its link.
 - `currentaccount.h`, `currentaccount.cpp` — the account the window shows.
-- `folderchoice.h`, `folderchoice.cpp` — the folder offered to the account shown while it has no
-  working folder, none or one that stopped, and Continue: a folder that stopped forgotten first,
-  then the folder registered, once the switch to two-way is granted when asked.
+- `folderchoice.h`, `folderchoice.cpp` — what a folder picked for an account is, as its folder
+  (`checkFolder`), and `FolderChoice`: a free one registered, a folder that stopped forgotten
+  first; why one that is not free is refused.
 - `foldertext.h` — a folder's path as the window writes it, from `~`.
 - `timetext.h` — a moment as the window writes it: the time of day today, else the date too.
 - `accountcontroller.h`, `accountcontroller.cpp` — one account's `org.konedrive.Account`.
@@ -1004,7 +1004,8 @@ Each has its file in `crates/konedrived/src/dbus/`.
 ### `app/qml/`
 
 - `AccountSwitcher.qml` — the top of the sidebar: the OneDrive the pages show.
-- `SignInPage.qml` — adding a OneDrive: Microsoft's sign-in in the browser, its link, Cancel.
+- `SignInPage.qml` — adding a OneDrive: Sign In for the first one, the wait for Microsoft's sign-in
+  in the browser, its link, Cancel.
 - `StatusPage.qml` — the start page: Sync Now, Pause and Open Folder; what the folder is doing or
   what stops it, with the one thing to do, and a line of what Issues lists; the space, with Free Up
   Space and Unpin All; each way's card, the pool and the files moving now; History, folded, with
@@ -1013,9 +1014,10 @@ Each has its file in `crates/konedrived/src/dbus/`.
   OneDrive, of its storage, with what is always kept.
 - `TransferCard.qml` — one way's card: the speed, the files moving, what is left, and the chart
   of the last two minutes.
-- `FolderChoiceCard.qml` — choosing the folder, on Status: after adding a OneDrive, or for a folder
-  that stopped, with why and Try Again; the folder, two-way sync or not, Continue; Cancel
-  disconnects a OneDrive that has never had a folder.
+- `StoppedFolderCard.qml` — a folder that stopped, on Status: why, Try Again, what is not uploaded,
+  and Use Another Folder….
+- `FolderPicker.qml` — the dialog that picks an account's folder, opened again with why while the
+  folder picked cannot be it.
 - `UnsentChangesPrompt.qml` — a question whose answer leaves the folder behind: it says first how
   many changes made here are not uploaded.
 - `DisconnectDialog.qml` — that question before an account is disconnected.
@@ -1036,7 +1038,8 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `accountcontrollertest.cpp` — `AccountController`.
 - `accountsmodeltest.cpp` — `DaemonController`, `AccountsModel`, `CurrentAccount`.
 - `appstatustest.cpp` — `AccountStatus`, `AppStatus`.
-- `folderchoicetest.cpp` — the folder offered, how a folder is written, `FolderChoice`.
+- `folderchoicetest.cpp` — what a folder picked is, a case each, how a folder is written,
+  `FolderChoice`.
 - `synccontrollertest.cpp` — `SyncController`.
 - `reasontextstest.cpp` — every reason reads as it did before its sentence was generated.
 - `modelstest.cpp` — the transfer, activity and conflict models.

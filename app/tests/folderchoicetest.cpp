@@ -8,13 +8,12 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QSet>
 #include <QTemporaryDir>
 #include <QTest>
 
-/// The folder a OneDrive is offered, as a function of what is free, and how the
-/// window writes a folder; then FolderChoice against the fake daemon: what it offers
-/// the account shown, and what Continue asks. HOME is a temporary directory.
+/// What a folder picked for an account is, a case each, and how the window writes a folder;
+/// then FolderChoice against the fake daemon: a folder given, one refused, and another
+/// folder for one that stopped. HOME is a temporary directory.
 class FolderChoiceTest : public QObject
 {
     Q_OBJECT
@@ -23,11 +22,25 @@ private:
     QTemporaryDir m_home;
     QByteArray m_realHome;
 
-    static QString suggest(const QString &name, const QSet<QString> &used)
+    QString inHome(const QString &name) const
     {
-        return ::suggestFolder(QStringLiteral("/home/u"), name, [&used](const QString &path) {
-            return !used.contains(path);
-        });
+        return m_home.path() + QLatin1Char('/') + name;
+    }
+
+    /// A directory `name` in HOME, with a hidden file in it when `withFile`.
+    QString makeDirectory(const QString &name, bool withFile) const
+    {
+        const QString path = inHome(name);
+        if (!QDir().mkdir(path)) {
+            return QString();
+        }
+        if (withFile) {
+            QFile file(path + QStringLiteral("/.hidden"));
+            if (!file.open(QIODevice::WriteOnly)) {
+                return QString();
+            }
+        }
+        return path;
     }
 
 private Q_SLOTS:
@@ -49,38 +62,6 @@ private Q_SLOTS:
         QDir().mkpath(m_home.path());
     }
 
-    void suggestFolder_data()
-    {
-        QTest::addColumn<QString>("name");
-        QTest::addColumn<QStringList>("used");
-        QTest::addColumn<QString>("offered");
-        QTest::newRow("~/OneDrive is free") << QStringLiteral("ann@example.com") << QStringList() << QStringLiteral("/home/u/OneDrive");
-        QTest::newRow("taken: the name up to its @") << QStringLiteral("ann@example.com") << QStringList{QStringLiteral("/home/u/OneDrive")}
-                                                     << QStringLiteral("/home/u/OneDrive-ann");
-        QTest::newRow("a label, not an email") << QStringLiteral("Work") << QStringList{QStringLiteral("/home/u/OneDrive")} << QStringLiteral("/home/u/OneDrive-Work");
-        QTest::newRow("that taken too: numbered") << QStringLiteral("ann@example.com")
-                                                  << QStringList{QStringLiteral("/home/u/OneDrive"), QStringLiteral("/home/u/OneDrive-ann")}
-                                                  << QStringLiteral("/home/u/OneDrive-ann-2");
-        QTest::newRow("no name: numbered") << QString() << QStringList{QStringLiteral("/home/u/OneDrive")} << QStringLiteral("/home/u/OneDrive-2");
-    }
-
-    void suggestFolder()
-    {
-        QFETCH(QString, name);
-        QFETCH(QStringList, used);
-        QFETCH(QString, offered);
-        QCOMPARE(suggest(name, QSet<QString>(used.cbegin(), used.cend())), offered);
-    }
-
-    /// None free up to -99: nothing is offered, and the picker is the way.
-    void nothingFreeOffersNothing()
-    {
-        QCOMPARE(::suggestFolder(QStringLiteral("/home/u"), QStringLiteral("ann@example.com"), [](const QString &) {
-                     return false;
-                 }),
-                 QString());
-    }
-
     void folderText_data()
     {
         QTest::addColumn<QString>("path");
@@ -98,35 +79,49 @@ private Q_SLOTS:
         QCOMPARE(::folderText(path, QStringLiteral("/home/u")), text);
     }
 
-    /// Free: not an account's, and nothing there or an empty directory.
-    void whatIsFree()
+    void nothingThereIsFree()
     {
-        const QString home = m_home.path();
-        QVERIFY(isFreeFolder(home + QStringLiteral("/none"), {}));
-        QVERIFY(QDir().mkdir(home + QStringLiteral("/empty")));
-        QVERIFY(isFreeFolder(home + QStringLiteral("/empty"), {}));
-        QVERIFY(!isFreeFolder(home + QStringLiteral("/empty"), {home + QStringLiteral("/empty")}));
-        QVERIFY(QDir().mkdir(home + QStringLiteral("/full")));
-        QFile file(home + QStringLiteral("/full/.hidden"));
-        QVERIFY(file.open(QIODevice::WriteOnly));
-        file.close();
-        QVERIFY(!isFreeFolder(home + QStringLiteral("/full"), {}));
-        QVERIFY(!isFreeFolder(home + QStringLiteral("/full/.hidden"), {}));
-        QVERIFY(QFile::link(home + QStringLiteral("/empty"), home + QStringLiteral("/link")));
-        QVERIFY(!isFreeFolder(home + QStringLiteral("/link"), {}));
+        QCOMPARE(checkFolder(inHome(QStringLiteral("none")), {}), FolderCheck::Free);
     }
 
-    /// The account shown is offered the first free folder; one chosen in the picker stays
-    /// until another account is shown; a folder freed is offered again.
-    void theAccountShownIsOffered()
+    void anEmptyDirectoryIsFree()
     {
-        const QString home = m_home.path();
-        FakeDaemon fake({QStringLiteral("ann@example.com"), QStringLiteral("Family")});
-        fake.object(0)->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}, {QStringLiteral("Email"), QStringLiteral("ann@example.com")}});
-        fake.object(1)->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
-        fake.object(1)->sync->folder->set({{QStringLiteral("Path"), QString(home + QStringLiteral("/OneDrive"))},
-                                           {QStringLiteral("State"), QStringLiteral("ready")},
-                                           {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+        QCOMPARE(checkFolder(makeDirectory(QStringLiteral("empty"), false), {}), FolderCheck::Free);
+    }
+
+    /// A hidden file counts; so does a file in the folder's place, and a link.
+    void anythingThereIsNotEmpty()
+    {
+        const QString full = makeDirectory(QStringLiteral("full"), true);
+        QCOMPARE(checkFolder(full, {}), FolderCheck::NotEmpty);
+        QCOMPARE(checkFolder(full + QStringLiteral("/.hidden"), {}), FolderCheck::NotEmpty);
+        QVERIFY(QFile::link(makeDirectory(QStringLiteral("empty"), false), inHome(QStringLiteral("link"))));
+        QCOMPARE(checkFolder(inHome(QStringLiteral("link")), {}), FolderCheck::NotEmpty);
+    }
+
+    void anotherAccountsFolderIsTaken()
+    {
+        const QString other = makeDirectory(QStringLiteral("OneDrive"), false);
+        QCOMPARE(checkFolder(other + QLatin1Char('/'), {other}), FolderCheck::AnotherAccountsFolder);
+    }
+
+    /// Inside another account's folder, also when it is empty; a name that only starts like
+    /// it is not inside.
+    void aFolderInsideAnotherAccountsIsTaken()
+    {
+        const QString other = inHome(QStringLiteral("OneDrive"));
+        QCOMPARE(checkFolder(other + QStringLiteral("/Work"), {other}), FolderCheck::InsideAnotherAccountsFolder);
+        QCOMPARE(checkFolder(other + QStringLiteral("-Work"), {other}), FolderCheck::Free);
+    }
+
+    /// A free folder is made and registered, the one picked for the account; one that is not
+    /// empty registers nothing and says why while its account is shown.
+    void aFolderPickedIsGivenOrRefused()
+    {
+        FakeDaemon fake({QStringLiteral("Personal"), QStringLiteral("Family")});
+        for (FakeAccountObject *object : std::as_const(fake.objects)) {
+            object->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        }
         QVERIFY(fake.start());
         DaemonController daemon;
         AccountsModel accounts(&daemon);
@@ -134,71 +129,77 @@ private Q_SLOTS:
         FolderChoice choice(&accounts, &current);
         QTRY_COMPARE(accounts.count(), 2);
         current.select(fake.object(0)->path);
-        QTRY_COMPARE(accounts.at(1)->sync()->rootPath(), home + QStringLiteral("/OneDrive"));
-        QTRY_COMPARE(choice.folder(), home + QStringLiteral("/OneDrive-ann"));
-        QCOMPARE(choice.folderText(), QStringLiteral("~/OneDrive-ann"));
+        AccountItem *personal = accounts.at(0);
 
-        // Family's folder forgotten: ~/OneDrive is free again.
-        fake.object(1)->sync->folder->set({{QStringLiteral("Path"), QString()}, {QStringLiteral("State"), QStringLiteral("none")}});
-        QTRY_COMPARE(choice.folder(), home + QStringLiteral("/OneDrive"));
-
-        // Chosen in the picker: kept while the account is shown.
-        choice.setFolder(QUrl::fromLocalFile(QStringLiteral("/mnt/data/OneDrive")));
-        QCOMPARE(choice.folder(), QStringLiteral("/mnt/data/OneDrive"));
-        fake.object(1)->sync->folder->set({{QStringLiteral("Path"), QString(home + QStringLiteral("/OneDrive"))}, {QStringLiteral("State"), QStringLiteral("ready")}});
-        QTRY_COMPARE(accounts.at(1)->sync()->rootPath(), home + QStringLiteral("/OneDrive"));
-        QCOMPARE(choice.folder(), QStringLiteral("/mnt/data/OneDrive"));
-
-        // An account with a folder is offered none.
+        const QString full = makeDirectory(QStringLiteral("full"), true);
+        QVERIFY(!choice.choose(personal, QUrl::fromLocalFile(full)));
+        QCOMPARE(choice.refusal(), QStringLiteral("~/full is not an empty folder. Choose an empty folder for your OneDrive."));
+        // The refusal is Personal's: it shows with Personal only.
         current.select(fake.object(1)->path);
-        QCOMPARE(choice.folder(), QString());
+        QCOMPARE(choice.refusal(), QString());
         current.select(fake.object(0)->path);
-        QCOMPARE(choice.folder(), home + QStringLiteral("/OneDrive-ann"));
+        QVERIFY(!choice.refusal().isEmpty());
+
+        const QString folder = inHome(QStringLiteral("OneDrive"));
+        QVERIFY(choice.choose(personal, QUrl::fromLocalFile(folder)));
+        QCOMPARE(choice.refusal(), QString());
+        QTRY_VERIFY(fake.object(0)->sync->calls.contains(QStringLiteral("Register:") + folder));
+        QVERIFY(QFileInfo(folder).isDir());
+        QCOMPARE(fake.object(0)->sync->calls.count(QStringLiteral("Register:") + folder), 1);
+        QVERIFY(!fake.object(0)->sync->calls.contains(QStringLiteral("Unregister")));
+
+        // Personal's folder is taken for Family.
+        QTRY_COMPARE(personal->sync()->rootPath(), folder);
+        QVERIFY(!choice.choose(accounts.at(1), QUrl::fromLocalFile(folder)));
+        current.select(fake.object(1)->path);
+        QCOMPARE(choice.refusal(), QStringLiteral("~/OneDrive is already the folder of another OneDrive. Choose another folder."));
+        QVERIFY(!fake.object(1)->sync->calls.join(QLatin1Char(' ')).contains(QStringLiteral("Register")));
         fake.stop();
     }
 
-    /// Continue, read-only: the folder is made and registered. Two-way: the switch first, and
-    /// the folder only once it is granted; a switch refused registers nothing.
-    void continueRegistersTheFolder()
+    /// A folder that works is never forgotten for one picked: the picked one is only asked
+    /// for, and the daemon refuses it.
+    void aWorkingFolderIsNotForgotten()
     {
-        const QString home = m_home.path();
         FakeDaemon fake;
         fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        fake.sync->folder->set({{QStringLiteral("Path"), inHome(QStringLiteral("Works"))}, {QStringLiteral("State"), QStringLiteral("ready")}});
+        fake.sync->folder->decide("ok", "up-to-date");
         QVERIFY(fake.start());
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
         FolderChoice choice(&accounts, &current);
         QTRY_COMPARE(accounts.count(), 1);
-        QTRY_VERIFY(accounts.at(0)->account()->state() == QLatin1String("signed-in"));
-        QTRY_COMPARE(choice.folder(), home + QStringLiteral("/OneDrive"));
+        QTRY_COMPARE(accounts.at(0)->sync()->overallReason(), QStringLiteral("up-to-date"));
 
-        // Two-way refused: nothing is registered.
-        fake.account->readWriteFails = QStringLiteral("cannot listen on localhost");
-        choice.choose(true);
-        QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-write:no-force")));
-        QTRY_VERIFY(!accounts.at(0)->account()->actionError().isEmpty());
-        QTest::qWait(100);
-        QVERIFY(!fake.sync->calls.join(QLatin1Char(' ')).contains(QStringLiteral("Register")));
+        const QString folder = inHome(QStringLiteral("OneDrive"));
+        QVERIFY(choice.choose(accounts.at(0), QUrl::fromLocalFile(folder)));
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Register:") + folder));
+        QVERIFY(!fake.sync->calls.contains(QStringLiteral("Unregister")));
+        fake.stop();
+    }
 
-        // Two-way: waits for the browser, then registers.
-        fake.account->readWriteFails.clear();
-        fake.account->calls.clear();
-        choice.choose(true);
-        QTRY_VERIFY(accounts.at(0)->account()->modeSignInPending());
-        QVERIFY(!fake.sync->calls.join(QLatin1Char(' ')).contains(QStringLiteral("Register")));
-        fake.account->grantReadWrite();
-        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Register:") + home + QStringLiteral("/OneDrive")));
-        QVERIFY(QFileInfo(home + QStringLiteral("/OneDrive")).isDir());
+    /// For a folder that stopped, the one picked is registered once the stopped one is forgotten.
+    void aFolderThatStoppedIsForgottenFirst()
+    {
+        FakeDaemon fake;
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        fake.sync->folder->set({{QStringLiteral("Path"), inHome(QStringLiteral("Gone"))}, {QStringLiteral("State"), QStringLiteral("error")}});
+        fake.sync->folder->decide("warning", "stopped");
+        QVERIFY(fake.start());
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        FolderChoice choice(&accounts, &current);
+        QTRY_COMPARE(accounts.count(), 1);
+        QTRY_VERIFY(!accounts.at(0)->sync()->rootPath().isEmpty());
 
-        // Read-only for a two-way account: switched, then registered.
-        fake.sync->folder->set({{QStringLiteral("Path"), QString()}, {QStringLiteral("State"), QStringLiteral("none")}});
-        QTRY_VERIFY(accounts.at(0)->sync()->rootPath().isEmpty());
-        QTRY_COMPARE(accounts.at(0)->account()->mode(), QStringLiteral("read-write"));
-        fake.sync->calls.clear();
-        choice.choose(false);
-        QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-only:no-force")));
-        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Register:") + home + QStringLiteral("/OneDrive")));
+        const QString folder = inHome(QStringLiteral("OneDrive"));
+        QVERIFY(choice.choose(accounts.at(0), QUrl::fromLocalFile(folder)));
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Register:") + folder));
+        QCOMPARE(fake.sync->calls.count(QStringLiteral("Unregister")), 1);
+        QVERIFY(fake.sync->calls.indexOf(QStringLiteral("Unregister")) < fake.sync->calls.indexOf(QStringLiteral("Register:") + folder));
         fake.stop();
     }
 };

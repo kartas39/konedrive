@@ -211,7 +211,7 @@ FormCard.FormCardPage {
                 implicitHeight: Kirigami.Units.iconSizes.medium
             }
         }
-        // A folder that stopped is given another on Status, in the step of choosing one.
+        // A folder that stopped is given another on Status, by its own Use Another Folder….
         FormCard.FormButtonDelegate {
             objectName: "anotherFolderButton"
             visible: page.sync !== null && page.sync.overallReason !== "stopped"
@@ -526,6 +526,7 @@ FormCard.FormCardPage {
     AnotherFolderDialog {
         id: anotherFolderDialog
         objectName: "anotherFolderDialog"
+        onConfirmed: page.window.showPage("status")
     }
 
     DisconnectDialog {

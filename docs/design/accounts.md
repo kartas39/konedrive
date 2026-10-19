@@ -333,8 +333,8 @@ canonical GUID form only, and is refused while any account is signing in or sign
 ### 8.2 Add
 
 An account is added only by signing in. `Accounts.SignIn() → (u sign_in, s url)` starts a sign-in
-for a new account and answers its number and the URL to open; the window's **Sign in…** and
-`konedrivectl account add` both call it.
+for a new account and answers its number and the URL to open; the window's **Sign In…** and
+**Add Another OneDrive…** and `konedrivectl account add` call it.
 
 The sign-in belongs to no account (`daemon/manager/sign_in.rs`). The manager runs it: the loopback
 listener, the authorization URL (read-only scopes, Microsoft's account picker), the wait for the
