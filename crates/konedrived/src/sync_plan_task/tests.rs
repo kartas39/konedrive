@@ -25,6 +25,8 @@ struct TaskFixture {
     unsent_counts: Arc<Mutex<Vec<u64>>>,
     last_unsent_count: tokio::sync::watch::Sender<Option<u64>>,
     after_folder_steps: Arc<tokio::sync::Notify>,
+    /// How often the task asked for `LocalBytes` to be measured again.
+    local_space_kicks: Arc<AtomicU64>,
     /// How often the task asked its reader of the quota.
     quota_read_count: Arc<AtomicUsize>,
     /// What the task's reader of the free space answers, in bytes: plenty, until a test
@@ -53,6 +55,7 @@ impl TaskFixture {
         };
         let last_unsent_count = tokio::sync::watch::Sender::new(None);
         let quota_read_count = Arc::new(AtomicUsize::new(0));
+        let local_space_kicks = Arc::new(AtomicU64::new(0));
         let unsent_count_report = {
             let (unsent_counts, last_unsent_count) = (Arc::clone(&unsent_counts), last_unsent_count.clone());
             Arc::new(move |unsent| {
@@ -88,13 +91,19 @@ impl TaskFixture {
             marks_announcer,
             after_folder_steps: Some(Arc::clone(&after_folder_steps)),
             unsent_count_report,
+            local_space_kick: {
+                let local_space_kicks = Arc::clone(&local_space_kicks);
+                Arc::new(move || {
+                    local_space_kicks.fetch_add(1, Ordering::SeqCst);
+                })
+            },
             free_space_reader: {
                 let free_space = Arc::clone(&free_space);
                 Arc::new(move || *free_space.lock().unwrap())
             },
             free_space_reserve_reader: Arc::new(|| disk_space::count_reserve_bytes(10)),
         });
-        TaskFixture { fixture, task, state, marks_calls, unsent_counts, last_unsent_count, after_folder_steps, quota_read_count, free_space, _fake_onedrive: fake_onedrive }
+        TaskFixture { fixture, task, state, marks_calls, unsent_counts, last_unsent_count, after_folder_steps, local_space_kicks, quota_read_count, free_space, _fake_onedrive: fake_onedrive }
     }
 
     fn upload_queue(&self) -> UploadQueueStatus {
@@ -198,6 +207,9 @@ fn the_status_is_published_after_a_plan_and_after_a_settled_round_and_the_marks_
     assert!(task_fixture.marks_calls.lock().unwrap().iter().all(|(items, _)| !items.contains(&listed)), "a step towards the folder changes no sync mark");
     // The step towards the folder that showed the listed file nudged the thumbnail filler.
     assert!(futures_util::FutureExt::now_or_never(task_fixture.after_folder_steps.notified()).is_some());
+    // Every plan asked for `LocalBytes` to be measured again.
+    let (kicks, plans) = (task_fixture.local_space_kicks.load(Ordering::SeqCst), task.plan_count.load(Ordering::SeqCst));
+    assert!(plans > 0 && kicks >= plans, "{kicks} kicks for {plans} plans");
 }
 
 /// What is left to download of the pinned files is published with the plan whose reading

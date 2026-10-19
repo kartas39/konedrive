@@ -37,7 +37,7 @@ fn the_detail_of_a_freed_event_counts_files_and_says_the_size() {
 /// Freeing up through the folder's mount: a clean copy is freed and counted; a file with a
 /// change that is not uploaded is refused, by `Dehydrate` and by `FreeUp`'s check, before
 /// anything is freed; a file with nothing on disk is already freed; a pinned path loses
-/// the pin and is freed.
+/// the pin and is freed, and `LocalBytes` is measured again.
 #[test]
 fn a_clean_copy_is_freed_and_a_change_that_is_not_uploaded_refuses_the_free_up() {
     let fixture = ItemFixture::new();
@@ -69,9 +69,11 @@ fn a_clean_copy_is_freed_and_a_change_that_is_not_uploaded_refuses_the_free_up()
         let refused = service.dehydrate(&path("pinned.txt")).await.unwrap_err();
         assert!(matches!(&refused, SyncError::NotAllowed(why) if *why == refusal(&path("pinned.txt"))), "{refused:?}");
 
-        // `FreeUp` takes the pin off first, and then frees.
+        // `FreeUp` takes the pin off first, and then frees; what it freed has `LocalBytes` measured again.
+        assert!(!service.report.space.running(), "nothing was freed yet");
         let freed = service.free_up(&[path("pinned.txt"), path("clean.txt"), path("online.txt")]).await.unwrap();
         assert_eq!((freed.files, freed.bytes > 0, freed.pinned), (2, true, 0));
+        assert!(service.report.space.running(), "the space is not measured again");
         assert_eq!(service.state().get().local.pinned_count, 0, "the pin came off");
         for freed in ["pinned.txt", "clean.txt"] {
             assert_eq!(fixture.find_item_at(freed).unwrap().content_presence, konedrive_tree::ContentPresence::NotOnDisk, "{freed}");
