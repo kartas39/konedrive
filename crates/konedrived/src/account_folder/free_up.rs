@@ -1,5 +1,6 @@
 //! Freeing up space: `Dehydrate`, `FreeUpSpace` and `FreeUp`, answered by the folder's mount,
-//! which removes the downloaded copies; the files stay in the folder as names.
+//! which removes the downloaded copies; the files stay in the folder as names. What frees
+//! anything has `LocalBytes` measured again.
 
 use std::path::{Path, PathBuf};
 
@@ -44,6 +45,7 @@ impl SyncService {
             return Err(SyncError::InUse);
         }
         self.report.activity.record(vec![activity::event(Kind::Freed, path.display().to_string(), activity::human_size(freed.bytes))]).await;
+        self.report.space.kick();
         Ok(())
     }
 
@@ -58,6 +60,7 @@ impl SyncService {
         if total.files > 0 {
             let event = activity::event(Kind::Freed, reg.root.path.display().to_string(), freed_detail(total.files, total.bytes));
             self.report.activity.record(vec![event]).await;
+            self.report.space.kick();
         }
         Ok(total)
     }
@@ -104,6 +107,7 @@ impl SyncService {
         }
         if !events.is_empty() {
             self.report.activity.record(events).await;
+            self.report.space.kick();
         }
         Ok(total)
     }

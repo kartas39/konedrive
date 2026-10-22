@@ -629,7 +629,9 @@ async fn read_quota_before_first_plan(drive: &DriveClient, space: &OneDriveSpace
 /// when it could not be read), the activity log (`input.report.activity`), the
 /// announcer of sync marks (`FolderSteps::announce_marks_changed` of the folder steps
 /// made above), the thumbnail filler's nudge as `after_folder_steps` (the same
-/// `Notify` the cycle was given) and `input.unsent_count_report`, and its loop spawned
+/// `Notify` the cycle was given), `input.unsent_count_report` and the kick of
+/// `input.report.space` as `local_space_kick`; the space then measured in the mount's
+/// backing directory (`LocalSpace::measure_at`), and the plan's loop spawned
 /// with the stop's token. No task watches the account: what its state holds is set and
 /// ended by the owner's watcher. The poller's handle is cloned for the plan's task and
 /// `SyncTasks::poll`. The plan's
@@ -699,12 +701,19 @@ fn start_sync_tasks(input: &FolderStartInput, store: &Store, mount: &Arc<ItemMou
         marks_announcer: Arc::new(move |items| folder_steps.announce_marks_changed(items)),
         after_folder_steps: thumbnail_filler.is_some().then(|| Arc::clone(&thumbnail_nudge)),
         unsent_count_report: Arc::clone(&input.unsent_count_report),
+        local_space_kick: {
+            let space = Arc::clone(&input.report.space);
+            Arc::new(move || space.kick())
+        },
         free_space_reader: mount.free_space_reader(),
         free_space_reserve_reader: {
             let running = Arc::clone(&input.running);
             Arc::new(move || crate::sync_plan_task::disk_space::count_reserve_bytes(running.settings().free_space_reserve_gb))
         },
     });
+    // The folder's space is measured in the directory under the mount from here on, before the plan's first
+    // round asks for it: a walk through the mount would ask the mount about every name of the drive.
+    input.report.space.measure_at(Some(mount.backing_directory().resolve_root_path()));
     let plan_loop = tokio::spawn(Arc::clone(&plan).run(stop.clone()));
     SyncTasks { listing_poller: Some(listing_poller), poll, plan_loop, thumbnail_filler, sending_holds: Arc::clone(sending_holds), sync_plan_wake: Arc::clone(sync_plan_wake), stop }
 }

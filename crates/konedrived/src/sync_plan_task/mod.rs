@@ -26,6 +26,10 @@
 //!   ([`step_choice::decide_steps_to_start`]) and started;
 //! - *sleep*: until a cause, a time, or the stop.
 //!
+//! A round that settled a step or made a plan asks for `LocalBytes` to be measured again
+//! (`local_space_kick`): what was written to the folder or removed from it, by a step or
+//! by a program, changes it.
+//!
 //! **What bounds the plans.** A plan is made when a cause other than a finished step
 //! came, when a time was reached, or when a step that ended changed something a plan is
 //! made from (it was written, its rows changed, a try was counted, a cycle asked for, a
@@ -180,6 +184,12 @@ pub(crate) struct SyncPlanTaskParts {
     /// all of them stay only here). The task is the ONE that says it; nobody asks the
     /// count on a timer. It must not block.
     pub(crate) unsent_count_report: Arc<dyn Fn(u64) + Send + Sync>,
+    /// Asks for the folder's `LocalBytes` to be measured again (`LocalSpace::kick` of the
+    /// folder's report), after every round that settled a step or made a plan: what the
+    /// steps wrote to the folder or removed from it, and what was written to it, changes
+    /// the space its files take. Not after the stop, which stops the measuring. It must
+    /// not block.
+    pub(crate) local_space_kick: Arc<dyn Fn() + Send + Sync>,
     /// Measures what the filesystem the backing directory is on has free for the daemon,
     /// in bytes (`ItemMount::measure_free_space`); `None` when it cannot be measured.
     /// Asked each time the downloads of a plan are chosen (`disk_space`).
@@ -372,6 +382,7 @@ impl SyncPlanTask {
             if has_settled_steps {
                 self.publish_queue_status(true).await;
             }
+            let mut has_made_plan = false;
             match decide_round(&causes, settled, steps_left_to_start.len()) {
                 RoundDecision::MakePlan => {
                     let now = (parts.clock)();
@@ -383,6 +394,7 @@ impl SyncPlanTask {
                     self.missing_pinned_files.note_wake_causes(&causes);
                     match self.make_plan(self.gather_daemon_facts()).await {
                         Ok(round) => {
+                            has_made_plan = true;
                             self.plan_count.fetch_add(1, Ordering::SeqCst);
                             let now = (parts.clock)();
                             let plan = &round.plan;
@@ -413,6 +425,9 @@ impl SyncPlanTask {
                 }
                 RoundDecision::GoOnWithLastPlan => steps_left_to_start = self.start_steps(steps_left_to_start, (parts.clock)()),
                 RoundDecision::Sleep => {}
+            }
+            if has_settled_steps || has_made_plan {
+                (parts.local_space_kick)();
             }
             // While a content step runs the task also wakes at its tick, only to publish the bytes of the uploads: a wake at the tick alone makes no plan, and `decide_round` is not asked.
             let waited = loop {

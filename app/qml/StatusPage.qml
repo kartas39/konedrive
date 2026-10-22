@@ -35,9 +35,6 @@ ListPage {
     readonly property bool running: working && !sync.paused
     /// What waits and goes up by itself, by why (the "waiting" rows of NotUploadedSummary()).
     readonly property var waitingRows: sync ? sync.notUploadedSummary.filter(row => row.group === "waiting") : []
-    /// Uploads show unless the account is read-only and nothing goes up any more.
-    readonly property bool uploadsShown: working && account !== null
-                                         && (account.mode === "read-write" || sync.uploads.count > 0 || sync.uploadLeftCount > 0)
     /// History is open: its events are the list's rows.
     property bool historyShown: false
     /// What History's search keeps: events whose path holds it, in any case.
@@ -491,7 +488,6 @@ ListPage {
                 TransferCard {
                     id: uploading
                     objectName: "uploadingCard"
-                    visible: page.uploadsShown
                     title: i18nc("@title a mini card", "Uploading")
                     speed: page.sync ? page.sync.uploadSpeed : 0
                     active: page.sync ? page.sync.activeUploads : 0

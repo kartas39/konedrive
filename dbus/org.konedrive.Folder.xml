@@ -203,7 +203,8 @@
     <property name="LastChecked" type="x" access="read"/>
     <!-- Bytes the folder's files take on this disk (st_blocks * 512, of
          the directory under the mount): a file that is not downloaded
-         takes none. -->
+         takes none. Measured again after every round of the sync, every
+         download and every free-up, at most every 5 seconds. -->
     <property name="LocalBytes" type="t" access="read"/>
     <!-- How many files and folders carry their own "Always keep on this
          device" pin. -->
