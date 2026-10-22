@@ -246,6 +246,7 @@ class FakeFolder : public FakeFolderInterface
     Q_PROPERTY(qlonglong LastChecked READ lastChecked)
     Q_PROPERTY(qulonglong LocalBytes READ localBytes)
     Q_PROPERTY(uint PinnedCount READ pinnedCount)
+    Q_PROPERTY(qulonglong PinnedBytes READ pinnedBytes)
     Q_PROPERTY(QStringList IgnorePatterns READ ignorePatterns)
     Q_PROPERTY(bool Paused READ paused)
     Q_PROPERTY(qlonglong PausedUntil READ pausedUntil)
@@ -275,6 +276,7 @@ public:
                                   {QStringLiteral("LastChecked"), QVariant::fromValue<qlonglong>(0)},
                                   {QStringLiteral("LocalBytes"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(0)},
+                                  {QStringLiteral("PinnedBytes"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("IgnorePatterns"), QStringList{QStringLiteral("*.tmp"), QStringLiteral("~*")}},
                                   {QStringLiteral("Paused"), false},
                                   {QStringLiteral("PausedUntil"), QVariant::fromValue<qlonglong>(0)},
@@ -300,6 +302,7 @@ public:
     qlonglong lastChecked() const { return value("LastChecked").toLongLong(); }
     qulonglong localBytes() const { return value("LocalBytes").toULongLong(); }
     uint pinnedCount() const { return value("PinnedCount").toUInt(); }
+    qulonglong pinnedBytes() const { return value("PinnedBytes").toULongLong(); }
     QStringList ignorePatterns() const { return value("IgnorePatterns").toStringList(); }
     bool paused() const { return value("Paused").toBool(); }
     qlonglong pausedUntil() const { return value("PausedUntil").toLongLong(); }
@@ -927,6 +930,29 @@ private:
     };
 };
 
+/// Files on the manager object: what the window asks of paths. Unpin answers how many
+/// paths it was given.
+class FakeFiles : public QDBusAbstractAdaptor
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.konedrive.Files")
+
+public:
+    explicit FakeFiles(QObject *daemon)
+        : QDBusAbstractAdaptor(daemon)
+    {
+    }
+
+    QStringList calls;
+
+public Q_SLOTS:
+    uint Unpin(const QStringList &paths)
+    {
+        calls << QStringLiteral("Unpin:") + paths.join(QLatin1Char(','));
+        return uint(paths.size());
+    }
+};
+
 /// The daemon: the manager object and its accounts. `account` and `sync` are
 /// the first account's, for tests about one account.
 class FakeDaemon : public QObject
@@ -937,6 +963,7 @@ public:
     /// One account per label, in order; by default one, "Personal".
     explicit FakeDaemon(const QStringList &labels = {QStringLiteral("Personal")})
         : manager(new FakeAccounts(this))
+        , files(new FakeFiles(this))
     {
         // Before anything is sent: Transfers is an a(stt).
         registerKonedriveSyncTypes();
@@ -1016,7 +1043,10 @@ public:
         signIn = 0;
         QString path = QStringLiteral("/");
         if (outcome == QLatin1String("signed-in")) {
-            path = addAccount(message, {{QStringLiteral("Email"), message}, {QStringLiteral("State"), QStringLiteral("signed-in")}})->path;
+            FakeAccountObject *added = addAccount(message, {{QStringLiteral("Email"), message}, {QStringLiteral("State"), QStringLiteral("signed-in")}});
+            // As the daemon says it of an account signed in with no folder yet.
+            added->sync->folder->decide("offline", "no-folder");
+            path = added->path;
         } else if (outcome == QLatin1String("already-added")) {
             for (const FakeAccountObject *object : std::as_const(objects)) {
                 if (object->account->label() == message) {
@@ -1059,6 +1089,7 @@ public:
     FakeAccountObject *object(int index) const { return objects.value(index); }
 
     FakeAccounts *manager;
+    FakeFiles *files;
     QList<FakeAccountObject *> objects;
     /// The number of the SignIn that has not ended; 0 when none is under way.
     uint signIn = 0;

@@ -33,7 +33,7 @@ QString copyTitle()
 }
 }
 
-KNotificationSink::KNotificationSink(std::function<void(const QString &account)> openWindow)
+KNotificationSink::KNotificationSink(OpenWindow openWindow)
     : m_openWindow(std::move(openWindow))
 {
 }
@@ -54,14 +54,15 @@ void KNotificationSink::send(const Notice &notice)
     }
     if (m_openWindow) {
         KNotificationAction *open = notification->addDefaultAction(i18nc("@action", "Open KOneDrive"));
-        const std::function<void(const QString &)> openWindow = m_openWindow;
+        const OpenWindow openWindow = m_openWindow;
         const QString account = notice.account;
-        QObject::connect(open, &KNotificationAction::activated, notification, [notification, openWindow, account] {
+        const WindowSection section = notice.section;
+        QObject::connect(open, &KNotificationAction::activated, notification, [notification, openWindow, account, section] {
             // The click hands over the right to raise a window (xdg-activation on Wayland).
             if (const QString token = notification->xdgActivationToken(); !token.isEmpty()) {
                 KWindowSystem::setCurrentXdgActivationToken(token);
             }
-            openWindow(account);
+            openWindow(account, section);
         });
     }
     notification->sendEvent();
@@ -109,26 +110,27 @@ void Notifier::onActivity(qint64, const QString &kind, const QString &path, cons
     const QString name = fileName(path);
     if (kind == QLatin1String("not-removed-here")) {
         // The path is the directory; rmdir itself could only say "not empty". Nothing to press.
-        // TODO: wording
         post({QStringLiteral("notRemovedHere"),
+              WindowSection::NotInFolder,
               i18nc("@title notification", "Folder not removed"),
-              i18n("%1 cannot be removed here: it holds items that cannot be shown on this computer. Remove it in OneDrive.", name),
+              i18n("%1 cannot be removed here: it holds items that can't be shown in the folder. Remove it in OneDrive.", name),
               {}});
         return;
     }
     if (kind == QLatin1String("conflict")) {
         // A file changed on both sides: the daemon's detail is the copy kept beside it.
-        post({QStringLiteral("conflict"), copyTitle(), i18n("%1 changed here and in OneDrive. Both are kept: your version as %2.", name, fileName(detail)), detail});
+        post({QStringLiteral("conflict"), WindowSection::KeptBothVersions, copyTitle(), i18n("%1 changed here and in OneDrive. Kept both versions: yours is %2.", name, fileName(detail)), detail});
         return;
     }
     switch (classifyFailure(kind, detail)) {
     case ActivityFailure::None:
         return;
     case ActivityFailure::DiskFull:
-        post({QStringLiteral("diskFull"), i18nc("@title notification", "Not enough disk space"), i18n("%1 could not be downloaded: the disk is full.", name), {}});
+        post({QStringLiteral("diskFull"), WindowSection::Status, i18nc("@title notification", "Not enough disk space"), i18n("%1 could not be downloaded: the disk is full.", name), {}});
         return;
     case ActivityFailure::Update:
         post({QStringLiteral("updateFailed"),
+              WindowSection::History,
               i18nc("@title notification", "A file could not be updated"),
               i18n("%1 changed in OneDrive but could not be updated here: %2", name, detail),
               {}});
@@ -137,15 +139,17 @@ void Notifier::onActivity(qint64, const QString &kind, const QString &path, cons
         // Blocked names and a full OneDrive are the usual ones; the detail is a reason code.
         if (detail == QLatin1String("quota-exceeded")) {
             post({QStringLiteral("uploadFailed"),
+                  WindowSection::CantUpload,
                   i18nc("@title notification", "OneDrive is full"),
-                  i18n("%1 cannot be uploaded until there is space in OneDrive.", name),
+                  i18n("%1 can't upload until there is space in OneDrive.", name),
                   path});
             return;
         }
-        post({QStringLiteral("uploadFailed"), i18nc("@title notification", "Upload failed"), i18n("%1 cannot be uploaded. %2", name, uploadReasonText(detail)), path});
+        post({QStringLiteral("uploadFailed"), WindowSection::CantUpload, i18nc("@title notification", "Can't upload"), i18n("%1 can't upload. %2", name, uploadReasonText(detail)), path});
         return;
     case ActivityFailure::Download:
         post({QStringLiteral("downloadFailed"),
+              WindowSection::History,
               i18nc("@title notification", "Download failed"),
               detail.isEmpty() ? i18n("%1 could not be downloaded.", name) : i18n("%1 could not be downloaded: %2", name, detail),
               {}});
@@ -163,8 +167,9 @@ void Notifier::onSyncChanged()
     const int full = int(m_sync->quotaFull());
     if (m_full == 0 && full == 1) {
         post({QStringLiteral("uploadFailed"),
+              WindowSection::CantUpload,
               i18nc("@title notification", "OneDrive is full"),
-              i18n("Nothing more is uploaded until there is space in OneDrive. Free up space there, then Refresh on the Status page."),
+              i18n("Nothing more is uploaded until there is space in OneDrive. Free up space there, then choose Sync Now in KOneDrive."),
               {}});
     }
     m_full = full;
@@ -175,14 +180,14 @@ void Notifier::onSyncChanged()
     if (m_waitRefusal.isEmpty() && !refused.isEmpty()) {
         const QString name = fileName(refused);
         const int minutes = int((m_sync->retryAfter() + 59) / 60);
-        // TODO: wording
         post({QStringLiteral("throttled"),
+              WindowSection::Status,
               i18nc("@title notification", "OneDrive asked to wait"),
-              minutes > 0 ? i18np("OneDrive asked this computer to wait about 1 minute. %2 opens after that.",
-                                  "OneDrive asked this computer to wait about %1 minutes. %2 opens after that.",
+              minutes > 0 ? i18np("OneDrive asked this device to wait about 1 minute. %2 opens after that.",
+                                  "OneDrive asked this device to wait about %1 minutes. %2 opens after that.",
                                   minutes,
                                   name)
-                          : i18n("OneDrive asked this computer to wait. %1 opens after that.", name),
+                          : i18n("OneDrive asked this device to wait. %1 opens after that.", name),
               {}});
     }
     m_waitRefusal = refused;
@@ -215,7 +220,7 @@ void Notifier::announceSignOut()
     if (m_account->state() != QLatin1String("signed-out")) {
         return;
     }
-    post({QStringLiteral("signedOut"), i18nc("@title notification", "Signed out of OneDrive"), i18n("Sign in again to keep your OneDrive folder up to date."), {}});
+    post({QStringLiteral("signedOut"), WindowSection::Status, i18nc("@title notification", "Signed out of OneDrive"), i18n("Sign in again to keep your OneDrive folder up to date."), {}});
 }
 
 void Notifier::setAccountName(std::function<QString()> name)
@@ -256,14 +261,13 @@ Notice Notifier::summary(const Window &window) const
         notice.text = i18np("1 more file changed in OneDrive could not be updated here.", "%1 more files changed in OneDrive could not be updated here.", n);
     } else if (notice.event == QLatin1String("conflict")) {
         // "Show in Folder" stays on the last copy kept.
-        notice.text = i18np("1 more file changed here and in OneDrive; both versions are kept.", "%1 more files changed here and in OneDrive; both versions are kept.", n);
+        notice.text = i18np("1 more file changed here and in OneDrive; kept both versions.", "%1 more files changed here and in OneDrive; kept both versions.", n);
     } else if (notice.event == QLatin1String("notRemovedHere")) {
         notice.text = i18np("1 more folder cannot be removed here.", "%1 more folders cannot be removed here.", n);
     } else if (notice.event == QLatin1String("throttled")) {
-        // TODO: wording
         notice.text = i18np("1 more file could not be opened: OneDrive asked to wait.", "%1 more files could not be opened: OneDrive asked to wait.", n);
     } else if (notice.event == QLatin1String("uploadFailed")) {
-        notice.text = i18np("1 more change could not be uploaded.", "%1 more changes could not be uploaded.", n);
+        notice.text = i18np("1 more change can't upload.", "%1 more changes can't upload.", n);
     }
     return notice;
 }

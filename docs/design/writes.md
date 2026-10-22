@@ -9,8 +9,8 @@ document does not repeat them.
 
 ## 1. What the user sees
 
-- **A folder is read-only until its account is switched.** "Upload changes made on this
-  computer" on the Account page, or `konedrivectl account mode read-write`, signs in again in the
+- **A folder is read-only until its account is switched.** "Two-way sync" on OneDrive Settings,
+  or `konedrivectl account mode read-write`, signs in again in the
   browser to ask for permission to change files. Until then the folder refuses every change
   (`EROFS`).
 - **Anything a program does in a read-write folder counts**: a file saved, a folder made, a
@@ -18,14 +18,15 @@ document does not repeat them.
   for 2 seconds and no program holds it open for writing; ten saves of one document while offline
   are one upload of its last content.
 - **Dolphin** shows the syncing emblem on what waits or goes up, and the error emblem on what
-  needs the user. The window's Status page and Activity page show what waits and what went
+  needs the user. The window's Status page shows what waits and, in its History, what went
   ([desktop.md](desktop.md)).
 - **Changed on both sides**, both are kept, as on Windows: OneDrive's version keeps the name, and
-  this computer's goes up beside it as `Report-<machine>.docx`, listed under Conflicts.
+  this computer's goes up beside it as `Report-<machine>.docx`, listed under Issues' Kept Both
+  Versions.
 - **Names OneDrive refuses** (`a:b.txt`, a trailing space, `CON`, …) are not renamed for the user:
-  they stay here and are listed under Not Uploaded until the user renames them. Names on the
-  ignore list (editors' temporary files) stay here unlisted. Links, special files and the user's
-  own extended attributes are refused by the mount (F300).
+  they stay here and are listed under Issues' Can't Upload until the user renames them. Names on
+  the ignore list (editors' temporary files) stay here unlisted. Links, special files and the
+  user's own extended attributes are refused by the mount (F300).
 - **A removal is sent at once**, however much it removes; what was removed is in OneDrive's
   recycle bin, and nothing of it is kept here (F302). The folder has no trash of its own (K34).
 - **A move out of the folder** is a copy and a removal, because the kernel refuses a rename from
@@ -132,7 +133,7 @@ backing file by the path of the row's local version, and opens nothing whose siz
 the planned content's.
 
 **The ignore list** is the account's: `ignore` in `config.toml`, `Folder.SetIgnorePatterns`,
-`konedrivectl sync ignore`, the Account page. Shell globs match the name, not the path,
+`konedrivectl sync ignore`, OneDrive Settings. Shell globs match the name, not the path,
 case-sensitively; by default editors' swap, lock and backup files, `~$*`, `*.part`,
 `*.crdownload`, `*.tmp`, `.goutputstream-*`, `.fuse_hidden*`, `.nfs*`. The list applies only to
 items with no binding: what came from OneDrive syncs whatever its name. Each row keeps whether
@@ -394,7 +395,7 @@ nothing is left (`local/names.rs`, `machine_name`; `Conflicts.MachineName`).
 
 The rename is a step towards the folder (`FolderStep::RenameToConflictCopy`), and its commit
 writes the conflict's record in the same transaction (`item_store/step_record.rs`), so that no
-copy is made that nothing knows of. `Conflicts.List()` and the window's Conflicts page list the
+copy is made that nothing knows of. `Conflicts.List()` and Issues' Kept Both Versions list the
 copies; `Dismiss` takes one off the list and leaves the file.
 
 **The mass-removal guard**: there is none. A removal is sent as any other change, however many

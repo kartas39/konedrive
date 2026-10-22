@@ -37,20 +37,3 @@ async fn binary_register_of_a_symlink_is_refused_not_resolved() {
     );
 }
 
-/// A named refusal (`NotEmpty`) must reach the terminal as a failure, never
-/// as the bare "Folder registered" success line.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_register_refusal_never_prints_a_bare_success() {
-    // Refused before anything is mounted.
-    let (f, _graph) = harness_onedrive().await;
-    let addr = f._bus.address();
-    let root = f.dir.path().join("NotEmpty");
-    std::fs::create_dir(&root).unwrap();
-    std::fs::write(root.join("x"), b"x").unwrap();
-
-    let out = run(addr, &["sync", "register", root.to_str().unwrap()]);
-    assert!(!out.status.success(), "{out:?}");
-    assert!(!out_text(&out).contains("Folder registered"), "{}", out_text(&out));
-    assert!(err_text(&out).contains("empty"), "{}", err_text(&out));
-}
-

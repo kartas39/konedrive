@@ -106,6 +106,8 @@ fn a_move_over_that_died_before_the_disk_left_nothing() {
     assert_eq!(decide_settlement(moved_over(OwnEntry, OwnEntry, Aside::Nothing)), NothingLeft);
 }
 
+/// An undo is two renames: a death between them leaves this state too, and the next start
+/// does the second.
 #[test]
 fn a_move_over_that_died_after_the_set_aside_has_the_entry_put_back_under_its_name() {
     assert_eq!(decide_settlement(moved_over(OwnEntry, Nothing, Aside::Entry)), Undo(ChangeUndo::Restore));
@@ -114,13 +116,6 @@ fn a_move_over_that_died_after_the_set_aside_has_the_entry_put_back_under_its_na
 #[test]
 fn a_move_over_that_died_after_the_move_and_before_the_row_is_moved_back_and_the_entry_put_back() {
     assert_eq!(decide_settlement(moved_over(Nothing, OwnEntry, Aside::Entry)), Undo(ChangeUndo::MoveBackAndRestore));
-}
-
-/// The undo is two renames; a death between them leaves the first done, and the next start
-/// does the second.
-#[test]
-fn an_undo_of_a_move_over_that_died_half_way_is_gone_on_with() {
-    assert_eq!(decide_settlement(moved_over(OwnEntry, Nothing, Aside::Entry)), Undo(ChangeUndo::Restore));
 }
 
 /// With nothing set aside, the entry at the new place is the replaced item's own, where

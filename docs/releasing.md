@@ -21,10 +21,11 @@ the code:
    own Rust: `konedrive` and `konedrive-kde` for x86_64, and the source RPM. The dist tag in the
    file names tells the two apart (`.fc44`, `.fc45`).
 2. It keeps each Fedora's RPMs as the run's artifacts.
-3. It installs each Fedora's two packages in a clean container of that Fedora, as a person would,
-   and checks that every program finds its libraries, that `konedrived --version` and
-   `konedrivectl --version` run, and that the window loads its interface and comes up hidden, with
-   no display, on a bus of its own. A missing dependency of the package shows here.
+3. In a clean container of that Fedora it installs `konedrive` alone, and checks that it brings
+   in no Qt and that `konedrived --version` and `konedrivectl --version` run; then `konedrive-kde`,
+   as a person on Plasma would, and checks that every program finds its libraries and that the
+   window loads its interface and comes up hidden, with no display, on a bus of its own. A missing
+   dependency of either package shows here.
 4. It tags the commit it built `vX.Y.Z` and publishes a GitHub Release, "KOneDrive X.Y.Z", with the
    six RPMs and one `SHA256SUMS` for them all. The release notes are `docs/release-notes/X.Y.Z.md`, written by hand
    and merged with the rest before the release; without that file they list the pull requests

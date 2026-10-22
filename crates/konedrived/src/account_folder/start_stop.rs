@@ -129,9 +129,8 @@ impl SyncService {
         // The readers reach the sync from here on.
         stopped.publish();
         if !is_mount_kept {
-            // The mount came with this start: the folder's space is measured in the directory under it, and a file
-            // manager that showed the folder reads it again, in either access mode.
-            self.report.space.measure_at(Some(mount.backing_directory().resolve_root_path()));
+            // The mount came with this start: the folder's space is measured in the directory under it (the start
+            // pointed the walk there), and a file manager that showed the folder reads it again, in either access mode.
             self.report.space.kick();
             stopped.read_again();
         }

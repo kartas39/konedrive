@@ -88,7 +88,7 @@ know `konedrive-graph`); `konedrive-dbus`; `konedrive-text` (uses `konedrive-rea
 | The Dolphin plugins | `cmake -S dolphin -B build/dolphin -DBUILD_TESTING=ON && cmake --build build/dolphin && ctest --test-dir build/dolphin --output-on-failure` | `dolphin/tests/` |
 | The VM suite | `tests/fuse-probe/run.sh [<group>…]`; `ONLY="<scenario>"` for one scenario | The daemon's service and `konedrivectl` over a sync folder that is mounted for real, on ext4 in a virtme-ng VM, over the fake OneDrive: nothing is mounted on the host. Groups: `service`, `mounted_folder`, `file_writes`, `file_reads`, `daemon_restarts`, `cli`; by name only, `kio_trash` |
 | The test account | `konedrive-write-test` (`tests/write-account`) | Writes to OneDrive itself, through the guards; rare, never the user's real account |
-| The structure | `scripts/check-structure.sh` | The files over the advised sizes (listed only), tests outside source files, the daemon's layer order, locks |
+| The structure | `scripts/check-structure.sh` | The files over the advised sizes (listed only), tests outside source files, the daemon's layer order, locks, the tests a module names |
 
 ## `crates/konedrived`: the daemon
 
@@ -471,7 +471,7 @@ The task of a folder's sync plan: one per folder, in either access mode.
   of a reading (`decide_window`) and the count of what will not be sent by itself. `[tests]`
 - `missing_pinned_files.rs` — `MissingPinnedFiles`: whether a pinned file may be missing its
   content, which is when a plan's reading scans below the pinned directories. `[tests]`
-- `step_choice.rs` — `decide_steps_to_start`: which steps of a plan start now.
+- `step_choice.rs` — `decide_steps_to_start`: which steps of a plan start now. `[tests]`
 - `step_runners.rs` — the three runners as the task takes them: one seam.
 - `row_steps.rs` — the runner of the steps of the rows alone, among them the hash of a local
   content.
@@ -955,26 +955,36 @@ Each has its file in `crates/konedrived/src/dbus/`.
 
 - `CMakeLists.txt` — the build; reads the version from `Cargo.toml`.
 - `main.cpp` — the program: single instance, the window, the tray.
-- `Main.qml` — the window: pages chosen from a sidebar.
+- `Main.qml` — the window: pages chosen from a sidebar, each shown only while there is something
+  on it to see or do.
 - `qmlregistration.h` — what the QML finds in `org.konedrive.app`.
 - `daemoncontroller.h`, `daemoncontroller.cpp` — the manager object, `org.konedrive.Accounts`.
-- `accountsmodel.h`, `accountsmodel.cpp` — the accounts, each with its controllers; Sign In.
+- `accountsmodel.h`, `accountsmodel.cpp` — the accounts, each with its controllers; Sign In and
+  its link.
 - `currentaccount.h`, `currentaccount.cpp` — the account the window shows.
+- `folderchoice.h`, `folderchoice.cpp` — what a folder picked for an account is, as its folder
+  (`checkFolder`), and `FolderChoice`: a free one registered, a folder that stopped forgotten
+  first; why one that is not free is refused.
+- `foldertext.h` — a folder's path as the window writes it, from `~`.
+- `timetext.h` — a moment as the window writes it: the time of day today, else the date too.
 - `accountcontroller.h`, `accountcontroller.cpp` — one account's `org.konedrive.Account`.
-- `synccontroller.h`, `synccontroller.cpp` — one account's folder, for QML.
+- `synccontroller.h`, `synccontroller.cpp` — one account's folder, for QML, with the speeds and
+  transfers of the last two minutes for the charts.
 - `synctypes.h` — the structured types of the folder's interfaces.
 - `skippeditem.h` — one entry of `Skipped()` and of `NotUploaded()`.
 - `accountstatus.h`, `accountstatus.cpp` — one summary of an account and its folder: the state
   the daemon decided (`Folder.Overall`), in words by its reason.
 - `appstatus.h`, `appstatus.cpp` — the whole app's state, for the tray: the worst of the accounts'.
-- `activitymodel.h`, `activitymodel.cpp` — the activity list.
-- `conflictmodel.h`, `conflictmodel.cpp` — the "Conflicts" list.
+- `activitymodel.h`, `activitymodel.cpp` — the activity list: as many events as the daemon keeps.
+- `conflictmodel.h`, `conflictmodel.cpp` — the "Kept Both Versions" list.
 - `transfermodel.h`, `transfermodel.cpp` — the downloads under way.
 - `uploadreasons.h`, `uploadreasons.cpp` — why a change is not uploaded, in words: the entry
   functions; the sentences are generated.
 - `generated/reasontexts.h`, `generated/reasontexts.cpp` — generated from `konedrive-text`, not
   edited: the window's sentence for every reason, and how a reason is cut into its parts.
 - `notifier.h`, `notifier.cpp` — the notifications.
+- `windowsection.h` — where a click on a notification opens the window: Status, Status with its
+  History unfolded, or a section of Issues.
 - `konedrive.notifyrc` — the notification events.
 - `trayicon.h`, `trayicon.cpp` — the app in the tray: one icon for every account, or one each.
 - `trayitem.h`, `trayitem.cpp` — one tray icon and its menu.
@@ -988,18 +998,38 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `placessettings.h`, `placessettings.cpp` — the setting for it.
 - `autostart.h`, `autostart.cpp` — start at login.
 - `selfrestart.h`, `selfrestart.cpp` — the window restarts as the installed program after an update.
+- `serviceunit.h`, `serviceunit.cpp` — the daemon's systemd unit: starting it, and its log.
 - `org.konedrive.KOneDrive.desktop.in` — the desktop entry.
 
 ### `app/qml/`
 
-- `AccountSwitcher.qml` — the top of the sidebar: the account the pages show.
-- `StatusPage.qml` — the start page: how the folder is doing, and what to do.
-- `AccountPage.qml` — the account: its name, its mode, its sign-in.
-- `ActivityPage.qml` — speeds, what is left, what happened.
-- `ConflictsPage.qml` — the local versions the sync moved out of the way.
-- `NotUploadedPage.qml` — what stays on this computer and is not uploaded.
-- `SkippedPage.qml` — what is in OneDrive but not in the folder.
-- `SettingsPage.qml` — the whole app's settings.
+- `AccountSwitcher.qml` — the top of the sidebar: the OneDrive the pages show.
+- `SignInPage.qml` — adding a OneDrive: Sign In for the first one, the wait for Microsoft's sign-in
+  in the browser, its link, Cancel.
+- `StatusPage.qml` — the start page: Sync Now, Pause and Open Folder; what the folder is doing or
+  what stops it, with the one thing to do, and a line of what Issues lists; the space, with Free Up
+  Space and Unpin All; each way's card, the pool and the files moving now; History, folded, with
+  its search. With no working folder, choosing one.
+- `StorageBar.qml` — the space in one bar: what is on this device and the rest of what is used in
+  OneDrive, of its storage, with what is always kept.
+- `TransferCard.qml` — one way's card: the speed, the files moving, what is left, and the chart
+  of the last two minutes.
+- `StoppedFolderCard.qml` — a folder that stopped, on Status: why, Try Again, what is not uploaded,
+  and Use Another Folder….
+- `FolderPicker.qml` — the dialog that picks an account's folder, opened again with why while the
+  folder picked cannot be it.
+- `UnsentChangesPrompt.qml` — a question whose answer leaves the folder behind: it says first how
+  many changes made here are not uploaded.
+- `DisconnectDialog.qml` — that question before an account is disconnected.
+- `AnotherFolderDialog.qml` — that question before another folder is used.
+- `ListPage.qml` — a page that is one long list, drawn as a page of FormCards.
+- `FormCardRow.qml` — a row of that list, on a card-coloured band.
+- `IssuesPage.qml` — what needs the user, in one list: the changes that can't upload, the files
+  whose both versions were kept, what can't be shown in the folder.
+- `OneDriveSettingsPage.qml` — one OneDrive's settings: its account, two-way sync, folder,
+  previews and the free space its downloads leave.
+- `SettingsPage.qml` — the whole app's settings, and About.
+- `ServiceCard.qml` — the KOneDrive service is not running: start it, or read its log.
 
 ### `app/tests/`
 
@@ -1008,11 +1038,14 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `accountcontrollertest.cpp` — `AccountController`.
 - `accountsmodeltest.cpp` — `DaemonController`, `AccountsModel`, `CurrentAccount`.
 - `appstatustest.cpp` — `AccountStatus`, `AppStatus`.
+- `folderchoicetest.cpp` — what a folder picked is, a case each, how a folder is written,
+  `FolderChoice`.
 - `synccontrollertest.cpp` — `SyncController`.
 - `reasontextstest.cpp` — every reason reads as it did before its sentence was generated.
 - `modelstest.cpp` — the transfer, activity and conflict models.
 - `notifiertest.cpp` — `Notifier`.
-- `dialogstest.cpp` — the window's confirmations.
+- `dialogstest.cpp` — the window's pages and confirmations, against the fake daemon.
+- `serviceunittest.cpp` — `ServiceUnit`.
 - `downloadprogresscontrollertest.cpp` — `DownloadProgressController`.
 - `downloadprogresssettingstest.cpp` — `DownloadProgressSettings`.
 - `placescontrollertest.cpp` — `PlacesController`.

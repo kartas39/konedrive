@@ -56,13 +56,8 @@
 //! its job failed as a whole) leaves a step towards OneDrive with nothing kept: the task
 //! counts a try of its own for it (`keep_unwritten_tries`), so that it waits.
 //!
-//! **Tested without the rest**, a test per line of the table:
-// test: each_outcome_is_settled_as_its_line_of_the_table_says
+//! **Tested without the rest:**
 // test: the_next_try_is_a_second_after_the_first_failure_and_doubles_to_an_hour
-// test: a_refusal_for_good_keeps_the_local_version_that_was_sent_and_the_removal_for_a_removal
-// test: a_taken_name_keeps_the_place_sent_and_the_holders_name
-// test: a_step_that_did_not_run_for_a_cause_that_does_not_end_by_itself_is_not_planned_again_at_once
-// test: the_settlements_of_several_steps_are_written_in_one_job
 // test: a_failed_try_of_a_step_towards_onedrive_is_the_stores_and_any_other_the_tasks
 // test: a_step_that_is_written_forgets_the_tasks_tries_of_it
 // test: a_failed_try_of_a_step_towards_onedrive_from_a_row_that_is_not_unsent_is_the_tasks

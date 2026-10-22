@@ -35,13 +35,14 @@
 // test: a_confirmed_removal_takes_the_pin_of_the_item
 // test: a_listed_removal_and_a_full_listings_sweep_take_the_pin
 // test: the_count_of_pins_is_of_bindings_that_rows_still_have
+// test: the_pinned_bytes_are_the_sizes_of_the_files_the_pins_hold
 // test: the_own_mark_says_what_the_marks_above_do_not
 // test: an_item_below_a_pin_is_excepted_and_a_pin_below_the_exception_holds
 // test: pinning_an_excepted_item_takes_the_exception_off
 // test: what_is_asked_of_a_directory_takes_the_marks_below_it_off
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::item_row::{find_is_pinned_above, find_item};
+use super::item_row::{find_is_pinned_above, find_item, sum_pinned_file_sizes};
 use super::{ItemReader, ItemStore};
 use crate::model::{ItemKind, LocalItemId, OneDriveItemReference};
 use crate::TreeError;
@@ -169,6 +170,13 @@ impl ItemReader<'_> {
     pub fn count_pins(&self) -> Result<u64, TreeError> {
         let count: i64 = self.conn().prepare_cached("SELECT COUNT(*) FROM pins JOIN items ON items.onedrive_item_id = pins.id WHERE pins.is_kept = 1")?.query_row([], |row| row.get(0))?;
         Ok(count.max(0) as u64)
+    }
+
+    /// The sizes the folder shows of the files a pin holds for, summed: `Folder.PinnedBytes`.
+    /// A file made here counts, an excepted one does not. Reads every row below a pinned
+    /// directory, as the reader of the pinned files to download does.
+    pub fn sum_pinned_file_sizes(&self) -> Result<u64, TreeError> {
+        sum_pinned_file_sizes(self.conn())
     }
 }
 

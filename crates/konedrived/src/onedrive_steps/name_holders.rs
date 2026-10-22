@@ -16,17 +16,15 @@
 //! **Tested without the rest**, a test per case of [`NameHolder`], then against the
 //! fixture's fake OneDrive:
 // test: no_holder_by_now_is_a_name_that_is_free
-// test: the_empty_file_of_this_items_own_session_is_gone_on_with
-// test: the_empty_file_of_another_items_live_session_is_waited_for
-// test: the_empty_file_of_another_items_session_past_its_end_is_forgotten_and_the_name_asked_again
 // test: the_holder_of_a_name_a_move_found_taken_is_answered_as_onedrive_spells_it
-// test: another_items_session_with_no_end_named_counts_as_ended_a_day_after_it_was_first_seen
 // test: the_empty_file_of_a_session_nothing_goes_on_with_is_cancelled
 // test: an_empty_unlisted_file_made_within_an_opening_window_is_this_folders_and_is_removed
 // test: an_empty_unlisted_file_made_outside_every_window_is_waited_for
-// test: an_empty_unlisted_file_made_outside_every_window_is_adopted_by_a_step_that_sends_an_empty_file
-// test: a_file_with_the_hash_sent_that_no_row_is_bound_to_is_adopted
-// test: any_other_holder_is_another_item_with_its_name_as_onedrive_spells_it
+// test: the_sessions_at_the_place_decide_before_the_holder_is_looked_at
+// test: a_holder_with_no_session_of_this_folder_is_told_by_what_it_is
+// test: an_own_empty_file_onedrive_does_not_remove_is_waited_for
+// test: another_items_session_is_waited_for_until_it_ended_and_forgotten_then
+// test: a_file_with_the_hash_sent_that_no_row_is_bound_to_is_adopted_and_any_other_holder_is_another_item
 
 use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Mutex};

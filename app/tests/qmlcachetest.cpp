@@ -68,7 +68,8 @@ private Q_SLOTS:
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
+        ServiceUnit serviceUnit;
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -85,9 +86,7 @@ private Q_SLOTS:
         window->show();
         QTRY_COMPARE(accounts.count(), 1);
         QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable());
-        const QStringList pages{QStringLiteral("status"), QStringLiteral("activity"), QStringLiteral("conflicts"),
-                                QStringLiteral("skipped"), QStringLiteral("notUploaded"), QStringLiteral("account"),
-                                QStringLiteral("settings")};
+        const QStringList pages{QStringLiteral("status"), QStringLiteral("issues"), QStringLiteral("oneDriveSettings"), QStringLiteral("settings")};
         for (const QString &page : pages) {
             QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, page));
         }

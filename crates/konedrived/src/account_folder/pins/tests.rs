@@ -14,11 +14,6 @@ async fn end_scene(service: &SyncService, mount: Arc<ItemMount>) {
     tokio::task::spawn_blocking(move || drop((kept, mount))).await.unwrap();
 }
 
-#[test]
-fn the_refusal_names_the_path_refused() {
-    assert_eq!(refusal(Path::new("/f/Docs/a b.txt")), "/f/Docs/a b.txt is pinned: unpin it first");
-}
-
 /// Pins through the folder's mount, kept by a sync that does not run: a path is counted
 /// when a mark changed for it, `PinnedCount` follows, and a path a directory above pins is
 /// left as it is by `Pin` and excepted by `Unpin`, the directory staying pinned.
@@ -42,6 +37,7 @@ fn a_pin_is_put_on_once_counted_and_a_path_pinned_from_above_is_excepted_by_unpi
 
         assert_eq!(service.pin(&[docs.clone(), b.clone()]).await.unwrap(), 2);
         assert_eq!(service.state().get().local.pinned_count, 2);
+        assert_eq!(service.state().get().local.pinned_bytes, 19, "a.txt and c.txt, 7 bytes each, and b.txt's 5");
         assert_eq!(service.pin(&[docs.clone()]).await.unwrap(), 0, "pinned already");
         assert_eq!(service.pin(&[a.clone()]).await.unwrap(), 0, "a directory above pins it: left as it is");
         assert_eq!(service.state().get().local.pinned_count, 2);
@@ -66,6 +62,36 @@ fn a_pin_is_put_on_once_counted_and_a_path_pinned_from_above_is_excepted_by_unpi
         assert!(matches!(service.unpin(&[b.clone(), outside]).await, Err(SyncError::OutsideRoot)));
         assert!(matches!(service.pin(&[b.clone(), fixture.disk_path("no such name")]).await, Err(SyncError::NotManaged)));
         assert_eq!(service.state().get().local.pinned_count, 0);
+        end_scene(&service, mount).await;
+    });
+}
+
+/// The folder itself unpinned, which is what the window's Unpin All asks: every pin and
+/// every exception in it comes off, and the files stay as they are.
+#[test]
+fn the_folder_unpinned_lets_every_pin_in_it_go() {
+    let fixture = ItemFixture::new();
+    fixture.show_onedrive_directory("docs");
+    fixture.show_onedrive_file("docs/a.txt", b"content");
+    fixture.show_onedrive_file("b.txt", b"other");
+    let (docs, a, b) = (fixture.disk_path("docs"), fixture.disk_path("docs/a.txt"), fixture.disk_path("b.txt"));
+    fixture.runtime().block_on(async {
+        let (service, _clock) = make_service();
+        let kept = make_kept_parts(&fixture);
+        let mount = Arc::clone(&kept.mount);
+        stage_folder(&service, &fixture.folder(), Sync::Stopped(Why::NotStarted), Some(kept)).await;
+        let is_pinned = |path: &Path| {
+            let (mount, path) = (Arc::clone(&mount), path.to_owned());
+            async move { mount.files_interface().find_path_status(&path).await.unwrap().is_pinned }
+        };
+        assert_eq!(service.pin(&[docs.clone(), b.clone()]).await.unwrap(), 2);
+        assert_eq!(service.unpin(&[a.clone()]).await.unwrap(), 1, "an exception under the pinned directory");
+
+        assert_eq!(service.unpin(&[fixture.folder()]).await.unwrap(), 1);
+        assert_eq!((service.state().get().local.pinned_count, service.state().get().local.pinned_bytes), (0, 0));
+        assert_eq!([is_pinned(&docs).await, is_pinned(&a).await, is_pinned(&b).await], [false, false, false]);
+        assert_eq!(service.pin(&[docs.clone()]).await.unwrap(), 1);
+        assert!(is_pinned(&a).await, "the exception went with the rest");
         end_scene(&service, mount).await;
     });
 }

@@ -1,8 +1,8 @@
 use super::*;
 use crate::item_store::tests::listed_drive::{listed_file, listed_gone, listed_root, reference, store_with_listed_root, write_listing_of_changes};
 use crate::item_store::tests::shown_items::{assert_rules_hold, row, show_listed_directory, show_listed_file};
-use crate::item_store::tests::make_file;
-use crate::model::LocalVersionChange;
+use crate::item_store::tests::{make_file, place};
+use crate::model::{ContentVersion, LocalVersionChange};
 use crate::sync_plan::ItemVersions;
 use crate::{ListingLink, StepCommitOutcome, TreeStore};
 
@@ -137,6 +137,27 @@ fn the_count_of_pins_is_of_bindings_that_rows_still_have() {
     assert_eq!(store.item_store().find_item(file).unwrap(), None);
     assert_eq!(pins(&store), ["no-row-has-this"]);
     assert_eq!(count_pins(&mut store), 0);
+}
+
+/// What the pins hold, by the sizes the folder shows: every file below a pinned directory
+/// and a file made here in it, not those below an exception, and a file pinned beside.
+#[test]
+fn the_pinned_bytes_are_the_sizes_of_the_files_the_pins_hold() {
+    let (mut store, [directory, _, sub, _, beside]) = store_with_shown_directory();
+    let bytes = |store: &mut TreeStore| store.item_store().reader().sum_pinned_file_sizes().unwrap();
+    assert_eq!(bytes(&mut store), 0);
+    pin(&mut store, directory);
+    assert_eq!(bytes(&mut store), 6, "`f` and `g`, 3 bytes each");
+    let content = ContentVersion::ChangedHere { size: 5, mtime: 200, mtime_nsec: 0, change_count: 1 };
+    store.item_store().apply(&LocalVersionChange::Made { kind: ItemKind::File, place: place(directory, "made"), content: Some(content), is_name_ignored: false, replaced: None }).unwrap();
+    assert_eq!(bytes(&mut store), 11, "a file made here is held too");
+
+    store.item_store().set_item_pin(sub, false).unwrap();
+    assert_eq!(bytes(&mut store), 8, "`g` is excepted");
+    pin(&mut store, beside);
+    assert_eq!(bytes(&mut store), 11);
+    store.item_store().set_item_pin(ROOT, false).unwrap();
+    assert_eq!(bytes(&mut store), 0);
 }
 
 #[test]

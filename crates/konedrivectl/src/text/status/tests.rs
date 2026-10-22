@@ -61,7 +61,7 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
         retry_after: 90,
         retry_after_refusal: "/home/u/OneDrive/budget.xlsx".into(),
         local_bytes: Some(5 << 20),
-        pinned: Some(7),
+        pinned: Some((7, 12 << 20)),
         conflicts: 1,
     };
     let p = "konedrivectl --account Work";
@@ -86,7 +86,7 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
          Paused by itself:       metered connection (`{p} sync anyway` syncs now)\n\
          Asked to wait:          1 min left: OneDrive asked for it; a file that is not downloaded cannot be read until then (not read meanwhile: /home/u/OneDrive/budget.xlsx)\n\
          On this computer:       5.0 MiB\n\
-         Always on this device:  7\n\
+         Always on this device:  7 (12.0 MiB)\n\
          Conflicts:              1 (see `{p} sync conflicts`)\n",
         waiting = crate::text::uploads::waiting_text(2, 2048),
         space = crate::text::uploads::space_waiting_text(4, 1 << 30),

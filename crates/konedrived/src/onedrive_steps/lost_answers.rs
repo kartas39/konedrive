@@ -38,23 +38,17 @@
 //!
 //! **Tested without the rest**, a test per case of [`SentRequest`] and of
 //! [`LostAnswerFate`], then against the fixture's fake OneDrive:
-// test: a_directory_of_the_name_that_no_row_is_bound_to_is_the_one_this_step_made
-// test: a_directory_of_the_name_that_a_row_is_bound_to_is_another_item_with_its_name
-// test: a_directory_of_the_name_that_is_not_empty_is_another_item
-// test: a_file_of_the_name_with_the_hash_sent_that_no_row_is_bound_to_is_adopted
-// test: an_item_already_at_the_place_sent_is_the_move_that_went_through
-// test: an_item_that_holds_the_hash_sent_is_the_upload_that_went_through
-// test: an_item_that_is_gone_is_the_removal_that_went_through
-// test: an_item_with_the_etag_planned_from_is_a_request_that_did_not_go_through
-// test: an_item_guarded_by_its_ctag_is_as_planned_while_it_has_that_ctag
-// test: an_item_that_was_moved_or_changed_by_another_is_not_adopted
-// test: a_record_whose_request_went_through_is_committed_as_its_step_would_and_goes
-// test: a_record_whose_request_did_not_go_through_goes_and_writes_no_row
 // test: a_record_whose_item_cannot_be_read_now_stands
 // test: a_record_whose_row_went_or_lost_its_binding_goes
 // test: a_record_whose_read_is_refused_for_certain_goes_and_is_left_to_a_listing
 // test: a_record_a_step_wrote_since_the_settling_began_is_not_forgotten
 // test: an_empty_file_found_where_a_session_or_an_opening_is_kept_is_not_the_steps_own
+// test: a_directory_of_the_name_is_the_steps_own_only_when_it_is_empty_and_no_row_is_bound_to_it
+// test: a_file_of_the_name_is_the_steps_own_only_with_the_hash_sent_unbound_and_no_sessions_empty_file
+// test: a_request_about_an_item_is_told_by_what_the_item_is_now
+// test: an_item_that_went_through_and_cannot_be_read_as_one_is_the_failure
+// test: a_failed_read_is_certain_by_its_status
+// test: the_request_of_a_record_is_the_request_that_was_sent
 
 use std::ffi::{OsStr, OsString};
 use std::sync::Arc;

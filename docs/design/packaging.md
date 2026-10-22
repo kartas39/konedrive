@@ -11,8 +11,8 @@ side of this page.
 
 | Package | Contents | Relations |
 |---|---|---|
-| `konedrive` | `/usr/bin/konedrived`, `/usr/bin/konedrivectl`, `/usr/bin/konedrive` (the window); the user unit `/usr/lib/systemd/user/konedrived.service`; the D-Bus activation file `/usr/share/dbus-1/services/org.konedrive.Daemon.service`; the launcher entry `/usr/share/applications/org.konedrive.KOneDrive.desktop`; the notification events `/usr/share/knotifications6/konedrive.notifyrc`; README, SECURITY.md, LICENSE and `docs/` | `Requires: fuse3`, since every folder is mounted with `fusermount3`; `Requires: kf6-kio-core >= 6.21` (K34); `Requires:` the Kirigami, Kirigami Addons, KQuickCharts and Qt Quick QML modules and the desktop style of Qt Quick Controls (`kf6-qqc2-desktop-style`), which no library dependency pulls in; `Recommends: konedrive-kde` of the same version and release |
-| `konedrive-kde` | the Dolphin plugins, `/usr/lib64/qt6/plugins/kf6/overlayicon/konedriveoverlay.so` and `/usr/lib64/qt6/plugins/kf6/kfileitemaction/konedriveactions.so`; LICENSE | `Requires: dolphin`; not `konedrive` |
+| `konedrive` | `/usr/bin/konedrived`, `/usr/bin/konedrivectl`; the user unit `/usr/lib/systemd/user/konedrived.service`; the D-Bus activation file `/usr/share/dbus-1/services/org.konedrive.Daemon.service`; README, SECURITY.md, LICENSE and `docs/` | `Requires: fuse3`, since every folder is mounted with `fusermount3`; nothing of KDE or Qt; `Conflicts: konedrive-kde` older than itself, since one before 0.2.1 held only the plugins and required no `konedrive`, so that upgrading `konedrive` alone would take the window away |
+| `konedrive-kde` | `/usr/bin/konedrive` (the window); the launcher entry `/usr/share/applications/org.konedrive.KOneDrive.desktop`; the notification events `/usr/share/knotifications6/konedrive.notifyrc`; the Dolphin plugins, `/usr/lib64/qt6/plugins/kf6/overlayicon/konedriveoverlay.so` and `/usr/lib64/qt6/plugins/kf6/kfileitemaction/konedriveactions.so`; LICENSE | `Requires: konedrive` of the same version and release; `Requires:` the Kirigami, Kirigami Addons, KItemModels, KQuickCharts and Qt Quick QML modules and the desktop style of Qt Quick Controls (`kf6-qqc2-desktop-style`), which no library dependency pulls in; `Requires: kf6-kio-core >= 6.21` (K34); `Requires: dolphin`; `Supplements: (konedrive and plasma-workspace)` |
 
 Nothing is installed as a system service and nothing runs as root: the daemon is a user service,
 and `fusermount3`, the setuid program of `fuse3`, is the only privileged program involved.
@@ -20,11 +20,14 @@ and `fusermount3`, the setuid program of `fuse3`, is the only privileged program
 There are no icons of our own: the launcher entry, the autostart entry and the tray menu use the
 theme's `folder-cloud`, and the tray shows the theme's icon for each state.
 
-**Why the Dolphin plugins are separate.** They are the one part that belongs to another program.
-They load into Dolphin, so their package requires Dolphin, and they need nothing from `konedrive`
-to load: the emblems come from the attributes of the files, and the menu hides its section when the
-daemon is not there ([desktop.md](desktop.md) §11). `konedrive` recommends them, so `dnf` installs
-them by default, and `sudo dnf remove konedrive-kde` takes them away alone.
+**Why the desktop is a package of its own.** The daemon and `konedrivectl` are the whole of the
+sync and need nothing of KDE or Qt, so `konedrive` is all that a machine without Plasma installs.
+What belongs to Plasma is `konedrive-kde`: the window, built on Kirigami, and the Dolphin plugins,
+which load into Dolphin. It requires `konedrive` of its own version and release, since the D-Bus
+interfaces carry no version ([desktop.md](desktop.md) §2), so the two are installed and upgraded
+together. From a repository, `Supplements:` has `dnf` install it with `konedrive` on a Plasma
+desktop; from the downloaded files, `dnf install ./konedrive-*.rpm` installs both.
+`sudo dnf remove konedrive-kde` takes the window and the plugins away and leaves the daemon.
 
 ## 2. What the build does
 
@@ -74,9 +77,10 @@ git is `0.0.0`, which every build writes over.
   debugsource one would carry every vendored crate.
 
 Releases are built the same way by `.github/workflows/release.yml`, in a `fedora:44` and a
-`fedora:45` container; each pair is then installed in a clean container of the same Fedora, where
-every program must find its libraries and `konedrived --version` and `konedrivectl --version` must
-run, before the tag and the release are made.
+`fedora:45` container; each pair is then installed in a clean container of the same Fedora before
+the tag and the release are made: `konedrive` first and alone, which must bring in no Qt, and
+`konedrived --version` and `konedrivectl --version` must run; then `konedrive-kde`, and every
+program must find its libraries and the window must come up.
 
 ## 3. The daemon's unit
 
@@ -94,7 +98,7 @@ run, before the tag and the release are made.
 
 ## 4. Install, upgrade and removal
 
-The scriptlets are the systemd user-unit macros alone.
+The scriptlets are `konedrive`'s, the systemd user-unit macros alone; `konedrive-kde` has none.
 
 | When | `konedrived.service`, per user |
 |---|---|

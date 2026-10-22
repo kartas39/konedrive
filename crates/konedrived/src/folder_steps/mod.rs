@@ -86,6 +86,11 @@
 // test: a_pinned_files_download_that_onedrive_refused_once_lands_when_the_step_runs_again
 // test: a_step_after_a_take_down_was_asked_for_and_one_whose_thread_stopped_do_not_run
 // test: steps_towards_the_folder_run_against_a_programs_writes_and_renames_and_deaths
+// test: the_obstacle_of_a_step_is_decided_from_the_row_and_its_writers
+// test: a_file_the_row_says_is_not_on_disk_leaves_what_no_row_says_at_its_path
+// test: a_pinned_files_content_is_downloaded_as_the_plans_step
+// test: a_death_after_the_record_and_before_the_disk_changes_nothing
+// test: the_sync_marks_are_announced_for_each_item_the_folder_shows_at_its_place_now
 //!
 //! **What an item has on disk** is asked of the disk, on the write-operation thread,
 //! where no name changes meanwhile: a directory that is there, and a file that is there

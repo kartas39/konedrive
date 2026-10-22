@@ -168,6 +168,7 @@ void TrayIcon::toggleWindow(TrayItem *clicked)
         if (clicked->account() && m_current && m_current->path() != toShow->path()) {
             qCDebug(KONEDRIVE_APP) << "turning the window to another account";
             Q_EMIT accountToShow(toShow->path());
+            Q_EMIT statusToShow();
             return;
         }
         qCDebug(KONEDRIVE_APP) << "hiding the window";
@@ -181,6 +182,7 @@ void TrayIcon::toggleWindow(TrayItem *clicked)
     if (toShow) {
         Q_EMIT accountToShow(toShow->path());
     }
+    Q_EMIT statusToShow();
     showWindow();
 }
 
@@ -204,5 +206,6 @@ void TrayIcon::openWindowWithToken(TrayItem *clicked)
     if (clicked->account()) {
         Q_EMIT accountToShow(clicked->account()->path());
     }
+    Q_EMIT statusToShow();
     showWindow();
 }

@@ -5,7 +5,7 @@
 //! ONE reader (`ItemReader::find_item_by_path`), here and nowhere else in `mount`.
 //!
 //! **Answers for:** `org.konedrive.Files` (`docs/design/desktop.md` §2.9) and `Folder.FreeUpSpace`,
-//! `PinnedCount`: download now, free up, pin and unpin, the status of a path.
+//! `PinnedCount`, `PinnedBytes`: download now, free up, pin and unpin, the status of a path.
 //!
 //! **Tested without the rest**, over a store in memory and a temporary backing directory:
 // test: a_path_outside_the_folder_and_a_path_the_folder_does_not_show_are_refused
@@ -17,11 +17,14 @@
 // test: a_directory_is_downloaded_file_by_file_and_a_failure_is_said_after_the_rest
 // test: a_free_up_after_the_thread_stopped_is_refused
 // test: a_download_asked_by_path_while_onedrive_asks_to_wait_is_refused_with_the_time_left
+// test: the_nearest_mark_at_a_path_or_above_it_says_whether_a_pin_holds_for_it
+// test: what_a_free_up_would_decide_is_what_the_free_up_then_does
+// test: the_unfinished_downloads_are_listed_by_path_with_their_size_and_checkpoint
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use konedrive_tree::{ContentPresence, FileSyncState, Item, ItemKind, LocalItemId, OneDriveItemReference, PinChange, Store, TreeError};
+use konedrive_tree::{ContentPresence, FileSyncState, Item, ItemKind, LocalItemId, OneDriveItemReference, PinChange, PinnedTotal, Store, TreeError};
 use tokio::sync::oneshot;
 
 use super::item_free_up::FreeUpDecision;
@@ -313,11 +316,13 @@ impl ItemFilesInterface {
         Ok(unfinished)
     }
 
-    /// `Folder.PinnedCount` (`ItemReader::count_pins`).
-    pub(crate) async fn count_pins(&self) -> u64 {
-        self.store.read_items(|reader| reader.count_pins()).await.unwrap_or_else(|error| {
+    /// `Folder.PinnedCount` and `PinnedBytes` (`ItemReader::count_pins`,
+    /// `sum_pinned_file_sizes`), in one reading.
+    pub(crate) async fn count_pins(&self) -> PinnedTotal {
+        let read = self.store.read_items(|reader| Ok(PinnedTotal { count: reader.count_pins()?, bytes: reader.sum_pinned_file_sizes()? }));
+        read.await.unwrap_or_else(|error| {
             tracing::warn!("the pins could not be counted: {error}");
-            0
+            PinnedTotal::default()
         })
     }
 

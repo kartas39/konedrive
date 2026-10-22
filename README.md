@@ -26,9 +26,9 @@ folder of files at their real sizes, and a file downloads when something reads i
 
 ## Screenshots
 
-| Status | Activity | Account |
+| Status | Issues | OneDrive Settings |
 | --- | --- | --- |
-| ![Status page](docs/screenshots/status.png) | ![Activity page](docs/screenshots/activity.png) | ![Account page](docs/screenshots/account.png) |
+| ![Status page](docs/screenshots/status.png) | ![Issues page](docs/screenshots/issues.png) | ![OneDrive Settings page](docs/screenshots/onedrive-settings.png) |
 
 (Shown with example data from a test daemon, not a real OneDrive account: two accounts,
 "Personal" chosen in the switcher at the top of the sidebar.)
@@ -44,8 +44,8 @@ Needs FUSE 3 (`fuse3`, which the package asks for), KDE Plasma 6, Qt 6.8+ and KD
 6.21+.
 
 Download the two RPMs of the latest release for your Fedora (`.fc44` or `.fc45` in the name) from
-the Releases page — `konedrive` and `konedrive-kde` (the Dolphin plugins), not the `.src.rpm` — and
-install them:
+the Releases page — `konedrive` (the service and the command line) and `konedrive-kde` (the window
+and the Dolphin plugins), not the `.src.rpm` — and install them:
 
 ```
 sudo dnf install ./konedrive-*.rpm

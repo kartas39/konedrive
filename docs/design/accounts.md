@@ -9,8 +9,8 @@ access mode is in [writes.md](writes.md) §2; the D-Bus API, the window and the 
 
 ## 1. What the user sees
 
-- Several personal Microsoft accounts, each with its own folder, Places entry, activity, conflicts
-  and "Not in the Folder" list. Work and school accounts are not supported.
+- Several personal Microsoft accounts, each with its own folder, Places entry, history, conflicts
+  and list of what can't be shown in the folder. Work and school accounts are not supported.
 - Every account is read-only until the user switches it to read-write (§10).
 - The window shows one account at a time, chosen in a switcher at the top of its sidebar; the tray
   has an icon for each, or one for them all ([desktop.md](desktop.md) §4, §5).
@@ -333,8 +333,8 @@ canonical GUID form only, and is refused while any account is signing in or sign
 ### 8.2 Add
 
 An account is added only by signing in. `Accounts.SignIn() → (u sign_in, s url)` starts a sign-in
-for a new account and answers its number and the URL to open; the window's **Sign in…** and
-`konedrivectl account add` both call it.
+for a new account and answers its number and the URL to open; the window's **Sign In…** and
+**Add Another OneDrive…** and `konedrivectl account add` call it.
 
 The sign-in belongs to no account (`daemon/manager/sign_in.rs`). The manager runs it: the loopback
 listener, the authorization URL (read-only scopes, Microsoft's account picker), the wait for the

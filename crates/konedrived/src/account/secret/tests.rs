@@ -1,27 +1,6 @@
 use super::*;
 use crate::account::testing::MemoryWallet;
 use crate::config::Paths;
-use konedrive_graph::secret::MemoryStore;
-
-#[tokio::test]
-async fn memory_store_round_trip() {
-    let store = MemoryStore::default();
-    assert!(!store.exists().await.unwrap());
-    assert_eq!(store.load().await.unwrap(), None);
-    store.store("RT").await.unwrap();
-    assert!(store.exists().await.unwrap());
-    assert_eq!(store.load().await.unwrap().as_deref(), Some("RT"));
-    store.delete().await.unwrap();
-    assert!(!store.exists().await.unwrap());
-}
-
-#[tokio::test]
-async fn locked_store_reports_existence_but_refuses_load() {
-    let store = MemoryStore::with_token("RT");
-    store.set_locked(true);
-    assert!(store.exists().await.unwrap());
-    assert!(matches!(store.load().await, Err(SecretError::Locked)));
-}
 
 /// A configuration with one account whose `legacy_token` is set, its id, and the
 /// account's secrets on `wallet`.

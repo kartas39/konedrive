@@ -7,13 +7,11 @@
 //!
 //! **Tested without the rest**, a test per case of `WriteError`:
 // test: a_409_a_412_a_404_and_a_gone_session_are_the_steps_to_look_at
-// test: a_507_is_no_space
-// test: a_429_and_a_503_are_throttled_with_the_time_onedrive_named
-// test: a_423_is_locked_and_tried_again
-// test: a_403_is_forbidden_and_a_400_refused_for_good_with_its_message
-// test: a_signed_out_account_is_said_so
-// test: the_network_a_timeout_and_a_5xx_are_an_answer_lost_and_carry_no_address
-// test: any_other_4xx_is_settled_as_transient_at_once
+// test: a_refusal_that_is_certain_is_settled_at_once_as_its_case
+// test: the_network_a_timeout_and_a_5xx_are_an_answer_lost_and_any_other_4xx_is_settled_as_transient
+// test: the_text_of_a_lost_answer_carries_no_address
+// test: a_plain_refusal_is_the_settled_one_and_transient_for_all_else
+// test: a_failed_read_is_read_as_the_refusal_of_its_error
 
 use konedrive_graph::drive::{DriveError, WriteError};
 

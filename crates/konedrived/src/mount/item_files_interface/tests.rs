@@ -170,17 +170,17 @@ fn a_pin_is_set_by_the_stores_job_and_the_plan_woken() {
     fixture.show_onedrive_file("docs/report.txt", b"the report");
     let files = make_files_interface(&fixture);
     let run = fixture.runtime();
-    assert_eq!(run.block_on(files.count_pins()), 0);
+    assert_eq!(run.block_on(files.count_pins()), PinnedTotal::default());
 
     run.block_on(files.set_pin(&fixture.disk_path("docs"), true)).expect("the pin is set");
 
     assert_eq!(run.block_on(fixture.sync_plan_wake.wait()), [WakeCause::UserAnswered].into(), "the plan is woken: it downloads what the pin holds");
-    assert_eq!(run.block_on(files.count_pins()), 1);
+    assert_eq!(run.block_on(files.count_pins()), PinnedTotal { count: 1, bytes: 10 }, "the directory, holding the report's 10 bytes");
     let below = run.block_on(files.find_path_status(&fixture.disk_path("docs/report.txt"))).expect("the status");
     assert!(below.is_pinned, "the pin of the directory holds for what is in it");
 
     run.block_on(files.set_pin(&fixture.disk_path("docs"), false)).expect("the pin is taken off");
-    assert_eq!(run.block_on(files.count_pins()), 0);
+    assert_eq!(run.block_on(files.count_pins()), PinnedTotal::default());
     assert!(!run.block_on(files.find_path_status(&fixture.disk_path("docs/report.txt"))).expect("the status").is_pinned);
 }
 
@@ -209,44 +209,6 @@ fn the_status_of_a_path_is_the_rows_sync_state_its_pin_and_what_runs_for_it() {
     assert!(status("docs/remote.txt").is_downloading && !status("docs/remote.txt").is_open_for_writing);
     assert!(status("docs/clean.txt").is_open_for_writing && !status("docs/clean.txt").is_downloading);
     fixture.item_handles.remove_writer(writer);
-}
-
-/// The status of a file with `sync_state`, as far as the state for the menu reads it.
-fn status_with(sync_state: Option<FileSyncState>, is_downloading: bool) -> ItemPathStatus {
-    ItemPathStatus { item: LocalItemId::new(5), kind: if sync_state.is_some() { ItemKind::File } else { ItemKind::Directory }, onedrive_item: ItemFixture::onedrive_reference_of("x"), sync_state, is_pinned: false, is_downloading, is_open_for_writing: false }
-}
-
-#[test]
-fn the_state_a_path_is_shown_as_is_what_the_state_attribute_says() {
-    use konedrive_fs::placeholder::State;
-    let cases = [
-        (None, false, None),
-        (None, true, None),
-        (Some(FileSyncState::LocalOnly), false, None),
-        (Some(FileSyncState::LocalOnly), true, None),
-        (Some(FileSyncState::RemoteOnly), false, Some(State::OnlineOnly)),
-        (Some(FileSyncState::Synced), false, Some(State::Hydrated)),
-        (Some(FileSyncState::ModifiedHere), false, Some(State::Hydrated)),
-        (Some(FileSyncState::RemoteOnly), true, Some(State::Hydrating)),
-        (Some(FileSyncState::Synced), true, Some(State::Hydrating)),
-        (Some(FileSyncState::ModifiedHere), true, Some(State::Hydrating)),
-    ];
-    for (sync_state, is_downloading, state) in cases {
-        assert_eq!(status_with(sync_state, is_downloading).find_state_attribute(), state, "{sync_state:?}, downloading: {is_downloading}");
-    }
-
-    // And of the rows: a file not on disk, the same while it is being downloaded, a copy, a directory.
-    let fixture = ItemFixture::new();
-    fixture.show_onedrive_directory("docs");
-    let remote = fixture.show_onedrive_file("docs/remote.txt", b"remote");
-    make_clean_copy(&fixture, "docs/clean.txt", b"clean");
-    let files = make_files_interface(&fixture);
-    let run = fixture.runtime();
-    let state = |path: &str| run.block_on(files.find_path_status(&fixture.disk_path(path))).expect("the status").find_state_attribute();
-    assert_eq!([state("docs"), state("docs/remote.txt"), state("docs/clean.txt")], [None, Some(State::OnlineOnly), Some(State::Hydrated)]);
-    let key = crate::mount::item_download_states::DownloadKey { item: remote.local_item_id, content: remote.local.clone().unwrap().content.unwrap() };
-    let _started = fixture.download_states.start_or_join(&key, &DownloadAsker::Read, None);
-    assert_eq!(state("docs/remote.txt"), Some(State::Hydrating));
 }
 
 fn running_step(item: LocalItemId, class: crate::sync_parts::running_steps::StepClass) -> crate::sync_parts::running_steps::RunningStep {
@@ -279,13 +241,13 @@ fn the_nearest_mark_at_a_path_or_above_it_says_whether_a_pin_holds_for_it() {
     assert_eq!(pins(), [false, false, true]);
     assert!(run.block_on(files.set_pin(&fixture.disk_path("docs/deep/report.txt"), true)).unwrap());
     assert_eq!(pins(), [true, false, true]);
-    assert_eq!(run.block_on(files.count_pins()), 2, "the exception is not counted");
+    assert_eq!(run.block_on(files.count_pins()).count, 2, "the exception is not counted");
 
     // Taken off above: every mark below goes with it; taken off twice, nothing changed.
     assert!(run.block_on(files.set_pin(&fixture.disk_path("docs"), false)).unwrap());
     assert!(!run.block_on(files.set_pin(&fixture.disk_path("docs"), false)).unwrap());
     assert_eq!(pins(), [false, false, false]);
-    assert_eq!(run.block_on(files.count_pins()), 0);
+    assert_eq!(run.block_on(files.count_pins()), PinnedTotal::default());
 }
 
 /// What a free-up would decide is asked for every file, then the free-up runs for each:

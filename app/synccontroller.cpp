@@ -3,6 +3,7 @@
 #include "activityloginterface.h"
 #include "conflictsinterface.h"
 #include "folderinterface.h"
+#include "foldertext.h"
 #include "generated/reasontexts.h"
 #include "uploadqueueinterface.h"
 
@@ -13,6 +14,8 @@
 #include <QDBusPendingReply>
 #include <QDBusServiceWatcher>
 #include <QDesktopServices>
+#include <QDir>
+#include <QFileInfo>
 #include <QLocale>
 #include <QTimer>
 
@@ -212,6 +215,7 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         number("LocalBytes", m_localBytes);
         time("LastChecked", m_lastChecked);
         count("PinnedCount", m_pinnedCount);
+        number("PinnedBytes", m_pinnedBytes);
         if (const auto it = p.constFind(QLatin1String("Paused")); it != p.constEnd()) {
             m_paused = it->toBool();
         }
@@ -274,15 +278,16 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         count("TooBigCount", m_tooBigCount);
     } else if (interfaceName == ConflictsInterface) {
         count("Count", m_conflictCount);
-        text("MachineName", m_machineName);
     } else if (interfaceName == LocalScanInterface) {
         text("State", m_scanState);
         text("Reason", m_scanReason);
         time("Started", m_scanStarted);
-        time("Finished", m_scanFinished);
-        count("Took", m_scanTook);
     }
     Q_EMIT syncChanged();
+    // Registered or forgotten: what a call could not do was about the folder before.
+    if (m_rootPath != previousRoot) {
+        setActionError(QString());
+    }
 
     // GetAll's own answer loads the lists (fetchAll); a change on the way loads them again.
     if (!m_serviceAvailable) {
@@ -388,9 +393,20 @@ void SyncController::quietly(const QDBusPendingCall &pending, std::function<void
     });
 }
 
+QString SyncController::rootPathText() const
+{
+    return folderText(m_rootPath);
+}
+
 void SyncController::chooseFolder(const QUrl &folder)
 {
     const QString path = folder.toLocalFile();
+    // A folder named in the dialog may not be there yet: Register opens what it
+    // is given. Only the folder itself is made, never a directory above it.
+    if (!QFileInfo::exists(path) && !QDir().mkdir(path)) {
+        setActionError(i18n("%1 could not be made.", path));
+        return;
+    }
     // M6: no timeout, as FreeUpSpace has — Register can take a while
     // (the initial listing starts under it), so it bypasses the generated
     // proxy (whose timeout is shared with every other call on m_folder).
@@ -401,10 +417,19 @@ void SyncController::chooseFolder(const QUrl &folder)
 
 void SyncController::forget()
 {
+    forgetThen({});
+}
+
+void SyncController::forgetThen(std::function<void()> then)
+{
     // Never refused for what is unsent: the page warns with readUnsentCount() before it calls.
     // M6: no timeout, as Register and FreeUpSpace have.
     const auto message = QDBusMessage::createMethodCall(ServiceName, m_path, FolderInterface, QStringLiteral("Unregister"));
-    call(m_bus.asyncCall(message, std::numeric_limits<int>::max()));
+    call(m_bus.asyncCall(message, std::numeric_limits<int>::max()), [then](const QDBusPendingCall &) {
+        if (then) {
+            then();
+        }
+    });
 }
 
 void SyncController::readUnsentCount()
@@ -451,6 +476,30 @@ void SyncController::openFolder()
     if (!m_rootPath.isEmpty()) {
         QDesktopServices::openUrl(QUrl::fromLocalFile(m_rootPath));
     }
+}
+
+void SyncController::openOnWeb()
+{
+    if (m_rootPath.isEmpty()) {
+        return;
+    }
+    // Files.WebUrl answers the folder itself with the address of the drive's root.
+    auto message = QDBusMessage::createMethodCall(ServiceName, QStringLiteral("/org/konedrive/Accounts"), QStringLiteral("org.konedrive.Files"), QStringLiteral("WebUrl"));
+    message << m_rootPath;
+    call(m_bus.asyncCall(message), [](const QDBusPendingCall &pending) {
+        const QDBusPendingReply<QString> reply = pending;
+        QDesktopServices::openUrl(QUrl(reply.value()));
+    });
+}
+
+void SyncController::unpinAll()
+{
+    if (m_rootPath.isEmpty()) {
+        return;
+    }
+    auto message = QDBusMessage::createMethodCall(ServiceName, QStringLiteral("/org/konedrive/Accounts"), QStringLiteral("org.konedrive.Files"), QStringLiteral("Unpin"));
+    message << QStringList{m_rootPath};
+    call(m_bus.asyncCall(message));
 }
 
 void SyncController::loadActivity()
@@ -518,7 +567,8 @@ void SyncController::freeUpSpace()
         } else {
             const uint files = reply.argumentAt<0>();
             const qulonglong bytes = reply.argumentAt<1>();
-            m_freeUpResult = i18np("Freed 1 file (%2).", "Freed %1 files (%2).", files, QLocale().formattedDataSize(qint64(bytes)));
+            m_freeUpResult = files == 0 ? i18n("Nothing was freed up.")
+                                        : i18np("Freed 1 file (%2).", "Freed %1 files (%2).", files, QLocale().formattedDataSize(qint64(bytes)));
         }
         Q_EMIT freeUpResultChanged();
     });

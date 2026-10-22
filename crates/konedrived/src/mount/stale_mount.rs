@@ -14,8 +14,10 @@
 //! waited for [`STATISTICS_WAIT`]: a daemon that runs and does not answer in that time is
 //! not dead, and its mount is left alone — the thread stays until the answer comes.
 //!
-//! **Tested without a mount:** [`decide_is_mount_stale`], a case each.
+//! **Tested without a mount:** [`decide_is_mount_stale`], a case each, and what a plain
+//! directory and a path that is not there answer:
 // test: a_mount_is_stale_when_its_statistics_are_refused_as_not_connected
+// test: a_directory_with_no_mount_over_it_is_no_stale_mount
 
 use std::path::Path;
 use std::time::Duration;

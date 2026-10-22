@@ -133,6 +133,7 @@
 // test: what_a_read_does_once_its_whole_download_ended_per_case
 // test: reads_of_a_remembered_content_join_its_download_until_onedrive_has_answered
 // test: while_onedrive_asks_to_wait_what_needs_its_content_fails_at_once_and_the_rest_is_answered
+// test: a_directory_is_synced_and_one_the_folder_does_not_show_has_nothing_to_sync
 
 use std::ffi::OsStr;
 use std::fs::File;

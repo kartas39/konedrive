@@ -103,6 +103,21 @@
 // test: a_temporary_name_is_moved_to_like_any_place_and_is_not_cleaned
 // test: a_change_dropped_without_its_end_still_ends_the_count_and_wakes_the_sleepers
 // test: an_undo_that_fails_is_answered_as_such_and_asks_nothing_by_itself
+// test: readers_never_get_another_items_file_while_two_entries_are_renamed_back_and_forth
+// test: a_row_that_is_gone_answers_none_and_a_failure_of_the_store_is_told_as_such
+// test: a_file_is_opened_to_read
+// test: a_stat_that_no_change_crossed_answers_the_facts_of_the_rows_file
+// test: the_errno_and_the_trouble_of_an_open_are_told_per_case
+// test: a_changer_that_panics_in_its_change_leaves_the_count_and_the_condition_usable
+// test: a_reader_that_panics_under_the_lock_leaves_it_usable
+// test: a_change_holds_the_lock_for_its_begin_alone_and_a_begin_waits_for_who_holds_it
+// test: a_change_begun_off_the_write_operation_thread_is_a_fault
+// test: an_open_by_a_rows_path_on_the_write_operation_thread_is_a_fault
+// test: a_file_or_a_directory_is_made_with_the_directories_above_and_removed_by_its_undo
+// test: a_directory_that_holds_what_no_row_says_is_left_with_its_mark_off
+// test: an_entry_left_set_aside_by_a_failed_discard_gives_way_to_the_next_of_its_item
+// test: a_move_over_an_entry_sets_it_aside_and_its_undo_puts_both_back
+// test: a_move_over_what_is_not_on_disk_or_cannot_be_set_aside
 
 use std::ffi::CString;
 use std::fs::File;

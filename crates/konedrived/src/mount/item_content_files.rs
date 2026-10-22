@@ -33,6 +33,11 @@
 // test: an_item_that_gave_its_binding_up_loses_its_marks
 // test: the_rows_are_read_without_waiting_for_the_stores_reading_thread
 // test: the_time_a_file_is_given_is_its_contents_with_the_nanoseconds
+// test: a_file_has_the_size_and_time_of_a_content_by_its_size_its_seconds_and_the_nanoseconds_the_content_has
+// test: a_content_the_row_no_longer_has_is_not_opened
+// test: a_row_that_says_on_disk_over_no_file_is_a_missing_backing_file
+// test: a_sent_file_that_changed_since_is_not_marked
+// test: what_the_two_sides_agree_on_is_marked_as_the_whole_copy_with_the_bindings_id_and_the_ctag
 
 use std::fs::File;
 use std::io;

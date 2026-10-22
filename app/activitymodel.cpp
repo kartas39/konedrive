@@ -1,9 +1,11 @@
 #include "activitymodel.h"
 
+#include "timetext.h"
 #include "uploadreasons.h"
 
 #include <KLocalizedString>
 
+#include <QDateTime>
 #include <QFileInfo>
 
 ActivityFailure classifyFailure(const QString &kind, const QString &detail)
@@ -63,12 +65,10 @@ QString ActivityModel::describe(const QString &kind, const QString &detail)
     }
     if (kind == QLatin1String("store-rebuilt")) {
         // The path is the folder; the detail says what was lost with the old records.
-        // TODO: wording
         return i18nc("@info activity", "KOneDrive's records of this folder were made anew");
     }
     if (kind == QLatin1String("not-removed-here")) {
         // The path is the directory; DetailTextRole says why and what to do.
-        // TODO: wording
         return i18nc("@info activity", "Cannot be removed here");
     }
     if (kind == QLatin1String("conflict")) {
@@ -116,6 +116,8 @@ QVariant ActivityModel::data(const QModelIndex &index, int role) const
     }
     case TimeRole:
         return row.time;
+    case TimeTextRole:
+        return timeText(row.time, QDateTime::currentSecsSinceEpoch());
     case KindRole:
         return row.kind;
     case PathRole:
@@ -132,8 +134,7 @@ QVariant ActivityModel::data(const QModelIndex &index, int role) const
             return i18nc("@info activity detail: where a moved file was", "was %1", row.detail);
         }
         if (row.kind == QLatin1String("not-removed-here")) {
-            // TODO: wording
-            return i18nc("@info activity detail", "It holds items that cannot be shown on this computer. Remove it in OneDrive.");
+                return i18nc("@info activity detail", "It holds items that can't be shown in the folder. Remove it in OneDrive.");
         }
         return row.kind == QLatin1String("upload-failed") ? uploadReasonText(row.detail) : row.detail;
     case IconRole:
@@ -182,6 +183,7 @@ QHash<int, QByteArray> ActivityModel::roleNames() const
         {TextRole, "what"}, // not "text": a delegate's own property
         {IconRole, "iconName"},
         {DetailTextRole, "detailText"},
+        {TimeTextRole, "timeText"},
     };
 }
 

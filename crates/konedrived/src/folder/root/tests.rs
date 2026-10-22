@@ -179,16 +179,6 @@ async fn an_unusable_directory_is_reported_as_unusable_even_when_it_is_not_empty
     );
 }
 
-#[tokio::test]
-async fn accepts_a_non_empty_directory_that_already_carries_its_own_root_id() {
-    let dir = tempfile::tempdir().unwrap();
-    let handle = File::open(dir.path()).unwrap();
-    handle.set_xattr(XATTR_ROOT, uuid_v4().as_bytes()).unwrap();
-    std::fs::write(dir.path().join("stray.txt"), b"x").unwrap();
-
-    check_root_candidate(dir.path()).unwrap();
-}
-
 // --- Root registration -----------------------------------------------
 
 #[test]

@@ -28,6 +28,11 @@
 // test: an_entry_that_cannot_be_put_back_asks_for_the_take_down_and_keeps_its_record
 // test: a_directory_that_holds_what_no_row_says_stays_on_disk_unmarked_and_its_row_goes
 // test: a_file_open_for_writing_is_removed_and_its_writers_close_writes_nothing
+// test: a_directory_with_what_was_never_shown_in_it_is_decided_not_empty_for_an_rmdir_alone
+// test: a_directory_that_holds_what_cannot_be_shown_is_not_removed_and_the_user_is_told_once
+// test: a_directory_with_an_item_not_shown_yet_is_not_removed_and_nothing_is_told
+// test: an_item_an_upload_left_in_a_directory_does_not_keep_the_directory
+// test: the_last_rmdir_of_an_rm_r_of_what_onedrive_has_is_not_refused
 
 use std::ffi::OsStr;
 use std::path::PathBuf;

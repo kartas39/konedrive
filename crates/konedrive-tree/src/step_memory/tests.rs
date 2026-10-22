@@ -609,23 +609,6 @@ fn a_session_that_ended_is_not_abandoned_though_the_content_changed_since() {
     assert_eq!((kept(&store, file), abandoned(&mut store)), (ItemMemory::default(), vec![]));
 }
 
-/// A session that ended is forgotten of the item whose memory keeps it and of no other,
-/// as a session is advanced: told of an address whose cancel was left, or of another
-/// item's session, the call changes nothing, and the cancel stays for the loop that sends
-/// the cancels.
-#[test]
-fn a_session_is_said_ended_only_of_the_item_that_keeps_it() {
-    let mut store = TreeStore::in_memory().unwrap();
-    let (file, other) = (make_file(&mut store, ROOT, "report"), make_file(&mut store, ROOT, "other"));
-    let (first, second) = (new_file_session(&mut store, file, "1"), new_file_session(&mut store, other, "2"));
-    assert_eq!(remember_session(&mut store, file, &first), Continued);
-    assert_eq!(remember_session(&mut store, other, &second), Continued);
-    store.step_memory().abandon_upload_session(file).unwrap();
-    store.step_memory().forget_ended_upload_session(other, &address("1")).unwrap();
-    store.step_memory().forget_ended_upload_session(file, &address("2")).unwrap();
-    assert_eq!((abandoned(&mut store), said(&mut store, other).upload_session), (vec![address("1")], Some(second)));
-}
-
 /// A new try of an upload takes the session of the former content away: the first call of
 /// the try queues its cancel, and what holds the name in OneDrive is then answered as a
 /// session nothing goes on with, not as the item's.

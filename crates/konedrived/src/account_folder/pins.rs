@@ -73,12 +73,16 @@ impl SyncService {
         }
     }
 
-    /// `PinnedCount`, as the mount has it: written into the published state. Called after
-    /// a start of the folder's sync and after every change of a pin made through the bus;
-    /// what a listing changes of the pins is published by the plan's task with its round.
+    /// `PinnedCount` and `PinnedBytes`, as the mount has them: written into the published
+    /// state. Called after a start of the folder's sync and after every change of a pin
+    /// made through the bus; what a listing changes of the pins is published by the plan's
+    /// task with its round.
     pub(super) async fn show_pins(&self, mount: &ItemMount) {
-        let count = u32::try_from(mount.files_interface().count_pins().await).unwrap_or(u32::MAX);
-        self.state.update_if_changed(|s| s.local.pinned_count = count);
+        let pinned = mount.files_interface().count_pins().await;
+        self.state.update_if_changed(|s| {
+            s.local.pinned_count = u32::try_from(pinned.count).unwrap_or(u32::MAX);
+            s.local.pinned_bytes = pinned.bytes;
+        });
     }
 }
 

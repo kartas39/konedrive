@@ -1,6 +1,6 @@
 # KOneDrive for Fedora: two binary packages from one source.
-#   konedrive      the daemon, the command line and the window
-#   konedrive-kde  the Dolphin plugins
+#   konedrive      the daemon and the command line
+#   konedrive-kde  the window and the Dolphin plugins, for KDE Plasma
 # Built offline from vendored crates by scripts/build-rpm.sh, which makes both
 # source tarballs from the committed tree. What goes where, and why:
 # docs/design/packaging.md.
@@ -27,7 +27,7 @@ Name:           konedrive
 # (docs/releasing.md).
 Version:        0.0.0
 Release:        1%{?dist}
-Summary:        OneDrive client for KDE Plasma with files on demand
+Summary:        OneDrive client with files on demand: the daemon and the command line
 
 # Only the project's own license. The binaries also link the vendored crates,
 # each under its own license (MIT, Apache-2.0 and others). A public build
@@ -70,33 +70,45 @@ BuildRequires:  kf6-kjobwidgets-devel >= %{kf6_min}
 BuildRequires:  desktop-file-utils
 BuildRequires:  systemd-rpm-macros
 
+# The daemon mounts each OneDrive folder with fusermount3. Nothing of KDE or
+# Qt: that is all konedrive-kde's.
+Requires:       fuse3
+# A konedrive-kde before 0.2.1 holds only the Dolphin plugins and requires no
+# konedrive: upgrading konedrive alone would take the window away.
+Conflicts:      %{name}-kde < %{version}-%{release}
+
+%description
+KOneDrive shows your OneDrive as a folder of files at their real sizes; a file
+takes no space until something reads it, and reading it downloads it. This
+package is its daemon, which runs as your user and serves the folder as a
+FUSE mount, and the konedrivectl command line. The window and the Dolphin
+plugins for KDE Plasma are konedrive-kde. An account is read-only until you
+switch it to upload the changes made on this computer.
+
+%package        kde
+Summary:        KOneDrive for KDE Plasma: the window, the tray icon and the Dolphin plugins
+# The window and the plugins speak the D-Bus interfaces of the daemon's own
+# build, which carry no version (docs/design/desktop.md §2).
+Requires:       %{name}%{?_isa} = %{version}-%{release}
 # The window's QML modules, which no library dependency pulls in.
 Requires:       kf6-kirigami%{?_isa}
 Requires:       kf6-kirigami-addons%{?_isa}
+Requires:       kf6-kitemmodels%{?_isa}
 Requires:       kf6-kquickcharts%{?_isa}
 # The window's Qt Quick Controls style (org.kde.desktop).
 Requires:       kf6-qqc2-desktop-style%{?_isa}
 Requires:       qt6-qtdeclarative%{?_isa}
-# The daemon mounts each OneDrive folder with fusermount3.
-Requires:       fuse3
 # Below this KIO's "Move to Trash" copies a file of the folder into the home
 # trash, which downloads it (docs/limitations/K34.md).
 Requires:       kf6-kio-core%{?_isa} >= %{kf6_min}
-Recommends:     %{name}-kde = %{version}-%{release}
-
-%description
-KOneDrive shows your OneDrive as a folder of files at their real sizes; a file
-takes no space until something reads it, and reading it downloads it. It has
-a daemon that runs as your user and serves the folder as a FUSE mount, a
-window with a tray icon, and the konedrivectl command line. An account is
-read-only until you switch it to upload the changes made on this computer.
-
-%package        kde
-Summary:        Dolphin integration for KOneDrive: file state emblems and menu actions
 Requires:       dolphin
+# Installed with the daemon on a Plasma desktop, from a repository.
+Supplements:    (%{name} and plasma-workspace)
 
 %description    kde
-Two Dolphin plugins for the KOneDrive folder: an emblem on each file that
+The KOneDrive window, with its tray icon and notifications, where OneDrive
+accounts are added and each one's folder, space, transfers and history are
+shown; and two Dolphin plugins for the folder: an emblem on each file that
 shows whether it is online-only, downloading, downloaded or kept on this
 device, or has a change waiting to be uploaded, and "Always Keep on This
 Device", "Free Up Space" and "Open in OneDrive" in its context menu. Neither
@@ -196,16 +208,16 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/org.konedrive.KOneDri
 %files
 %license LICENSE
 %doc README.md SECURITY.md docs
-%{_bindir}/konedrive
 %{_bindir}/konedrived
 %{_bindir}/konedrivectl
 %{_userunitdir}/konedrived.service
 %{_datadir}/dbus-1/services/org.konedrive.Daemon.service
-%{_datadir}/applications/org.konedrive.KOneDrive.desktop
-%{_datadir}/knotifications6/konedrive.notifyrc
 
 %files kde
 %license LICENSE
+%{_bindir}/konedrive
+%{_datadir}/applications/org.konedrive.KOneDrive.desktop
+%{_datadir}/knotifications6/konedrive.notifyrc
 %dir %{_qt6_plugindir}/kf6/overlayicon
 %dir %{_qt6_plugindir}/kf6/kfileitemaction
 %{_qt6_plugindir}/kf6/overlayicon/konedriveoverlay.so

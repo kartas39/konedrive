@@ -35,6 +35,8 @@ class SyncController : public QObject
     Q_PROPERTY(bool serviceAvailable READ serviceAvailable NOTIFY serviceAvailableChanged)
     Q_PROPERTY(QString path READ path CONSTANT)
     Q_PROPERTY(QString rootPath READ rootPath NOTIFY syncChanged)
+    /// The folder as the window writes it: ~/OneDrive.
+    Q_PROPERTY(QString rootPathText READ rootPathText NOTIFY syncChanged)
     Q_PROPERTY(QString rootState READ rootState NOTIFY syncChanged)
     Q_PROPERTY(QString rootSource READ rootSource NOTIFY syncChanged)
     /// Folder.Overall, as the daemon decided it: the state of the account as a whole
@@ -49,6 +51,8 @@ class SyncController : public QObject
     Q_PROPERTY(qulonglong itemsListed READ itemsListed NOTIFY syncChanged)
     Q_PROPERTY(qulonglong skippedCount READ skippedCount NOTIFY syncChanged)
     Q_PROPERTY(QVariantList skipped READ skipped NOTIFY skippedChanged)
+    /// Why the last call the window made could not be done; empty once a folder is
+    /// registered or forgotten, and again at the next action.
     Q_PROPERTY(QString actionError READ actionError NOTIFY actionErrorChanged)
     /// Unix seconds of the last successful check with OneDrive; 0 = never.
     Q_PROPERTY(qlonglong lastChecked READ lastChecked NOTIFY syncChanged)
@@ -57,6 +61,8 @@ class SyncController : public QObject
     Q_PROPERTY(uint conflictCount READ conflictCount NOTIFY syncChanged)
     /// How many files and folders carry their own "Always keep on this device" pin.
     Q_PROPERTY(uint pinnedCount READ pinnedCount NOTIFY syncChanged)
+    /// The sizes of the files those pins hold.
+    Q_PROPERTY(qulonglong pinnedBytes READ pinnedBytes NOTIFY syncChanged)
     Q_PROPERTY(TransferModel *transfers READ transfers CONSTANT)
     Q_PROPERTY(ActivityModel *activity READ activity CONSTANT)
     Q_PROPERTY(ConflictModel *conflicts READ conflicts CONSTANT)
@@ -94,8 +100,6 @@ class SyncController : public QObject
     /// The account's own sync setting (FreeSpaceReserve): the gigabytes of the disk's
     /// free space that downloads of files kept on this device leave.
     Q_PROPERTY(int freeSpaceReserve READ freeSpaceReserve NOTIFY syncChanged)
-    /// What a copy of a file changed on both sides is named after: "Report-<machine>.docx".
-    Q_PROPERTY(QString machineName READ machineName NOTIFY syncChanged)
     /// Uploads under way (Transfers.Uploads).
     Q_PROPERTY(TransferModel *uploads READ uploads CONSTANT)
     /// The account's transfers and pool (Transfers' DownloadSpeed, UploadSpeed, ActiveDownloads,
@@ -135,12 +139,10 @@ class SyncController : public QObject
     Q_PROPERTY(uint uploadTimeLeft READ uploadTimeLeft NOTIFY syncChanged)
     /// The check of the folder on disk at the start of its sync (LocalScan's properties):
     /// "running", "idle", or "none" before the first; why it runs; when it started (unix
-    /// seconds); when the last one finished (0: not yet) and how long it took, in seconds.
+    /// seconds).
     Q_PROPERTY(QString scanState READ scanState NOTIFY syncChanged)
     Q_PROPERTY(QString scanReason READ scanReason NOTIFY syncChanged)
     Q_PROPERTY(qlonglong scanStarted READ scanStarted NOTIFY syncChanged)
-    Q_PROPERTY(qlonglong scanFinished READ scanFinished NOTIFY syncChanged)
-    Q_PROPERTY(uint scanTook READ scanTook NOTIFY syncChanged)
     /// The last two minutes of each, one sample a second, oldest first: the window keeps
     /// them, the daemon does not.
     Q_PROPERTY(QVariantList downloadSpeedHistory READ downloadSpeedHistory NOTIFY historyChanged)
@@ -178,6 +180,7 @@ public:
     bool serviceAvailable() const { return m_serviceAvailable; }
     QString path() const { return m_path; }
     QString rootPath() const { return m_rootPath; }
+    QString rootPathText() const;
     QString rootState() const { return m_rootState; }
     QString rootSource() const { return m_rootSource; }
     QString overallState() const { return m_overallState; }
@@ -192,6 +195,7 @@ public:
     qulonglong localBytes() const { return m_localBytes; }
     uint conflictCount() const { return m_conflictCount; }
     uint pinnedCount() const { return m_pinnedCount; }
+    qulonglong pinnedBytes() const { return m_pinnedBytes; }
     TransferModel *transfers() const { return m_transfers; }
     ActivityModel *activity() const { return m_activity; }
     ConflictModel *conflicts() const { return m_conflicts; }
@@ -212,7 +216,6 @@ public:
     QString liveChanges() const { return m_liveChanges; }
     bool thumbnails() const { return m_thumbnails; }
     int freeSpaceReserve() const { return m_freeSpaceReserve; }
-    QString machineName() const { return m_machineName; }
     TransferModel *uploads() const { return m_uploads; }
     qulonglong downloadSpeed() const { return m_downloadSpeed; }
     qulonglong uploadSpeed() const { return m_uploadSpeed; }
@@ -238,8 +241,6 @@ public:
     QString scanState() const { return m_scanState; }
     QString scanReason() const { return m_scanReason; }
     qlonglong scanStarted() const { return m_scanStarted; }
-    qlonglong scanFinished() const { return m_scanFinished; }
-    uint scanTook() const { return m_scanTook; }
     QVariantList downloadSpeedHistory() const { return m_history[0]; }
     QVariantList uploadSpeedHistory() const { return m_history[1]; }
     QVariantList activeDownloadsHistory() const { return m_history[2]; }
@@ -252,9 +253,14 @@ public:
     QVariantMap notUploadedFiles() const { return m_notUploadedFiles; }
     int perFileCap() const { return PerFileCap; }
 
-    /// Folder.Register; a refusal is actionError.
+    /// Folder.Register; a refusal is actionError. A folder that is not there yet is made
+    /// first (only it, not the directories above it).
     Q_INVOKABLE void chooseFolder(const QUrl &folder);
     Q_INVOKABLE void forget();
+    /// Folder.Unregister, and `then` once the daemon has forgotten the folder: FolderChoice
+    /// gives an account whose folder stopped another one so. Not after a refusal, which is
+    /// actionError.
+    void forgetThen(std::function<void()> then);
     /// Asks UploadQueue.UnsentCount(): how many changes made here are not sent to
     /// OneDrive, which a Forget or the account's removal leaves only on this computer.
     /// Answers unsentCountRead; a count that cannot be read is 0, so that nothing waits
@@ -263,6 +269,8 @@ public:
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void loadSkipped();
     Q_INVOKABLE void openFolder();
+    /// Opens the drive on the OneDrive website (Files.WebUrl of the folder); a refusal is actionError.
+    Q_INVOKABLE void openOnWeb();
     /// ActivityLog.Recent(ActivityModel::Capacity) into `activity`.
     Q_INVOKABLE void loadActivity();
     /// Conflicts.List() into `conflicts`.
@@ -271,6 +279,9 @@ public:
     Q_INVOKABLE void dismissConflict(const QString &copyPath);
     /// FreeUpSpace; the outcome lands in `freeUpResult`.
     Q_INVOKABLE void freeUpSpace();
+    /// Unpin All: Files.Unpin of the folder itself, which lets every pin and exception in
+    /// it go; the files stay downloaded. A refusal is actionError.
+    Q_INVOKABLE void unpinAll();
     Q_INVOKABLE void clearFreeUpResult();
     /// Opens the file manager on the file's folder with the file selected.
     Q_INVOKABLE void showInFolder(const QString &path);
@@ -367,6 +378,7 @@ private:
     qulonglong m_localBytes = 0;
     uint m_conflictCount = 0;
     uint m_pinnedCount = 0;
+    qulonglong m_pinnedBytes = 0;
     TransferModel *m_transfers;
     ActivityModel *m_activity;
     ConflictModel *m_conflicts;
@@ -388,7 +400,6 @@ private:
     QString m_liveChanges = QStringLiteral("off");
     bool m_thumbnails = true;
     int m_freeSpaceReserve = 10;
-    QString m_machineName;
     TransferModel *m_uploads;
     /// Adds one sample to each history (every second).
     void sampleHistory();
@@ -416,8 +427,6 @@ private:
     QString m_scanState = QStringLiteral("none");
     QString m_scanReason;
     qlonglong m_scanStarted = 0;
-    qlonglong m_scanFinished = 0;
-    uint m_scanTook = 0;
     /// Download speed, upload speed, active downloads, active uploads.
     QVariantList m_history[4];
     QTimer *m_sampler;

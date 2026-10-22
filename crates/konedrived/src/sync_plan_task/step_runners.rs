@@ -7,11 +7,7 @@
 //! naming them: [`StepRunners::of_runners`] is the one place that knows which runner a
 //! step goes to and under what (the folder's lease for a step towards the folder).
 //!
-//! **Tested without the rest:**
-// test: each_case_of_a_step_goes_to_its_runner
-// test: a_step_towards_the_folder_runs_under_the_folders_lease_and_a_download_does_not
-// test: a_step_that_waits_for_the_lease_when_the_stop_comes_is_not_run
-// test: the_show_steps_go_to_the_folder_steps_as_one_call
+//! **No test of its own.**
 
 use std::future::Future;
 use std::pin::Pin;

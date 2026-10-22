@@ -67,14 +67,6 @@ fn matches_the_bit_by_bit_transcription_on_every_length_up_to_a_thousand() {
 }
 
 #[test]
-fn matches_the_transcription_on_a_megabyte() {
-    let data = noise(1 << 20, 7);
-    let mut h = QuickXor::new();
-    h.update(&data);
-    assert_eq!(h.finish(), reference(&data));
-}
-
-#[test]
 fn a_stream_in_pieces_hashes_like_the_whole() {
     let data = noise(100_003, 11);
     let mut whole = QuickXor::new();

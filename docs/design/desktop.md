@@ -31,13 +31,13 @@ Session bus, service `org.konedrive.Daemon`. The objects are in [accounts.md](ac
 `Conflicts`, `LocalScan` and `ActivityLog`. A development build adds `DevTools` and `TokenExport`
 (§2.11).
 
-No name carries a version: the daemon and its clients ship in one package. A member does not
-repeat its interface's name (`Conflicts.List`, not `Conflicts.Conflicts`). The definitions are
-`dbus/*.xml`, one file per interface, with each member's meaning in its comment; a test
-(`crates/konedrived/tests/dbus_api.rs`) holds each against the live interface's signatures. The
-daemon is D-Bus activated (`SystemdService=konedrived.service`), so the first call from any client
-starts it, and every object is on the bus before the name is claimed
-([accounts.md](accounts.md) §3.2).
+No name carries a version: the daemon and its clients are installed at one version
+([packaging.md](packaging.md) §1). A member does not repeat its interface's name (`Conflicts.List`,
+not `Conflicts.Conflicts`). The definitions are `dbus/*.xml`, one file per interface, with each
+member's meaning in its comment; a test (`crates/konedrived/tests/dbus_api.rs`) holds each against
+the live interface's signatures. The daemon is D-Bus activated
+(`SystemdService=konedrived.service`), so the first call from any client starts it, and every object
+is on the bus before the name is claimed ([accounts.md](accounts.md) §3.2).
 
 Properties change through `PropertiesChanged`, each under the interface that holds it. Which
 property goes out how is one table (`dbus/properties.rs`), which the getters answer through too, so
@@ -104,6 +104,7 @@ Each setting is written to the account's section of `config.toml` and taken at o
 | `LastChecked` (`x`) | unix time of the last successful check with OneDrive; 0 for never |
 | `LocalBytes` (`t`) | the space the folder's files take in the backing directory (`st_blocks × 512`): a file that is not on disk takes none |
 | `PinnedCount` (`u`) | how many files and folders carry a pin of their own |
+| `PinnedBytes` (`t`) | the sizes the folder shows of the files those pins hold |
 | `IgnorePatterns` (`as`), `Thumbnails` (`b`), `FreeSpaceReserve` (`t`) | the settings of §2.3 |
 | `Paused` (`b`), `PausedUntil` (`x`) | the user's pause, and when it ends by itself (0: until `Resume`) |
 | `HeldBack` (`s`) | why the account holds back by itself: `metered`, `on-battery`, `power-saver`, or empty |
@@ -286,8 +287,8 @@ knows only the codes (`konedrive-reason`, `konedrive-dbus`):
   from what the generator writes now. The steps are in `CONTRIBUTING.md`, "A new reason or
   refusal".
 
-The words for `Overall`'s reasons and for the reasons of the "Not in the Folder" page are written
-in the window and in `konedrivectl`, each on its own.
+The words for `Overall`'s reasons and for the reasons under Issues' "Can't Be Shown in the
+Folder" are written in the window and in `konedrivectl`, each on its own.
 
 ## 3. The command line
 
@@ -341,23 +342,24 @@ daemon as a link and is refused.
 ## 4. The window
 
 KOneDrive is a Kirigami application (`app/`). Its sidebar is headed by an **account switcher**,
-below which are six pages about the account chosen there and, after a separator, Settings, which is
-the whole app's:
+below which are three pages about the OneDrive chosen there and, after a separator, Settings,
+which is the whole app's. With no account at all the window is one page, "Add your OneDrive", with
+"Sign In…".
 
 | Page | Shows |
 |---|---|
-| **Status** | the status line and what needs attention; the folder and "On this computer"; "Free Up Space…", "Refresh Now", "Open in File Manager"; the mode ("Read-only", "Changes upload", "Read-only for now" while the folder of a read-write account is not writable, or "Switching to read-only" while a switch waits); the last start-up check; the changes waiting to upload and those that cannot be; a full OneDrive and files too big for the space left, with "Refresh"; the pins; "Pause Syncing…" (2, 8 or 24 hours, or until resumed) or "Resume"; while the account holds back by itself, why, with **Sync Anyway** |
-| **Activity** | two cards, "Downloading" and "Uploading": the speed, the files moving, what is left with its size and time, what is done, and a chart of the last two minutes (KQuickCharts); the transfer pool once below them; the transfers under way with progress bars; the newest 50 events |
-| **Conflicts** | each conflict copy, with "Show Both" and "Dismiss"; the newest 200, then "and N more" naming `konedrivectl sync conflicts`; a count badge while there are any |
-| **Not in the Folder** | `Skipped()` and why, in the words `sync skipped` uses; the first 200 |
-| **Not Uploaded** | `NotUploadedSummary()` in its groups, and the files of a reason when it is opened (`NotUploadedFiles(reason, 20)`); a count badge while changes are blocked |
-| **Account** | the name with "Rename…"; the switch "Upload changes made on this computer" (below); "Download thumbnails" (§8); the free space to keep for pinned files; sign in or out, the Microsoft account's name, email and quota, and `Account.LastError`; the folder with "Choose Folder…" and "Forget Folder"; this computer's name for conflict copies and the ignore list; "Remove Account…" |
-| **Settings** | "Start at login", "Show download and upload progress", "Show in Places", "Show a tray icon for each account"; for every account, "Pause on metered connections" and "On battery"; "Quit KOneDrive" |
+| **Status** | in its header "Sync Now", "Pause" (2, 8 or 24 hours, or until resumed) or "Resume", and "Open Folder" with the folder's path in its tooltip. The state: the headline and the line under it by `Overall`, the mode ("Read-only", or "Read-only for now" while the folder of a read-write account is not writable), the trouble, the last start-up check, "Sign In Again" or "Sync Anyway" when they apply, and one line of what Issues lists, which opens it. The space: one bar as long as the OneDrive's storage (`QuotaTotal`), bright for what is on this device (`LocalBytes`), pale for the rest of what is used in OneDrive (`QuotaUsed`), with "N items always kept (size)" (`PinnedCount`, `PinnedBytes`); "Free Up Space…", and "Unpin All…" while anything is pinned. Two cards, "Downloading" and "Uploading": the speed, the files moving, what is left with its size and time, what is done, and a chart of the last two minutes (KQuickCharts); under Downloading the thumbnails being downloaded, under Uploading what waits and why. The transfer pool once below them; the transfers under way with progress bars. **History**, folded until opened: the events the daemon keeps, newest first, with a search by name or folder. With no folder yet, the head says so, with "Choose Folder…"; a folder that stopped has only why, with "Try Again" and "Use Another Folder…" (below) |
+| **Issues** | one list in three sections, with a count badge while anything needs the user: **Can't Upload**, `NotUploadedSummary()` by what can be done about it, a reason one action fixes as one line with its button, and the files of a reason when it is opened (`NotUploadedFiles(reason, 20)`); **Kept Both Versions**, each conflict copy with "Show Both" and "Dismiss"; **Can't Be Shown in the Folder**, `Skipped()` and why, in the words `sync skipped` uses. The last two show their first 200 rows and count the rest |
+| **OneDrive Settings** | the name with "Rename…"; the Microsoft account's name and email; **Two-way sync** (below); the folder with "Use Another Folder…"; "Previews without downloading" (§8) and the free space to keep for pinned files, changed after "Edit", which turns into "Save"; the ignore list ("Never uploaded"); "Sign Out"; "Disconnect This OneDrive…". With no folder yet, only the account's part, "Sign Out" and "Disconnect This OneDrive…" |
+| **Settings** | "Start at login", "Show download and upload progress", "Show in Places", "Show a tray icon for each account"; for every account, "Pause on metered connections" and "On battery"; About; "Quit KOneDrive" |
 
 The long lists are `ListView`s, which build only the rows in sight, with a fixed height.
 
+Nothing on a page turns with the mouse wheel, so that scrolling a page changes no setting: a
+number's box takes input only after "Edit", and a choice's combo box does not take the wheel.
+
 **The switcher** shows the chosen account and opens a menu of every account, each with its state's
-icon (§5), then "Sign in…". When another account than the chosen one is in `warning`, a sign on
+icon (§5), then "Add Another OneDrive…". When another account than the chosen one is in `warning`, a sign on
 the switcher says so. The choice is remembered (`CurrentAccount=<id>` in `konedriverc`). With more
 than one account each page's title names the account.
 
@@ -374,28 +376,44 @@ commit 5254595" (`docs/releasing.md`). When the daemon on the bus runs another b
 `Version` or `Commit` differs — a second line says to restart it. `konedrivectl --version` says
 the same.
 
-**After an update** the package replaces the window's program file and restarts the daemon, not
+**After an update** the packages replace the window's program file and restart the daemon, not
 the window. So when the daemon comes back as another build and the window's own program file is no
 longer the one it started from, the window starts the installed program in its place, in the same
 process (`SelfRestart`): hidden in the tray if it was hidden, on the same account if it was shown.
 A window built by hand and run against an installed daemon stays, with the version line.
 
-**Sign in…** is `Accounts.SignIn`; the window then waits for `SignInFinished` with that number
-([accounts.md](accounts.md) §8.2). `signed-in` chooses the new account and opens the folder picker
-at once. A cancel shows nothing, `already-added` names the account it is, a failure says the
-daemon's reason, and a daemon that leaves the bus ends the adding with a message that says so.
-With no account at all, the Status page shows "Connect your OneDrive" with "Sign in…".
+**Sign In…** is `Accounts.SignIn`; the window then waits for `SignInFinished` with that number
+([accounts.md](accounts.md) §8.2), with the link to copy and "Cancel". "Add Another OneDrive…" in
+the switcher's menu calls it at once and shows the same wait. `signed-in` chooses the new account,
+shows its Status and opens the dialog that picks its folder. A cancel shows nothing, and with an
+account already there leads back to its Status; `already-added` names the account it is, a failure
+says the daemon's reason, with "Sign In…" to try again, and a daemon that leaves the bus ends the
+adding with a message that says so.
 
-**Forget Folder** and **Remove Account…** read `UploadQueue.UnsentCount` first and, with any, say
-that those changes stay only on this computer. Remove Account says that the downloaded files and
-the user's own stay in the folder.
+**The folder** is picked in a dialog, "Choose an Empty Folder for OneDrive", which nothing fills in:
+after a sign-in, by "Choose Folder…" on Status, and by "Use Another Folder…" of a folder that
+stopped. The window checks the folder picked first (`FolderChoice`): one that is another account's
+folder or inside one, or has anything in it, is not registered; Status says why, and the dialog
+opens again with that as its title. The daemon refuses a folder that is not empty too
+(`NotEmpty`). A folder that passes is registered (`Folder.Register`), read-only for a new account:
+two-way sync is switched on in OneDrive Settings. A dialog closed with no folder leaves "Choose
+Folder…" on Status, and OneDrive Settings, where the account can be disconnected. For a folder that
+stopped (`Overall` is `stopped`) Status says why (`Trouble`), with "Try Again" (`Refresh`), and how
+many changes made there are not uploaded (`UploadQueue.UnsentCount`): they stay in the old folder
+as plain files. The folder picked by "Use Another Folder…" is registered once the old one is
+forgotten (`Unregister`). An error a call left on Status goes once a folder is registered or
+forgotten.
 
-**Upload changes made on this computer** is the access mode, and shows `Account.Mode`. Turned on,
-a dialog says that the browser opens for a sign-in allowing KOneDrive to change files; then
-`SetMode("read-write", false)`, whose URL opens as Sign In's does, and while that sign-in waits the
-switch says so. Turned off while changes are unsent, the switch to read-only waits for them, and the
-page says how many are still to send, with "Switch Now" (`force`) and "Cancel"
-([writes.md](writes.md) §2).
+**Use Another Folder…** and **Disconnect This OneDrive…** read `UploadQueue.UnsentCount` first and,
+with any, say that those changes stay only on this computer. Both say that the files downloaded so
+far and the user's own stay in the folder as plain files. Use Another Folder… then shows Status,
+with "Choose Folder…".
+
+**Two-way sync** is the access mode, and shows `Account.Mode`. Turned on, it says that the browser
+opens for a sign-in allowing KOneDrive to change files; then `SetMode("read-write", false)`, whose
+URL opens as Sign In's does, and while that sign-in waits the switch says so. Turned off while
+changes are unsent, the switch to read-only waits for them, and the page says how many are still to
+send, with "Switch Now" (`force`) and "Keep Two-Way Sync" ([writes.md](writes.md) §2).
 
 **Places.** Each account's folder has an entry in Dolphin's Places panel and in file dialogs,
 `OneDrive — <label>`, with one account too. The entry is found again by a tag of its own
@@ -428,7 +446,7 @@ account's object knows.
   per account in account order, "Personal — Up to date · checked 20 s ago"; an account's own icon
   has its label as the title.
 - **Menu.** "Open OneDrive Folder" (with several accounts on one icon, an "Open Folder" submenu),
-  "Open KOneDrive", "Refresh Now", "Pause Syncing" (2, 8 or 24 hours, or until resumed), "Resume
+  "Open KOneDrive", "Sync Now", "Pause Syncing" (2, 8 or 24 hours, or until resumed), "Resume
   Syncing" while an account is paused by the user, "Sync Anyway" while an account holds back by
   itself and is not paused by the user, and "Quit". On the one icon each entry acts on every
   account it applies to; on an account's own icon, on that account only.
@@ -458,9 +476,11 @@ events defined in `app/konedrive.notifyrc` so that each can be configured in Sys
 The first notification of an event is sent at once; more of the same event within 10 s are sent as
 one summary. A notification is chosen by the event's kind, never by its wording, except that a full
 disk is the exact detail `not enough disk space`. Each account's events notify on their own; with
-more than one account a notification's title names the account, and clicking it opens the window
-on that account. With the app quit nothing notifies, and what happened meanwhile is never announced
-later; the window's lists still show it.
+more than one account a notification's title names the account. Clicking it opens the window on that
+account where the event is dealt with (`WindowSection`): `uploadFailed`, `conflict` and
+`notRemovedHere` open their section of Issues, `downloadFailed` and `updateFailed` open Status with
+History unfolded, the others Status. With the app quit nothing notifies, and what happened meanwhile
+is never announced later; the window's lists still show it.
 
 ## 7. Download and upload progress in Plasma
 

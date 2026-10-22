@@ -61,6 +61,9 @@ class AccountsModel : public QAbstractListModel
     Q_PROPERTY(bool adding READ adding NOTIFY addingChanged)
     /// Why the last Sign In failed; empty when it did not.
     Q_PROPERTY(QString addError READ addError NOTIFY addingChanged)
+    /// The address of Sign In's sign-in, from SignIn's answer until the adding ends; empty
+    /// otherwise.
+    Q_PROPERTY(QString signInUrl READ signInUrl NOTIFY addingChanged)
 
 public:
     enum Roles {
@@ -87,6 +90,7 @@ public:
     bool anySignedIn() const;
     bool adding() const { return m_adding; }
     QString addError() const { return m_addError; }
+    QString signInUrl() const { return m_signInUrl; }
 
     DaemonController *daemon() const { return m_daemon; }
     const QList<AccountItem *> &items() const { return m_items; }
@@ -108,15 +112,17 @@ public:
     /// Accounts.SignIn, whose URL comes out of openUrlRequested. The daemon
     /// makes the account only once the sign-in has succeeded, signed in and
     /// named (by its email); accountAdded(path) then, once its row is here,
-    /// and the window opens the folder picker. Cancelled, failed, or already
+    /// and the window shows it, where its folder is chosen. Cancelled, failed, or already
     /// added as another account: no account was made, and addError says why
     /// unless it was cancelled. A daemon that goes away in the middle ends
     /// the adding too, with an error that says so.
     Q_INVOKABLE void addAccount(const QString &clientId = QString());
     /// Gives up the sign-in under way, if any (Accounts.CancelSignIn).
     Q_INVOKABLE void cancelAdd();
-    /// Forgets the last Sign In's failure (the dialog opens clean).
+    /// Forgets the last Sign In's failure (the page shows it clean).
     Q_INVOKABLE void clearAddError();
+    /// Puts signInUrl on the clipboard, for a browser that did not open.
+    Q_INVOKABLE void copySignInUrl() const;
     /// Accounts.Remove; a refusal lands in DaemonController::actionError.
     Q_INVOKABLE void removeAccount(const QString &path);
     /// "Try Again" when the service was not running: every controller re-reads.
@@ -127,7 +133,7 @@ Q_SIGNALS:
     void summaryChanged();
     void addingChanged();
     /// The account Sign In added is signed in, named, and shown; the window
-    /// selects it and opens the folder picker.
+    /// selects it, shows its Status and opens the dialog that picks its folder.
     void accountAdded(const QString &path);
     /// A row is gone; `item` is deleted later.
     void accountRemoved(AccountItem *item);
@@ -152,6 +158,7 @@ private:
     std::vector<std::function<void(AccountItem *)>> m_setUps;
     bool m_adding = false;
     QString m_addError;
+    QString m_signInUrl;
     /// The number of this Sign In's sign-in, from SignIn's answer until it has ended.
     std::optional<uint> m_signIn;
     /// Which Sign In the answers of SetClientId and SignIn belong to: one that
