@@ -43,3 +43,8 @@ Action=Popup
 Name=OneDrive asked to wait
 Comment=A file that is not on this computer could not be opened because OneDrive asked to wait
 Action=Popup
+
+[Event/newerRelease]
+Name=New release
+Comment=A newer release of KOneDrive is out on GitHub
+Action=Popup

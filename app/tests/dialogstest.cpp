@@ -1,4 +1,5 @@
 #include "fakedaemon.h"
+#include "notifier.h"
 #include "qmlregistration.h"
 #include "windowsection.h"
 
@@ -18,6 +19,14 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+/// Drops the release check's notification: it never asks GitHub here, and what is tested is
+/// the window.
+class DroppedNotices : public NotificationSink
+{
+public:
+    void send(const Notice &) override { }
+};
+
 /// The app's objects and its window: Main.qml loaded as main() loads it.
 struct App {
     Autostart autostart;
@@ -28,13 +37,15 @@ struct App {
     AccountsModel accounts{&daemon};
     CurrentAccount current{&accounts};
     ServiceUnit serviceUnit;
+    DroppedNotices releaseNotices;
+    ReleaseCheck releaseCheck{QStringLiteral(KONEDRIVE_VERSION), &releaseNotices};
     QQmlApplicationEngine engine;
     QQuickWindow *window = nullptr;
 
     /// Loads and shows the window; false when it could not be loaded.
     bool load()
     {
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit, &releaseCheck);
         KLocalization::setupLocalizedContext(&engine);
         engine.loadFromModule("org.konedrive.app.window", "Main");
         window = engine.rootObjects().isEmpty() ? nullptr : qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
@@ -362,7 +373,9 @@ private Q_SLOTS:
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
         ServiceUnit serviceUnit;
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+        DroppedNotices releaseNotices;
+        ReleaseCheck releaseCheck(QStringLiteral(KONEDRIVE_VERSION), &releaseNotices);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit, &releaseCheck);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -534,7 +547,9 @@ private Q_SLOTS:
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
         ServiceUnit serviceUnit;
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+        DroppedNotices releaseNotices;
+        ReleaseCheck releaseCheck(QStringLiteral(KONEDRIVE_VERSION), &releaseNotices);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit, &releaseCheck);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -620,7 +635,9 @@ private Q_SLOTS:
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
         ServiceUnit serviceUnit;
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+        DroppedNotices releaseNotices;
+        ReleaseCheck releaseCheck(QStringLiteral(KONEDRIVE_VERSION), &releaseNotices);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit, &releaseCheck);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -718,7 +735,9 @@ private Q_SLOTS:
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
         ServiceUnit serviceUnit;
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+        DroppedNotices releaseNotices;
+        ReleaseCheck releaseCheck(QStringLiteral(KONEDRIVE_VERSION), &releaseNotices);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit, &releaseCheck);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -760,8 +779,9 @@ private Q_SLOTS:
         QVERIFY(!battery->isEnabled());
     }
 
-    /// Settings' About names this build; a daemon of another build (installed, not
-    /// restarted) adds a second line, which goes once the daemon runs this build.
+    /// The foot of the sidebar names this build on every page; a daemon of another build
+    /// (installed, not restarted) adds a line, which goes once the daemon runs this build; a
+    /// newer release adds "Update available" with its page, which goes once it is not newer.
     void theVersionLine()
     {
         FakeDaemon fake;
@@ -775,7 +795,9 @@ private Q_SLOTS:
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
         ServiceUnit serviceUnit;
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+        DroppedNotices releaseNotices;
+        ReleaseCheck releaseCheck(QStringLiteral(KONEDRIVE_VERSION), &releaseNotices);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit, &releaseCheck);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -785,7 +807,6 @@ private Q_SLOTS:
         QVERIFY(window);
         window->show();
         QTRY_VERIFY(daemon.serviceAvailable());
-        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("settings")));
 
         QQuickItem *line = nullptr;
         QQuickItem *service = nullptr;
@@ -824,6 +845,18 @@ private Q_SLOTS:
         QVERIFY(!service->isVisible());
         QCOMPARE(line->property("text").toString(),
                  QStringLiteral("Version %1 · commit %2").arg(QStringLiteral(KONEDRIVE_VERSION), commit.left(7)));
+
+        // A newer release is out, then this build is the latest.
+        auto *release = window->findChild<QQuickItem *>(QStringLiteral("releaseLine"));
+        QVERIFY(release);
+        QVERIFY(!release->isVisible());
+        const QString page = QStringLiteral("https://github.com/kartas39/konedrive/releases/tag/v99.0.0");
+        QVERIFY(releaseCheck.takeAnswer(QStringLiteral("{\"tag_name\": \"v99.0.0\", \"html_url\": \"%1\"}").arg(page).toUtf8()));
+        QTRY_VERIFY(release->isVisible());
+        QCOMPARE(release->property("text").toString(), QStringLiteral("Update available: 99.0.0"));
+        QCOMPARE(release->property("url").toString(), page);
+        QVERIFY(releaseCheck.takeAnswer(QByteArrayLiteral("{\"tag_name\": \"v0.0.1\", \"html_url\": \"https://github.com/kartas39/konedrive/releases/tag/v0.0.1\"}")));
+        QTRY_VERIFY(!release->isVisible());
     }
 
     /// Issue #57: while the account holds back by itself, the head of Status says why,
@@ -847,7 +880,9 @@ private Q_SLOTS:
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
         ServiceUnit serviceUnit;
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+        DroppedNotices releaseNotices;
+        ReleaseCheck releaseCheck(QStringLiteral(KONEDRIVE_VERSION), &releaseNotices);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit, &releaseCheck);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -896,7 +931,9 @@ private Q_SLOTS:
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
         ServiceUnit serviceUnit;
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+        DroppedNotices releaseNotices;
+        ReleaseCheck releaseCheck(QStringLiteral(KONEDRIVE_VERSION), &releaseNotices);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit, &releaseCheck);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -1019,7 +1056,9 @@ private Q_SLOTS:
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
         ServiceUnit serviceUnit;
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+        DroppedNotices releaseNotices;
+        ReleaseCheck releaseCheck(QStringLiteral(KONEDRIVE_VERSION), &releaseNotices);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit, &releaseCheck);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -1071,7 +1110,9 @@ private Q_SLOTS:
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
         ServiceUnit serviceUnit;
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+        DroppedNotices releaseNotices;
+        ReleaseCheck releaseCheck(QStringLiteral(KONEDRIVE_VERSION), &releaseNotices);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit, &releaseCheck);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -1356,7 +1397,9 @@ private Q_SLOTS:
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
         ServiceUnit serviceUnit;
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+        DroppedNotices releaseNotices;
+        ReleaseCheck releaseCheck(QStringLiteral(KONEDRIVE_VERSION), &releaseNotices);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit, &releaseCheck);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -1463,7 +1506,9 @@ private Q_SLOTS:
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
         ServiceUnit serviceUnit;
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+        DroppedNotices releaseNotices;
+        ReleaseCheck releaseCheck(QStringLiteral(KONEDRIVE_VERSION), &releaseNotices);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit, &releaseCheck);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);

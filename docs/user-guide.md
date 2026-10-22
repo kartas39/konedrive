@@ -102,7 +102,9 @@ The sidebar starts with the **account switcher**: the OneDrive shown, and a menu
 - **Quit KOneDrive**.
 
 Closing the window does not stop anything: KOneDrive stays in the tray, and the service that syncs
-runs without the window at all. The foot of the sidebar names the version, for a bug report.
+runs without the window at all. The foot of the sidebar names the version, for a bug report; when
+a newer release is out, **Update available** below it opens the release's page, and a notification
+says so once.
 
 ## The tray
 

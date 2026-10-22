@@ -106,7 +106,8 @@ build's).
 build, then the running daemon's, and a line asking to restart the daemon when the two differ),
 `konedrived --version`, the daemon's `Version` and `Commit` properties on `org.konedrive.Accounts`,
 and the window (`konedrive --version`, from `KAboutData`, and the foot of its sidebar, with a
-second line while the running daemon is another build: `docs/design/desktop.md` §4). The rule is one for Rust
+line while a newer release is out on GitHub and one while the running daemon is another build:
+`docs/design/desktop.md` §4). The rule is one for Rust
 (`crates/konedrive-dbus/build.rs`) and for CMake (`app/CMakeLists.txt`):
 
 - the version: `KONEDRIVE_BUILD_VERSION` when `scripts/build-rpm.sh` sets it (the spec's `%build`

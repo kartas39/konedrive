@@ -14,6 +14,7 @@
 #include "downloadprogresssettings.h"
 #include "folderchoice.h"
 #include "placessettings.h"
+#include "releasecheck.h"
 #include "serviceunit.h"
 #include "transfermodel.h"
 #include "traysettings.h"
@@ -27,7 +28,8 @@ inline void registerKonedriveQml(DaemonController *daemon,
                                  DownloadProgressSettings *downloadProgress,
                                  PlacesSettings *places,
                                  TraySettings *tray,
-                                 ServiceUnit *serviceUnit)
+                                 ServiceUnit *serviceUnit,
+                                 ReleaseCheck *releaseCheck)
 {
     const char *uri = "org.konedrive.app";
     qmlRegisterSingletonInstance(uri, 1, 0, "Daemon", daemon);
@@ -38,6 +40,7 @@ inline void registerKonedriveQml(DaemonController *daemon,
     qmlRegisterSingletonInstance(uri, 1, 0, "Places", places);
     qmlRegisterSingletonInstance(uri, 1, 0, "Tray", tray);
     qmlRegisterSingletonInstance(uri, 1, 0, "ServiceUnit", serviceUnit);
+    qmlRegisterSingletonInstance(uri, 1, 0, "ReleaseCheck", releaseCheck);
     // Parented to `current`, whose account its refusal shows with.
     qmlRegisterSingletonInstance(uri, 1, 0, "FolderChoice", new FolderChoice(accounts, current, current));
     qmlRegisterUncreatableType<AccountItem>(uri, 1, 0, "AccountItem", QStringLiteral("owned by Accounts"));

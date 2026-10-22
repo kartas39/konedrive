@@ -956,7 +956,8 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `CMakeLists.txt` — the build; reads the version from `Cargo.toml`.
 - `main.cpp` — the program: single instance, the window, the tray.
 - `Main.qml` — the window: pages chosen from a sidebar, each shown only while there is something
-  on it to see or do.
+  on it to see or do; the sidebar's foot names the build, a newer release and a daemon of another
+  build.
 - `qmlregistration.h` — what the QML finds in `org.konedrive.app`.
 - `daemoncontroller.h`, `daemoncontroller.cpp` — the manager object, `org.konedrive.Accounts`.
 - `accountsmodel.h`, `accountsmodel.cpp` — the accounts, each with its controllers; Sign In and
@@ -999,6 +1000,10 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `autostart.h`, `autostart.cpp` — start at login.
 - `selfrestart.h`, `selfrestart.cpp` — the window restarts as the installed program after an update.
 - `serviceunit.h`, `serviceunit.cpp` — the daemon's systemd unit: starting it, and its log.
+- `buildversion.h`, `buildversion.cpp` — a build's version (`X.Y.Z`, `X.Y.Z-dev.N`, a tag
+  `vX.Y.Z`), read and ordered as RPM orders the packages.
+- `releasecheck.h`, `releasecheck.cpp` — the newer release on GitHub: asked once a day, said in the
+  sidebar's foot and notified once.
 - `org.konedrive.KOneDrive.desktop.in` — the desktop entry.
 
 ### `app/qml/`
@@ -1028,7 +1033,7 @@ Each has its file in `crates/konedrived/src/dbus/`.
   whose both versions were kept, what can't be shown in the folder.
 - `OneDriveSettingsPage.qml` — one OneDrive's settings: its account, two-way sync, folder,
   previews and the free space its downloads leave.
-- `SettingsPage.qml` — the whole app's settings, and About.
+- `SettingsPage.qml` — the whole app's settings, and Quit.
 - `ServiceCard.qml` — the KOneDrive service is not running: start it, or read its log.
 
 ### `app/tests/`
@@ -1046,6 +1051,8 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `notifiertest.cpp` — `Notifier`.
 - `dialogstest.cpp` — the window's pages and confirmations, against the fake daemon.
 - `serviceunittest.cpp` — `ServiceUnit`.
+- `releasechecktest.cpp` — `BuildVersion`, what a latest release is to a build, a case each, and
+  `ReleaseCheck`.
 - `downloadprogresscontrollertest.cpp` — `DownloadProgressController`.
 - `downloadprogresssettingstest.cpp` — `DownloadProgressSettings`.
 - `placescontrollertest.cpp` — `PlacesController`.
