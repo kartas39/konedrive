@@ -6,6 +6,7 @@
 #include "synccontroller.h"
 
 #include <KIO/OpenFileManagerWindowJob>
+#include <KIO/OpenUrlJob>
 #include <KLocalizedString>
 #include <KNotification>
 #include <KWindowSystem>
@@ -52,7 +53,17 @@ void KNotificationSink::send(const Notice &notice)
             KIO::highlightInFileManager({QUrl::fromLocalFile(path)}, notification->xdgActivationToken().toUtf8());
         });
     }
-    if (m_openWindow) {
+    if (notice.link.isValid()) {
+        const QUrl link = notice.link;
+        const auto openLink = [notification, link] {
+            // The browser's window gets the click's activation token.
+            auto *job = new KIO::OpenUrlJob(link);
+            job->setStartupId(notification->xdgActivationToken().toUtf8());
+            job->start();
+        };
+        QObject::connect(notification->addDefaultAction(i18nc("@action", "Open Release Page")), &KNotificationAction::activated, notification, openLink);
+        QObject::connect(notification->addAction(i18nc("@action:button", "Open Release Page")), &KNotificationAction::activated, notification, openLink);
+    } else if (m_openWindow) {
         KNotificationAction *open = notification->addDefaultAction(i18nc("@action", "Open KOneDrive"));
         const OpenWindow openWindow = m_openWindow;
         const QString account = notice.account;

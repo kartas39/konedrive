@@ -102,7 +102,9 @@ int run(int argc, char *argv[], Restart *restart)
     PlacesController placesController(&accounts, &placesSettings);
 
     ServiceUnit serviceUnit;
-    registerKonedriveQml(&daemon, &accounts, &current, &autostart, &downloadProgressSettings, &placesSettings, &traySettings, &serviceUnit);
+    // Says a newer release in the foot of the sidebar, and once as a notification.
+    ReleaseCheck releaseCheck(QStringLiteral(KONEDRIVE_VERSION), &sink);
+    registerKonedriveQml(&daemon, &accounts, &current, &autostart, &downloadProgressSettings, &placesSettings, &traySettings, &serviceUnit, &releaseCheck);
 
     QQmlApplicationEngine engine;
     KLocalization::setupLocalizedContext(&engine);
@@ -171,6 +173,7 @@ int run(int argc, char *argv[], Restart *restart)
     if (!parser.isSet(background)) {
         tray.showWindow();
     }
+    releaseCheck.start(ReleaseCheck::latestReleaseUrl());
     qCDebug(KONEDRIVE_APP) << "ready, window" << (window && window->isVisible() ? "shown" : "hidden");
     return app.exec();
 }

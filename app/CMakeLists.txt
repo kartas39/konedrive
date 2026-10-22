@@ -68,7 +68,7 @@ include(KDEInstallDirs)
 include(KDECMakeSettings)
 include(KDECompilerSettings NO_POLICY_SCOPE)
 
-find_package(Qt6 ${QT_MIN_VERSION} REQUIRED COMPONENTS Core Gui DBus Widgets Test)
+find_package(Qt6 ${QT_MIN_VERSION} REQUIRED COMPONENTS Core Gui DBus Network Widgets Test)
 
 set(KONEDRIVE_DBUS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../dbus)
 qt_add_dbus_interface(konedrive_dbus_SRCS ${KONEDRIVE_DBUS_DIR}/org.konedrive.Accounts.xml accountsinterface)
@@ -112,13 +112,15 @@ add_library(konedrive_core STATIC
     placescontroller.cpp
     downloadprogresscontroller.cpp
     serviceunit.cpp
+    buildversion.cpp
+    releasecheck.cpp
     ${konedrive_dbus_SRCS})
 target_include_directories(konedrive_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(konedrive_core PUBLIC
-    Qt6::Core Qt6::Gui Qt6::DBus Qt6::Widgets
+    Qt6::Core Qt6::Gui Qt6::DBus Qt6::Network Qt6::Widgets
     KF6::I18n KF6::ConfigCore KF6::Notifications KF6::StatusNotifierItem KF6::KIOGui KF6::KIOFileWidgets KF6::WindowSystem KF6::JobWidgets)
 # This build's version and commit: the window's version line (DaemonController)
-# and KAboutData (main.cpp).
+# KAboutData and the release check (main.cpp).
 target_compile_definitions(konedrive_core PUBLIC
     KONEDRIVE_VERSION="${KONEDRIVE_VERSION}" KONEDRIVE_COMMIT="${KONEDRIVE_SHOWN_COMMIT}")
 # What the autostart entry runs: the installed program, as the launcher's entry does.
@@ -192,7 +194,9 @@ if(BUILD_TESTING)
         "XDG_STATE_HOME=${KONEDRIVE_TEST_XDG}/state"
         "XDG_DATA_HOME=${KONEDRIVE_TEST_XDG}/data"
         "QT_QPA_PLATFORM=offscreen"
-        "QML_DISABLE_DISK_CACHE=1")
+        "QML_DISABLE_DISK_CACHE=1"
+        # The programs the tests start ask here for the latest release, and never reach GitHub.
+        "KONEDRIVE_LATEST_RELEASE_URL=http://127.0.0.1:1/")
 
     function(konedrive_test name)
         # fakedaemon.h holds Q_OBJECT classes: listed so AUTOMOC sees it.
@@ -215,6 +219,7 @@ if(BUILD_TESTING)
     konedrive_test(placescontrollertest)
     konedrive_test(downloadprogresscontrollertest)
     konedrive_test(serviceunittest)
+    konedrive_test(releasechecktest)
 
     # Loads Main.qml as the app does, to see what its dialogs act on.
     konedrive_test(dialogstest)
