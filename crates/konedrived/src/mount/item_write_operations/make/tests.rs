@@ -7,7 +7,8 @@ use konedrive_tree::{ContentPresence, ContentVersion, FileSyncState};
 use super::*;
 use crate::sync_parts::running_steps::{RunningStep, StepClass};
 use crate::mount::item_fixture::{onedrive_id_of, ItemFixture};
-use crate::mount::item_write_operations::tests::{bind, make_row, OperationPoint, OperationsFixture};
+use crate::mount::item_write_operations::tests::{bind, list_names_told_taken, make_row, operations_with_activity, OperationPoint, OperationsFixture};
+use crate::mount::item_write_operations::NameMatch;
 
 /// A make of `kind` in a directory the folder shows, at a name nothing has.
 fn case(kind: MadeKind) -> MakeCase {
@@ -16,6 +17,7 @@ fn case(kind: MadeKind) -> MakeCase {
         directory_path: Some("d".into()),
         directory_marks: vec![None],
         holder: None,
+        holder_not_shown: None,
         removed_file: None,
         has_removed_file_a_running_step: false,
         kind,
@@ -38,6 +40,13 @@ fn each_case_of_a_make_is_decided() {
         // The order: no directory, then the name, then what holds it.
         assert_eq!(decide_make(&MakeCase { directory: None, is_hidden_name: true, holder: Some(make_row(5, ItemKind::File)), ..case(kind) }), Err(Errno::ENOENT));
         assert_eq!(decide_make(&MakeCase { is_hidden_name: true, holder: Some(make_row(5, ItemKind::File)), ..case(kind) }), Err(Errno::EPERM));
+        // A name OneDrive holds with an item the folder cannot show; an ignored name, which is never sent, only by the very name.
+        let not_shown = |name_match| Some(HolderNotShown { item: LocalItemId::new(7), reason: konedrive_tree::SkipReason::OneNote, name_match });
+        assert_eq!(decide_make(&MakeCase { holder_not_shown: not_shown(NameMatch::Same), ..case(kind) }), Err(Errno::EEXIST), "{kind:?}: held in OneDrive");
+        assert_eq!(decide_make(&MakeCase { holder_not_shown: not_shown(NameMatch::Folded), ..case(kind) }), Err(Errno::EEXIST), "{kind:?}: as OneDrive compares names");
+        assert_eq!(decide_make(&MakeCase { holder_not_shown: not_shown(NameMatch::Same), is_name_ignored: true, ..case(kind) }), Err(Errno::EEXIST), "{kind:?}");
+        assert_eq!(decide_make(&MakeCase { holder_not_shown: not_shown(NameMatch::Folded), is_name_ignored: true, ..case(kind) }), Ok(MakeDecision { is_name_ignored: true, replaced: None }), "{kind:?}");
+        assert_eq!(decide_make(&MakeCase { holder_not_shown: not_shown(NameMatch::Same), is_hidden_name: true, ..case(kind) }), Err(Errno::EPERM), "{kind:?}: the name first");
     }
     // A file takes over the binding of the file removed there; a directory never does.
     for kind in [MadeKind::File, MadeKind::FileOpenedForWriting] {
@@ -197,6 +206,38 @@ fn a_name_that_is_taken_is_refused_before_the_disk_is_touched() {
     let file = operations.id("taken.txt");
     assert_eq!(operations.run(move |operations| operations.make(file, OsStr::new("x"), MadeKind::File)).map(|made| made.fh), Err(Errno::ENOENT));
     assert_eq!(operations.run(|operations| operations.make(LocalItemId::new(999), OsStr::new("x"), MadeKind::File)).map(|made| made.fh), Err(Errno::ENOENT));
+}
+
+#[test]
+fn a_name_onedrive_holds_with_an_item_not_shown_is_refused_and_told_once() {
+    let (operations, activity) = operations_with_activity();
+    let fixture = &operations.fixture;
+    let mut announced = activity.subscribe();
+    fixture.show_onedrive_directory("Documents");
+    fixture.list_onedrive_file_not_placed("Documents/IT", b"a notebook", konedrive_tree::SkipReason::OneNote);
+    let reached = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = std::sync::Arc::clone(&reached);
+    operations.run_at(OperationPoint::RecordWritten, move || seen.store(true, std::sync::atomic::Ordering::SeqCst));
+
+    for (name, kind) in [("Documents/IT", MadeKind::Directory), ("Documents/it", MadeKind::File), ("Documents/It", MadeKind::FileOpenedForWriting)] {
+        assert_eq!(operations.make(name, kind).map(|made| made.fh), Err(Errno::EEXIST), "{name} as {kind:?}: also as OneDrive compares names");
+    }
+    assert!(!reached.load(std::sync::atomic::Ordering::SeqCst), "no record was written: nothing was begun");
+    for name in ["Documents/IT", "Documents/it", "Documents/It"] {
+        assert_eq!(fixture.find_item_at(name), None, "{name}");
+        assert!(!fixture.disk_path(name).exists(), "{name}");
+    }
+    // Told once, of the first name asked: the notebook holds them all.
+    let told = fixture.folder().join("Documents/IT").display().to_string();
+    assert_eq!(list_names_told_taken(&activity), [(told.clone(), "onenote".to_owned())]);
+    assert_eq!(announced.try_recv().map(|event| (event.kind, event.path)).ok(), Some((konedrive_tree::ActivityKind::NameTakenInOneDrive, told)), "announced as it is recorded");
+    assert!(announced.try_recv().is_err());
+
+    // Another name is free; and a name the upload rules ignore, which is never sent, is not taken by one that only folds to it.
+    assert!(operations.make("Documents/IT notes", MadeKind::Directory).is_ok());
+    fixture.list_onedrive_file_not_placed("Documents/Draft.tmp", b"a notebook", konedrive_tree::SkipReason::OneNote);
+    assert!(operations.make("Documents/draft.tmp", MadeKind::File).is_ok_and(|made| made.item.is_name_ignored));
+    assert_eq!(list_names_told_taken(&activity).len(), 1);
 }
 
 #[test]

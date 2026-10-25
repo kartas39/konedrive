@@ -17,7 +17,8 @@ class QTimer;
 /// One desktop notification, as the Notifier decides it.
 struct Notice {
     /// The event in konedrive.notifyrc: signedOut, diskFull, downloadFailed,
-    /// updateFailed, uploadFailed, conflict, notRemovedHere, throttled, newerRelease.
+    /// updateFailed, uploadFailed, conflict, notRemovedHere, nameTaken, throttled,
+    /// newerRelease.
     QString event;
     /// Where a click on the notification opens the window.
     WindowSection section = WindowSection::Status;
@@ -65,7 +66,8 @@ private:
 /// Turns what one account's daemon objects report into notifications:
 /// signing out after being signed in, a full disk, a failed download, a
 /// failed update, a change that cannot be uploaded, a conflict (a copy kept
-/// beside the file), a directory that cannot be removed here, and a file that could not be
+/// beside the file), a directory that cannot be removed here, a name OneDrive holds with an
+/// item that cannot be shown here, and a file that could not be
 /// opened because OneDrive asked the account to wait — once for each wait. Nothing else
 /// an account reports notifies (a newer release is ReleaseCheck's). Each event kind sends at
 /// most one notification per 10 s window; what arrives inside a window is

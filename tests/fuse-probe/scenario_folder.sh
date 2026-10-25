@@ -68,13 +68,15 @@ expected() {
     echo "$SRC/expected"
 }
 
-# seed_file <id> <parent id> <name> <text>, seed_folder <id> <parent id> <name>: what OneDrive
-# holds before the folder is registered, or gets while it runs.
+# seed_file <id> <parent id> <name> <text>, seed_folder <id> <parent id> <name>,
+# seed_notebook <id> <parent id> <name> (a OneNote notebook, which the folder cannot show): what
+# OneDrive holds before the folder is registered, or gets while it runs.
 seed_file() {
     printf '%s' "$4" > "$SRC/seed-$1"
     onedrive file "$1" "$2" "$3" "$SRC/seed-$1" > /dev/null
 }
 seed_folder() { onedrive folder "$1" "$2" "$3" > /dev/null; }
+seed_notebook() { onedrive notebook "$1" "$2" "$3" > /dev/null; }
 
 # What a scenario waits for.
 onedrive_holds() { [ "$(onedrive compare "$1" "$2")" = equal ]; }

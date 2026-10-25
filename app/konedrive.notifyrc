@@ -39,6 +39,11 @@ Name=Folder not removed
 Comment=A folder could not be removed on this computer because it holds items that cannot be shown here
 Action=Popup
 
+[Event/nameTaken]
+Name=Name taken in OneDrive
+Comment=A name could not be used on this computer because OneDrive has an item of that name that cannot be shown here
+Action=Popup
+
 [Event/throttled]
 Name=OneDrive asked to wait
 Comment=A file that is not on this computer could not be opened because OneDrive asked to wait

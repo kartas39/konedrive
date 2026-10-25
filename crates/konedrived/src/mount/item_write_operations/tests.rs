@@ -106,6 +106,32 @@ pub(super) fn take_off_disk(mut row: Item) -> Item {
     row
 }
 
+/// The operations of a fixture whose report keeps the activity of the fixture's folder,
+/// with that activity.
+pub(super) fn operations_with_activity() -> (OperationsFixture, Arc<crate::status::activity::Activity>) {
+    use crate::status::report::Report;
+    use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
+    let mut kept = None;
+    let operations = OperationsFixture::with_report(|fixture| {
+        let mut snapshot = SyncSnapshot::default();
+        snapshot.folder.root_path = fixture.folder().display().to_string();
+        let state = SyncStateHandle::new(snapshot);
+        let report = Report { activity: Arc::new(crate::status::activity::Activity::new(state.clone())), ..Report::nowhere() };
+        kept = Some(Arc::clone(&report.activity));
+        report
+    });
+    (operations, kept.unwrap())
+}
+
+/// The names the user was told OneDrive holds with an item the folder cannot show, oldest
+/// first, each with the reason told.
+pub(super) fn list_names_told_taken(activity: &crate::status::activity::Activity) -> Vec<(String, String)> {
+    let mut events = activity.recent(100).unwrap();
+    events.reverse();
+    assert!(events.iter().all(|event| event.kind == konedrive_tree::ActivityKind::NameTakenInOneDrive), "{events:?}");
+    events.into_iter().map(|event| (event.path, event.detail)).collect()
+}
+
 fn split(path: &str) -> (&str, &str) {
     path.rsplit_once('/').unwrap_or(("", path))
 }

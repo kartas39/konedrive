@@ -6,7 +6,7 @@ use konedrive_tree::{ContentVersion, FileSyncState};
 
 use super::*;
 use crate::mount::item_fixture::{onedrive_id_of, ItemFixture};
-use crate::mount::item_write_operations::tests::{bind, make_row, take_off_disk, OperationPoint, OperationsFixture};
+use crate::mount::item_write_operations::tests::{bind, list_names_told_taken, make_row, operations_with_activity, take_off_disk, OperationPoint, OperationsFixture};
 use crate::mount::item_write_operations::MadeKind;
 use crate::mount::mount_take_down::TakeDownCause;
 
@@ -20,6 +20,8 @@ fn case(moved: Item) -> RenameCase {
         new_directory_path: Some("b".into()),
         new_directory_marks: vec![None],
         displaced: None,
+        holder_not_shown: None,
+        has_the_name_in_onedrive: false,
         is_displaced_empty: true,
         is_into_itself: false,
         mode: RenameMode::Replace,
@@ -64,6 +66,25 @@ fn each_case_of_a_rename_is_decided() {
     for (moved, displaced) in [(&file, &other_file), (&file, &other_directory), (&directory, &other_file), (&directory, &other_directory)] {
         assert_eq!(decide_rename(&RenameCase { mode: RenameMode::NoReplace, ..over(moved, displaced) }), Err(Errno::EEXIST), "the mode keeps what is there");
     }
+    // A new name OneDrive holds with an item the folder cannot show: in every mode, nothing shown being there to replace.
+    let not_shown = |name_match| Some(HolderNotShown { item: LocalItemId::new(9), reason: konedrive_tree::SkipReason::OneNote, name_match });
+    for moved in [&file, &directory] {
+        let item = moved.local_item_id;
+        for mode in [RenameMode::Replace, RenameMode::NoReplace] {
+            assert_eq!(decide_rename(&RenameCase { holder_not_shown: not_shown(NameMatch::Same), mode, ..case(moved.clone()) }), Err(Errno::EEXIST), "{mode:?}");
+            assert_eq!(decide_rename(&RenameCase { holder_not_shown: not_shown(NameMatch::Folded), mode, ..case(moved.clone()) }), Err(Errno::EEXIST), "{mode:?}: as OneDrive compares names");
+        }
+        // An ignored name is never sent: only the very name is taken from it.
+        assert_eq!(decide_rename(&RenameCase { holder_not_shown: not_shown(NameMatch::Folded), is_new_name_ignored: true, ..case(moved.clone()) }), Ok(RenameDecision::Move { item, is_name_ignored: true }));
+        assert_eq!(decide_rename(&RenameCase { holder_not_shown: not_shown(NameMatch::Same), is_new_name_ignored: true, ..case(moved.clone()) }), Err(Errno::EEXIST));
+        // OneDrive has the moved item there under a name of this fold already: it judged the two apart, but for the very name.
+        assert_eq!(decide_rename(&RenameCase { holder_not_shown: not_shown(NameMatch::Folded), has_the_name_in_onedrive: true, ..case(bind(moved.clone())) }), Ok(RenameDecision::Move { item, is_name_ignored: false }));
+        assert_eq!(decide_rename(&RenameCase { holder_not_shown: not_shown(NameMatch::Same), has_the_name_in_onedrive: true, ..case(bind(moved.clone())) }), Err(Errno::EEXIST));
+        // The same place is nothing to do; over an entry, the holder says first.
+        assert_eq!(decide_rename(&RenameCase { holder_not_shown: not_shown(NameMatch::Folded), displaced: Some(moved.clone()), ..case(moved.clone()) }), Ok(RenameDecision::Nothing));
+        assert_eq!(decide_rename(&RenameCase { holder_not_shown: not_shown(NameMatch::Folded), ..over(moved, if moved.kind == ItemKind::File { &other_file } else { &other_directory }) }), Err(Errno::EEXIST));
+    }
+    assert_eq!(decide_rename(&RenameCase { holder_not_shown: not_shown(NameMatch::Same), is_into_itself: true, ..case(directory.clone()) }), Err(Errno::EINVAL), "into itself first");
 }
 
 #[test]
@@ -340,6 +361,30 @@ fn an_item_of_onedrive_moved_into_a_directory_that_is_left_here_is_taken() {
     assert!(!operations.fixture.read_rows(move |reader| reader.is_ignored(copy)), "an item OneDrive has is never left here");
     assert_eq!(operations.fixture.read_disk_file("cache/doc.txt").as_deref(), Some(&b"the copy"[..]));
     operations.fixture.assert_rows_and_disk_agree();
+}
+
+#[test]
+fn a_rename_to_a_name_onedrive_holds_with_an_item_not_shown_is_refused_and_told_once() {
+    let (operations, activity) = operations_with_activity();
+    let fixture = &operations.fixture;
+    fixture.show_onedrive_directory("Documents");
+    fixture.list_onedrive_file_not_placed("Documents/IT", b"a notebook", konedrive_tree::SkipReason::OneNote);
+    fixture.make_own_directory("Documents/IT-soname-krasnov");
+    fixture.make_own_file("notes.txt", b"mine");
+
+    assert_eq!(operations.rename("Documents/IT-soname-krasnov", "Documents/IT"), Err(Errno::EEXIST));
+    assert_eq!(operations.rename_as("Documents/IT-soname-krasnov", "Documents/it", RenameMode::NoReplace), Err(Errno::EEXIST), "as OneDrive compares names");
+    assert_eq!(operations.rename("notes.txt", "Documents/IT"), Err(Errno::EEXIST), "a move from another directory");
+    assert!(fixture.find_item_at("Documents/IT-soname-krasnov").is_some_and(|row| row.local.is_some()), "where it was");
+    assert!(fixture.find_item_at("notes.txt").is_some());
+    assert_eq!(operations.list_records(), [], "nothing was begun on disk");
+    let told = fixture.folder().join("Documents/IT").display().to_string();
+    assert_eq!(list_names_told_taken(&activity), [(told, "onenote".to_owned())], "told once, of the first name asked");
+
+    // Another name is free.
+    assert_eq!(operations.rename("Documents/IT-soname-krasnov", "Documents/IT work"), Ok(()));
+    assert_eq!(list_names_told_taken(&activity).len(), 1);
+    fixture.assert_rows_and_disk_agree();
 }
 
 #[test]

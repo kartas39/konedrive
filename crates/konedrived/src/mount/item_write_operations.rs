@@ -50,6 +50,7 @@
 // test: a_read_only_folder_refuses_every_operation_before_anything_is_read
 // test: a_reader_that_opens_by_path_during_an_operation_gets_the_file_of_its_row
 
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::MetadataExt;
@@ -58,7 +59,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::Errno;
-use konedrive_tree::{LocalItemId, PlaceChangeRecord, PlaceChangeRecordId, RowRefusalReason, Store, TreeError, TreeStore};
+use konedrive_tree::{FoldedName, ItemReader, LocalItemId, PlaceChangeRecord, PlaceChangeRecordId, Placement, RowRefusalReason, SkipReason, Store, TreeError, TreeStore};
 
 use super::access_mode_switch::AccessModeSwitch;
 use super::backing_directory::BackingDirectory;
@@ -119,6 +120,48 @@ pub(super) fn decide_place_errno(refusal: &PlaceRefusal) -> Errno {
     }
 }
 
+/// An item OneDrive has under the name a make or a rename asks for, which the folder
+/// cannot show by its own placement (`ItemReader::list_items_not_shown_at`): it holds the
+/// name in OneDrive though the folder shows nothing there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct HolderNotShown {
+    pub(super) item: LocalItemId,
+    pub(super) reason: SkipReason,
+    pub(super) name_match: NameMatch,
+}
+
+/// How the name an item has in OneDrive is the name asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NameMatch {
+    /// Byte for byte.
+    Same,
+    /// Only as OneDrive compares names (`FoldedName`).
+    Folded,
+}
+
+/// Whether `holder` takes the name asked for: the very name always; one that only folds to
+/// it unless the upload rules ignore the name asked for. An item that is sent cannot have a
+/// name OneDrive takes for the holder's; one with an ignored name is never sent, and only
+/// the holder's very name is not to be had here — as the plan has it (`name_contest`,
+/// `docs/design/sync.md` §6.4), which would rename the item to a conflict copy's name
+/// after the fact. Pure.
+pub(super) fn is_name_taken_by(holder: Option<&HolderNotShown>, is_name_ignored: bool) -> bool {
+    holder.is_some_and(|holder| holder.name_match == NameMatch::Same || !is_name_ignored)
+}
+
+/// The item OneDrive has under `name` in `directory` that the folder cannot show, other than
+/// `moved`, the item a rename moves (one the folder still shows though a listing said it
+/// cannot be shown holds no name against itself): one under the very name before one whose
+/// name only folds to it. Read in the job of an operation's case.
+fn find_holder_not_shown(reader: &ItemReader<'_>, directory: LocalItemId, name: &OsStr, moved: Option<LocalItemId>) -> Result<Option<HolderNotShown>, TreeError> {
+    let holders = reader.list_items_not_shown_at(directory, &FoldedName::of(name))?.into_iter().filter(|holder| Some(holder.local_item_id) != moved).filter_map(|holder| {
+        let Placement::Skipped(reason) = holder.placement else { return None };
+        let is_same_name = holder.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()).is_some_and(|place| place.name == name);
+        Some(HolderNotShown { item: holder.local_item_id, reason, name_match: if is_same_name { NameMatch::Same } else { NameMatch::Folded } })
+    });
+    Ok(holders.min_by_key(|holder| holder.name_match == NameMatch::Folded))
+}
+
 /// The path a take-down names when `undo` could not be taken back: where the disk has
 /// what no row says.
 fn find_undone_path(undo: &PlaceUndo) -> PathBuf {
@@ -166,7 +209,8 @@ pub(super) struct ItemWriteOperations {
     sync_plan_wake: Arc<SyncPlanWake>,
     mount_take_down: Arc<MountTakeDown>,
     /// Where the user is told what an errno cannot say
-    /// (`remove::tell_directory_not_removable`): the activity log, which announces it.
+    /// (`remove::tell_directory_not_removable`, `tell_name_taken_in_onedrive`): the
+    /// activity log, which announces it.
     report: Report,
     /// The folder's path, which is the mount: the activity log holds full paths.
     folder: PathBuf,
@@ -177,6 +221,10 @@ pub(super) struct ItemWriteOperations {
     /// operation runs after it, and the next run of the mount is built with write
     /// operations of its own, whose set is empty.
     directories_told_not_removable: std::sync::Mutex<std::collections::BTreeSet<LocalItemId>>,
+    /// The items not shown that a refused make or rename was told of already, as holding
+    /// the name it asked for ([`tell_name_taken_in_onedrive`](Self::tell_name_taken_in_onedrive)):
+    /// each is told once in a run of the mount, as `directories_told_not_removable`.
+    holders_told_not_shown: std::sync::Mutex<std::collections::BTreeSet<LocalItemId>>,
     /// What a test has run at the points of an operation between its record and its row.
     #[cfg(test)]
     operation_point_hook: tests::OperationPointHook,
@@ -215,6 +263,7 @@ impl ItemWriteOperations {
             report,
             folder,
             directories_told_not_removable: std::sync::Mutex::default(),
+            holders_told_not_shown: std::sync::Mutex::default(),
             #[cfg(test)]
             operation_point_hook: tests::OperationPointHook::default(),
         }
@@ -307,4 +356,22 @@ impl ItemWriteOperations {
         }
     }
 
+    /// Tells the user that `name` cannot be given in the directory at `directory_path`
+    /// because OneDrive has `holder` under it, which the folder cannot show, and that the
+    /// holder is to be renamed in OneDrive: the make's or the rename's `EEXIST` says only
+    /// that the name is taken, and the folder shows nothing there. One event of the activity
+    /// log (`ActivityKind::NameTakenInOneDrive`, the full path of the name asked for, the
+    /// holder's reason), recorded and announced through the mount's report — at most once
+    /// per holder while the mount is up, so that a program that tries again says it once.
+    /// The holder itself is in the bus's list of what is not shown (`Folder.Skipped()`).
+    /// Called by make and rename, on the write-operation thread, after the decision and
+    /// before the errno is answered.
+    fn tell_name_taken_in_onedrive(&self, directory_path: &std::path::Path, name: &OsStr, holder: &HolderNotShown) {
+        // Asked and kept on this thread alone, as `directories_told_not_removable`.
+        if !crate::panic::lock(&self.holders_told_not_shown).insert(holder.item) {
+            return;
+        }
+        let event = crate::status::activity::event(konedrive_tree::ActivityKind::NameTakenInOneDrive, self.folder.join(directory_path).join(name).display().to_string(), holder.reason.as_str());
+        self.report.activity.record_blocking(vec![event]);
+    }
 }

@@ -1,5 +1,6 @@
 # The scenarios of a folder from its start to its end: what OneDrive holds shown and read, what
-# OneDrive changes arriving, a directory that cannot be removed here, and the folder forgotten.
+# OneDrive changes arriving, a directory that cannot be removed here, a name that cannot be used
+# here, and the folder forgotten.
 # Sourced by guest.sh; each scenario has a folder of its own (scenario_folder.sh).
 
 start_from_nothing_shows_onedrives_files_and_reads_them() {
@@ -95,6 +96,31 @@ directory_holding_what_the_folder_cannot_show_is_not_removed() {
     check "one removal was sent" "$(onedrive count DELETE items)" 1
 }
 
+# The owner's decision of 2026-10-25: a name OneDrive holds with an item the folder cannot show
+# is refused here at once, by mkdir and by rename, as OneDrive compares names, and the user is
+# told once; nothing is renamed after the fact.
+name_held_by_what_the_folder_cannot_show_is_refused() {
+    begin_folder
+    seed_folder D R Documents
+    seed_notebook N D IT
+    register_folder
+    check "the folder shows the directory and not the notebook" "$(listing)" "Documents"
+    user "mkdir Documents/IT-soname-krasnov"
+    check_within 30 "the directory made here is sent" onedrive_has Documents/IT-soname-krasnov
+    check "no directory is made at the notebook's name" "$(errno_of "os.mkdir('Documents/IT')")" EEXIST
+    check "nor at a name that differs by case" "$(errno_of "os.mkdir('Documents/it')")" EEXIST
+    check "a rename to it is refused" "$(errno_of "os.rename('Documents/IT-soname-krasnov', 'Documents/IT')")" EEXIST
+    user "printf 'mine' > notes.txt"
+    # What mv says of the refusal is coreutils' own: it finds nothing at the name, and is told it is taken.
+    check "mv of a directory to it is refused" "$(user "mv Documents/IT-soname-krasnov Documents/IT 2>&1")" \
+        "mv: cannot overwrite non-directory 'Documents/IT' with directory 'Documents/IT-soname-krasnov'"
+    check "mv of a file to it is refused" "$(user "mv notes.txt Documents/IT 2>&1")" "mv: cannot overwrite 'Documents/IT': File exists"
+    check "each stays where it was" "$(listing)" "Documents Documents/IT-soname-krasnov notes.txt"
+    check "the user is told once" "$(daemon activity | grep -o NameTakenInOneDrive | wc -l)" 1
+    check_sent
+    check "OneDrive holds the notebook and the rest as they were" "$(onedrive paths)" "Documents Documents/IT Documents/IT-soname-krasnov notes.txt"
+}
+
 # The owner's decision of 2026-10-11: Forget is never refused for what is unsent; the unsent
 # files stay only here, as plain files of the user's.
 forgotten_folder_with_unsent_changes_keeps_them_as_plain_files() {
@@ -126,6 +152,7 @@ mounted_folder() {
         file_that_is_not_on_disk_is_read_in_ranges_and_then_downloaded_whole \
         changes_made_in_onedrive_arrive_in_the_folder \
         directory_holding_what_the_folder_cannot_show_is_not_removed \
+        name_held_by_what_the_folder_cannot_show_is_refused \
         forgotten_folder_with_unsent_changes_keeps_them_as_plain_files; do
         folder_scenario $name
     done
