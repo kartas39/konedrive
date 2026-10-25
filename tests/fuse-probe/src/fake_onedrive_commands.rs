@@ -1,7 +1,8 @@
 //! The fake OneDrive and the commands the suite gives it, a line each.
 //!
 //! What it is made to hold: `file <id> <parent> <name> <path>`, `folder <id> <parent> <name>`,
-//! `edit <id> <path>`, `rename <id> <parent> <name>`, `trash <id>` (the root's id is `R`).
+//! `notebook <id> <parent> <name>` (a OneNote notebook), `edit <id> <path>`,
+//! `rename <id> <parent> <name>`, `trash <id>` (the root's id is `R`).
 //!
 //! What it holds: `paths`, `id <path>`, `compare <path> <file>` (its content at a path against
 //! a file's), `bin` (the ids in its recycle bin).
@@ -65,6 +66,10 @@ impl FakeOneDriveCommands {
                         mtime: 0,
                     })
                 });
+                String::new()
+            }
+            ["notebook", id, parent, name] => {
+                graph.with(|cloud| cloud.add_notebook(id, parent, name));
                 String::new()
             }
             ["edit", id, from] => {

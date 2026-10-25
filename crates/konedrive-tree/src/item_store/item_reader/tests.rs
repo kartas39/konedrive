@@ -412,6 +412,24 @@ fn an_item_an_upload_left_below_a_directory_is_none_the_folder_never_showed() {
 }
 
 #[test]
+fn an_item_not_shown_is_found_at_its_name_as_onedrive_compares_names() {
+    let mut store = store_with_listed_root();
+    let a = show_listed_directory(&mut store, "A", "R", "a");
+    let other = show_listed_directory(&mut store, "O", "R", "other");
+    show_listed_file(&mut store, "F", "A", "IT.txt", "h1");
+    write_listing_of_changes(&mut store, &[not_placed(listed_directory("N", "A", "IT", "e-N"))]);
+    let notebook = bound(&mut store, "N");
+    let at = |store: &mut TreeStore, directory: LocalItemId, name: &str| ids(&store.item_store().reader().list_items_not_shown_at(directory, &FoldedName::of(OsStr::new(name))).unwrap());
+
+    assert_eq!(at(&mut store, a, "IT"), [notebook.local_item_id]);
+    assert_eq!(at(&mut store, a, "it"), [notebook.local_item_id], "as OneDrive compares names");
+    assert_eq!(at(&mut store, a, "IT.txt"), [], "a shown item is none of these");
+    assert_eq!(at(&mut store, other, "IT"), [], "another directory");
+    write_listing_of_changes(&mut store, &[listed_gone("N")]);
+    assert_eq!(at(&mut store, a, "IT"), [], "gone from OneDrive");
+}
+
+#[test]
 fn the_shown_directories_are_read_the_root_first_bounded_and_past_rows_with_no_path() {
     let mut store = TreeStore::in_memory().unwrap();
     let d1 = make_directory(&mut store, ROOT, "d1");

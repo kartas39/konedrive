@@ -131,6 +131,22 @@ private Q_SLOTS:
         QCOMPARE(m_sink.sent.first().showPath, QString());
     }
 
+    /// A name OneDrive holds with an item the folder can't show is told with what holds it,
+    /// by its reason, and what to do, and offers nothing to press.
+    void aNameTakenInOneDriveNotifies()
+    {
+        start();
+        report(QStringLiteral("name-taken-in-onedrive"), QStringLiteral("IT"), QStringLiteral("onenote"));
+        QCOMPARE(m_sink.sent.size(), 1);
+        QCOMPARE(m_sink.sent.first().event, QStringLiteral("nameTaken"));
+        QCOMPARE(m_sink.sent.first().section, WindowSection::NotInFolder);
+        QCOMPARE(m_sink.sent.first().title, QStringLiteral("Name taken in OneDrive"));
+        QCOMPARE(m_sink.sent.first().text,
+                 QStringLiteral("IT can't be used here: OneDrive has an item of this name that can't be shown in the folder. A OneNote notebook, which is not a file. "
+                                "Rename it in OneDrive to use the name."));
+        QCOMPARE(m_sink.sent.first().showPath, QString());
+    }
+
     /// A replacement that failed is its own kind, `update-failed`.
     void aFailedUpdateNotifies()
     {

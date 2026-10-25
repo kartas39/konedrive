@@ -96,6 +96,7 @@ add_library(konedrive_core STATIC
     activitymodel.cpp
     conflictmodel.cpp
     uploadreasons.cpp
+    skipreasons.cpp
     generated/reasontexts.cpp
     accountstatus.cpp
     appstatus.cpp

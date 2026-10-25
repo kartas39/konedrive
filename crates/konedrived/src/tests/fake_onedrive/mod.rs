@@ -11,7 +11,7 @@
 
 mod sockets;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -102,6 +102,9 @@ pub struct Cloud {
     pub(crate) items: BTreeMap<String, FakeItem>,
     /// OneDrive's recycle bin.
     pub bin: BTreeMap<String, FakeItem>,
+    /// The items that are OneNote notebooks ([`add_notebook`](Self::add_notebook)): listed
+    /// with a `package` facet and neither a folder's nor a file's, as Graph lists one.
+    notebooks: BTreeSet<String>,
     sessions: HashMap<String, Session>,
     /// The empty file an open session of a new file holds its name with, by
     /// session: `child` finds it, and a new file of that name is refused
@@ -396,6 +399,13 @@ impl Cloud {
         json!({ "value": value, "@odata.deltaLink": self.delta_link() })
     }
 
+    /// A OneNote notebook `name` in `parent`, as another device made it: a folder can
+    /// show it as nothing, and it holds its name all the same.
+    pub fn add_notebook(&mut self, id: &str, parent: &str, name: &str) {
+        self.notebooks.insert(id.to_owned());
+        self.add(FakeItem { id: id.into(), parent: Some(parent.into()), name: name.into(), folder: false, content: Vec::new(), hash: None, size: 0, etag: format!("e-{id}"), ctag: format!("c-{id}"), mtime: 0 });
+    }
+
     fn json(&self, item: &FakeItem) -> Value {
         let mut value = json!({
             "id": item.id,
@@ -411,6 +421,10 @@ impl Cloud {
         match &item.parent {
             Some(parent) => value["parentReference"] = json!({ "id": parent, "driveId": self.drive_id.as_deref().unwrap_or("D") }),
             None => value["root"] = json!({}),
+        }
+        if self.notebooks.contains(&item.id) {
+            value["package"] = json!({ "type": "oneNote" });
+            return value;
         }
         if item.folder {
             let children = self.items.values().filter(|i| i.parent.as_deref() == Some(item.id.as_str())).count();

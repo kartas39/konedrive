@@ -185,7 +185,8 @@ folder, and `NotUp`, with why, for a folder that is not up or whose sync has not
   falls behind can miss some, and `Recent` still has them. The kinds are `konedrive_tree`'s
   `ActivityKind` (`crates/konedrive-tree/src/activity.rs`): `downloaded`, `freed`, `added`,
   `updated`, `removed`, `moved`, `first-sync-began`, `first-sync-ended`, `conflict`,
-  `not-removed-here`, `store-rebuilt`, `failed`, `update-failed`, and for a read-write account
+  `not-removed-here`, `name-taken-in-onedrive`, `store-rebuilt`, `failed`, `update-failed`, and
+  for a read-write account
   `uploaded`, `cloud-moved`, `cloud-deleted`, `upload-failed`, `restored`, `not-uploaded`. A full
   disk is the exact detail `not enough disk space`. The log is a summary: a first listing is two
   events of the folder, not one per item; at most 50 events of each kind of what OneDrive changed
@@ -481,6 +482,7 @@ events defined in `app/konedrive.notifyrc` so that each can be configured in Sys
 | `uploadFailed` | a change cannot be uploaded (`upload-failed`): the reason in words, with "Show in Folder"; and once when `QuotaFull` turns true, "OneDrive is full" |
 | `conflict` | a conflict copy: "Both are kept: your version as …", with "Show in Folder" |
 | `notRemovedHere` | a directory could not be removed here because it holds in OneDrive what the folder cannot show (F299) |
+| `nameTaken` | a name could not be used here because OneDrive holds it with an item the folder cannot show (F304): that item's reason, and to rename it in OneDrive |
 | `throttled` | a program was refused a file during OneDrive's `Retry-After`: once per wait, naming the first file and the time left |
 | `newerRelease` | a newer release is out on GitHub, once per release (§4, the version line); not an account's, so it names none and is never summed up |
 
@@ -488,8 +490,8 @@ The first notification of an event is sent at once; more of the same event withi
 one summary. A notification is chosen by the event's kind, never by its wording, except that a full
 disk is the exact detail `not enough disk space`. Each account's events notify on their own; with
 more than one account a notification's title names the account. Clicking it opens the window on that
-account where the event is dealt with (`WindowSection`): `uploadFailed`, `conflict` and
-`notRemovedHere` open their section of Issues, `downloadFailed` and `updateFailed` open Status with
+account where the event is dealt with (`WindowSection`): `uploadFailed`, `conflict`,
+`notRemovedHere` and `nameTaken` open their section of Issues, `downloadFailed` and `updateFailed` open Status with
 History unfolded, `newerRelease` opens the release's page in the browser, the others Status. With the app quit nothing notifies, and what happened meanwhile
 is never announced later; the window's lists still show it.
 

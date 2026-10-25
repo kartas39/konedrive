@@ -72,10 +72,11 @@ fn only_y_and_yes_go_on_and_an_input_that_ended_is_no_answer() {
     assert_eq!(decide_unsent_answer(None), UnsentAnswer::NotAnswered, "Ctrl-D, or a pipe that ended");
 }
 
-/// `sync activity` says of a directory that could not be removed here why, and what to
-/// do; every other kind keeps its detail, or none.
+/// `sync activity` says of a directory that could not be removed here, and of a name
+/// OneDrive holds with an item that cannot be shown here, why, and what to do; every other
+/// kind keeps its detail, or none.
 #[test]
-fn the_activity_says_why_a_directory_was_not_removed_here() {
+fn the_activity_says_why_a_directory_was_not_removed_or_a_name_cannot_be_used_here() {
     let event = |kind: &str, path: &str, detail: &str| konedrive_dbus::rows::Event { at: 0, kind: kind.to_owned(), path: path.to_owned(), detail: detail.to_owned() };
     let out = activity_text(&[event("not-removed-here", "/r/Notebooks", ""), event("uploaded", "/r/a.txt", "3 KB"), event("removed", "/r/b.txt", "")]);
     let lines: Vec<&str> = out.lines().collect();
@@ -84,6 +85,14 @@ fn the_activity_says_why_a_directory_was_not_removed_here() {
         "{out}"
     );
     assert!(lines[1].ends_with("/r/a.txt  (3 KB)"), "{out}");
+    // A name OneDrive holds with an item the folder cannot show: why, with the item's reason, and what to do.
+    let taken = activity_text(&[event("name-taken-in-onedrive", "/r/Documents/IT", "onenote")]);
+    assert!(
+        taken.trim_end().ends_with(
+            "name-taken-in-onedrive  /r/Documents/IT  (cannot be used here: OneDrive has an item of this name that cannot be shown on this computer. A OneNote notebook, which is not a file. Rename it in OneDrive to use the name.)"
+        ),
+        "{taken}"
+    );
     // A store made anew that lost something: the kind, the folder, and the daemon's sentence.
     let rebuilt = activity_text(&[event("store-rebuilt", "/r", "The database of this folder was of an older version and was rebuilt; lost with it: 3 pin(s)")]);
     assert!(rebuilt.trim_end().ends_with("store-rebuilt  /r  (The database of this folder was of an older version and was rebuilt; lost with it: 3 pin(s))"), "{rebuilt}");

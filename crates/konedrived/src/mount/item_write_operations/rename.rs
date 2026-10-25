@@ -32,6 +32,7 @@
 // test: an_exchange_of_two_names_is_refused
 // test: an_item_of_onedrive_moved_into_a_directory_that_is_left_here_is_taken
 // test: a_rename_to_a_place_the_disk_holds_though_no_row_says_so_is_refused_and_replaces_nothing
+// test: a_rename_to_a_name_onedrive_holds_with_an_item_not_shown_is_refused_and_told_once
 // test: a_row_refused_after_the_disk_renames_back_and_restores_what_was_displaced
 // test: a_file_open_for_writing_is_renamed_and_its_writer_keeps_its_file
 // test: a_directory_with_a_file_open_for_writing_in_it_is_renamed_and_the_close_is_written
@@ -44,10 +45,10 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use fuser::Errno;
-use konedrive_tree::{ContentPresence, Item, ItemKind, ItemPlace, LocalItemId, LocalVersionChange, PlaceChangeRecord, PlaceChangeRowWrite};
+use konedrive_tree::{ContentPresence, FoldedName, Item, ItemKind, ItemPlace, LocalItemId, LocalVersionChange, PlaceChangeRecord, PlaceChangeRowWrite};
 
 use super::super::place_changes::{DirectoryMarks, PlaceUndo};
-use super::ItemWriteOperations;
+use super::{find_holder_not_shown, is_name_taken_by, HolderNotShown, ItemWriteOperations, NameMatch};
 use crate::folder::disk::{is_hidden_name, make_aside_entry_name};
 
 #[cfg(test)]
@@ -77,6 +78,12 @@ pub(super) struct RenameCase {
     pub(super) new_directory_marks: DirectoryMarks,
     /// What the folder shows at the new place.
     pub(super) displaced: Option<Item>,
+    /// What OneDrive has under the new name that the folder cannot show, other than the
+    /// moved item.
+    pub(super) holder_not_shown: Option<HolderNotShown>,
+    /// OneDrive has the moved item in the new directory already, under a name that is the
+    /// new one as OneDrive compares names: the moved item is renamed within that fold.
+    pub(super) has_the_name_in_onedrive: bool,
     /// Whether the folder shows something in the displaced directory.
     pub(super) is_displaced_empty: bool,
     /// Whether the new directory is the moved item or below it.
@@ -106,7 +113,9 @@ pub(super) enum RenameDecision {
 /// `EINVAL` for an exchange; `ENOENT` for no
 /// directory at the new place; `EPERM` for a new name the mount hides; `ENOENT` for
 /// nothing at the old place; the same place is nothing to do; `EINVAL` for a directory
-/// into itself or below; over an entry `EEXIST` when the mode keeps it, `EISDIR` for a
+/// into itself or below; `EEXIST` for a new name OneDrive holds with an item the folder
+/// cannot show ([`find_holder_taking_new_name`]), in every mode, there being nothing shown
+/// to replace; over an entry `EEXIST` when the mode keeps it, `EISDIR` for a
 /// file over a directory, `ENOTDIR` for a directory over a file, `ENOTEMPTY` for a
 /// directory the folder shows something in. Pure.
 ///
@@ -127,18 +136,18 @@ pub(super) fn decide_rename(case: &RenameCase) -> Result<RenameDecision, Errno> 
         return Err(Errno::EPERM);
     }
     let moved = case.moved.as_ref().ok_or(Errno::ENOENT)?;
-    let Some(displaced) = &case.displaced else {
-        return match case.is_into_itself {
-            true => Err(Errno::EINVAL),
-            false => Ok(RenameDecision::Move { item: moved.local_item_id, is_name_ignored: case.is_new_name_ignored }),
-        };
-    };
-    if displaced.local_item_id == moved.local_item_id {
+    if case.displaced.as_ref().is_some_and(|displaced| displaced.local_item_id == moved.local_item_id) {
         return Ok(RenameDecision::Nothing);
     }
     if case.is_into_itself {
         return Err(Errno::EINVAL);
     }
+    if find_holder_taking_new_name(case).is_some() {
+        return Err(Errno::EEXIST);
+    }
+    let Some(displaced) = &case.displaced else {
+        return Ok(RenameDecision::Move { item: moved.local_item_id, is_name_ignored: case.is_new_name_ignored });
+    };
     match (moved.kind, displaced.kind) {
         _ if case.mode == RenameMode::NoReplace => Err(Errno::EEXIST),
         (ItemKind::File, ItemKind::Directory) => Err(Errno::EISDIR),
@@ -146,6 +155,15 @@ pub(super) fn decide_rename(case: &RenameCase) -> Result<RenameDecision, Errno> 
         (ItemKind::Directory, ItemKind::Directory) if !case.is_displaced_empty => Err(Errno::ENOTEMPTY),
         (ItemKind::File, ItemKind::File) | (ItemKind::Directory, ItemKind::Directory) => Ok(RenameDecision::SaveOver { replacing: moved.local_item_id, replaced: displaced.local_item_id }),
     }
+}
+
+/// The item OneDrive has under the new name that the folder cannot show, when it takes
+/// the name ([`is_name_taken_by`]). One whose name only folds to the new one takes nothing
+/// from a moved item OneDrive has under a name of that fold in the new directory already:
+/// OneDrive has judged and keeps the two apart, as the plan has it (`name_contest`). Pure.
+pub(super) fn find_holder_taking_new_name(case: &RenameCase) -> Option<&HolderNotShown> {
+    let holder = case.holder_not_shown.as_ref().filter(|holder| holder.name_match == NameMatch::Same || !case.has_the_name_in_onedrive);
+    holder.filter(|holder| is_name_taken_by(Some(holder), case.is_new_name_ignored))
 }
 
 /// What a rename that goes ahead does to the names of the backing directory.
@@ -198,13 +216,16 @@ impl ItemWriteOperations {
                 None => None,
             };
             let new_directory_row = reader.find_item(new_directory)?.filter(is_shown_directory);
-            let (new_directory_path, new_directory_marks, displaced) = match &new_directory_row {
+            let moved_id = moved.as_ref().map(|moved| moved.local_item_id);
+            let (new_directory_path, new_directory_marks, displaced, holder_not_shown) = match &new_directory_row {
                 Some(_) => {
                     let (path, marks) = reader.find_path_with_marks(new_directory)?.unzip();
-                    (path, marks.unwrap_or_default(), reader.find_item_at(new_directory, &new_name_read)?)
+                    (path, marks.unwrap_or_default(), reader.find_item_at(new_directory, &new_name_read)?, find_holder_not_shown(&reader, new_directory, &new_name_read, moved_id)?)
                 }
-                None => (None, Vec::new(), None),
+                None => (None, Vec::new(), None, None),
             };
+            let new_folded_name = FoldedName::of(&new_name_read);
+            let has_the_name_in_onedrive = moved.as_ref().and_then(|moved| moved.onedrive.as_ref()).and_then(|onedrive| onedrive.place.as_ref()).is_some_and(|place| place.parent_local_item_id == new_directory && FoldedName::of(&place.name) == new_folded_name);
             let is_displaced_empty = match &displaced {
                 Some(displaced) if displaced.kind == ItemKind::Directory => reader.list_children(displaced.local_item_id)?.is_empty(),
                 _ => true,
@@ -213,7 +234,7 @@ impl ItemWriteOperations {
                 (Some(moved), Some(moved_path), Some(new_directory_path)) => moved.kind == ItemKind::Directory && new_directory_path.starts_with(moved_path),
                 _ => false,
             };
-            Ok(RenameCase { moved, moved_path, new_directory: new_directory_row, new_directory_path, new_directory_marks, displaced, is_displaced_empty, is_into_itself, mode, is_new_name_hidden, is_new_name_ignored })
+            Ok(RenameCase { moved, moved_path, new_directory: new_directory_row, new_directory_path, new_directory_marks, displaced, holder_not_shown, has_the_name_in_onedrive, is_displaced_empty, is_into_itself, mode, is_new_name_hidden, is_new_name_ignored })
         })?;
         let is_moved_on_disk = match (&case.moved, &case.moved_path) {
             (Some(moved), Some(_)) if moved.kind == ItemKind::File => moved.content_presence == ContentPresence::OnDisk,
@@ -240,11 +261,20 @@ impl ItemWriteOperations {
     /// took a binding over marked as the copy of that item. From the begin of the place
     /// change to its end no reader opens by a path of either place (`docs/design/mount.md` §3.2).
     ///
+    /// A rename refused because OneDrive holds the new name with an item the folder cannot
+    /// show tells the user why before it answers `EEXIST`
+    /// ([`tell_name_taken_in_onedrive`](Self::tell_name_taken_in_onedrive)).
+    ///
     /// Called by the kernel's rename, on the write-operation thread.
     pub(in crate::mount) fn rename(&self, directory: LocalItemId, name: &OsStr, new_directory: LocalItemId, new_name: &OsStr, mode: RenameMode) -> Result<(), Errno> {
         self.access_mode_switch.check_read_write()?;
         let case = self.read_rename_case(directory, name, new_directory, new_name, mode)?;
-        let decision = decide_rename(&case)?;
+        let decision = decide_rename(&case);
+        // An errno says nothing of why, and the folder shows nothing at the name: what holds it in OneDrive is said to the user.
+        if let (Err(Errno::EEXIST), Some(holder), Some(new_directory_path)) = (decision, find_holder_taking_new_name(&case), &case.new_directory_path) {
+            self.tell_name_taken_in_onedrive(new_directory_path, new_name, holder);
+        }
+        let decision = decision?;
         let to_place = ItemPlace { parent_local_item_id: new_directory, name: new_name.to_owned() };
         let (item, row_change) = match decision {
             RenameDecision::Nothing => return Ok(()),

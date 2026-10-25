@@ -4,9 +4,9 @@ use konedrive_dbus::Refusal;
 use super::formats::{human_bytes, local_time};
 
 /// What each `Skipped()` reason means to the person whose file it is. The
-/// same sentences, word for word, as `whyText` in `app/synccontroller.cpp`
+/// same sentences, word for word, as `skipReasonText` in `app/skipreasons.cpp`
 /// (each wrapped there in `i18n(...)`);
-/// `skip_reason_text_matches_every_branch_of_the_windows_whytext` (in
+/// `skip_reason_text_matches_every_branch_of_the_windows_skip_reason_text` (in
 /// `tests/sync_cli/wording.rs`) compares them with the C++ source, so the two cannot
 /// drift apart unnoticed.
 pub fn skip_reason_text(reason: &str) -> &'static str {

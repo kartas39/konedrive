@@ -1,14 +1,14 @@
 // --- The skip-reason wording is one sentence, shared with the window -----
 
-/// Parses `whyText`'s `if (reason == QLatin1String("<reason>")) { return
-/// i18n("<sentence>"); }` branches out of `app/synccontroller.cpp`'s source,
+/// Parses `skipReasonText`'s `if (reason == QLatin1String("<reason>")) { return
+/// i18n("<sentence>"); }` branches out of `app/skipreasons.cpp`'s source,
 /// in order, as `(reason, sentence)` pairs — plus the function's final,
 /// unconditional `return i18n("<sentence>");` (the fallback for anything not
 /// named above) as the pair `("unsupported", <that sentence>)`, matching the
 /// name `skip_reason_text`'s own fallback answers to.
-fn parse_why_text_branches(cpp: &str) -> Vec<(String, String)> {
-    let start = cpp.find("QString whyText").expect("whyText(...) not found in synccontroller.cpp");
-    let end = start + cpp[start..].find("\n}\n").expect("no closing brace found for whyText");
+fn parse_skip_reason_text_branches(cpp: &str) -> Vec<(String, String)> {
+    let start = cpp.find("QString skipReasonText").expect("skipReasonText(...) not found in skipreasons.cpp");
+    let end = start + cpp[start..].find("\n}\n").expect("no closing brace found for skipReasonText");
     let mut rest = &cpp[start..end];
     let mut pairs = Vec::new();
     while let Some(reason_at) = rest.find("QLatin1String(\"") {
@@ -34,8 +34,8 @@ fn parse_why_text_branches(cpp: &str) -> Vec<(String, String)> {
     pairs
 }
 
-/// `skip_reason_text` (`konedrivectl::text::files`) and the window's `whyText`
-/// (`app/synccontroller.cpp`) are meant to say exactly the same thing for
+/// `skip_reason_text` (`konedrivectl::text::files`) and the window's `skipReasonText`
+/// (`app/skipreasons.cpp`) are meant to say exactly the same thing for
 /// each reason (see `crates/konedrivectl/src/text/files.rs`'s doc comment on
 /// `skip_reason_text`), so a person reading `konedrivectl sync skipped` and
 /// a person reading the window see one explanation, not two that happen to
@@ -49,23 +49,23 @@ fn parse_why_text_branches(cpp: &str) -> Vec<(String, String)> {
 /// direction, including a swap between two reasons that both still have
 /// *a* sentence, just not the *right* one.
 #[test]
-fn skip_reason_text_matches_every_branch_of_the_windows_whytext() {
+fn skip_reason_text_matches_every_branch_of_the_windows_skip_reason_text() {
     let cpp = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../app/synccontroller.cpp"
+        "/../../app/skipreasons.cpp"
     ))
     .unwrap();
-    let branches = parse_why_text_branches(&cpp);
+    let branches = parse_skip_reason_text_branches(&cpp);
     assert_eq!(
         branches.iter().map(|(reason, _)| reason.as_str()).collect::<Vec<_>>(),
         vec!["name-too-long", "personal-vault", "shared", "onenote", "reserved-name", "unsupported"],
-        "whyText's branches changed shape; update this parser or the reason list"
+        "skipReasonText's branches changed shape; update this parser or the reason list"
     );
     for (reason, sentence) in &branches {
         assert_eq!(
             konedrivectl::text::files::skip_reason_text(reason),
             sentence,
-            "app/synccontroller.cpp's whyText(\"{reason}\") and \
+            "app/skipreasons.cpp's skipReasonText(\"{reason}\") and \
              konedrivectl's skip_reason_text(\"{reason}\") must say exactly the same thing"
         );
     }

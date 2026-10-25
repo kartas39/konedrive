@@ -335,12 +335,12 @@ What the kernel asks:
 A change a program makes:
 
 - `item_write_operations.rs` — `ItemWriteOperations`: each change made in the backing directory
-  and written into the item's row, in one order of disk and row; the errno of a refusal.
-  `[tests]`
-- `item_write_operations/make.rs` — mkdir, mknod and create; a trash directory refused.
-  `[tests]`
-- `item_write_operations/rename.rs` — rename, also over another item (its binding taken over).
-  `[tests]`
+  and written into the item's row, in one order of disk and row; the errno of a refusal; a name
+  OneDrive holds with an item the folder cannot show, and the user told of it. `[tests]`
+- `item_write_operations/make.rs` — mkdir, mknod and create; a trash directory refused, and a
+  name OneDrive holds with an item the folder cannot show. `[tests]`
+- `item_write_operations/rename.rs` — rename, also over another item (its binding taken over);
+  to a name OneDrive holds with an item the folder cannot show, refused. `[tests]`
 - `item_write_operations/remove.rs` — unlink and rmdir; a directory that holds in OneDrive
   what the folder never showed is not removed, and the user is told. `[tests]`
 - `item_write_operations/content_write.rs` — open for writing, truncate, the time set, the
@@ -981,6 +981,8 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `transfermodel.h`, `transfermodel.cpp` — the downloads under way.
 - `uploadreasons.h`, `uploadreasons.cpp` — why a change is not uploaded, in words: the entry
   functions; the sentences are generated.
+- `skipreasons.h`, `skipreasons.cpp` — why the folder cannot show an item, in words: the same
+  sentences as `konedrivectl`'s, compared by its test.
 - `generated/reasontexts.h`, `generated/reasontexts.cpp` — generated from `konedrive-text`, not
   edited: the window's sentence for every reason, and how a reason is cut into its parts.
 - `notifier.h`, `notifier.cpp` — the notifications.

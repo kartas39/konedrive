@@ -25,6 +25,7 @@
 // test: a_name_the_upload_rules_ignore_is_made_with_the_flag
 // test: a_name_of_the_daemons_own_and_the_trash_are_refused
 // test: a_name_that_is_taken_is_refused_before_the_disk_is_touched
+// test: a_name_onedrive_holds_with_an_item_not_shown_is_refused_and_told_once
 // test: a_name_the_disk_holds_though_no_row_says_so_is_refused_and_nothing_is_replaced
 // test: a_file_created_is_made_and_open_for_writing_in_one_transaction
 // test: a_row_refused_after_the_disk_removes_what_was_made
@@ -43,7 +44,7 @@ use super::super::backing_directory::EntryKind;
 use super::super::errno::to_errno;
 use super::super::item_handles::Fh;
 use super::super::place_changes::DirectoryMarks;
-use super::{read_size_and_time, ItemWriteOperations};
+use super::{find_holder_not_shown, is_name_taken_by, read_size_and_time, HolderNotShown, ItemWriteOperations};
 use crate::folder::disk::is_hidden_name;
 
 #[cfg(test)]
@@ -99,6 +100,8 @@ pub(super) struct MakeCase {
     pub(super) directory_marks: DirectoryMarks,
     /// What the folder shows under the name there.
     pub(super) holder: Option<Item>,
+    /// What OneDrive has under the name there that the folder cannot show.
+    pub(super) holder_not_shown: Option<HolderNotShown>,
     /// The file removed from that place here whose removal is not sent
     /// (`ItemReader::find_removed_file_at_synced_place`).
     pub(super) removed_file: Option<Item>,
@@ -123,7 +126,8 @@ pub(super) struct MakeDecision {
 
 /// Whether the make goes ahead, and what it writes; the errno otherwise, in this order:
 /// `ENOENT` for no directory, `EPERM` for a name the mount hides or the trash, `EEXIST`
-/// for a taken name. Pure. A directory never
+/// for a taken name: one the folder shows, or one OneDrive holds with an item the folder
+/// cannot show ([`is_name_taken_by`]). Pure. A directory never
 /// replaces anything; a file replaces a removed file only when its own name is not
 /// ignored and no step runs for that file.
 pub(super) fn decide_make(case: &MakeCase) -> Result<MakeDecision, Errno> {
@@ -133,7 +137,7 @@ pub(super) fn decide_make(case: &MakeCase) -> Result<MakeDecision, Errno> {
     if case.is_hidden_name || case.is_trash {
         return Err(Errno::EPERM);
     }
-    if case.holder.is_some() {
+    if case.holder.is_some() || is_name_taken_by(case.holder_not_shown.as_ref(), case.is_name_ignored) {
         return Err(Errno::EEXIST);
     }
     let replaced = match (case.kind, &case.removed_file) {
@@ -148,18 +152,20 @@ impl ItemWriteOperations {
     /// writer, with what the upload rules and the running steps say.
     fn read_make_case(&self, directory: LocalItemId, name: &OsStr, kind: MadeKind) -> Result<MakeCase, Errno> {
         let name_read = name.to_owned();
-        let (directory_row, directory_path, directory_marks, holder, removed_file) = self.run_store_job("the place of a make could not be read", move |store| {
+        let (directory_row, directory_path, directory_marks, holder, holder_not_shown, removed_file) = self.run_store_job("the place of a make could not be read", move |store| {
             let items = store.item_store();
             let reader = items.reader();
-            let Some(shown) = reader.find_item(directory)?.filter(|row| row.kind == ItemKind::Directory && row.local.is_some()) else { return Ok((None, None, Vec::new(), None, None)) };
+            let Some(shown) = reader.find_item(directory)?.filter(|row| row.kind == ItemKind::Directory && row.local.is_some()) else { return Ok((None, None, Vec::new(), None, None, None)) };
             let (path, marks) = reader.find_path_with_marks(directory)?.unzip();
-            Ok((Some(shown), path, marks.unwrap_or_default(), reader.find_item_at(directory, &name_read)?, reader.find_removed_file_at_synced_place(directory, &name_read)?))
+            let holder_not_shown = find_holder_not_shown(&reader, directory, &name_read, None)?;
+            Ok((Some(shown), path, marks.unwrap_or_default(), reader.find_item_at(directory, &name_read)?, holder_not_shown, reader.find_removed_file_at_synced_place(directory, &name_read)?))
         })?;
         Ok(MakeCase {
             directory: directory_row,
             directory_path,
             directory_marks,
             holder,
+            holder_not_shown,
             has_removed_file_a_running_step: removed_file.as_ref().is_some_and(|removed| self.running_steps.has_running_step(removed.local_item_id)),
             removed_file,
             kind,
@@ -187,11 +193,20 @@ impl ItemWriteOperations {
     /// has that content again (`ClosedUnchanged`): its writer is not marked as having
     /// written, since an empty new file is unsent as it is.
     ///
+    /// A make refused because OneDrive holds the name with an item the folder cannot show
+    /// tells the user why before it answers `EEXIST`
+    /// ([`tell_name_taken_in_onedrive`](Self::tell_name_taken_in_onedrive)).
+    ///
     /// Called by the kernel's mkdir, mknod and create, on the write-operation thread.
     pub(in crate::mount) fn make(&self, directory: LocalItemId, name: &OsStr, kind: MadeKind) -> Result<MadeItem, Errno> {
         self.access_mode_switch.check_read_write()?;
         let case = self.read_make_case(directory, name, kind)?;
-        let decision = decide_make(&case)?;
+        let decision = decide_make(&case);
+        // An errno says nothing of why, and the folder shows nothing at the name: what holds it in OneDrive is said to the user.
+        if let (Err(Errno::EEXIST), None, Some(holder), Some(directory_path)) = (decision, &case.holder, &case.holder_not_shown, &case.directory_path) {
+            self.tell_name_taken_in_onedrive(directory_path, name, holder);
+        }
+        let decision = decision?;
         let path = case.directory_path.as_ref().ok_or(Errno::ENOENT)?.join(name);
         let place = ItemPlace { parent_local_item_id: directory, name: name.to_owned() };
         let item_kind = kind.to_item_kind();
