@@ -325,8 +325,10 @@ against every relation checks that the plan always has a way on (`sync_plan/test
 - **Two rows that say OneDrive has one name** (`onedrive_name_holders`): the second waits for a
   listing under way; with none, one name twice is a fault, and two names that only fold to one are
   two items.
-- **What the folder cannot show**: a new item at the name of such an item steps aside; nothing is sent
-  into a directory the folder cannot show or that is left here.
+- **What the folder cannot show**: its name is refused here by the mount
+  ([F304](../limitations/F304.md)); a new item that has it all the same — made here before a listing
+  brought the item — steps aside. Nothing is sent into a directory the folder cannot show or that is
+  left here.
 - **A wait is followed to its end** (`wait_chain`).
 
 ### 6.5 Names
@@ -572,7 +574,7 @@ that stays up 10 minutes starts the count over; a refresh tries at once.
 From [`../limitations/`](../limitations/README.md): some OneDrive items are never shown
 ([P7](../limitations/P7.md)); a removal is sent with no confirmation ([F302](../limitations/F302.md));
 a directory that holds what the folder cannot show cannot be removed here
-([F299](../limitations/F299.md)); a file never uploaded keeps a directory OneDrive removed
+([F299](../limitations/F299.md)), nor its name used ([F304](../limitations/F304.md)); a file never uploaded keeps a directory OneDrive removed
 ([F255](../limitations/F255.md)); a change on disk while no daemon runs is no move or removal in
 OneDrive ([F298](../limitations/F298.md)); an unfinished upload holds its name
 ([F172](../limitations/F172.md)); a store of another version is rebuilt ([D36](../limitations/D36.md)).

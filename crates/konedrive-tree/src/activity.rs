@@ -60,8 +60,12 @@ activity_kinds! {
     Conflict => "conflict",
     /// A directory could not be removed here because it holds in OneDrive items that
     /// cannot be shown here: it is to be removed in OneDrive. The path is the directory.
-    // TODO: wording
     NotRemovedHere => "not-removed-here",
+    /// A name could not be given here, by a make or a rename, because OneDrive has an item
+    /// under it, as OneDrive compares names, that the folder cannot show (a OneNote
+    /// notebook…): that item is to be renamed in OneDrive. The path is the name asked for;
+    /// the detail, the item's reason (`SkipReason::as_str`).
+    NameTakenInOneDrive => "name-taken-in-onedrive",
     /// The folder's store was of an older version and was made anew, and something the
     /// user misses went with it: pins, changes that were not sent and are not on disk,
     /// uploads under way. Once, at the start that made it anew. The path is the folder;

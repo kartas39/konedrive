@@ -287,7 +287,7 @@ asked.
 |---|---|
 | `EROFS` | a change in a read-only folder, or in one whose mount asked for its take-down |
 | `ESTALE` | the row is gone or shows nothing; the content a handle was opened as is not the row's any more; OneDrive stated another content (§5.5) |
-| `EEXIST` | the place is taken in the rows, or held on disk by what no row says |
+| `EEXIST` | the place is taken in the rows, or held on disk by what no row says, or the name in OneDrive by an item the folder cannot show, as OneDrive compares names ([F304](../limitations/F304.md)) |
 | `ENOTEMPTY`, `ENOENT` | the store's refusal of a removal or a make ([F299](../limitations/F299.md) for a directory that holds in OneDrive what it does not show) |
 | `EAGAIN` | OneDrive asks the account to wait, and the content is needed now (§5.6) |
 | `ENOSPC`, `EDQUOT` | a download or a write ran out of space |

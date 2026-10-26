@@ -81,7 +81,7 @@ private Q_SLOTS:
         QCOMPARE(uploadReasonText(QStringLiteral("blocked")), QStringLiteral("KOneDrive's record of this change is incomplete (blocked): it stays here until the file is changed again."));
         QCOMPARE(uploadReasonText(QStringLiteral("not allowed now: the folder is read-only")), QStringLiteral("Uploads are not allowed now: it goes on when they are (the folder is read-only)."));
         for (const QString &kind : {QStringLiteral("uploaded"), QStringLiteral("cloud-moved"), QStringLiteral("cloud-deleted"), QStringLiteral("restored"),
-                                    QStringLiteral("not-uploaded"), QStringLiteral("not-removed-here"), QStringLiteral("store-rebuilt"),
+                                    QStringLiteral("not-uploaded"), QStringLiteral("not-removed-here"), QStringLiteral("name-taken-in-onedrive"), QStringLiteral("store-rebuilt"),
                                     QStringLiteral("first-sync-began"), QStringLiteral("first-sync-ended")}) {
             QVERIFY2(ActivityModel::describe(kind, QString()) != kind, qPrintable(kind));
         }
@@ -100,6 +100,15 @@ private Q_SLOTS:
         QCOMPARE(notRemoved.data(row, ActivityModel::DetailTextRole).toString(),
                  QStringLiteral("It holds items that can't be shown in the folder. Remove it in OneDrive."));
         QCOMPARE(notRemoved.data(row, ActivityModel::IconRole).toString(), QStringLiteral("dialog-warning"));
+        // A name OneDrive holds with an item the folder can't show: what holds it, by its reason, and what to do.
+        ActivityModel taken;
+        taken.prepend({1, QStringLiteral("name-taken-in-onedrive"), QStringLiteral("/d/Documents/IT"), QStringLiteral("onenote")});
+        const QModelIndex takenRow = taken.index(0);
+        QCOMPARE(taken.data(takenRow, ActivityModel::NameRole).toString(), QStringLiteral("IT"));
+        QCOMPARE(taken.data(takenRow, ActivityModel::TextRole).toString(), QStringLiteral("Name taken in OneDrive"));
+        QCOMPARE(taken.data(takenRow, ActivityModel::DetailTextRole).toString(),
+                 QStringLiteral("OneDrive has an item of this name that can't be shown in the folder. A OneNote notebook, which is not a file. Rename it in OneDrive to use the name."));
+        QCOMPARE(taken.data(takenRow, ActivityModel::IconRole).toString(), QStringLiteral("dialog-warning"));
 
         ConflictModel conflicts;
         conflicts.setConflicts({{2, root + QStringLiteral("/Report.docx"), root + QStringLiteral("/Report-fedora.docx"), QStringLiteral("copy")},

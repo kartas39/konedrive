@@ -6,8 +6,8 @@ import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
 /// The whole app's settings: start at login, download progress, Places,
-/// when every account pauses by itself (metered connections, battery), this
-/// build, and Quit. Each OneDrive's own things (its folder, its sign-in, its
+/// when every account pauses by itself (metered connections, battery), and
+/// Quit. Each OneDrive's own things (its folder, its sign-in, its
 /// previews) are on its OneDrive Settings page.
 FormCard.FormCardPage {
     id: page
@@ -140,45 +140,6 @@ FormCard.FormCardPage {
                         currentIndex = Math.max(0, choices.indexOf(choice));
                         Daemon.setOnBattery(choices[index]);
                     }
-                }
-            }
-        }
-    }
-
-    // This build, for bug reports: selectable, to copy.
-    FormCard.FormHeader {
-        title: i18nc("@title:group", "About")
-    }
-    FormCard.FormCard {
-        objectName: "about"
-
-        FormCard.AbstractFormDelegate {
-            background: null
-            contentItem: ColumnLayout {
-                spacing: Kirigami.Units.smallSpacing
-
-                QQC2.TextArea {
-                    objectName: "versionLine"
-                    Layout.fillWidth: true
-                    text: Daemon.versionLine
-                    readOnly: true
-                    selectByMouse: true
-                    wrapMode: TextEdit.Wrap
-                    background: null
-                    padding: 0
-                }
-                // The running service is another build (installed, not restarted).
-                QQC2.TextArea {
-                    objectName: "serviceVersionLine"
-                    Layout.fillWidth: true
-                    visible: text.length > 0
-                    text: Daemon.daemonBuildMismatch
-                    readOnly: true
-                    selectByMouse: true
-                    wrapMode: TextEdit.Wrap
-                    background: null
-                    padding: 0
-                    color: Kirigami.Theme.neutralTextColor
                 }
             }
         }

@@ -1,5 +1,6 @@
 #include "activitymodel.h"
 
+#include "skipreasons.h"
 #include "timetext.h"
 #include "uploadreasons.h"
 
@@ -71,6 +72,10 @@ QString ActivityModel::describe(const QString &kind, const QString &detail)
         // The path is the directory; DetailTextRole says why and what to do.
         return i18nc("@info activity", "Cannot be removed here");
     }
+    if (kind == QLatin1String("name-taken-in-onedrive")) {
+        // The path is the name asked for; DetailTextRole says what holds it and what to do.
+        return i18nc("@info activity", "Name taken in OneDrive");
+    }
     if (kind == QLatin1String("conflict")) {
         // A file changed on both sides: the detail is the copy kept beside it.
         return i18nc("@info activity", "Changed on both sides: both versions kept");
@@ -136,13 +141,18 @@ QVariant ActivityModel::data(const QModelIndex &index, int role) const
         if (row.kind == QLatin1String("not-removed-here")) {
                 return i18nc("@info activity detail", "It holds items that can't be shown in the folder. Remove it in OneDrive.");
         }
+        if (row.kind == QLatin1String("name-taken-in-onedrive")) {
+            // Its detail is the reason of the item that holds the name.
+            return i18nc("@info activity detail", "OneDrive has an item of this name that can't be shown in the folder. %1 Rename it in OneDrive to use the name.", skipReasonText(row.detail));
+        }
         return row.kind == QLatin1String("upload-failed") ? uploadReasonText(row.detail) : row.detail;
     case IconRole:
         if (row.kind == QLatin1String("conflict")) {
             return QStringLiteral("document-duplicate");
         }
         if (row.kind == QLatin1String("failed") || row.kind == QLatin1String("update-failed")
-            || row.kind == QLatin1String("upload-failed") || row.kind == QLatin1String("not-removed-here") || row.kind == QLatin1String("store-rebuilt")) {
+            || row.kind == QLatin1String("upload-failed") || row.kind == QLatin1String("not-removed-here") || row.kind == QLatin1String("name-taken-in-onedrive")
+            || row.kind == QLatin1String("store-rebuilt")) {
             return QStringLiteral("dialog-warning");
         }
         if (row.kind == QLatin1String("uploaded") || row.kind == QLatin1String("cloud-moved")) {

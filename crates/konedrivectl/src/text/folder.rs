@@ -207,27 +207,29 @@ pub const DISMISSED: &str = "Dismissed. The file was left where it is.";
 /// After `sync free-up-space` in a folder with pins.
 pub const PINS_LEFT: &str = "Files kept on this device (`konedrivectl sync pin`) were left as they are.";
 
-/// What `sync activity` says in the place of the detail for a kind whose events carry
-/// none and need a sentence; `None` for every other kind. (`store-rebuilt` carries its
-/// sentence as its detail: what was lost with the old records.)
-// TODO: wording
-fn activity_kind_sentence(kind: &str) -> Option<&'static str> {
+/// What `sync activity` says in the place of the detail for a kind whose events need a
+/// sentence, from the event's detail; `None` for every other kind. (`store-rebuilt` carries
+/// its sentence as its detail: what was lost with the old records.) A name taken in
+/// OneDrive carries the reason of the item that holds it, as `Skipped()` says it.
+fn activity_kind_sentence(kind: &str, detail: &str) -> Option<String> {
     match kind {
-        "not-removed-here" => Some("cannot be removed here: it holds items that cannot be shown on this computer. Remove it in OneDrive."),
+        "not-removed-here" => Some("cannot be removed here: it holds items that cannot be shown on this computer. Remove it in OneDrive.".to_owned()),
+        "name-taken-in-onedrive" => Some(format!("cannot be used here: OneDrive has an item of this name that cannot be shown on this computer. {} Rename it in OneDrive to use the name.", skip_reason_text(detail))),
         _ => None,
     }
 }
 
 /// `sync activity`: one line per event, newest first — time, kind, full
 /// path, and the detail in parentheses when there is one; for a directory that could
-/// not be removed here, why and what to do.
+/// not be removed here, and for a name OneDrive holds with an item that cannot be shown
+/// here, why and what to do.
 pub fn activity_text(events: &[Event]) -> String {
     if events.is_empty() {
         return "Nothing has happened yet.\n".to_owned();
     }
     let mut out = String::new();
     for Event { at, kind, path, detail } in events {
-        let detail = match activity_kind_sentence(kind) {
+        let detail = match activity_kind_sentence(kind, detail) {
             Some(sentence) => format!("  ({sentence})"),
             None if detail.is_empty() => String::new(),
             None => format!("  ({detail})"),

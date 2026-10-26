@@ -6,6 +6,7 @@
 #include <QList>
 #include <QObject>
 #include <QString>
+#include <QUrl>
 
 #include <functional>
 
@@ -16,7 +17,8 @@ class QTimer;
 /// One desktop notification, as the Notifier decides it.
 struct Notice {
     /// The event in konedrive.notifyrc: signedOut, diskFull, downloadFailed,
-    /// updateFailed, uploadFailed, conflict, notRemovedHere, throttled.
+    /// updateFailed, uploadFailed, conflict, notRemovedHere, nameTaken, throttled,
+    /// newerRelease.
     QString event;
     /// Where a click on the notification opens the window.
     WindowSection section = WindowSection::Status;
@@ -29,6 +31,9 @@ struct Notice {
     /// The account's object path: a click on the notification opens the window on it, at
     /// `section`.
     QString account = QString();
+    /// When set, a click on the notification opens this page in the browser instead of the
+    /// window, and the notification offers "Open Release Page" for it.
+    QUrl link = QUrl();
 };
 
 /// Where notices go. The app sends them through KNotification
@@ -61,8 +66,10 @@ private:
 /// Turns what one account's daemon objects report into notifications:
 /// signing out after being signed in, a full disk, a failed download, a
 /// failed update, a change that cannot be uploaded, a conflict (a copy kept
-/// beside the file), a directory that cannot be removed here, and a file that could not be
-/// opened because OneDrive asked the account to wait — once for each wait. Nothing else notifies. Each event kind sends at
+/// beside the file), a directory that cannot be removed here, a name OneDrive holds with an
+/// item that cannot be shown here, and a file that could not be
+/// opened because OneDrive asked the account to wait — once for each wait. Nothing else
+/// an account reports notifies (a newer release is ReleaseCheck's). Each event kind sends at
 /// most one notification per 10 s window; what arrives inside a window is
 /// counted and sent as one summary when the window ends. Each account has its
 /// own Notifier, so windows and summaries are per account and kind.

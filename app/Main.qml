@@ -265,6 +265,66 @@ Kirigami.ApplicationWindow {
         Item {
             Layout.fillHeight: true
         }
+
+        // This build, on every page, for bug reports: selectable, to copy. Below it a newer
+        // release, and a service that runs another build.
+        footer: ColumnLayout {
+            spacing: 0
+
+            Kirigami.Separator {
+                Layout.fillWidth: true
+            }
+            QQC2.TextArea {
+                objectName: "versionLine"
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.smallSpacing
+                Layout.rightMargin: Kirigami.Units.smallSpacing
+                Layout.topMargin: Kirigami.Units.smallSpacing
+                Layout.bottomMargin: releaseLine.visible || serviceVersionLine.visible ? 0 : Kirigami.Units.smallSpacing
+                text: Daemon.versionLine
+                readOnly: true
+                selectByMouse: true
+                wrapMode: TextEdit.Wrap
+                background: null
+                padding: 0
+                font: Kirigami.Theme.smallFont
+                opacity: 0.7
+            }
+            // A newer release is out: its page, where its packages are.
+            Kirigami.UrlButton {
+                id: releaseLine
+
+                objectName: "releaseLine"
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.smallSpacing
+                Layout.rightMargin: Kirigami.Units.smallSpacing
+                Layout.bottomMargin: serviceVersionLine.visible ? 0 : Kirigami.Units.smallSpacing
+                visible: ReleaseCheck.newerVersion.length > 0
+                text: i18nc("@info the version of a newer release", "Update available: %1", ReleaseCheck.newerVersion)
+                url: ReleaseCheck.newerPage.toString()
+                font: Kirigami.Theme.smallFont
+                elide: Text.ElideRight
+            }
+            // The running service is another build (installed, not restarted).
+            QQC2.TextArea {
+                id: serviceVersionLine
+
+                objectName: "serviceVersionLine"
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.smallSpacing
+                Layout.rightMargin: Kirigami.Units.smallSpacing
+                Layout.bottomMargin: Kirigami.Units.smallSpacing
+                visible: text.length > 0
+                text: Daemon.daemonBuildMismatch
+                readOnly: true
+                selectByMouse: true
+                wrapMode: TextEdit.Wrap
+                background: null
+                padding: 0
+                font: Kirigami.Theme.smallFont
+                color: Kirigami.Theme.neutralTextColor
+            }
+        }
     }
 
     // The pages live for the window's lifetime: the page row borrows the one

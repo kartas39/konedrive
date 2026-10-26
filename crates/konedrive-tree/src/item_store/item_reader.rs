@@ -39,6 +39,7 @@
 // test: the_path_of_an_item_the_folder_does_not_show_is_that_of_its_synced_place
 // test: what_onedrive_has_below_a_directory_that_was_never_shown_is_told_from_what_was_removed_here
 // test: an_item_an_upload_left_below_a_directory_is_none_the_folder_never_showed
+// test: an_item_not_shown_is_found_at_its_name_as_onedrive_compares_names
 // test: the_shown_directories_are_read_the_root_first_bounded_and_past_rows_with_no_path
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
@@ -357,6 +358,17 @@ impl ItemReader<'_> {
             }
         }
         Ok(never_shown)
+    }
+
+    /// The items OneDrive has in `directory` under `name`, as OneDrive compares names, that
+    /// the folder cannot show by their own placement (a OneNote notebook, the Personal
+    /// Vault…), by local item id. Such an item holds its name in OneDrive though the folder
+    /// shows nothing there. Called by the mount's mkdir, mknod, create and rename, in the
+    /// job that reads their case: a name one of these holds is refused (`EEXIST`). One read
+    /// of the index `items_onedrive_folded_place`.
+    pub fn list_items_not_shown_at(&self, directory: LocalItemId, name: &FoldedName) -> Result<Vec<Item>, TreeError> {
+        let sql = format!("SELECT {ITEM_COLUMNS} FROM items INDEXED BY items_onedrive_folded_place WHERE onedrive_parent_id = ?1 AND onedrive_folded_name = ?2 AND {NOT_PLACED} ORDER BY local_item_id");
+        self.list_items(&sql, params![directory.as_i64(), name_value(name.as_os_str())])
     }
 
     /// The directories the folder shows, the root first, each with its path relative to

@@ -87,7 +87,8 @@ The sidebar starts with the **account switcher**: the OneDrive shown, and a menu
   changes"); files changed on both sides, of which both versions are kept so that nothing is lost
   (**Kept Both Versions**, with **Show Both** and **Dismiss**); and what **Can't Be Shown in the
   Folder**, and why: the Personal Vault, a OneNote notebook, a shared folder, a name Linux cannot
-  hold.
+  hold. Such an item keeps its name: nothing here can be given it, also in another case, until
+  the item is renamed in OneDrive.
 - **OneDrive Settings** — its name (**Rename…**), the Microsoft account, **Two-way sync**, the
   folder (**Use Another Folder…**), previews, the free space to keep, what is never uploaded,
   **Sign Out** and **Disconnect This OneDrive…**.
@@ -102,7 +103,9 @@ The sidebar starts with the **account switcher**: the OneDrive shown, and a menu
 - **Quit KOneDrive**.
 
 Closing the window does not stop anything: KOneDrive stays in the tray, and the service that syncs
-runs without the window at all. The foot of the sidebar names the version, for a bug report.
+runs without the window at all. The foot of the sidebar names the version, for a bug report; when
+a newer release is out, **Update available** below it opens the release's page, and a notification
+says so once.
 
 ## The tray
 

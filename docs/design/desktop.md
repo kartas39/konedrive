@@ -185,7 +185,8 @@ folder, and `NotUp`, with why, for a folder that is not up or whose sync has not
   falls behind can miss some, and `Recent` still has them. The kinds are `konedrive_tree`'s
   `ActivityKind` (`crates/konedrive-tree/src/activity.rs`): `downloaded`, `freed`, `added`,
   `updated`, `removed`, `moved`, `first-sync-began`, `first-sync-ended`, `conflict`,
-  `not-removed-here`, `store-rebuilt`, `failed`, `update-failed`, and for a read-write account
+  `not-removed-here`, `name-taken-in-onedrive`, `store-rebuilt`, `failed`, `update-failed`, and
+  for a read-write account
   `uploaded`, `cloud-moved`, `cloud-deleted`, `upload-failed`, `restored`, `not-uploaded`. A full
   disk is the exact detail `not enough disk space`. The log is a summary: a first listing is two
   events of the folder, not one per item; at most 50 events of each kind of what OneDrive changed
@@ -351,7 +352,7 @@ which is the whole app's. With no account at all the window is one page, "Add yo
 | **Status** | in its header "Sync Now", "Pause" (2, 8 or 24 hours, or until resumed) or "Resume", and "Open Folder" with the folder's path in its tooltip. The state: the headline and the line under it by `Overall`, the mode ("Read-only", or "Read-only for now" while the folder of a read-write account is not writable), the trouble, the last start-up check, "Sign In Again" or "Sync Anyway" when they apply, and one line of what Issues lists, which opens it. The space: one bar as long as the OneDrive's storage (`QuotaTotal`), bright for what is on this device (`LocalBytes`), pale for the rest of what is used in OneDrive (`QuotaUsed`), with "N items always kept (size)" (`PinnedCount`, `PinnedBytes`); "Free Up Space…", and "Unpin All…" while anything is pinned. Two cards, "Downloading" and "Uploading": the speed, the files moving, what is left with its size and time, what is done, and a chart of the last two minutes (KQuickCharts); under Downloading the thumbnails being downloaded, under Uploading what waits and why. The transfer pool once below them; the transfers under way with progress bars. **History**, folded until opened: the events the daemon keeps, newest first, with a search by name or folder. With no folder yet, the head says so, with "Choose Folder…"; a folder that stopped has only why, with "Try Again" and "Use Another Folder…" (below) |
 | **Issues** | one list in three sections, with a count badge while anything needs the user: **Can't Upload**, `NotUploadedSummary()` by what can be done about it, a reason one action fixes as one line with its button, and the files of a reason when it is opened (`NotUploadedFiles(reason, 20)`); **Kept Both Versions**, each conflict copy with "Show Both" and "Dismiss"; **Can't Be Shown in the Folder**, `Skipped()` and why, in the words `sync skipped` uses. The last two show their first 200 rows and count the rest |
 | **OneDrive Settings** | the name with "Rename…"; the Microsoft account's name and email; **Two-way sync** (below); the folder with "Use Another Folder…"; "Previews without downloading" (§8) and the free space to keep for pinned files, changed after "Edit", which turns into "Save"; the ignore list ("Never uploaded"); "Sign Out"; "Disconnect This OneDrive…". With no folder yet, only the account's part, "Sign Out" and "Disconnect This OneDrive…" |
-| **Settings** | "Start at login", "Show download and upload progress", "Show in Places", "Show a tray icon for each account"; for every account, "Pause on metered connections" and "On battery"; About; "Quit KOneDrive" |
+| **Settings** | "Start at login", "Show download and upload progress", "Show in Places", "Show a tray icon for each account"; for every account, "Pause on metered connections" and "On battery"; "Quit KOneDrive" |
 
 The long lists are `ListView`s, which build only the rows in sight, with a fixed height.
 
@@ -371,10 +372,20 @@ only "The KOneDrive service is not running". The status line reads, for example,
 checked 20 s ago", "· live" while `LiveChanges` is `connected`, "Listing your OneDrive: N items so
 far", "Downloading 3 files", "Paused until 14:00", or the trouble, refreshed while it ages.
 
-**The version line.** The foot of the sidebar names the window's build: "Version 0.1.1-dev.57 ·
-commit 5254595" (`docs/releasing.md`). When the daemon on the bus runs another build — its
-`Version` or `Commit` differs — a second line says to restart it. `konedrivectl --version` says
-the same.
+**The version line.** The foot of the sidebar names the window's build on every page: "Version
+0.1.1-dev.57 · commit 5254595" (`docs/releasing.md`), selectable, to copy. When a newer release is
+out, "Update available: 0.2.2" below it links to the release's page. When the daemon on the bus
+runs another build — its `Version` or `Commit` differs — a last line says to restart it.
+`konedrivectl --version` says the build and the daemon's, not the newer release.
+
+**The newer release** is the window's own check (`ReleaseCheck`; the daemon takes no part, and
+there is no setting for it): at start and then once a day it asks GitHub for the latest release
+(`api.github.com/repos/kartas39/konedrive/releases/latest`) and compares its tag with the window's
+build (`BuildVersion`: a build `X.Y.Z-dev.N` or `X.Y.Z-dev` comes before the release `X.Y.Z` and
+after the one before). An ask that gets no answer says nothing and is asked again an hour later.
+The first time a release is newer, the `newerRelease` notification says so once; the release
+notified is kept as `NotifiedRelease` in `konedriverc`'s `[General]` group. Nothing is downloaded or
+installed.
 
 **After an update** the packages replace the window's program file and restart the daemon, not
 the window. So when the daemon comes back as another build and the window's own program file is no
@@ -460,7 +471,7 @@ An account added or removed gains or loses its icon at once. The setting is the 
 
 Notifications are sent by the **window's process**, not the daemon, through KNotification, with
 events defined in `app/konedrive.notifyrc` so that each can be configured in System Settings
-(`app/notifier.cpp`):
+(`app/notifier.cpp`; `newerRelease` from `app/releasecheck.cpp`):
 
 | Event | When |
 |---|---|
@@ -471,15 +482,17 @@ events defined in `app/konedrive.notifyrc` so that each can be configured in Sys
 | `uploadFailed` | a change cannot be uploaded (`upload-failed`): the reason in words, with "Show in Folder"; and once when `QuotaFull` turns true, "OneDrive is full" |
 | `conflict` | a conflict copy: "Both are kept: your version as …", with "Show in Folder" |
 | `notRemovedHere` | a directory could not be removed here because it holds in OneDrive what the folder cannot show (F299) |
+| `nameTaken` | a name could not be used here because OneDrive holds it with an item the folder cannot show (F304): that item's reason, and to rename it in OneDrive |
 | `throttled` | a program was refused a file during OneDrive's `Retry-After`: once per wait, naming the first file and the time left |
+| `newerRelease` | a newer release is out on GitHub, once per release (§4, the version line); not an account's, so it names none and is never summed up |
 
 The first notification of an event is sent at once; more of the same event within 10 s are sent as
 one summary. A notification is chosen by the event's kind, never by its wording, except that a full
 disk is the exact detail `not enough disk space`. Each account's events notify on their own; with
 more than one account a notification's title names the account. Clicking it opens the window on that
-account where the event is dealt with (`WindowSection`): `uploadFailed`, `conflict` and
-`notRemovedHere` open their section of Issues, `downloadFailed` and `updateFailed` open Status with
-History unfolded, the others Status. With the app quit nothing notifies, and what happened meanwhile
+account where the event is dealt with (`WindowSection`): `uploadFailed`, `conflict`,
+`notRemovedHere` and `nameTaken` open their section of Issues, `downloadFailed` and `updateFailed` open Status with
+History unfolded, `newerRelease` opens the release's page in the browser, the others Status. With the app quit nothing notifies, and what happened meanwhile
 is never announced later; the window's lists still show it.
 
 ## 7. Download and upload progress in Plasma

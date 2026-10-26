@@ -48,6 +48,16 @@ fn every_skip_reason_is_recognised() {
 }
 
 #[test]
+fn a_notebook_the_fake_onedrive_lists_is_not_placed_as_a_onenote_notebook() {
+    let mut cloud = crate::fake_onedrive::Cloud::default();
+    cloud.add_notebook("N", "R", "IT");
+    let listed = cloud.delta_body();
+    let notebook = listed["value"].as_array().unwrap().iter().find(|value| value["id"] == "N").unwrap().clone();
+    let Change::Upsert(row) = classify(&item(notebook)) else { panic!("not an upsert") };
+    assert_eq!((row.name.as_str(), row.parent_id.as_deref(), row.placement), ("IT", Some("R"), Placement::Skipped(SkipReason::OneNote)));
+}
+
+#[test]
 fn the_255_byte_name_is_the_exact_boundary() {
     let Change::Upsert(exact) = classify(&item(json!({"id": "9", "name": "a".repeat(255), "file": {}, "parentReference": {"id": "R"}}))) else { panic!() };
     assert_eq!(exact.placement, Placement::Placed, "255 bytes is Linux's limit, inclusive");

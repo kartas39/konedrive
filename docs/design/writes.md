@@ -583,7 +583,8 @@ of content; `If-Match` takes a cTag as well as an eTag.
 The limits of uploads that cannot simply be removed, in [`../limitations/`](../limitations/):
 consent to write that stays with Microsoft (F66); no size in a session request (F39); the empty
 file an open session leaves (F172); no local trash and no confirmation of a removal (F302); a
-directory that holds what the folder cannot show (F299); a change made on disk while the daemon
+directory that holds what the folder cannot show (F299), and a name such an item holds (F304); a
+change made on disk while the daemon
 does not run, which is never a move or a removal in OneDrive (F298); a file that is never uploaded
 and keeps a directory OneDrive removed (F255); a move between accounts (F124); no links or special
 files (F300); the executable bit kept here only (F303); a trash with KDE Frameworks before 6.21

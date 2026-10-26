@@ -5,6 +5,7 @@
 #include "folderinterface.h"
 #include "foldertext.h"
 #include "generated/reasontexts.h"
+#include "skipreasons.h"
 #include "uploadqueueinterface.h"
 
 #include <QDBusArgument>
@@ -30,27 +31,6 @@ namespace
 {
 // The most gigabytes of free space to keep the account page's box takes.
 constexpr qulonglong FreeSpaceReserveLimit = 100000;
-
-/// Same sentences as konedrivectl's skip-reason text, each through i18n().
-QString whyText(const QString &reason)
-{
-    if (reason == QLatin1String("name-too-long")) {
-        return i18n("The name is longer than Linux allows (255 bytes; a Cyrillic letter takes two).");
-    }
-    if (reason == QLatin1String("personal-vault")) {
-        return i18n("The Personal Vault is locked separately and is not synced.");
-    }
-    if (reason == QLatin1String("shared")) {
-        return i18n("A shared folder added to your OneDrive; shared folders are not synced yet.");
-    }
-    if (reason == QLatin1String("onenote")) {
-        return i18n("A OneNote notebook, which is not a file.");
-    }
-    if (reason == QLatin1String("reserved-name")) {
-        return i18n("The name begins with .konedrive-, which konedrive keeps for itself.");
-    }
-    return i18n("It is neither a file nor a folder konedrive can show.");
-}
 }
 
 const QString SyncController::ServiceName = QStringLiteral("org.konedrive.Daemon");
@@ -460,7 +440,7 @@ void SyncController::loadSkipped()
             for (const KonedriveNotInFolderItem &item : reply.value()) {
                 // An item that is still on this computer says so, and what keeps it.
                 const QString stillHere = stillHereSentence(item.waits);
-                QString why = stillHere.isEmpty() ? whyText(item.reason) : whyText(item.reason) + QLatin1Char(' ') + stillHere;
+                QString why = stillHere.isEmpty() ? skipReasonText(item.reason) : skipReasonText(item.reason) + QLatin1Char(' ') + stillHere;
                 if (!item.here.isEmpty()) {
                     why += QLatin1Char(' ') + i18n("It is at %1.", item.here);
                 }

@@ -1,4 +1,5 @@
 #include "fakedaemon.h"
+#include "notifier.h"
 #include "qmlregistration.h"
 
 #include <KLocalizedQmlContext>
@@ -16,6 +17,13 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
+
+/// Drops the release check's notification: it never asks GitHub here.
+class DroppedNotices : public NotificationSink
+{
+public:
+    void send(const Notice &) override { }
+};
 
 /// The window's QML runs from the binary, never from Qt's disk cache: with
 /// the cache on and empty, loading the window writes no unit for its files
@@ -69,7 +77,9 @@ private Q_SLOTS:
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
         ServiceUnit serviceUnit;
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit);
+        DroppedNotices releaseNotices;
+        ReleaseCheck releaseCheck(QStringLiteral(KONEDRIVE_VERSION), &releaseNotices);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit, &releaseCheck);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);

@@ -1,13 +1,12 @@
 //! Remove: the decision's cases, and each removal over the fixture.
 
 use std::ffi::OsStr;
-use std::sync::Arc;
 
 use konedrive_tree::{ItemPlace, LocalVersionChange};
 
 use super::*;
 use crate::mount::item_fixture::{onedrive_id_of, ItemFixture};
-use crate::mount::item_write_operations::tests::{make_row, take_off_disk, OperationPoint, OperationsFixture};
+use crate::mount::item_write_operations::tests::{make_row, operations_with_activity, take_off_disk, OperationPoint, OperationsFixture};
 use crate::mount::item_write_operations::MadeKind;
 use crate::mount::mount_take_down::TakeDownCause;
 
@@ -240,23 +239,6 @@ fn a_directory_with_what_was_never_shown_in_it_is_decided_not_empty_for_an_rmdir
         assert_eq!(decide_remove(&with(never_shown, &file, ItemKind::Directory)), Err(Errno::ENOTDIR), "{never_shown:?}");
         assert_eq!(decide_remove(&RemoveCase { directory: None, ..with(never_shown, &directory, ItemKind::Directory) }), Err(Errno::ENOENT), "{never_shown:?}");
     }
-}
-
-/// The operations of a fixture whose report keeps the activity of the fixture's folder,
-/// with that activity.
-fn operations_with_activity() -> (OperationsFixture, Arc<crate::status::activity::Activity>) {
-    use crate::status::report::Report;
-    use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
-    let mut kept = None;
-    let operations = OperationsFixture::with_report(|fixture| {
-        let mut snapshot = SyncSnapshot::default();
-        snapshot.folder.root_path = fixture.folder().display().to_string();
-        let state = SyncStateHandle::new(snapshot);
-        let report = Report { activity: Arc::new(crate::status::activity::Activity::new(state.clone())), ..Report::nowhere() };
-        kept = Some(Arc::clone(&report.activity));
-        report
-    });
-    (operations, kept.unwrap())
 }
 
 /// The paths the user was told cannot be removed here, oldest first.

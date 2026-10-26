@@ -102,7 +102,9 @@ konedrivectl sync skipped                       # in OneDrive but not in the fol
 `freed`, `added`, `updated`, `removed`, `moved`, `uploaded`, `conflict`, `failed`, …), the full
 path, and a detail in parentheses when there is one. It shows 20 events unless `--limit` says
 otherwise; the daemon keeps the last 200. A directory that could not be removed here because it
-holds items the folder cannot show is listed as `not-removed-here`, with what to do.
+holds items the folder cannot show is listed as `not-removed-here`, and a name that could not be
+used here because OneDrive holds it with such an item as `name-taken-in-onedrive`, each with what to
+do.
 
 ## Uploading
 

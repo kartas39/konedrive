@@ -2,10 +2,12 @@
 
 #include "accountcontroller.h"
 #include "activitymodel.h"
+#include "skipreasons.h"
 #include "uploadreasons.h"
 #include "synccontroller.h"
 
 #include <KIO/OpenFileManagerWindowJob>
+#include <KIO/OpenUrlJob>
 #include <KLocalizedString>
 #include <KNotification>
 #include <KWindowSystem>
@@ -52,7 +54,17 @@ void KNotificationSink::send(const Notice &notice)
             KIO::highlightInFileManager({QUrl::fromLocalFile(path)}, notification->xdgActivationToken().toUtf8());
         });
     }
-    if (m_openWindow) {
+    if (notice.link.isValid()) {
+        const QUrl link = notice.link;
+        const auto openLink = [notification, link] {
+            // The browser's window gets the click's activation token.
+            auto *job = new KIO::OpenUrlJob(link);
+            job->setStartupId(notification->xdgActivationToken().toUtf8());
+            job->start();
+        };
+        QObject::connect(notification->addDefaultAction(i18nc("@action", "Open Release Page")), &KNotificationAction::activated, notification, openLink);
+        QObject::connect(notification->addAction(i18nc("@action:button", "Open Release Page")), &KNotificationAction::activated, notification, openLink);
+    } else if (m_openWindow) {
         KNotificationAction *open = notification->addDefaultAction(i18nc("@action", "Open KOneDrive"));
         const OpenWindow openWindow = m_openWindow;
         const QString account = notice.account;
@@ -114,6 +126,15 @@ void Notifier::onActivity(qint64, const QString &kind, const QString &path, cons
               WindowSection::NotInFolder,
               i18nc("@title notification", "Folder not removed"),
               i18n("%1 cannot be removed here: it holds items that can't be shown in the folder. Remove it in OneDrive.", name),
+              {}});
+        return;
+    }
+    if (kind == QLatin1String("name-taken-in-onedrive")) {
+        // The path is the name asked for, the detail the reason of what holds it: mkdir or rename could only say "exists", and the folder shows nothing there.
+        post({QStringLiteral("nameTaken"),
+              WindowSection::NotInFolder,
+              i18nc("@title notification", "Name taken in OneDrive"),
+              i18n("%1 can't be used here: OneDrive has an item of this name that can't be shown in the folder. %2 Rename it in OneDrive to use the name.", name, skipReasonText(detail)),
               {}});
         return;
     }
@@ -264,6 +285,8 @@ Notice Notifier::summary(const Window &window) const
         notice.text = i18np("1 more file changed here and in OneDrive; kept both versions.", "%1 more files changed here and in OneDrive; kept both versions.", n);
     } else if (notice.event == QLatin1String("notRemovedHere")) {
         notice.text = i18np("1 more folder cannot be removed here.", "%1 more folders cannot be removed here.", n);
+    } else if (notice.event == QLatin1String("nameTaken")) {
+        notice.text = i18np("1 more name is taken in OneDrive by an item that can't be shown here.", "%1 more names are taken in OneDrive by items that can't be shown here.", n);
     } else if (notice.event == QLatin1String("throttled")) {
         notice.text = i18np("1 more file could not be opened: OneDrive asked to wait.", "%1 more files could not be opened: OneDrive asked to wait.", n);
     } else if (notice.event == QLatin1String("uploadFailed")) {
