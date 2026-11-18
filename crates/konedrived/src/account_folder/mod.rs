@@ -225,9 +225,11 @@ impl SyncService {
         let shown = state.clone();
         pool.set_observer(Arc::new(move |throughput| shown.set_throughput(throughput)));
         pool.set_limits(wiring.transfers.ceiling, wiring.transfers.large);
-        // The drive reports into the account's pool.
+        // The drive reports into the account's pool, and into one reachability for the account's life: every sync
+        // of its folder follows it (`SendingHolds::follow_reachability`).
         if let Some(onedrive) = wiring.onedrive.take() {
-            wiring.onedrive = Some(OneDrive { drive: onedrive.drive.with_pool(Arc::clone(&pool)), paths: onedrive.paths });
+            let drive = onedrive.drive.with_pool(Arc::clone(&pool)).with_reachability(konedrive_graph::reachability::Reachability::new());
+            wiring.onedrive = Some(OneDrive { drive, paths: onedrive.paths });
         }
         let settings = wiring.persist.store.account(&wiring.persist.account).map(|a| running::Settings::of(&a)).unwrap_or_default();
         let report = Report::new(state.clone());

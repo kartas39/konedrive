@@ -360,3 +360,30 @@ async fn a_refused_read_carries_the_status_and_graphs_code() {
     assert!(matches!(failing, DriveError::Transient(_)), "{failing:?}");
     assert_eq!((failing.status(), failing.code()), (Some(Status::new(502)), None));
 }
+
+/// Every try tells the account's reachability how it ended: no answer from OneDrive, an
+/// answer of any status, no answer from the token endpoint.
+#[tokio::test]
+async fn each_try_tells_whether_microsoft_answered() {
+    struct NoTokenEndpoint;
+    #[async_trait::async_trait]
+    impl TokenSource for NoTokenEndpoint {
+        async fn access_token(&self) -> Result<String, AuthError> {
+            Err(AuthError::Unreachable("cannot reach Microsoft: error sending request".into()))
+        }
+        async fn invalidate(&self) {}
+    }
+    let server = MockServer::start().await;
+    Mock::given(method("GET")).and(path("/me/drive/items/Y")).respond_with(ResponseTemplate::new(502)).mount(&server).await;
+    let reachability = Reachability::new();
+    let drive = client(&server).with_reachability(Arc::clone(&reachability));
+    let closed = dropping_url().await;
+    assert!(drive.download(&closed, 0, None).await.is_err());
+    assert!(reachability.is_unreachable(), "a connection that gives no answer");
+    assert!(drive.item("Y").await.is_err());
+    assert!(!reachability.is_unreachable(), "a 502 is an answer");
+    let base = Url::parse(&format!("{}/", server.uri())).unwrap();
+    let no_token = DriveClient::new(base, Arc::new(NoTokenEndpoint)).unwrap().with_reachability(Arc::clone(&reachability));
+    assert!(no_token.item("Y").await.is_err());
+    assert!(reachability.is_unreachable(), "no request leaves without a token");
+}

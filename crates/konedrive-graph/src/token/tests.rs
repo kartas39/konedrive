@@ -239,6 +239,19 @@ async fn invalid_grant_signs_out() {
     assert_eq!(s.last_error, SESSION_EXPIRED);
 }
 
+/// A token endpoint that does not answer: told apart from a server error, and the session kept.
+#[tokio::test]
+async fn a_token_endpoint_that_does_not_answer_is_unreachable_and_keeps_the_session() {
+    let state = StateHandle(Arc::new(std::sync::Mutex::new(AccountSnapshot { state: SignInState::SignedIn, last_error: String::new() })));
+    let store = Arc::new(MemoryStore::with_token("RT0"));
+    let tokens = TokenManager::new(store.clone(), state.clone());
+    let nobody = Url::parse("http://127.0.0.1:9/").unwrap();
+    tokens.set_oauth(Some(OAuthClient::new(reqwest::Client::new(), Endpoints { authority: nobody.clone(), graph: nobody }, "cid".into())));
+    assert!(matches!(tokens.access_token().await, Err(AuthError::Unreachable(_))));
+    assert_eq!(store.current().as_deref(), Some("RT0"));
+    assert_eq!(state.get().state, SignInState::SignedIn);
+}
+
 #[tokio::test]
 async fn server_errors_are_transient_and_keep_the_session() {
     let server = MockServer::start().await;

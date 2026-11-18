@@ -6,6 +6,7 @@ use super::*;
 use crate::account::state::ModeNote;
 use crate::sync_parts::sync_plan_wake::WakeCause;
 use crate::sync_parts::sending_holds::BACKOFF_MAX;
+use konedrive_graph::reachability::{Reachability, RequestEnd};
 
 const NOW: i64 = 1_700_000_000;
 
@@ -177,6 +178,7 @@ fn a_throttle_holds_no_download_and_a_pause_does() {
         (SendingHold::Paused { until: None }, true),
         (SendingHold::Paused { until: Some(NOW) }, true),
         (SendingHold::Throttled { until: NOW }, false),
+        (SendingHold::Unreachable, true),
         (SendingHold::FirstListingNotEnded, false),
     ];
     for (hold, holds_download) in &every_hold {
@@ -254,4 +256,40 @@ fn a_read_only_folder_holds_what_is_sent_and_no_download_and_is_shown_after_the_
     holds.set_writes_refusal(None);
     assert_eq!(holds.find(NOW), Some(SendingHold::Throttled { until: NOW + 30 }));
     assert_eq!(holds.find(NOW + 30), None);
+}
+
+#[test]
+fn the_hold_of_an_unreachable_microsoft_follows_the_accounts_reachability_and_asks_a_listing_at_its_start() {
+    let wake = Arc::new(SyncPlanWake::new());
+    let holds = Arc::new(SendingHolds::new(Arc::clone(&wake)));
+    let reachability = Reachability::new();
+    let listings_asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let asked = Arc::clone(&listings_asked);
+    holds.follow_reachability(&reachability, move || {
+        asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    let listings = || listings_asked.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!((holds.find(NOW), is_plan_woken(&wake), listings()), (Some(SendingHold::FirstListingNotEnded), false, 0), "reachable at the start: nothing changes");
+
+    reachability.note(RequestEnd::Unanswered { began: std::time::Instant::now() });
+    assert_eq!((holds.find(NOW), is_plan_woken(&wake), listings()), (Some(SendingHold::Unreachable), true, 1), "shown before the first listing, and a listing asked");
+    assert!(holds.is_held(StepClass::Download, NOW) && holds.is_held(StepClass::Content, NOW) && !holds.is_held(StepClass::Folder, NOW));
+    reachability.note(RequestEnd::Unanswered { began: std::time::Instant::now() });
+    assert_eq!((is_plan_woken(&wake), listings()), (false, 1), "no answer again changes nothing");
+    holds.throttle(secs(30), NOW);
+    assert_eq!(holds.find(NOW), Some(SendingHold::Throttled { until: NOW + 30 }), "shown after a throttle");
+    assert!(is_plan_woken(&wake));
+
+    reachability.note(RequestEnd::Answered);
+    assert_eq!((holds.find(NOW + 30), is_plan_woken(&wake), listings()), (Some(SendingHold::FirstListingNotEnded), true, 1), "the first answer ends it");
+    assert!(!holds.is_held(StepClass::Download, NOW + 30));
+
+    // A run that starts while Microsoft does not answer is held from its start.
+    let later = Arc::new(SendingHolds::new(Arc::new(SyncPlanWake::new())));
+    reachability.note(RequestEnd::Unanswered { began: std::time::Instant::now() + Duration::from_secs(1) });
+    later.follow_reachability(&reachability, || {});
+    assert_eq!(later.find(NOW), Some(SendingHold::Unreachable));
+    drop(holds);
+    reachability.note(RequestEnd::Answered);
+    assert_eq!(later.find(NOW), Some(SendingHold::FirstListingNotEnded), "the holds of the run that follows it, not of the one before");
 }

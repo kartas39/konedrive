@@ -1026,7 +1026,7 @@ impl SyncPlanTask {
         let note = match hold {
             Some(SendingHold::Throttled { until }) => Some(UploadQueueNote::Throttled(*until)),
             Some(SendingHold::WritesNotAllowed { reason }) => Some(UploadQueueNote::WritesNotAllowed(reason.clone())),
-            Some(SendingHold::Stopping | SendingHold::SignedOut | SendingHold::FolderReadOnly | SendingHold::Paused { .. } | SendingHold::FirstListingNotEnded) | None => None,
+            Some(SendingHold::Stopping | SendingHold::SignedOut | SendingHold::FolderReadOnly | SendingHold::Paused { .. } | SendingHold::Unreachable | SendingHold::FirstListingNotEnded) | None => None,
         };
         let counts = round.item_counts;
         parts.state.update_if_changed(|state| {

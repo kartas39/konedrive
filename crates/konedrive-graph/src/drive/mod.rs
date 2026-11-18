@@ -33,6 +33,7 @@ use error::{classify, graph_error, Kind};
 use send::{Auth, Throttle};
 
 use crate::pool::{Direction, TransferPool};
+use crate::reachability::Reachability;
 use crate::token::TokenSource;
 
 /// Where a delta request starts: the beginning (a full listing), or a link
@@ -104,6 +105,10 @@ pub struct DriveClient {
     /// The account's transfer pool (`crate::pool`): told of every `429`/`503` and of the bytes
     /// that move. A pool of its own until the account's is set ([`with_pool`](Self::with_pool)).
     pool: Arc<TransferPool>,
+    /// Whether Microsoft answers the account's requests (`crate::reachability`): told of how
+    /// each try of a request ended. One of its own until the account's is set
+    /// ([`with_reachability`](Self::with_reachability)).
+    reachability: Arc<Reachability>,
 }
 
 #[derive(Deserialize)]
@@ -164,7 +169,7 @@ impl DriveClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         let pool = TransferPool::new(crate::pool::DEFAULT_CEILING);
-        Ok(Self { api, content, upload, base, tokens, retry: RetryPolicy::default(), pool })
+        Ok(Self { api, content, upload, base, tokens, retry: RetryPolicy::default(), pool, reachability: Reachability::new() })
     }
 
     /// This client reports into `pool`, the account's.
@@ -176,6 +181,17 @@ impl DriveClient {
     /// The account's transfer pool.
     pub fn pool(&self) -> &Arc<TransferPool> {
         &self.pool
+    }
+
+    /// This client tells `reachability`, the account's, how each try of a request ended.
+    pub fn with_reachability(mut self, reachability: Arc<Reachability>) -> Self {
+        self.reachability = reachability;
+        self
+    }
+
+    /// Whether Microsoft answers the account's requests.
+    pub fn reachability(&self) -> &Arc<Reachability> {
+        &self.reachability
     }
 
     pub fn with_retry(mut self, retry: RetryPolicy) -> Self {

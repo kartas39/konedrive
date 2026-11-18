@@ -36,8 +36,10 @@
 //!    the mount's access mode and the hold of a read-only folder, BEFORE any task plans;
 //! 6. `OneDriveSpace::new(input.quota)`, then `read_quota_before_first_plan`;
 //! 7. `start_sync_tasks`: the runner of the steps towards the folder made of the mount's
-//!    parts (`make_folder_steps`), then the listing's poller, the thumbnail filler, the
-//!    plan's task. In either access mode. Nothing is awaited in it.
+//!    parts (`make_folder_steps`), then the listing's poller — whose handle the holds are
+//!    given to follow the account's reachability (`SendingHolds::follow_reachability`) —,
+//!    the thumbnail filler, the plan's task. In either access mode. Nothing is awaited in
+//!    it.
 //!
 //! **Two functions.** Stages 5 to 7 are `start_sync_over_parts`, over the parts of a
 //! folder whether they were kept or made in this start, and whether the mount is served
@@ -58,6 +60,7 @@
 // test: a_folder_whose_drive_is_not_known_is_not_mounted
 // test: a_folder_that_keeps_its_parts_opens_no_store_runs_no_check_builds_no_mount_and_asks_for_no_full_listing
 // test: the_holds_that_stand_at_the_start_are_set_before_the_first_plan
+// test: a_start_that_microsoft_does_not_answer_holds_what_can_wait_from_the_first_plan
 // test: a_refused_start_gives_back_the_parts_it_was_given_as_kept
 // test: the_parts_are_given_back_by_a_start_over_them_that_is_refused
 // test: a_refused_start_says_what_the_rebuild_of_its_store_lost
@@ -665,6 +668,11 @@ fn start_sync_tasks(input: &FolderStartInput, store: &Store, mount: &Arc<ItemMou
     });
     let listing_poller = ListingPoller::start(listing_cycle, input.schedule.clone(), Arc::clone(&input.running));
     let poll = listing_poller.handle();
+    // While Microsoft does not answer, nothing that can wait is tried; the listing asks again on its own schedule.
+    sending_holds.follow_reachability(input.drive.reachability(), {
+        let poll = poll.clone();
+        move || poll.refresh()
+    });
     let thumbnail_filler = input.thumbnail_cache.clone().map(|cache| ThumbnailFiller::new(input.drive.clone(), store.clone(), input.root.clone(), cache, Arc::clone(&input.running), input.state.clone()).spawn(Arc::clone(&thumbnail_nudge), stop.clone()));
 
     let quota_drive = input.drive.clone();

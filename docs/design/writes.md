@@ -416,10 +416,11 @@ cause set and cleared by its own owner, every change waking the plan. In the ord
 | `FolderReadOnly` | the switch to read-only (§2.3) |
 | `Paused` | the user's pause or the automatic hold (§6.3) |
 | `Throttled` | OneDrive asked to wait (§6.2) |
+| `Unreachable` | Microsoft does not answer the account's requests (§6.4); cleared by the first answer |
 | `FirstListingNotEnded` | the folder's start: nothing is sent on rows a stopped daemon left behind OneDrive until a listing of this run ended |
 
-Every hold holds every step towards OneDrive. A download is held only by `Stopping`, `SignedOut`
-and `Paused`; steps towards the folder and of the rows by none. The queue shows the first hold;
+Every hold holds every step towards OneDrive. A download is held only by `Stopping`, `SignedOut`,
+`Paused` and `Unreachable`; steps towards the folder and of the rows by none. The queue shows the first hold;
 whether a step is held asks every hold.
 
 ### 6.2 Throttling
@@ -462,6 +463,23 @@ once, `metered`. The hold is never written anywhere and never shows as `Paused`;
 pause stops. `Folder.SyncAnyway()` (`konedrivectl sync anyway`) lifts it for that account until a
 source or a setting changes; `sync anyway --all` and the tray's Sync Anyway lift it for every
 account that holds back by itself and is not paused by the user.
+
+### 6.4 No answer from Microsoft
+
+Each try of a request of the account tells the account's `Reachability`
+(`konedrive_graph::reachability`) how it ended, in the one way a request leaves the Graph client
+(`drive/send.rs`): an answer of any status, or none — the request could not be sent, nothing came
+back, or Microsoft's token endpoint did not answer. A request that began before the last answer
+came says nothing when it goes unanswered. While no answer comes the hold `Unreachable` stands, so
+that nothing that can wait — a pinned file, an unsent change — is tried and given up file by file.
+A program that opens a file is not held: its download is tried, and answers at once that it
+failed.
+
+The listing is not held by it: it asks again on its own schedule (5, 15, 30 seconds, then every
+minute), and is asked for a cycle when the hold begins, so that a listing whose next cycle is
+minutes away (the notification socket up) does not keep everything held until then.
+NetworkManager's "connected" asks for one at once (`conditions/network.rs`). The first answer, to
+the listing or to anything else, ends the hold.
 
 ## 7. On the bus and the command line
 

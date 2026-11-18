@@ -238,7 +238,7 @@ What the tasks of one folder's sync share: each a small owner of one state.
   the mount read it without asking the task. `[tests]`
 - `step_outcome.rs` — `StepOutcome`: what came of one step, the one answer every runner gives.
 - `sending_holds.rs` — `SendingHolds`: what holds all sending to OneDrive (a pause, a
-  sign-out, a read-only folder, a throttle), and its one owner. `[tests]`
+  sign-out, a read-only folder, a throttle, no answer from Microsoft), and its one owner. `[tests]`
 - `onedrive_space.rs` — `OneDriveSpace`: whether OneDrive is full, as the plan is told and as
   a refusal for lack of space is read. `[tests]`
 - `lease.rs` — the folder's lease as a task sees it: held while it changes the folder, so that
@@ -689,6 +689,8 @@ Integration tests: the compiled binary against a daemon on a private bus.
 - `secret.rs` — the refresh token's store, as the token manager sees it.
 - `pool.rs` — the transfer pool: how many requests an account has in flight. `[tests]`
 - `quickxor.rs` — QuickXorHash. `[tests]`
+- `reachability.rs` — `Reachability`: whether Microsoft answers the account's requests, as each
+  try told it. `[tests]`
 - `drive/mod.rs` — the drive API, reading: the delta feed, one item, content. `[tests]`
 - `drive/error.rs` — an answer's status, what it and Graph's error code mean, a read's error.
   `[tests]`

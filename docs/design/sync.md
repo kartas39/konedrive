@@ -487,8 +487,9 @@ request to OneDrive, one at a time. A download starts only where it leaves the f
 account keeps (`sync_plan_task/disk_space.rs`).
 
 What holds sending (`SendingHolds`): the stop, the sign-out, an account that may not write, a
-read-only folder, the pause, OneDrive's throttle, and no listing of this run ended yet. Each holds the
-steps towards OneDrive; the stop, the sign-out and the pause hold downloads too; none holds a step
+read-only folder, the pause, OneDrive's throttle, Microsoft not answering the account's requests
+([writes.md](writes.md) §6.4), and no listing of this run ended yet. Each holds the
+steps towards OneDrive; the stop, the sign-out, the pause and the lack of an answer hold downloads too; none holds a step
 towards the folder or of the rows. While OneDrive is full no content starts (`OneDriveSpace`).
 
 ### 8.4 What wakes it

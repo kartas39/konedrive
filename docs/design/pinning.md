@@ -90,7 +90,7 @@ answering another content than the row's asks for a listing, and the next downlo
 
 | What | Owner | |
 |---|---|---|
-| the folder's sync stopping, the sign-out, the user's pause or the automatic hold | `SendingHolds` ([writes.md](writes.md) §6) | a download is held by these alone, not by a read-only folder or a throttle of uploads |
+| the folder's sync stopping, the sign-out, the user's pause or the automatic hold, no answer from Microsoft | `SendingHolds` ([writes.md](writes.md) §6) | a download is held by these alone, not by a read-only folder or a throttle of uploads |
 | the free space the account keeps | `sync_plan_task/disk_space.rs` | a download that would leave less than the reserve is not started; a smaller one after it still is |
 
 **The free space kept** is `free_space_reserve_gb` in the account's section of `config.toml`, 10 by

@@ -9,6 +9,7 @@
 //! - The drive API, in [`drive`]: [`drive::DriveClient`], its items, its errors, the
 //!   change notifications.
 //! - The transfer pool, in [`pool`]: how many requests an account has in flight.
+//! - Whether Microsoft answers the account's requests, in [`reachability`].
 //! - QuickXorHash, in [`quickxor`].
 //!
 //! What only tests need (a secret store in memory, a pool that starts at a given size) is
@@ -20,6 +21,7 @@ pub mod oauth;
 pub mod pkce;
 pub mod pool;
 pub mod quickxor;
+pub mod reachability;
 pub mod secret;
 pub mod token;
 
