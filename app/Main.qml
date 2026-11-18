@@ -299,6 +299,8 @@ Kirigami.ApplicationWindow {
                 Layout.leftMargin: Kirigami.Units.smallSpacing
                 Layout.rightMargin: Kirigami.Units.smallSpacing
                 Layout.bottomMargin: serviceVersionLine.visible ? 0 : Kirigami.Units.smallSpacing
+                // A link button centres its text: the foot's lines start at its left edge.
+                horizontalAlignment: Text.AlignLeft
                 text: ReleaseCheck.newerVersion.length > 0 ? i18nc("@info the version of a newer release", "New version available: %1", ReleaseCheck.newerVersion) : i18nc("@info a link to the releases", "KOneDrive on GitHub")
                 url: ReleaseCheck.releasesPage.toString()
                 font: Kirigami.Theme.smallFont

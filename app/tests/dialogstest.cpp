@@ -852,6 +852,7 @@ private Q_SLOTS:
         QVERIFY(release->isVisible());
         QCOMPARE(release->property("text").toString(), QStringLiteral("KOneDrive on GitHub"));
         QCOMPARE(release->property("url").toString(), releases);
+        QCOMPARE(release->property("horizontalAlignment").toInt(), int(Qt::AlignLeft));
         const QByteArray newer = QByteArrayLiteral("{\"tag_name\": \"v99.0.0\", \"html_url\": \"https://github.com/kartas39/konedrive/releases/tag/v99.0.0\"}");
         QVERIFY(releaseCheck.takeAnswer(newer));
         QTRY_COMPARE(release->property("text").toString(), QStringLiteral("New version available: 99.0.0"));
