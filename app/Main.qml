@@ -266,8 +266,8 @@ Kirigami.ApplicationWindow {
             Layout.fillHeight: true
         }
 
-        // This build, on every page, for bug reports: selectable, to copy. Below it a newer
-        // release, and a service that runs another build.
+        // This build's version, on every page: selectable, to copy. Below it KOneDrive's releases
+        // on GitHub, which say when a newer one is out, and a service that runs another build.
         footer: ColumnLayout {
             spacing: 0
 
@@ -280,7 +280,6 @@ Kirigami.ApplicationWindow {
                 Layout.leftMargin: Kirigami.Units.smallSpacing
                 Layout.rightMargin: Kirigami.Units.smallSpacing
                 Layout.topMargin: Kirigami.Units.smallSpacing
-                Layout.bottomMargin: releaseLine.visible || serviceVersionLine.visible ? 0 : Kirigami.Units.smallSpacing
                 text: Daemon.versionLine
                 readOnly: true
                 selectByMouse: true
@@ -290,7 +289,8 @@ Kirigami.ApplicationWindow {
                 font: Kirigami.Theme.smallFont
                 opacity: 0.7
             }
-            // A newer release is out: its page, where its packages are.
+            // KOneDrive's releases on GitHub, where the packages are; while a newer release is
+            // out, the link says so.
             Kirigami.UrlButton {
                 id: releaseLine
 
@@ -299,9 +299,8 @@ Kirigami.ApplicationWindow {
                 Layout.leftMargin: Kirigami.Units.smallSpacing
                 Layout.rightMargin: Kirigami.Units.smallSpacing
                 Layout.bottomMargin: serviceVersionLine.visible ? 0 : Kirigami.Units.smallSpacing
-                visible: ReleaseCheck.newerVersion.length > 0
-                text: i18nc("@info the version of a newer release", "Update available: %1", ReleaseCheck.newerVersion)
-                url: ReleaseCheck.newerPage.toString()
+                text: ReleaseCheck.newerVersion.length > 0 ? i18nc("@info the version of a newer release", "New version available: %1", ReleaseCheck.newerVersion) : i18nc("@info a link to the releases", "KOneDrive on GitHub")
+                url: ReleaseCheck.releasesPage.toString()
                 font: Kirigami.Theme.smallFont
                 elide: Text.ElideRight
             }

@@ -160,8 +160,13 @@ konedrivectl --version                          # this program's build and the s
 
 `--version` says so when the running service is another build and should be restarted.
 
-The settings that are the window's own — start at login, progress, Places, a tray icon per account
-— are in `~/.config/konedriverc`, group `[General]`, and are read when the window starts.
+The settings that are the window's own — start at login, progress, Places, a tray icon per account,
+the check for new versions (`CheckForNewVersions`) — are in `~/.config/konedriverc`, group
+`[General]`, and are read when the window starts:
+
+```
+kwriteconfig6 --file konedriverc --group General --key CheckForNewVersions false
+```
 
 A development build (`scripts/dev-install.sh`, or a package built with `--dev-tools`) also has
 `konedrivectl dev add-account <label>` and `konedrivectl dev export-access-token --out <file>

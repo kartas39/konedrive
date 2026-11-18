@@ -99,13 +99,15 @@ The sidebar starts with the **account switcher**: the OneDrive shown, and a menu
 - **Show download and upload progress** — a long transfer shows in Plasma's notifications.
 - **Show in Places** — each account's folder is in Dolphin's Places panel and in file dialogs.
 - **Show a tray icon for each account**.
+- **Check for new versions once a day** — KOneDrive asks GitHub for its latest release; nothing is
+  downloaded or installed.
 - **Pause on metered connections** and **On battery** — when every account pauses by itself.
 - **Quit KOneDrive**.
 
 Closing the window does not stop anything: KOneDrive stays in the tray, and the service that syncs
-runs without the window at all. The foot of the sidebar names the version, for a bug report; when
-a newer release is out, **Update available** below it opens the release's page, and a notification
-says so once.
+runs without the window at all. The foot of the sidebar names the version, for a bug report, and
+**KOneDrive on GitHub** below it opens the releases. When a newer release is out, the link says
+**New version available**, and a notification says so once.
 
 ## The tray
 

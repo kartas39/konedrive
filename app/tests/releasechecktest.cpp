@@ -8,6 +8,7 @@
 #include <QFile>
 #include <QSignalSpy>
 #include <QStandardPaths>
+#include <QTcpServer>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -22,9 +23,10 @@ public:
 };
 
 /// The newer release: how build versions are read and ordered, what a latest release is to
-/// the build that runs, how GitHub's answer is read, and what the check shows and notifies.
-/// No test asks GitHub: answers are handed to `takeAnswer`. konedriverc is under a temporary
-/// XDG_CONFIG_HOME, so the user's own ~/.config is never touched.
+/// the build that runs, how GitHub's answer is read, what the check shows and notifies, and
+/// that a check turned off asks nothing. No test asks GitHub: answers are handed to
+/// `takeAnswer`, and an ask goes to a local server that only counts it. konedriverc is under a
+/// temporary XDG_CONFIG_HOME, so the user's own ~/.config is never touched.
 class ReleaseCheckTest : public QObject
 {
     Q_OBJECT
@@ -40,10 +42,20 @@ private:
             .toUtf8();
     }
 
+    static KConfigGroup general(KConfig &config) { return config.group(QStringLiteral("General")); }
+
+    static QString configPath() { return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + QStringLiteral("/konedriverc"); }
+
     static QString notifiedRelease()
     {
-        KConfig config(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + QStringLiteral("/konedriverc"), KConfig::SimpleConfig);
-        return config.group(QStringLiteral("General")).readEntry("NotifiedRelease", QString());
+        KConfig config(configPath(), KConfig::SimpleConfig);
+        return general(config).readEntry("NotifiedRelease", QString());
+    }
+
+    static QString checkSetting()
+    {
+        KConfig config(configPath(), KConfig::SimpleConfig);
+        return general(config).readEntry("CheckForNewVersions", QString());
     }
 
 private Q_SLOTS:
@@ -156,12 +168,11 @@ private Q_SLOTS:
             QSignalSpy changed(&check, &ReleaseCheck::newerReleaseChanged);
             QVERIFY(check.takeAnswer(answer(QStringLiteral("v0.2.2"))));
             QCOMPARE(check.newerVersion(), QStringLiteral("0.2.2"));
-            QCOMPARE(check.newerPage(), QUrl(QStringLiteral("https://github.com/kartas39/konedrive/releases/tag/v0.2.2")));
             QCOMPARE(changed.count(), 1);
             QCOMPARE(sink.sent.size(), 1);
             QCOMPARE(sink.sent.at(0).event, QStringLiteral("newerRelease"));
             QCOMPARE(sink.sent.at(0).title, QStringLiteral("KOneDrive 0.2.2 is out"));
-            QCOMPARE(sink.sent.at(0).link, check.newerPage());
+            QCOMPARE(sink.sent.at(0).link, QUrl(QStringLiteral("https://github.com/kartas39/konedrive/releases/tag/v0.2.2")));
             QCOMPARE(notifiedRelease(), QStringLiteral("0.2.2"));
 
             QVERIFY(check.takeAnswer(answer(QStringLiteral("v0.2.2"))));
@@ -190,6 +201,46 @@ private Q_SLOTS:
         QVERIFY(updated.takeAnswer(answer(QStringLiteral("v0.2.3"))));
         QVERIFY(updated.newerVersion().isEmpty());
         QCOMPARE(sink.sent.size(), 2);
+    }
+
+    /// On by default. Turned off, the newer release shown goes and nothing is asked, also once
+    /// the window starts anew; turned on again, it asks at once. konedriverc keeps the setting.
+    void aCheckTurnedOffAsksNothing()
+    {
+        QTcpServer github;
+        QVERIFY(github.listen(QHostAddress::LocalHost));
+        int asks = 0;
+        connect(&github, &QTcpServer::newConnection, this, [&] {
+            while (github.nextPendingConnection()) {
+                ++asks;
+            }
+        });
+        const QUrl url(QStringLiteral("http://127.0.0.1:%1/latest").arg(github.serverPort()));
+        RecordingSink sink;
+        {
+            ReleaseCheck check(QStringLiteral("0.2.1"), &sink);
+            QVERIFY(check.enabled());
+            QVERIFY(check.takeAnswer(answer(QStringLiteral("v0.2.2"))));
+            QCOMPARE(check.newerVersion(), QStringLiteral("0.2.2"));
+            QSignalSpy turned(&check, &ReleaseCheck::enabledChanged);
+            check.setEnabled(false);
+            QCOMPARE(turned.count(), 1);
+            QVERIFY(check.newerVersion().isEmpty());
+            QCOMPARE(checkSetting(), QStringLiteral("false"));
+            check.start(url);
+            QTest::qWait(300);
+            QCOMPARE(asks, 0);
+        }
+
+        // The window started anew: still off, until turned on.
+        ReleaseCheck check(QStringLiteral("0.2.1"), &sink);
+        QVERIFY(!check.enabled());
+        check.start(url);
+        QTest::qWait(300);
+        QCOMPARE(asks, 0);
+        check.setEnabled(true);
+        QTRY_COMPARE(asks, 1);
+        QCOMPARE(checkSetting(), QStringLiteral("true"));
     }
 };
 
