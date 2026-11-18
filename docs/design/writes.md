@@ -472,8 +472,8 @@ Each try of a request of the account tells the account's `Reachability`
 back, or Microsoft's token endpoint did not answer. A request that began before the last answer
 came says nothing when it goes unanswered. While no answer comes the hold `Unreachable` stands, so
 that nothing that can wait — a pinned file, an unsent change — is tried and given up file by file.
-A program that opens a file is not held: its download is tried, and answers at once that it
-failed.
+Thumbnails wait for an answer too (`desktop/thumbs/request_start.rs`). A program that opens a
+file is not held: its download is tried, and answers at once that it failed.
 
 The listing is not held by it: it asks again on its own schedule (5, 15, 30 seconds, then every
 minute), and is asked for a cycle when the hold begins, so that a listing whose next cycle is

@@ -182,6 +182,7 @@ impl ThumbnailFiller {
             is_file_being_opened: pool.held(Class::Open) > 0,
             is_transfer_waiting: pool.waiting(),
             requests_under_way,
+            is_unreachable: self.drive.reachability().is_unreachable(),
         }
     }
 
@@ -243,9 +244,10 @@ impl ThumbnailFiller {
                 }
                 let wait = match decide_request_start(&self.read_request_facts(running.len()).await) {
                     RequestStart::Start => break true,
-                    // The listing's end nudges the filler: the drain ends here, and what
-                    // was not asked waits for the one the nudge starts.
-                    RequestStart::Wait(RequestWait::FullListingNotEnded | RequestWait::ListingUnderWay) => break false,
+                    // The listing's end nudges the filler — also the first after Microsoft
+                    // answers again: the drain ends here, and what was not asked waits for
+                    // the one the nudge starts.
+                    RequestStart::Wait(RequestWait::FullListingNotEnded | RequestWait::ListingUnderWay | RequestWait::Unreachable) => break false,
                     RequestStart::Wait(RequestWait::Throttled { left }) => left,
                     RequestStart::Wait(RequestWait::FileBeingOpened | RequestWait::TransferWaiting | RequestWait::RequestsAtLimit) => ASKED_AGAIN_AFTER,
                 };

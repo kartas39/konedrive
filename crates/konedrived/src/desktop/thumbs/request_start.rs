@@ -11,6 +11,7 @@
 //! ([`REQUESTS_AT_ONCE`]), and none starts
 //!
 //! - before the folder's first listing ended, or while any listing is under way;
+//! - while Microsoft does not answer the account's requests (`konedrive_graph::reachability`);
 //! - during a throttle's `Retry-After`;
 //! - while a file is being opened, or an open waits for its slot;
 //! - while an upload, a download of a pinned file or a metadata operation waits for a
@@ -57,6 +58,8 @@ pub(crate) struct RequestFacts {
     pub(crate) is_transfer_waiting: bool,
     /// The filler's thumbnail requests under way.
     pub(crate) requests_under_way: usize,
+    /// Microsoft does not answer the account's requests.
+    pub(crate) is_unreachable: bool,
 }
 
 /// Why no thumbnail request starts now; the first that holds, in this order.
@@ -67,6 +70,9 @@ pub(crate) enum RequestWait {
     FullListingNotEnded,
     /// A listing is under way. Ends with the listing, which nudges the filler.
     ListingUnderWay,
+    /// Microsoft does not answer the account's requests: every request would be given up.
+    /// Ends with the first answer; the listing that ends after it nudges the filler.
+    Unreachable,
     /// OneDrive asked to wait, this much longer.
     Throttled { left: Duration },
     /// A file is being opened.
@@ -88,6 +94,7 @@ pub(crate) fn decide_request_start(facts: &RequestFacts) -> RequestStart {
     let wait = match facts.listing {
         ListingProgress::FullNotEnded => Some(RequestWait::FullListingNotEnded),
         ListingProgress::UnderWay => Some(RequestWait::ListingUnderWay),
+        ListingProgress::Ended if facts.is_unreachable => Some(RequestWait::Unreachable),
         ListingProgress::Ended if !facts.throttle_left.is_zero() => Some(RequestWait::Throttled { left: facts.throttle_left }),
         ListingProgress::Ended if facts.is_file_being_opened => Some(RequestWait::FileBeingOpened),
         ListingProgress::Ended if facts.is_transfer_waiting => Some(RequestWait::TransferWaiting),
