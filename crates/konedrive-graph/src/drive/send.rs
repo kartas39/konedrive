@@ -9,12 +9,17 @@
 //! [`DriveClient::upload_chunk`] does the rest: it waits, asks the session where it stands,
 //! and sends the fragment again only if the session still expects it. The account page's
 //! two calls get the answer back and tell nobody ([`Throttle::Pass`]).
+//!
+//! Each try tells the account's [`Reachability`](crate::reachability::Reachability) how it
+//! ended: an answer of any status, or none — the request could not be sent, nothing came
+//! back, or the token endpoint did not answer.
 
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use super::error::{classify, Detail, Kind, Status};
 use super::write::retry_after;
 use super::{DriveClient, DriveError};
+use crate::reachability::RequestEnd;
 use crate::token::AuthError;
 
 /// How long to wait out throttling (`429`, `503`): `Retry-After` when given,
@@ -92,10 +97,18 @@ impl DriveClient {
                 Auth::Bearer(token) => request().bearer_auth(token),
                 Auth::Link | Auth::Session => request(),
             };
-            let response = request
-                .send()
-                .await
-                .map_err(|e| DriveError::Transient(format!("cannot reach {service}: {}", e.without_url()).into()))?;
+            let began = Instant::now();
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(e) => {
+                    // A request that could not be built never left: it says nothing of whether Microsoft answers.
+                    if !e.is_builder() {
+                        self.reachability.note(RequestEnd::Unanswered { began });
+                    }
+                    return Err(DriveError::Transient(format!("cannot reach {service}: {}", e.without_url()).into()));
+                }
+            };
+            self.reachability.note(RequestEnd::Answered);
             let status = Status::of(&response);
             match (classify(status, ""), auth, throttle) {
                 (Kind::Unauthorized, Auth::Account, _) if !renewed => {
@@ -127,10 +140,17 @@ impl DriveClient {
         }
     }
 
+    /// The account's access token. A token endpoint that does not answer is a try with no
+    /// answer (`crate::reachability`).
     async fn token(&self) -> Result<String, DriveError> {
+        let began = Instant::now();
         self.tokens.access_token().await.map_err(|e| match e {
             AuthError::SignedOut => DriveError::SignedOut,
             AuthError::Locked => DriveError::Transient("the secret storage is locked".into()),
+            AuthError::Unreachable(message) => {
+                self.reachability.note(RequestEnd::Unanswered { began });
+                DriveError::Transient(message.into())
+            }
             AuthError::Transient(message) => DriveError::Transient(message.into()),
         })
     }

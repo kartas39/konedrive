@@ -3,7 +3,8 @@
 //!
 //! **State owned:** the causes that hold now: the folder's sync stopping, the sign-out,
 //! the account not being allowed to write, the folder being read-only, the pause, OneDrive's throttle with its end,
-//! the first listing of this run not having ended. Each is set and cleared by its own
+//! Microsoft not answering the account's requests, the first listing of this run not
+//! having ended. Each is set and cleared by its own
 //! cause, through the functions here, and every change wakes the plan
 //! (`WakeCause::SendingHoldChanged`); none is stored. It is here, below the plan's task, because an upload
 //! reads it between two fragments and must not know the task. Whether OneDrive is full
@@ -25,12 +26,14 @@
 // test: a_read_only_folder_holds_what_is_sent_and_no_download_and_is_shown_after_the_accounts_refusal
 // test: a_download_is_held_by_a_pause_that_is_not_the_hold_shown
 // test: a_read_only_folder_that_still_sends_what_was_unsent_is_not_held_for_being_read_only
+// test: the_hold_of_an_unreachable_microsoft_follows_the_accounts_reachability_and_asks_a_listing_at_its_start
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use konedrive_graph::drive::MAX_RETRY_AFTER;
+use konedrive_graph::reachability::Reachability;
 
 use crate::account::state::ModeNote;
 
@@ -56,21 +59,26 @@ pub(crate) enum SendingHold {
     Paused { until: Option<i64> },
     /// OneDrive asked to wait, until this time.
     Throttled { until: i64 },
+    /// Microsoft does not answer the account's requests
+    /// (`konedrive_graph::reachability`): nothing that can wait is tried until an answer
+    /// comes. The listing, which this holds not, goes on asking on its own schedule, and
+    /// is asked for a cycle when this begins (`follow_reachability`).
+    Unreachable,
     /// No listing of this run of the sync has ended yet: nothing is sent on rows a
     /// stopped daemon left behind OneDrive.
     FirstListingNotEnded,
 }
 
 /// Whether `hold` holds a step of `class`. Pure. Every hold holds what is sent
-/// (`Content`, `Metadata`); a download is held by the stop, the sign-out and the pause
-/// alone; a step towards the folder or of the rows by none. Private: who asks whether a
+/// (`Content`, `Metadata`); a download is held by the stop, the sign-out, the pause and
+/// an unreachable Microsoft alone; a step towards the folder or of the rows by none. Private: who asks whether a
 /// step is held asks `SendingHolds::is_held` or `list_held_classes`, which ask this of
 /// every hold.
 fn decide_is_held(hold: Option<&SendingHold>, class: StepClass) -> bool {
     let Some(hold) = hold else { return false };
     match class {
         StepClass::Content | StepClass::Metadata => true,
-        StepClass::Download => matches!(hold, SendingHold::Stopping | SendingHold::SignedOut | SendingHold::Paused { .. }),
+        StepClass::Download => matches!(hold, SendingHold::Stopping | SendingHold::SignedOut | SendingHold::Paused { .. } | SendingHold::Unreachable),
         StepClass::Folder | StepClass::Row => false,
     }
 }
@@ -87,6 +95,7 @@ struct Holds {
     is_throttle_end_chosen: bool,
     /// The wait chosen last when OneDrive named none, doubled each time.
     chosen_wait: Option<Duration>,
+    is_unreachable: bool,
     has_listing_ended: bool,
 }
 
@@ -101,6 +110,7 @@ impl Holds {
             self.is_folder_read_only.then_some(SendingHold::FolderReadOnly),
             paused.map(|until| SendingHold::Paused { until }),
             self.find_throttle_end(now).map(|until| SendingHold::Throttled { until }),
+            self.is_unreachable.then_some(SendingHold::Unreachable),
             (!self.has_listing_ended).then_some(SendingHold::FirstListingNotEnded),
         ];
         holds.into_iter().flatten().collect()
@@ -146,8 +156,9 @@ pub(crate) struct SendingHolds {
 
 impl SendingHolds {
     /// Makes `change` to what holds, and wakes the plan when it changed something: after
-    /// this part's lock is let go. A hold set or ended is said at `debug`.
-    fn change(&self, change: impl FnOnce(&mut Holds)) {
+    /// this part's lock is let go. A hold set or ended is said at `debug`. Whether it
+    /// changed something.
+    fn change(&self, change: impl FnOnce(&mut Holds)) -> bool {
         let is_changed = {
             let mut holds = crate::panic::lock(&self.holds);
             let before = holds.clone();
@@ -161,6 +172,7 @@ impl SendingHolds {
         if is_changed {
             self.sync_plan_wake.wake(WakeCause::SendingHoldChanged);
         }
+        is_changed
     }
 
     /// Nothing holds but the first listing. Made by the folder's start.
@@ -185,7 +197,7 @@ impl SendingHolds {
         let ends = crate::panic::lock(&self.holds).list(now).into_iter().filter_map(|hold| match hold {
             SendingHold::Paused { until } => until,
             SendingHold::Throttled { until } => Some(until),
-            SendingHold::Stopping | SendingHold::SignedOut | SendingHold::WritesNotAllowed { .. } | SendingHold::FolderReadOnly | SendingHold::FirstListingNotEnded => None,
+            SendingHold::Stopping | SendingHold::SignedOut | SendingHold::WritesNotAllowed { .. } | SendingHold::FolderReadOnly | SendingHold::Unreachable | SendingHold::FirstListingNotEnded => None,
         });
         ends.min()
     }
@@ -233,6 +245,30 @@ impl SendingHolds {
     pub(crate) fn pass(&self) {
         // Nothing that holds changes: the plan is not woken.
         crate::panic::lock(&self.holds).chosen_wait = None;
+    }
+
+    /// The hold [`SendingHold::Unreachable`] follows `reachability`, the account's, from
+    /// now on: set while Microsoft does not answer the account's requests, cleared by the
+    /// first answer. When it begins, `ask_listing` is called: the listing, which nothing
+    /// here holds, is what asks Microsoft again, and a listing whose next cycle is far
+    /// (the notification socket up) would leave everything held until then. Called by the
+    /// start of the folder's sync, once the listing's poller runs; the account's
+    /// reachability outlives this run, and keeps no more than a weak reference to these
+    /// holds. Each change is said in the journal.
+    pub(crate) fn follow_reachability(self: &Arc<Self>, reachability: &Reachability, ask_listing: impl Fn() + Send + Sync + 'static) {
+        let holds = Arc::downgrade(self);
+        reachability.set_observer(Arc::new(move |is_unreachable| {
+            let Some(holds) = holds.upgrade() else { return };
+            if !holds.change(|holds| holds.is_unreachable = is_unreachable) {
+                return;
+            }
+            if is_unreachable {
+                tracing::warn!("Microsoft does not answer the account's requests: nothing is downloaded or sent in the background until it answers");
+                ask_listing();
+            } else {
+                tracing::info!("Microsoft answers the account's requests again");
+            }
+        }));
     }
 
     /// A listing ended. Called by the plan's task on `WakeCause::ListingEnded`.

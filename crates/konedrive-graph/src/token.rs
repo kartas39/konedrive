@@ -28,6 +28,9 @@ pub enum AuthError {
     SignedOut,
     #[error("secret storage is locked")]
     Locked,
+    /// Microsoft's token endpoint did not answer (`OAuthError::Unreachable`).
+    #[error("{0}")]
+    Unreachable(String),
     #[error("{0}")]
     Transient(String),
 }
@@ -291,6 +294,7 @@ impl TokenManager {
                 self.state.failed(&message);
                 Err(AuthError::Transient(message))
             }
+            Err(OAuthError::Unreachable(message)) => Err(AuthError::Unreachable(message)),
             Err(OAuthError::Transient(message)) => Err(AuthError::Transient(message)),
         }
     }

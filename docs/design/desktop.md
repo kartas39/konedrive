@@ -549,8 +549,9 @@ is drawn without opening the file.
   that no cycle starts over, draining 200 candidates at a time until each has been looked at once;
 - a thumbnail is a request to the Graph API, not a download, and takes no slot of the transfer pool.
   At most two run at once, and none starts before the folder's first listing ended, during a
-  listing, during a `Retry-After`, while a file is being opened, or while anything waits for a slot
-  of the pool (`desktop/thumbs/request_start.rs`).
+  listing, while Microsoft does not answer the account's requests ([writes.md](writes.md) §6.4),
+  during a `Retry-After`, while a file is being opened, or while anything waits for a slot of the
+  pool (`desktop/thumbs/request_start.rs`).
 
 `xx-large` is not filled: it would be a second request per file at about four times the bytes.
 Where Dolphin asks for that size, KIO makes its own thumbnail, which reads the file.

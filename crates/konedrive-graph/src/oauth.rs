@@ -91,7 +91,13 @@ pub enum OAuthError {
     /// Rejected for another reason (unknown client ID, bad redirect URI, …).
     #[error("{error}: {description}")]
     Rejected { error: String, description: String },
-    /// Network problem or server error; worth retrying.
+    /// The token endpoint did not answer: the request could not be sent, or no answer came
+    /// (no network, a name that does not resolve, a connection refused or timed out). Worth
+    /// retrying; told apart from [`Transient`](Self::Transient) because no answer of
+    /// Microsoft's is in it.
+    #[error("{0}")]
+    Unreachable(String),
+    /// An answer that is a server error or cannot be read; worth retrying.
     #[error("{0}")]
     Transient(String),
 }
@@ -204,7 +210,7 @@ impl OAuthClient {
             .form(form)
             .send()
             .await
-            .map_err(|e| OAuthError::Transient(format!("cannot reach Microsoft: {}", e.without_url())))?;
+            .map_err(|e| OAuthError::Unreachable(format!("cannot reach Microsoft: {}", e.without_url())))?;
         let status = response.status();
         if status.is_success() {
             return response

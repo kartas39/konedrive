@@ -335,7 +335,7 @@ impl AccountService {
     async fn token_for_refresh(&self) -> Result<String, ()> {
         match self.tokens.access_token().await {
             Ok(token) => Ok(token),
-            Err(AuthError::Transient(message)) => {
+            Err(AuthError::Unreachable(message) | AuthError::Transient(message)) => {
                 self.state.update(|s| s.set_error(AccountTrouble::ProfileNotRead { detail: message }));
                 Err(())
             }
