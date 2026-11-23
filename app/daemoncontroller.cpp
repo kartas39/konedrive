@@ -245,7 +245,7 @@ void DaemonController::remove(const QString &path)
 
 QString DaemonController::versionLine() const
 {
-    return i18nc("@info version, short commit hash", "Version %1 · commit %2", m_version, shortCommit(m_commit));
+    return i18nc("@info version", "Version %1", m_version);
 }
 
 QString DaemonController::daemonBuildMismatch() const
@@ -256,8 +256,5 @@ QString DaemonController::daemonBuildMismatch() const
     if (m_daemonVersion.isEmpty()) {
         return i18nc("@info", "Service: an older version — restart it to use this version");
     }
-    return i18nc("@info the running service's version, short commit hash",
-                 "Service: %1 · commit %2 — restart it to use this version",
-                 m_daemonVersion,
-                 shortCommit(m_daemonCommit));
+    return i18nc("@info the running service's version", "Service: %1 — restart it to use this version", m_daemonVersion);
 }

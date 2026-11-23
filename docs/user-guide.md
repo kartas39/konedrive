@@ -81,7 +81,10 @@ The sidebar starts with the **account switcher**: the OneDrive shown, and a menu
     pale for the rest of what your OneDrive holds; how many items are always kept here, and their
     size; **Free Up Space…** and **Unpin All…**;
   - **Downloading** and **Uploading**: the speed, the files moving, what is left with its size and
-    time, and a chart of the last two minutes; then the files moving now;
+    time, and a chart of the last two minutes;
+  - **Files moving now**, folded into one line of how many download and upload; opened, the first
+    three each way with how far each is, and how many more. Folded or opened, its size does not
+    change as files start and end, so the page does not jump;
   - **History**, folded until you open it: what happened lately, with a search by name or folder.
 - **Issues** — what needs you: the changes that **Can't Upload** and why (see "Uploading
   changes"); files changed on both sides, of which both versions are kept so that nothing is lost
@@ -99,13 +102,15 @@ The sidebar starts with the **account switcher**: the OneDrive shown, and a menu
 - **Show download and upload progress** — a long transfer shows in Plasma's notifications.
 - **Show in Places** — each account's folder is in Dolphin's Places panel and in file dialogs.
 - **Show a tray icon for each account**.
+- **Check for new versions once a day** — KOneDrive asks GitHub for its latest release; nothing is
+  downloaded or installed.
 - **Pause on metered connections** and **On battery** — when every account pauses by itself.
 - **Quit KOneDrive**.
 
 Closing the window does not stop anything: KOneDrive stays in the tray, and the service that syncs
-runs without the window at all. The foot of the sidebar names the version, for a bug report; when
-a newer release is out, **Update available** below it opens the release's page, and a notification
-says so once.
+runs without the window at all. The foot of the sidebar names the version, for a bug report, and
+**KOneDrive on GitHub** below it opens the releases. When a newer release is out, the link says
+**New version available**, and a notification says so once.
 
 ## The tray
 

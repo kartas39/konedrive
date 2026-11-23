@@ -2,7 +2,7 @@ use super::*;
 
 /// The facts with which a request starts: every test changes one of them.
 fn free() -> RequestFacts {
-    RequestFacts { listing: ListingProgress::Ended, throttle_left: Duration::ZERO, is_file_being_opened: false, is_transfer_waiting: false, requests_under_way: 0 }
+    RequestFacts { listing: ListingProgress::Ended, throttle_left: Duration::ZERO, is_file_being_opened: false, is_transfer_waiting: false, requests_under_way: 0, is_unreachable: false }
 }
 
 #[test]
@@ -32,6 +32,12 @@ fn none_starts_during_a_throttles_wait() {
 }
 
 #[test]
+fn none_starts_while_microsoft_does_not_answer() {
+    let facts = RequestFacts { is_unreachable: true, ..free() };
+    assert_eq!(decide_request_start(&facts), RequestStart::Wait(RequestWait::Unreachable));
+}
+
+#[test]
 fn none_starts_while_a_file_is_being_opened() {
     let facts = RequestFacts { is_file_being_opened: true, ..free() };
     assert_eq!(decide_request_start(&facts), RequestStart::Wait(RequestWait::FileBeingOpened));
@@ -55,11 +61,13 @@ fn none_starts_at_the_limit_of_requests_at_once() {
 /// listing's end is what nudges the filler, so it comes before what is only waited out.
 #[test]
 fn the_first_reason_in_the_order_of_the_cases_is_the_one_named() {
-    let all = RequestFacts { listing: ListingProgress::FullNotEnded, throttle_left: Duration::from_secs(5), is_file_being_opened: true, is_transfer_waiting: true, requests_under_way: REQUESTS_AT_ONCE };
+    let all = RequestFacts { listing: ListingProgress::FullNotEnded, throttle_left: Duration::from_secs(5), is_file_being_opened: true, is_transfer_waiting: true, requests_under_way: REQUESTS_AT_ONCE, is_unreachable: true };
     assert_eq!(decide_request_start(&all), RequestStart::Wait(RequestWait::FullListingNotEnded));
     let listed = RequestFacts { listing: ListingProgress::Ended, ..all };
-    assert_eq!(decide_request_start(&listed), RequestStart::Wait(RequestWait::Throttled { left: Duration::from_secs(5) }));
-    let unthrottled = RequestFacts { throttle_left: Duration::ZERO, ..listed };
+    assert_eq!(decide_request_start(&listed), RequestStart::Wait(RequestWait::Unreachable));
+    let answered = RequestFacts { is_unreachable: false, ..listed };
+    assert_eq!(decide_request_start(&answered), RequestStart::Wait(RequestWait::Throttled { left: Duration::from_secs(5) }));
+    let unthrottled = RequestFacts { throttle_left: Duration::ZERO, ..answered };
     assert_eq!(decide_request_start(&unthrottled), RequestStart::Wait(RequestWait::FileBeingOpened));
     let none_opened = RequestFacts { is_file_being_opened: false, ..unthrottled };
     assert_eq!(decide_request_start(&none_opened), RequestStart::Wait(RequestWait::TransferWaiting));

@@ -19,8 +19,10 @@ namespace
 {
 const QString ConfigName = QStringLiteral("konedriverc");
 const char Group[] = "General";
-const char Key[] = "NotifiedRelease";
+const char NotifiedKey[] = "NotifiedRelease";
+const char EnabledKey[] = "CheckForNewVersions";
 const QString GitHubLatestRelease = QStringLiteral("https://api.github.com/repos/kartas39/konedrive/releases/latest");
+const QString GitHubReleases = QStringLiteral("https://github.com/kartas39/konedrive/releases");
 constexpr int AskTimeoutMs = 30 * 1000;
 
 QString configPath()
@@ -63,6 +65,11 @@ QUrl ReleaseCheck::latestReleaseUrl()
     return QUrl(other.isEmpty() ? GitHubLatestRelease : other);
 }
 
+QUrl ReleaseCheck::releasesPage()
+{
+    return QUrl(GitHubReleases);
+}
+
 ReleaseCheck::ReleaseCheck(const QString &running, NotificationSink *sink, QObject *parent)
     : QObject(parent)
     , m_running(BuildVersion::parse(running))
@@ -70,7 +77,9 @@ ReleaseCheck::ReleaseCheck(const QString &running, NotificationSink *sink, QObje
     , m_sink(sink)
 {
     KConfig config(configPath(), KConfig::SimpleConfig);
-    m_notified = config.group(QLatin1String(Group)).readEntry(Key, QString());
+    const KConfigGroup group = config.group(QLatin1String(Group));
+    m_enabled = group.readEntry(EnabledKey, true);
+    m_notified = group.readEntry(NotifiedKey, QString());
 }
 
 void ReleaseCheck::start(const QUrl &url)
@@ -83,7 +92,32 @@ void ReleaseCheck::start(const QUrl &url)
     m_timer = new QTimer(this);
     m_timer->setSingleShot(true);
     connect(m_timer, &QTimer::timeout, this, &ReleaseCheck::ask);
-    ask();
+    if (m_enabled) {
+        ask();
+    }
+}
+
+void ReleaseCheck::setEnabled(bool enabled)
+{
+    if (m_enabled == enabled) {
+        return;
+    }
+    m_enabled = enabled;
+    KConfig config(configPath(), KConfig::SimpleConfig);
+    config.group(QLatin1String(Group)).writeEntry(EnabledKey, enabled);
+    config.sync();
+    if (!enabled) {
+        if (m_timer) {
+            m_timer->stop();
+        }
+        if (m_reply) {
+            m_reply->abort();
+        }
+        setNewer(QString());
+    } else if (m_timer) {
+        ask();
+    }
+    Q_EMIT enabledChanged();
 }
 
 void ReleaseCheck::ask()
@@ -94,8 +128,13 @@ void ReleaseCheck::ask()
     request.setRawHeader("Accept", "application/vnd.github+json");
     request.setTransferTimeout(AskTimeoutMs);
     QNetworkReply *reply = m_network->get(request);
+    m_reply = reply;
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         reply->deleteLater();
+        // Dropped when the check was turned off: nothing is taken, and nothing asked again.
+        if (!m_enabled) {
+            return;
+        }
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const bool taken = reply->error() == QNetworkReply::NoError && status == 200 && takeAnswer(reply->readAll());
         if (!taken) {
@@ -114,16 +153,16 @@ bool ReleaseCheck::takeAnswer(const QByteArray &answer)
     const std::optional<BuildVersion> latest = BuildVersion::parse(release->tag);
     switch (findRelease(m_running, latest, BuildVersion::parse(m_notified))) {
     case ReleaseFinding::NotNewer:
-        setNewer(QString(), QUrl());
+        setNewer(QString());
         break;
     case ReleaseFinding::NewerNotified:
-        setNewer(latest->toString(), release->page);
+        setNewer(latest->toString());
         break;
     case ReleaseFinding::NewerNotNotified: {
-        setNewer(latest->toString(), release->page);
+        setNewer(latest->toString());
         m_notified = latest->toString();
         KConfig config(configPath(), KConfig::SimpleConfig);
-        config.group(QLatin1String(Group)).writeEntry(Key, m_notified);
+        config.group(QLatin1String(Group)).writeEntry(NotifiedKey, m_notified);
         config.sync();
         Notice notice;
         notice.event = QStringLiteral("newerRelease");
@@ -137,12 +176,11 @@ bool ReleaseCheck::takeAnswer(const QByteArray &answer)
     return true;
 }
 
-void ReleaseCheck::setNewer(const QString &version, const QUrl &page)
+void ReleaseCheck::setNewer(const QString &version)
 {
-    if (m_newerVersion == version && m_newerPage == page) {
+    if (m_newerVersion == version) {
         return;
     }
     m_newerVersion = version;
-    m_newerPage = page;
     Q_EMIT newerReleaseChanged();
 }

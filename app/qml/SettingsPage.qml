@@ -6,8 +6,8 @@ import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
 /// The whole app's settings: start at login, download progress, Places,
-/// when every account pauses by itself (metered connections, battery), and
-/// Quit. Each OneDrive's own things (its folder, its sign-in, its
+/// the tray icons, the check for new versions, when every account pauses by
+/// itself (metered connections, battery), and Quit. Each OneDrive's own things (its folder, its sign-in, its
 /// previews) are on its OneDrive Settings page.
 FormCard.FormCardPage {
     id: page
@@ -77,6 +77,15 @@ FormCard.FormCardPage {
             description: i18n("With several accounts, each has its own icon with its own state and menu. When off, one icon shows the most serious state of them all.")
             checked: Tray.perAccount
             onToggled: Tray.perAccount = checked
+        }
+        FormCard.FormDelegateSeparator {}
+        FormCard.FormSwitchDelegate {
+            id: checkForNewVersions
+            objectName: "checkForNewVersions"
+            text: i18n("Check for new versions once a day")
+            description: i18n("KOneDrive asks GitHub for its latest release, and says when a newer one is out. Nothing is downloaded or installed.")
+            checked: ReleaseCheck.enabled
+            onToggled: ReleaseCheck.enabled = checked
         }
     }
 

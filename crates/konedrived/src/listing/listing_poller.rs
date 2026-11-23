@@ -71,7 +71,9 @@ impl ListingPollHandle {
     }
 
     /// A cycle now: the changes since the delta link. Called by the plan's task after a
-    /// refusal that asks for a cycle, by `Refresh()` and by the sign-in. In a test build
+    /// refusal that asks for a cycle, by `Refresh()`, by the sign-in, and when Microsoft
+    /// stops answering the account's requests (`SendingHolds::follow_reachability`): the
+    /// listing is then what asks again, on the retry schedule. In a test build
     /// it first raises `asked_cycle_count` where the handle has one: the count of a
     /// handle made by `for_tests` is of these calls.
     pub fn refresh(&self) {

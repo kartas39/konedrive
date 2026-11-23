@@ -220,6 +220,26 @@ fn the_holds_that_stand_at_the_start_are_set_before_the_first_plan() {
     });
 }
 
+/// The quota read before the first plan got no answer: the holds follow the account's
+/// reachability from the start, and hold what can wait before the first plan.
+#[test]
+fn a_start_that_microsoft_does_not_answer_holds_what_can_wait_from_the_first_plan() {
+    let fixture = ItemFixture::new();
+    fixture.runtime().block_on(async {
+        let nobody = url::Url::parse("http://127.0.0.1:9/").unwrap();
+        let drive = DriveClient::new(nobody, Arc::new(konedrive_graph::token::StaticToken::new("T"))).unwrap();
+        let input = make_start_input(&fixture, drive);
+
+        let started = start_sync_over_parts(&input, make_kept_parts(&fixture), StoreOrigin::Kept).await.ok().expect("the start goes through");
+
+        let (holds, now) = (started.tasks.sending_holds(), (fixture.clock())());
+        assert!(input.drive.reachability().is_unreachable());
+        assert_eq!(holds.find(now), Some(SendingHold::Unreachable));
+        assert!(holds.is_held(StepClass::Download, now) && holds.is_held(StepClass::Content, now));
+        stop(started).await;
+    });
+}
+
 #[test]
 fn the_plans_task_is_started_in_a_read_only_folder_too_and_the_access_mode_is_applied_before_its_first_plan() {
     let fixture = ItemFixture::new();

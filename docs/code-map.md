@@ -238,7 +238,7 @@ What the tasks of one folder's sync share: each a small owner of one state.
   the mount read it without asking the task. `[tests]`
 - `step_outcome.rs` — `StepOutcome`: what came of one step, the one answer every runner gives.
 - `sending_holds.rs` — `SendingHolds`: what holds all sending to OneDrive (a pause, a
-  sign-out, a read-only folder, a throttle), and its one owner. `[tests]`
+  sign-out, a read-only folder, a throttle, no answer from Microsoft), and its one owner. `[tests]`
 - `onedrive_space.rs` — `OneDriveSpace`: whether OneDrive is full, as the plan is told and as
   a refusal for lack of space is read. `[tests]`
 - `lease.rs` — the folder's lease as a task sees it: held while it changes the folder, so that
@@ -689,6 +689,8 @@ Integration tests: the compiled binary against a daemon on a private bus.
 - `secret.rs` — the refresh token's store, as the token manager sees it.
 - `pool.rs` — the transfer pool: how many requests an account has in flight. `[tests]`
 - `quickxor.rs` — QuickXorHash. `[tests]`
+- `reachability.rs` — `Reachability`: whether Microsoft answers the account's requests, as each
+  try told it. `[tests]`
 - `drive/mod.rs` — the drive API, reading: the delta feed, one item, content. `[tests]`
 - `drive/error.rs` — an answer's status, what it and Graph's error code mean, a read's error.
   `[tests]`
@@ -956,8 +958,8 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `CMakeLists.txt` — the build; reads the version from `Cargo.toml`.
 - `main.cpp` — the program: single instance, the window, the tray.
 - `Main.qml` — the window: pages chosen from a sidebar, each shown only while there is something
-  on it to see or do; the sidebar's foot names the build, a newer release and a daemon of another
-  build.
+  on it to see or do; the sidebar's foot names the version, links to the releases (saying when a
+  newer one is out) and names a daemon of another build.
 - `qmlregistration.h` — what the QML finds in `org.konedrive.app`.
 - `daemoncontroller.h`, `daemoncontroller.cpp` — the manager object, `org.konedrive.Accounts`.
 - `accountsmodel.h`, `accountsmodel.cpp` — the accounts, each with its controllers; Sign In and
@@ -1004,8 +1006,8 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `serviceunit.h`, `serviceunit.cpp` — the daemon's systemd unit: starting it, and its log.
 - `buildversion.h`, `buildversion.cpp` — a build's version (`X.Y.Z`, `X.Y.Z-dev.N`, a tag
   `vX.Y.Z`), read and ordered as RPM orders the packages.
-- `releasecheck.h`, `releasecheck.cpp` — the newer release on GitHub: asked once a day, said in the
-  sidebar's foot and notified once.
+- `releasecheck.h`, `releasecheck.cpp` — the newer release on GitHub: asked once a day while the
+  setting is on, said in the sidebar's foot and notified once.
 - `org.konedrive.KOneDrive.desktop.in` — the desktop entry.
 
 ### `app/qml/`

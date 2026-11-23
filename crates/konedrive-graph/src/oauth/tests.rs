@@ -140,12 +140,12 @@ async fn server_errors_are_transient() {
 }
 
 #[tokio::test]
-async fn connection_failures_are_transient() {
+async fn a_token_endpoint_that_does_not_answer_is_unreachable() {
     let base = Url::parse("http://127.0.0.1:9/").unwrap();
     let client = OAuthClient::new(
         reqwest::Client::new(),
         Endpoints { authority: base.clone(), graph: base },
         "cid".into(),
     );
-    assert!(matches!(client.refresh("RT").await, Err(OAuthError::Transient(_))));
+    assert!(matches!(client.refresh("RT").await, Err(OAuthError::Unreachable(message)) if message.starts_with("cannot reach Microsoft")));
 }

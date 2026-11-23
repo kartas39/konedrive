@@ -189,7 +189,9 @@ and one is cancelled between requests, never in a page.
 `ListingPoller` runs a cycle at once, then 60 s after the last ended (300 s while the notification
 socket is up), after a failure after 5, 15 and 30 s and then every 60 s, and at once on a refresh;
 refreshes given during a cycle are one. While the account's work is stopped no cycle runs, and
-whoever ends the stop asks for one ([writes.md](writes.md) §6.3).
+whoever ends the stop asks for one ([writes.md](writes.md) §6.3). When Microsoft stops answering
+the account's requests the poller is asked for one too: while that lasts it is what asks again,
+and its first answer ends the hold on what can wait ([writes.md](writes.md) §6.4).
 
 `listing/live.rs` keeps Graph's notification socket open: events within 2 s give one cycle, a
 failed connection is tried again after 1, 2, 4 … 60 s, and the first connection after a drop, and
@@ -487,8 +489,9 @@ request to OneDrive, one at a time. A download starts only where it leaves the f
 account keeps (`sync_plan_task/disk_space.rs`).
 
 What holds sending (`SendingHolds`): the stop, the sign-out, an account that may not write, a
-read-only folder, the pause, OneDrive's throttle, and no listing of this run ended yet. Each holds the
-steps towards OneDrive; the stop, the sign-out and the pause hold downloads too; none holds a step
+read-only folder, the pause, OneDrive's throttle, Microsoft not answering the account's requests
+([writes.md](writes.md) §6.4), and no listing of this run ended yet. Each holds the
+steps towards OneDrive; the stop, the sign-out, the pause and the lack of an answer hold downloads too; none holds a step
 towards the folder or of the rows. While OneDrive is full no content starts (`OneDriveSpace`).
 
 ### 8.4 What wakes it

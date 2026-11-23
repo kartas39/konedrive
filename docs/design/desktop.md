@@ -349,10 +349,10 @@ which is the whole app's. With no account at all the window is one page, "Add yo
 
 | Page | Shows |
 |---|---|
-| **Status** | in its header "Sync Now", "Pause" (2, 8 or 24 hours, or until resumed) or "Resume", and "Open Folder" with the folder's path in its tooltip. The state: the headline and the line under it by `Overall`, the mode ("Read-only", or "Read-only for now" while the folder of a read-write account is not writable), the trouble, the last start-up check, "Sign In Again" or "Sync Anyway" when they apply, and one line of what Issues lists, which opens it. The space: one bar as long as the OneDrive's storage (`QuotaTotal`), bright for what is on this device (`LocalBytes`), pale for the rest of what is used in OneDrive (`QuotaUsed`), with "N items always kept (size)" (`PinnedCount`, `PinnedBytes`); "Free Up Space…", and "Unpin All…" while anything is pinned. Two cards, "Downloading" and "Uploading": the speed, the files moving, what is left with its size and time, what is done, and a chart of the last two minutes (KQuickCharts); under Downloading the thumbnails being downloaded, under Uploading what waits and why. The transfer pool once below them; the transfers under way with progress bars. **History**, folded until opened: the events the daemon keeps, newest first, with a search by name or folder. With no folder yet, the head says so, with "Choose Folder…"; a folder that stopped has only why, with "Try Again" and "Use Another Folder…" (below) |
+| **Status** | in its header "Sync Now", "Pause" (2, 8 or 24 hours, or until resumed) or "Resume", and "Open Folder" with the folder's path in its tooltip. The state: the headline and the line under it by `Overall`, the mode ("Read-only", or "Read-only for now" while the folder of a read-write account is not writable), the trouble, the last start-up check, "Sign In Again" or "Sync Anyway" when they apply, and one line of what Issues lists, which opens it. The space: one bar as long as the OneDrive's storage (`QuotaTotal`), bright for what is on this device (`LocalBytes`), pale for the rest of what is used in OneDrive (`QuotaUsed`), with "N items always kept (size)" (`PinnedCount`, `PinnedBytes`); "Free Up Space…", and "Unpin All…" while anything is pinned. Two cards, "Downloading" and "Uploading": the title with the speed beside it, the files moving with what is done, what is left with its size and time ("0 files left" too), and a chart of the last two minutes (KQuickCharts) that takes most of the card; under Downloading the thumbnails being downloaded, under Uploading what waits and why. The transfer pool once below them. Then "Files moving now", folded into one line of how many download and upload ("Nothing moving" with none), folded again whenever the window starts; opened, "Downloading now" and "Uploading now", each a card as tall with no file as with many: three rows with progress bars for the first files seen, as long as they move, and "and N more" under them; with none, "Nothing downloading now" or "Nothing uploading now". Folded or opened, what is below stays where it is as files start and end. **History**, folded until opened: the events the daemon keeps, newest first, with a search by name or folder. With no folder yet, the head says so, with "Choose Folder…"; a folder that stopped has only why, with "Try Again" and "Use Another Folder…" (below) |
 | **Issues** | one list in three sections, with a count badge while anything needs the user: **Can't Upload**, `NotUploadedSummary()` by what can be done about it, a reason one action fixes as one line with its button, and the files of a reason when it is opened (`NotUploadedFiles(reason, 20)`); **Kept Both Versions**, each conflict copy with "Show Both" and "Dismiss"; **Can't Be Shown in the Folder**, `Skipped()` and why, in the words `sync skipped` uses. The last two show their first 200 rows and count the rest |
 | **OneDrive Settings** | the name with "Rename…"; the Microsoft account's name and email; **Two-way sync** (below); the folder with "Use Another Folder…"; "Previews without downloading" (§8) and the free space to keep for pinned files, changed after "Edit", which turns into "Save"; the ignore list ("Never uploaded"); "Sign Out"; "Disconnect This OneDrive…". With no folder yet, only the account's part, "Sign Out" and "Disconnect This OneDrive…" |
-| **Settings** | "Start at login", "Show download and upload progress", "Show in Places", "Show a tray icon for each account"; for every account, "Pause on metered connections" and "On battery"; "Quit KOneDrive" |
+| **Settings** | "Start at login", "Show download and upload progress", "Show in Places", "Show a tray icon for each account", "Check for new versions once a day"; for every account, "Pause on metered connections" and "On battery"; "Quit KOneDrive" |
 
 The long lists are `ListView`s, which build only the rows in sight, with a fixed height.
 
@@ -372,20 +372,24 @@ only "The KOneDrive service is not running". The status line reads, for example,
 checked 20 s ago", "· live" while `LiveChanges` is `connected`, "Listing your OneDrive: N items so
 far", "Downloading 3 files", "Paused until 14:00", or the trouble, refreshed while it ages.
 
-**The version line.** The foot of the sidebar names the window's build on every page: "Version
-0.1.1-dev.57 · commit 5254595" (`docs/releasing.md`), selectable, to copy. When a newer release is
-out, "Update available: 0.2.2" below it links to the release's page. When the daemon on the bus
-runs another build — its `Version` or `Commit` differs — a last line says to restart it.
-`konedrivectl --version` says the build and the daemon's, not the newer release.
+**The version line.** The foot of the sidebar names the window's version on every page: "Version
+0.1.1-dev.57" (`docs/releasing.md`), selectable, to copy; the commit is not in it (`konedrive
+--version` and `konedrivectl --version` say it). Below it "KOneDrive on GitHub" links to the
+releases (`github.com/kartas39/konedrive/releases`); while a newer release is out the same link
+says "New version available: 0.2.2". When the daemon on the bus runs another build — its `Version`
+or `Commit` differs — a last line names its version and says to restart it. `konedrivectl
+--version` says the build and the daemon's, not the newer release.
 
-**The newer release** is the window's own check (`ReleaseCheck`; the daemon takes no part, and
-there is no setting for it): at start and then once a day it asks GitHub for the latest release
-(`api.github.com/repos/kartas39/konedrive/releases/latest`) and compares its tag with the window's
-build (`BuildVersion`: a build `X.Y.Z-dev.N` or `X.Y.Z-dev` comes before the release `X.Y.Z` and
-after the one before). An ask that gets no answer says nothing and is asked again an hour later.
-The first time a release is newer, the `newerRelease` notification says so once; the release
-notified is kept as `NotifiedRelease` in `konedriverc`'s `[General]` group. Nothing is downloaded or
-installed.
+**The newer release** is the window's own check (`ReleaseCheck`; the daemon takes no part). It
+asks only while "Check for new versions once a day" is on in Settings, as it is unless turned off
+(`CheckForNewVersions` in `konedriverc`'s `[General]` group); turned off, the ask under way is
+dropped and no newer release is said, and turned on again it asks at once. At start and then once
+a day it asks GitHub for the latest release (`api.github.com/repos/kartas39/konedrive/releases/latest`)
+and compares its tag with the window's build (`BuildVersion`: a build `X.Y.Z-dev.N` or `X.Y.Z-dev`
+comes before the release `X.Y.Z` and after the one before). An ask that gets no answer says nothing
+and is asked again an hour later. The first time a release is newer, the `newerRelease`
+notification says so once and opens the release's page; the release notified is kept as
+`NotifiedRelease` in the same group. Nothing is downloaded or installed.
 
 **After an update** the packages replace the window's program file and restart the daemon, not
 the window. So when the daemon comes back as another build and the window's own program file is no
@@ -549,8 +553,9 @@ is drawn without opening the file.
   that no cycle starts over, draining 200 candidates at a time until each has been looked at once;
 - a thumbnail is a request to the Graph API, not a download, and takes no slot of the transfer pool.
   At most two run at once, and none starts before the folder's first listing ended, during a
-  listing, during a `Retry-After`, while a file is being opened, or while anything waits for a slot
-  of the pool (`desktop/thumbs/request_start.rs`).
+  listing, while Microsoft does not answer the account's requests ([writes.md](writes.md) §6.4),
+  during a `Retry-After`, while a file is being opened, or while anything waits for a slot of the
+  pool (`desktop/thumbs/request_start.rs`).
 
 `xx-large` is not filled: it would be a second request per file at about four times the bytes.
 Where Dolphin asks for that size, KIO makes its own thumbnail, which reads the file.
