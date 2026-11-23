@@ -1,6 +1,7 @@
 #include "fakedaemon.h"
 #include "notifier.h"
 #include "qmlregistration.h"
+#include "transfermodel.h"
 #include "windowsection.h"
 
 #include <KLocalizedQmlContext>
@@ -16,6 +17,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QRegularExpression>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -143,6 +145,49 @@ private:
             n += itemsSaying(item, part);
         }
         return n;
+    }
+
+    /// The visible items of any kind under `root`, by the visual tree, whose text holds `part`.
+    static int textsSaying(const QQuickItem *root, const QString &part)
+    {
+        int n = 0;
+        const auto children = root->childItems();
+        for (const QQuickItem *item : children) {
+            if (!item->isVisible()) {
+                continue;
+            }
+            if (item->property("text").toString().contains(part)) {
+                ++n;
+            }
+            n += textsSaying(item, part);
+        }
+        return n;
+    }
+
+    /// The first visible item of any kind under `root`, by the visual tree, whose text is
+    /// `text`; null when none is.
+    static QQuickItem *itemWithText(QQuickItem *root, const QString &text)
+    {
+        const auto children = root->childItems();
+        for (QQuickItem *item : children) {
+            if (!item->isVisible()) {
+                continue;
+            }
+            if (item->property("text").toString() == text) {
+                return item;
+            }
+            if (QQuickItem *found = itemWithText(item, text)) {
+                return found;
+            }
+        }
+        return nullptr;
+    }
+
+    /// Two frames drawn since: what changed is laid out where it goes.
+    static void waitForFrames(QQuickWindow *window)
+    {
+        QSignalSpy frames(window, &QQuickWindow::frameSwapped);
+        QTRY_VERIFY((window->update(), frames.count() >= 2));
     }
 
     /// The first visible form row (delegate) under `root`, by the visual tree,
@@ -1115,6 +1160,168 @@ private Q_SLOTS:
         fake.stop();
     }
 
+    /// Files starting and ending one after another move nothing on Status: History, under the
+    /// files moving now, keeps its place while they are folded into their line, and opened with
+    /// none, one or more than have a row each way, and as what is left to download empties and
+    /// fills.
+    void filesStartingAndEndingMoveNothingOnStatus()
+    {
+        FakeDaemon fake;
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}, {QStringLiteral("Mode"), QStringLiteral("read-write")}});
+        fake.sync->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/OneDrive")},
+                                {QStringLiteral("State"), QStringLiteral("ready")},
+                                {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+        fake.sync->folder->decide("syncing", "transferring");
+        QVERIFY(fake.start());
+
+        Autostart autostart;
+        DownloadProgressSettings progress;
+        PlacesSettings places;
+        TraySettings trayIcons;
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        ServiceUnit serviceUnit;
+        DroppedNotices releaseNotices;
+        ReleaseCheck releaseCheck(QStringLiteral(KONEDRIVE_VERSION), &releaseNotices);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons, &serviceUnit, &releaseCheck);
+
+        QQmlApplicationEngine engine;
+        KLocalization::setupLocalizedContext(&engine);
+        engine.loadFromModule("org.konedrive.app.window", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        window->show();
+        QTRY_COMPARE(accounts.count(), 1);
+        QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
+        SyncController *sync = accounts.at(0)->sync();
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("status")));
+        auto *status = window->findChild<QQuickItem *>(QStringLiteral("statusPage"));
+        auto *list = window->findChild<QQuickItem *>(QStringLiteral("historyList"));
+        auto *history = window->findChild<QQuickItem *>(QStringLiteral("historyCard"));
+        QVERIFY(status && list && history);
+        QTRY_VERIFY(history->isVisible());
+
+        // Where History begins, once what changed is laid out and drawn.
+        const auto historyAt = [list] {
+            return list->property("headerItem").value<QQuickItem *>()->property("historyY").toReal();
+        };
+        const auto file = [](const char *name) {
+            return KonedriveTransfer{QStringLiteral("/home/u/OneDrive/") + QLatin1String(name), 10, 100};
+        };
+        waitForFrames(window);
+        const qreal folded = historyAt();
+        QVERIFY(folded > 0);
+        auto *toggle = window->findChild<QQuickItem *>(QStringLiteral("movingNowToggle"));
+        auto *downloadingNow = window->findChild<QQuickItem *>(QStringLiteral("downloadingNow"));
+        QVERIFY(toggle && downloadingNow);
+        QVERIFY(toggle->isVisible());
+        QVERIFY(!downloadingNow->isVisible());
+        QCOMPARE(toggle->property("description").toString(), QStringLiteral("Nothing moving"));
+
+        // Folded: files come and go in its one line, and none of them shows.
+        fake.sync->transfers->setDownloads({file("a.jpg"), file("b.jpg")});
+        fake.sync->transfers->setUploads({file("x.odt")});
+        QTRY_COMPARE(sync->transfers()->count(), 2);
+        QTRY_COMPARE(sync->uploads()->count(), 1);
+        waitForFrames(window);
+        QCOMPARE(historyAt(), folded);
+        QCOMPARE(toggle->property("description").toString(), QStringLiteral("2 downloading · 1 uploading"));
+        QCOMPARE(textsSaying(status, QStringLiteral("a.jpg")), 0);
+        fake.sync->transfers->setDownloads({});
+        fake.sync->transfers->setUploads({});
+        QTRY_COMPARE(sync->transfers()->count(), 0);
+        QTRY_COMPARE(sync->uploads()->count(), 0);
+        waitForFrames(window);
+        QCOMPARE(historyAt(), folded);
+        QCOMPARE(toggle->property("description").toString(), QStringLiteral("Nothing moving"));
+
+        // Opened: each way's files, in a card as tall with none as with many.
+        QMetaObject::invokeMethod(toggle, "clicked");
+        QTRY_VERIFY(downloadingNow->isVisible());
+        waitForFrames(window);
+        const qreal at = historyAt();
+        QVERIFY(at > folded);
+        QCOMPARE(textsSaying(status, QStringLiteral("Nothing downloading now")), 1);
+        QCOMPARE(textsSaying(status, QStringLiteral("Nothing uploading now")), 1);
+
+        // One file down.
+        fake.sync->transfers->setDownloads({file("a.jpg")});
+        QTRY_COMPARE(sync->transfers()->count(), 1);
+        waitForFrames(window);
+        QCOMPARE(historyAt(), at);
+        QCOMPARE(textsSaying(status, QStringLiteral("a.jpg")), 1);
+        QCOMPARE(textsSaying(status, QStringLiteral("Nothing downloading now")), 0);
+
+        // Five down, two up: the first three seen have the rows, the rest is one line.
+        fake.sync->transfers->setDownloads({file("a.jpg"), file("b.jpg"), file("c.jpg"), file("d.jpg"), file("e.jpg")});
+        fake.sync->transfers->setUploads({file("x.odt"), file("y.odt")});
+        QTRY_COMPARE(sync->transfers()->count(), 5);
+        QTRY_COMPARE(sync->uploads()->count(), 2);
+        waitForFrames(window);
+        QCOMPARE(historyAt(), at);
+        QCOMPARE(textsSaying(status, QStringLiteral("c.jpg")), 1);
+        QCOMPARE(textsSaying(status, QStringLiteral("d.jpg")), 0);
+        QCOMPARE(textsSaying(status, QStringLiteral("and 2 more")), 1);
+        QCOMPARE(textsSaying(status, QStringLiteral("y.odt")), 1);
+        // Each in its place, none over another: the last row, the line under it, the
+        // uploads' heading, and History under all of them.
+        {
+            const auto top = [](QQuickItem *item) { return item->mapToScene(QPointF(0, 0)).y(); };
+            const auto bottom = [](QQuickItem *item) { return item->mapToScene(QPointF(0, item->height())).y(); };
+            QQuickItem *lastRow = itemWithText(status, QStringLiteral("c.jpg"));
+            QQuickItem *more = itemWithText(status, QStringLiteral("and 2 more"));
+            QQuickItem *uploadsHeading = itemWithText(status, QStringLiteral("Uploading now"));
+            QQuickItem *lastUpload = itemWithText(status, QStringLiteral("y.odt"));
+            QVERIFY(lastRow && more && uploadsHeading && lastUpload);
+            QVERIFY2(bottom(lastRow) <= top(more), qPrintable(QStringLiteral("%1 > %2").arg(bottom(lastRow)).arg(top(more))));
+            QVERIFY2(bottom(more) <= top(uploadsHeading), qPrintable(QStringLiteral("%1 > %2").arg(bottom(more)).arg(top(uploadsHeading))));
+            QVERIFY2(bottom(lastUpload) <= top(history), qPrintable(QStringLiteral("%1 > %2").arg(bottom(lastUpload)).arg(top(history))));
+        }
+
+        // The first one ends: the next one seen takes its row.
+        fake.sync->transfers->setDownloads({file("b.jpg"), file("c.jpg"), file("d.jpg"), file("e.jpg")});
+        QTRY_COMPARE(sync->transfers()->count(), 4);
+        waitForFrames(window);
+        QCOMPARE(historyAt(), at);
+        QCOMPARE(textsSaying(status, QStringLiteral("a.jpg")), 0);
+        QCOMPARE(textsSaying(status, QStringLiteral("d.jpg")), 1);
+        QCOMPARE(textsSaying(status, QStringLiteral("and 1 more")), 1);
+
+        // What is left to download fills and empties: its lines stay, and say so.
+        fake.sync->transfers->set({{QStringLiteral("DownloadLeftCount"), QVariant::fromValue<uint>(7)},
+                                   {QStringLiteral("DownloadLeftBytes"), QVariant::fromValue<qulonglong>(4096)}});
+        QTRY_COMPARE(sync->downloadLeftCount(), 7u);
+        waitForFrames(window);
+        QCOMPARE(historyAt(), at);
+        fake.sync->transfers->set({{QStringLiteral("DownloadLeftCount"), QVariant::fromValue<uint>(0)},
+                                   {QStringLiteral("DownloadLeftBytes"), QVariant::fromValue<qulonglong>(0)}});
+        QTRY_COMPARE(sync->downloadLeftCount(), 0u);
+        waitForFrames(window);
+        QCOMPARE(historyAt(), at);
+        auto *left = window->findChild<QQuickItem *>(QStringLiteral("downloadingCardLeft"));
+        QVERIFY(left && left->isVisible());
+        QCOMPARE(left->property("text").toString(), QStringLiteral("0 files left"));
+
+        // All of them end.
+        fake.sync->transfers->setDownloads({});
+        fake.sync->transfers->setUploads({});
+        QTRY_COMPARE(sync->transfers()->count(), 0);
+        QTRY_COMPARE(sync->uploads()->count(), 0);
+        waitForFrames(window);
+        QCOMPARE(historyAt(), at);
+        QCOMPARE(textsSaying(status, QStringLiteral("Nothing downloading now")), 1);
+        QCOMPARE(textsSaying(status, QStringLiteral("Nothing uploading now")), 1);
+
+        // Folded again: the line alone.
+        QMetaObject::invokeMethod(toggle, "clicked");
+        QTRY_VERIFY(!downloadingNow->isVisible());
+        waitForFrames(window);
+        QCOMPARE(historyAt(), folded);
+        fake.stop();
+    }
+
     /// With no service, Status says so and starts it; a start refused (the test bus
     /// has no systemd) says it could not, and offers to start again.
     void theStatusStartsTheService()
@@ -1181,6 +1388,8 @@ private Q_SLOTS:
 
         QMetaObject::invokeMethod(toggle, "clicked");
         QTRY_COMPARE(list->property("count").toInt(), 3);
+        // Its rows in sight, under all that is above them: only those are built.
+        QMetaObject::invokeMethod(list, "positionViewAtEnd");
         const auto nameAt = [list](int index) {
             QQuickItem *row = nullptr;
             QMetaObject::invokeMethod(list, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, row), Q_ARG(int, index));
@@ -1484,9 +1693,9 @@ private Q_SLOTS:
         QCOMPARE(itemsSaying(status, root + QLatin1Char('/')), 0);
         QVERIFY(itemsSaying(status, QString()) <= 20);
 
-        // Nothing left to download: its line goes.
+        // Nothing left to download: its line stays, and says so.
         fake.sync->transfers->set({{QStringLiteral("DownloadLeftCount"), QVariant::fromValue<uint>(0)}});
-        QTRY_VERIFY(left("downloadingCardLeft").isEmpty());
+        QTRY_VERIFY(left("downloadingCardLeft").startsWith(QStringLiteral("0 files left")));
         QVERIFY(!left("uploadingCardLeft").isEmpty());
 
         QVERIFY(!fake.sync->calls.contains(QStringLiteral("Changes")));

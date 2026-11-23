@@ -81,7 +81,10 @@ The sidebar starts with the **account switcher**: the OneDrive shown, and a menu
     pale for the rest of what your OneDrive holds; how many items are always kept here, and their
     size; **Free Up Space…** and **Unpin All…**;
   - **Downloading** and **Uploading**: the speed, the files moving, what is left with its size and
-    time, and a chart of the last two minutes; then the files moving now;
+    time, and a chart of the last two minutes;
+  - **Files moving now**, folded into one line of how many download and upload; opened, the first
+    three each way with how far each is, and how many more. Folded or opened, its size does not
+    change as files start and end, so the page does not jump;
   - **History**, folded until you open it: what happened lately, with a search by name or folder.
 - **Issues** — what needs you: the changes that **Can't Upload** and why (see "Uploading
   changes"); files changed on both sides, of which both versions are kept so that nothing is lost

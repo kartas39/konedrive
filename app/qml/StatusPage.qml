@@ -10,9 +10,10 @@ import org.konedrive.app
 /// Sync Now, Pause (Resume while paused) and Open Folder. Then what its folder is doing or
 /// what stops it, with the one thing to do, and one line of what Issues lists; the space it
 /// takes, with Free Up Space and Unpin All; each way's speed over the last two minutes and
-/// what is left, the transfer pool, and the files moving now; and its History, folded until
-/// it is opened, with a search. An account with no folder yet has Choose Folder… in its head,
-/// and one whose syncing stopped only why, with Try Again and Use Another Folder….
+/// what is left, the transfer pool, and the files moving now, folded until they are opened;
+/// and its History, folded until it is opened, with a search. An account with no folder yet
+/// has Choose Folder… in its head, and one whose syncing stopped only why, with Try Again and
+/// Use Another Folder….
 ///
 /// One list: what is above History is its header, and History's events are its rows, built
 /// only while it is open and only those in sight.
@@ -35,6 +36,8 @@ ListPage {
     readonly property bool running: working && !sync.paused
     /// What waits and goes up by itself, by why (the "waiting" rows of NotUploadedSummary()).
     readonly property var waitingRows: sync ? sync.notUploadedSummary.filter(row => row.group === "waiting") : []
+    /// The files moving now are open: each way's files show, under the line of how many.
+    property bool transfersShown: false
     /// History is open: its events are the list's rows.
     property bool historyShown: false
     /// What History's search keeps: events whose path holds it, in any case.
@@ -58,6 +61,9 @@ ListPage {
         return hours % 24 === 0 ? i18nc("@info time left, days", "about %1 d", Math.floor(hours / 24))
                                 : i18nc("@info time left, days and hours", "about %1 d %2 h", Math.floor(hours / 24), hours % 24);
     }
+
+    /// How many of the files moving one way have a row; the rest are counted on one line.
+    readonly property int transferRows: 3
 
     /// The counts the summary of what waits was last asked for at.
     property string shownCounts: ""
@@ -540,32 +546,40 @@ ListPage {
                 }
             }
 
-            // The files moving now, each with how far it is.
-            FormCard.FormHeader {
-                visible: page.working && page.sync.transfers.count > 0
-                title: i18nc("@title:group", "Downloading now")
-            }
+            // The files moving now: folded into one line of how many, which keeps its height,
+            // so that nothing under it moves as files start and end. Opened, each way's files
+            // with how far each is, in a card as tall with none as with many.
             FormCard.FormCard {
+                objectName: "movingNowCard"
+                Layout.topMargin: Kirigami.Units.largeSpacing
+                visible: page.working
+
+                FormCard.FormButtonDelegate {
+                    objectName: "movingNowToggle"
+                    readonly property int downloads: page.sync ? page.sync.transfers.count : 0
+                    readonly property int uploads: page.sync ? page.sync.uploads.count : 0
+
+                    text: i18nc("@action:button the files downloading and uploading now", "Files moving now")
+                    description: downloads + uploads === 0 ? i18nc("@info no file downloads or uploads now", "Nothing moving")
+                                                           : i18nc("@info files downloading and uploading now", "%1 downloading · %2 uploading", downloads, uploads)
+                    icon.name: "network-transmit-receive"
+                    trailingLogo.direction: page.transfersShown ? Qt.UpArrow : Qt.DownArrow
+                    onClicked: page.transfersShown = !page.transfersShown
+                }
+            }
+            TransferSection {
                 objectName: "downloadingNow"
-                visible: page.working && page.sync.transfers.count > 0
-
-                Repeater {
-                    model: page.sync ? page.sync.transfers : null
-                    delegate: TransferRow {}
-                }
+                visible: page.working && page.transfersShown
+                title: i18nc("@title:group", "Downloading now")
+                emptyText: i18n("Nothing downloading now")
+                transfers: page.sync ? page.sync.transfers : null
             }
-            FormCard.FormHeader {
-                visible: page.working && page.sync.uploads.count > 0
-                title: i18nc("@title:group", "Uploading now")
-            }
-            FormCard.FormCard {
+            TransferSection {
                 objectName: "uploadingNow"
-                visible: page.working && page.sync.uploads.count > 0
-
-                Repeater {
-                    model: page.sync ? page.sync.uploads : null
-                    delegate: TransferRow {}
-                }
+                visible: page.working && page.transfersShown
+                title: i18nc("@title:group", "Uploading now")
+                emptyText: i18n("Nothing uploading now")
+                transfers: page.sync ? page.sync.uploads : null
             }
 
             // History: folded until opened; open, a search, and the events below as the rows.
@@ -725,6 +739,77 @@ ListPage {
             target: Current
             function onChanged() {
                 unpinAllDialog.close();
+            }
+        }
+    }
+
+    /// One way's files moving now, under its heading, in a card always as tall as
+    /// `transferRows` rows and a line: the first files seen have the rows, as long as they
+    /// move; the line counts those after them; with none, the card says so.
+    component TransferSection: ColumnLayout {
+        id: section
+
+        required property string title
+        /// "Nothing downloading now" or "Nothing uploading now".
+        required property string emptyText
+        /// That way's TransferModel: its rows are in the order the files were first seen.
+        required property var transfers
+        readonly property int count: transfers ? transfers.count : 0
+
+        Layout.fillWidth: true
+        spacing: 0
+
+        FormCard.FormHeader {
+            title: section.title
+        }
+        FormCard.FormCard {
+            Item {
+                Layout.fillWidth: true
+                implicitHeight: page.transferRows * rowSize.implicitHeight + more.implicitHeight + rowSize.bottomPadding
+
+                // Never shown: how tall a row is, also while none is in the card.
+                TransferRow {
+                    id: rowSize
+                    visible: false
+                    name: "x"
+                    done: 0
+                    total: 1
+                    fraction: 0
+                }
+                ColumnLayout {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    spacing: 0
+                    Repeater {
+                        model: section.transfers
+                        delegate: TransferRow {
+                            required property int index
+                            visible: index < page.transferRows
+                        }
+                    }
+                }
+                QQC2.Label {
+                    anchors.centerIn: parent
+                    visible: section.count === 0
+                    text: section.emptyText
+                    opacity: 0.7
+                }
+                // Empty while every file has a row: a line tall all the same.
+                QQC2.Label {
+                    id: more
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.leftMargin: rowSize.leftPadding
+                    anchors.rightMargin: rowSize.rightPadding
+                    anchors.bottomMargin: rowSize.bottomPadding
+                    elide: Text.ElideRight
+                    opacity: 0.7
+                    text: section.count > page.transferRows
+                          ? i18ncp("@info the files moving one way now that have no row", "and %1 more", "and %1 more", section.count - page.transferRows)
+                          : ""
+                }
             }
         }
     }

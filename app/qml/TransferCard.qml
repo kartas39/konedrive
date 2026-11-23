@@ -5,10 +5,11 @@ import org.kde.kirigami as Kirigami
 import org.kde.quickcharts as Charts
 import org.kde.quickcharts.controls as ChartsControls
 
-/// One direction's card on Status: its speed, how many files move that way at once, what is
-/// left that way, and one chart of the last two minutes with two lines on two scales — speed
-/// on the left axis, the files moving that way on the right — with a small legend; under it
-/// the lines it is given (`lines`). Dimmed while nothing moves.
+/// One direction's card on Status: its title with its speed beside it, how many files move
+/// that way at once with what this run has done, what is left that way, and one chart of the
+/// last two minutes with two lines on two scales — speed on the left axis, the files moving
+/// that way on the right — with a small legend; under it the lines it is given (`lines`). The
+/// chart takes most of the card, the text a few short lines. Dimmed while nothing moves.
 Kirigami.AbstractCard {
     id: card
 
@@ -43,27 +44,40 @@ Kirigami.AbstractCard {
 
     contentItem: ColumnLayout {
         spacing: Kirigami.Units.smallSpacing
-        QQC2.Label {
-            text: card.title
-            font.bold: true
+        // "Downloading", and its speed at the other end of the line.
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Kirigami.Units.smallSpacing
+            QQC2.Label {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignBaseline
+                elide: Text.ElideRight
+                text: card.title
+                font.bold: true
+            }
+            Kirigami.Heading {
+                objectName: card.objectName + "Speed"
+                Layout.alignment: Qt.AlignBaseline
+                level: 3
+                text: card.idle ? i18nc("@info a transfer card while nothing moves", "no transfers")
+                                : i18nc("@info bytes a second", "%1/s", Qt.locale().formattedDataSize(card.speed))
+            }
         }
-        Kirigami.Heading {
-            level: 2
-            text: card.idle ? i18nc("@info a transfer card while nothing moves", "no transfers")
-                            : i18nc("@info bytes a second", "%1/s", Qt.locale().formattedDataSize(card.speed))
-        }
+        // "5 files downloading · 812 MiB done": what this run has done.
         QQC2.Label {
+            objectName: card.objectName + "Done"
             Layout.fillWidth: true
             elide: Text.ElideRight
             opacity: 0.7
-            text: card.filesText
+            text: i18nc("@info files moving now, then the bytes moved in this run", "%1 · %2 done", card.filesText,
+                        Qt.locale().formattedDataSize(card.doneBytes))
         }
-        // "1 234 files left · 48.2 GiB · about 12 min", and what this run has done.
+        // "1 234 files left · 48.2 GiB · about 12 min"; also "0 files left", so that nothing
+        // moves as the last one goes and the next comes.
         QQC2.Label {
             objectName: card.objectName + "Left"
             Layout.fillWidth: true
             elide: Text.ElideRight
-            visible: card.leftCount > 0
             text: {
                 const parts = [card.leftText];
                 if (card.leftBytes > 0) {
@@ -75,19 +89,10 @@ Kirigami.AbstractCard {
                 return parts.join(" · ");
             }
         }
-        QQC2.Label {
-            objectName: card.objectName + "Done"
-            Layout.fillWidth: true
-            elide: Text.ElideRight
-            visible: card.leftCount > 0
-            font: Kirigami.Theme.smallFont
-            opacity: 0.7
-            text: i18nc("@info bytes moved in this run", "%1 done", Qt.locale().formattedDataSize(card.doneBytes))
-        }
         RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: false
-            Layout.preferredHeight: Kirigami.Units.gridUnit * 3
+            Layout.preferredHeight: Kirigami.Units.gridUnit * 6
             spacing: Kirigami.Units.smallSpacing
 
             // Left axis: speed.
