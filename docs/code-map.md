@@ -958,8 +958,8 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `CMakeLists.txt` — the build; reads the version from `Cargo.toml`.
 - `main.cpp` — the program: single instance, the window, the tray.
 - `Main.qml` — the window: pages chosen from a sidebar, each shown only while there is something
-  on it to see or do; the sidebar's foot names the build, a newer release and a daemon of another
-  build.
+  on it to see or do; the sidebar's foot names the version, links to the releases (saying when a
+  newer one is out) and names a daemon of another build.
 - `qmlregistration.h` — what the QML finds in `org.konedrive.app`.
 - `daemoncontroller.h`, `daemoncontroller.cpp` — the manager object, `org.konedrive.Accounts`.
 - `accountsmodel.h`, `accountsmodel.cpp` — the accounts, each with its controllers; Sign In and
@@ -1006,8 +1006,8 @@ Each has its file in `crates/konedrived/src/dbus/`.
 - `serviceunit.h`, `serviceunit.cpp` — the daemon's systemd unit: starting it, and its log.
 - `buildversion.h`, `buildversion.cpp` — a build's version (`X.Y.Z`, `X.Y.Z-dev.N`, a tag
   `vX.Y.Z`), read and ordered as RPM orders the packages.
-- `releasecheck.h`, `releasecheck.cpp` — the newer release on GitHub: asked once a day, said in the
-  sidebar's foot and notified once.
+- `releasecheck.h`, `releasecheck.cpp` — the newer release on GitHub: asked once a day while the
+  setting is on, said in the sidebar's foot and notified once.
 - `org.konedrive.KOneDrive.desktop.in` — the desktop entry.
 
 ### `app/qml/`

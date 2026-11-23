@@ -3,6 +3,7 @@
 #include "buildversion.h"
 
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <QUrl>
 
@@ -10,6 +11,7 @@
 
 class NotificationSink;
 class QNetworkAccessManager;
+class QNetworkReply;
 class QTimer;
 
 /// What GitHub answers as the latest release of KOneDrive: its tag (`vX.Y.Z`) and its page.
@@ -24,7 +26,7 @@ enum class ReleaseFinding {
     NotNewer,
     /// Newer, and notified before: the foot of the sidebar says it, and nothing else.
     NewerNotified,
-    /// Newer, and not notified yet: the foot says it, and one notification goes.
+    /// Newer, and not notified yet: the foot says it, and one notification goes to the release's page.
     NewerNotNotified,
 };
 
@@ -44,13 +46,20 @@ ReleaseFinding findRelease(const std::optional<BuildVersion> &running,
 /// asked again an hour later. The first time a release is found newer than this build, one
 /// notification says so; that release is kept under `NotifiedRelease` in konedriverc's [General]
 /// group, so it is not notified again once the window starts anew.
+///
+/// Whether it asks at all is the setting "Check for new versions once a day", kept under
+/// `CheckForNewVersions` in the same group, on by default. Turned off, the ask under way is
+/// dropped, nothing more is asked and no newer release is shown; turned on again, it asks at once.
 class ReleaseCheck : public QObject
 {
     Q_OBJECT
-    /// The newer release's version, `0.2.2`; empty while none is known.
+    /// Whether the check asks GitHub: the setting, as konedriverc keeps it.
+    Q_PROPERTY(bool enabled READ enabled WRITE setEnabled NOTIFY enabledChanged)
+    /// The newer release's version, `0.2.2`; empty while none is known or the check is off.
     Q_PROPERTY(QString newerVersion READ newerVersion NOTIFY newerReleaseChanged)
-    /// That release's page on GitHub, where its packages are.
-    Q_PROPERTY(QUrl newerPage READ newerPage NOTIFY newerReleaseChanged)
+    /// KOneDrive's releases on GitHub, where every release's packages are: where the foot of the
+    /// sidebar leads.
+    Q_PROPERTY(QUrl releasesPage READ releasesPage CONSTANT)
 
 public:
     static constexpr int DayMs = 24 * 60 * 60 * 1000;
@@ -61,33 +70,42 @@ public:
     /// reach GitHub.
     static QUrl latestReleaseUrl();
 
+    /// KOneDrive's releases on GitHub.
+    static QUrl releasesPage();
+
     /// `running` is this build's version, as the window shows it (KONEDRIVE_VERSION); the
     /// notification goes to `sink`.
     ReleaseCheck(const QString &running, NotificationSink *sink, QObject *parent = nullptr);
 
-    /// Asks `url` now, and from then on by itself. A build whose version cannot be read never asks.
+    /// Asks `url` now, when the check is on, and from then on by itself. A build whose version
+    /// cannot be read never asks.
     void start(const QUrl &url);
     /// Takes an answer of GitHub's, as an ask does once it is back: false when it cannot be read.
     bool takeAnswer(const QByteArray &answer);
 
+    bool enabled() const { return m_enabled; }
+    /// Turns the check on or off, and keeps it in konedriverc.
+    void setEnabled(bool enabled);
     QString newerVersion() const { return m_newerVersion; }
-    QUrl newerPage() const { return m_newerPage; }
 
 Q_SIGNALS:
+    void enabledChanged();
     void newerReleaseChanged();
 
 private:
     void ask();
-    void setNewer(const QString &version, const QUrl &page);
+    void setNewer(const QString &version);
 
     std::optional<BuildVersion> m_running;
     QString m_runningText;
     NotificationSink *m_sink;
+    bool m_enabled;
     /// The release notified last, as konedriverc keeps it; empty before the first.
     QString m_notified;
     QString m_newerVersion;
-    QUrl m_newerPage;
     QUrl m_url;
     QNetworkAccessManager *m_network = nullptr;
     QTimer *m_timer = nullptr;
+    /// The ask under way, dropped when the check is turned off.
+    QPointer<QNetworkReply> m_reply;
 };

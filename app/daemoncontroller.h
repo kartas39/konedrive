@@ -42,14 +42,16 @@ class DaemonController : public QObject
     /// X.Y.Z-dev.N or X.Y.Z-dev, and the full hash of its commit or "unknown".
     Q_PROPERTY(QString version READ version CONSTANT)
     Q_PROPERTY(QString commit READ commit CONSTANT)
-    /// "Version 0.1.1-dev.57 · commit 5254595": the sidebar's line.
+    /// "Version 0.1.1-dev.57": the sidebar's line. The commit is not in it: `konedrive --version`
+    /// and `konedrivectl --version` say it.
     Q_PROPERTY(QString versionLine READ versionLine CONSTANT)
     /// The running daemon's Version and Commit; empty before it has said, or
     /// from a daemon too old to have them.
     Q_PROPERTY(QString daemonVersion READ daemonVersion NOTIFY changed)
     Q_PROPERTY(QString daemonCommit READ daemonCommit NOTIFY changed)
-    /// The daemon is on the bus and runs another build than this window's
-    /// (installed, not restarted): what the sidebar says about it, else empty.
+    /// The daemon is on the bus and runs another build than this window's — another version
+    /// or another commit — (installed, not restarted): what the sidebar says about it, with its
+    /// version, else empty.
     Q_PROPERTY(QString daemonBuildMismatch READ daemonBuildMismatch NOTIFY daemonBuildChanged)
 
 public:
@@ -77,9 +79,6 @@ public:
     QString daemonVersion() const { return m_daemonVersion; }
     QString daemonCommit() const { return m_daemonCommit; }
     QString daemonBuildMismatch() const;
-
-    /// A commit as people read it: its first 7 characters.
-    static QString shortCommit(const QString &commit) { return commit.left(7); }
 
     /// Re-reads every Accounts property (GetAll).
     Q_INVOKABLE void retry();

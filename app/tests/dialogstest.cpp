@@ -779,9 +779,10 @@ private Q_SLOTS:
         QVERIFY(!battery->isEnabled());
     }
 
-    /// The foot of the sidebar names this build on every page; a daemon of another build
-    /// (installed, not restarted) adds a line, which goes once the daemon runs this build; a
-    /// newer release adds "Update available" with its page, which goes once it is not newer.
+    /// The foot of the sidebar names this build's version on every page, and leads to
+    /// KOneDrive's releases on GitHub; a daemon of another build (installed, not restarted) adds
+    /// a line, which goes once the daemon runs this build; while a newer release is out, the link
+    /// says so, until it is not newer or the check is turned off in Settings.
     void theVersionLine()
     {
         FakeDaemon fake;
@@ -813,8 +814,7 @@ private Q_SLOTS:
         QTRY_VERIFY((line = window->findChild<QQuickItem *>(QStringLiteral("versionLine"))));
         QTRY_VERIFY((service = window->findChild<QQuickItem *>(QStringLiteral("serviceVersionLine"))));
         const QString commit = QStringLiteral(KONEDRIVE_COMMIT);
-        QCOMPARE(line->property("text").toString(),
-                 QStringLiteral("Version %1 · commit %2").arg(QStringLiteral(KONEDRIVE_VERSION), commit.left(7)));
+        QCOMPARE(line->property("text").toString(), QStringLiteral("Version %1").arg(QStringLiteral(KONEDRIVE_VERSION)));
         QVERIFY(line->isVisible());
         // The same build: no second line.
         QVERIFY(!service->isVisible());
@@ -827,7 +827,7 @@ private Q_SLOTS:
         QVERIFY(fake.start());
         QTRY_VERIFY(service->isVisible());
         QCOMPARE(service->property("text").toString(),
-                 QStringLiteral("Service: 0.0.9-dev.55 · commit 1a2b3c4 — restart it to use this version"));
+                 QStringLiteral("Service: 0.0.9-dev.55 — restart it to use this version"));
 
         // The same version from another commit differs too.
         fake.stop();
@@ -843,20 +843,37 @@ private Q_SLOTS:
         QVERIFY(fake.start());
         QTRY_VERIFY(daemon.serviceAvailable());
         QVERIFY(!service->isVisible());
-        QCOMPARE(line->property("text").toString(),
-                 QStringLiteral("Version %1 · commit %2").arg(QStringLiteral(KONEDRIVE_VERSION), commit.left(7)));
+        QCOMPARE(line->property("text").toString(), QStringLiteral("Version %1").arg(QStringLiteral(KONEDRIVE_VERSION)));
 
-        // A newer release is out, then this build is the latest.
+        // KOneDrive's releases; a newer one is out, then this build is the latest.
+        const QString releases = QStringLiteral("https://github.com/kartas39/konedrive/releases");
         auto *release = window->findChild<QQuickItem *>(QStringLiteral("releaseLine"));
         QVERIFY(release);
-        QVERIFY(!release->isVisible());
-        const QString page = QStringLiteral("https://github.com/kartas39/konedrive/releases/tag/v99.0.0");
-        QVERIFY(releaseCheck.takeAnswer(QStringLiteral("{\"tag_name\": \"v99.0.0\", \"html_url\": \"%1\"}").arg(page).toUtf8()));
-        QTRY_VERIFY(release->isVisible());
-        QCOMPARE(release->property("text").toString(), QStringLiteral("Update available: 99.0.0"));
-        QCOMPARE(release->property("url").toString(), page);
+        QVERIFY(release->isVisible());
+        QCOMPARE(release->property("text").toString(), QStringLiteral("KOneDrive on GitHub"));
+        QCOMPARE(release->property("url").toString(), releases);
+        QCOMPARE(release->property("horizontalAlignment").toInt(), int(Qt::AlignLeft));
+        const QByteArray newer = QByteArrayLiteral("{\"tag_name\": \"v99.0.0\", \"html_url\": \"https://github.com/kartas39/konedrive/releases/tag/v99.0.0\"}");
+        QVERIFY(releaseCheck.takeAnswer(newer));
+        QTRY_COMPARE(release->property("text").toString(), QStringLiteral("New version available: 99.0.0"));
+        QCOMPARE(release->property("url").toString(), releases);
         QVERIFY(releaseCheck.takeAnswer(QByteArrayLiteral("{\"tag_name\": \"v0.0.1\", \"html_url\": \"https://github.com/kartas39/konedrive/releases/tag/v0.0.1\"}")));
-        QTRY_VERIFY(!release->isVisible());
+        QTRY_COMPARE(release->property("text").toString(), QStringLiteral("KOneDrive on GitHub"));
+
+        // Turned off in Settings: the newer release is no longer said; the link stays.
+        QVERIFY(releaseCheck.takeAnswer(newer));
+        QTRY_COMPARE(release->property("text").toString(), QStringLiteral("New version available: 99.0.0"));
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("settings")));
+        QQuickItem *check = nullptr;
+        QTRY_VERIFY((check = window->findChild<QQuickItem *>(QStringLiteral("checkForNewVersions"))));
+        QTRY_VERIFY(check->isVisible());
+        QVERIFY(check->property("checked").toBool());
+        check->setProperty("checked", false);
+        QMetaObject::invokeMethod(check, "toggled");
+        QVERIFY(!releaseCheck.enabled());
+        QTRY_COMPARE(release->property("text").toString(), QStringLiteral("KOneDrive on GitHub"));
+        QVERIFY(release->isVisible());
+        releaseCheck.setEnabled(true);
     }
 
     /// Issue #57: while the account holds back by itself, the head of Status says why,
